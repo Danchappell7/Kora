@@ -2898,6 +2898,22 @@ async function meetingsSuite(w: World) {
     eq(await recaps(w.carol, stale.id), 0, "without a recap");
     await end(w.carol, fresh.id);
   });
+  await test("0056: the room's presence channel (who's there, Hand over) is for the meeting's readers; nothing is broadcast on it", async () => {
+    const has = (await w.pg.query<{ on: boolean }>(`select to_regprocedure('public.kanbo_realtime_allowed(text,text,boolean)') is not null as "on"`)).rows[0].on;
+    if (!has) return;   // (without 0048 there's no presence at all)
+    const allowed = async (u: string, topic: string, ext: string, write: boolean) =>
+      (await asPerson<{ ok: boolean }>(w.pg, u, `select public.kanbo_realtime_allowed($1, $2, $3) as ok`, [topic, ext, write]))[0].ok;
+    const room = `kanbo:meeting:${team}`;
+    for (const u of [w.bob, w.alice, ned]) {
+      eq([await allowed(u, room, "presence", false), await allowed(u, room, "presence", true), await allowed(u, room, "broadcast", true)], [true, true, false], `${u}: see who's there, say they are, never broadcast`);
+    }
+    for (const u of [w.gus, w.carol]) eq(await allowed(u, room, "presence", false), false, `${u}: a guest or an outsider hears nothing`);
+    eq(await allowed(ned, `kanbo:meeting:${lead}`, "presence", false), false, "a member and a leadership meeting's room");
+    eq(await allowed(ida, `kanbo:meeting:${lead}`, "presence", true), true, "an admin is in that one");
+    eq(await allowed(w.alice, `kanbo:meeting:00000000-0000-4000-8000-000000000000`, "presence", false), false, "no such meeting");
+    eq(await allowed(w.alice, `kanbo:meeting:${team}:x`, "presence", false), false, "only a uuid after the prefix");
+    eq(await allowed(w.alice, `kanbo:project:${w.launch}`, "presence", false), true, "a project's channel as before");
+  });
   await test("0056: a leadership meeting is its owners' and admins'; a Group one only theirs who lead every business in it", async () => {
     for (const u of [w.alice, ida, max]) eq((await seen(u, lead)).length, 1, `${u} reads the leadership meeting`);
     for (const u of [w.bob, ned, w.gus, w.carol]) eq((await seen(u, lead)).length, 0, `${u} doesn't`);
@@ -3491,9 +3507,14 @@ async function waveThreeRerunSuite(w: World, files: string[]) {
     await same(before, "after 0041");
   });
   if (files.includes("0048_ux_wave.sql")) {
-    await test("wave 3: 0048 run again keeps every policy", async () => {
+    await test("wave 3: 0048 run again keeps every policy, and the meeting room's presence", async () => {
+      const room = (await w.pg.query<{ id: string; u: string }>(`select m.id::text as id, m.started_by::text as u from public.meetings m where m.preset = 'team' order by m.started_at limit 1`)).rows[0];
+      ok(room, "a team meeting to check");
+      const allowed = async () => (await asPerson<{ ok: boolean }>(w.pg, room.u, `select public.kanbo_realtime_allowed($1, 'presence', true) as ok`, [`kanbo:meeting:${room.id}`]))[0].ok;
+      eq(await allowed(), true, "before");
       await applyFile(w.pg, "0048_ux_wave.sql");
       await same(before, "after 0048");
+      eq(await allowed(), true, "after 0048 again");
     });
   }
 }

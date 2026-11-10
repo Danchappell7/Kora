@@ -17,6 +17,7 @@ decision and action.
 | Ending it | `end_meeting` | The presenter, whoever started it, or the business's owners and admins. The recap goes once into the Inbox of everyone asked or there (not the person ending it, and not anyone who switched update notices off): activity kind `meeting`. The daily digest carries it for people on one. |
 | Deleting it | `delete_meeting` | Whoever started it, or the business's owners and admins. Its recaps go with it. |
 | Live | realtime on `meetings`, `meeting_attendees`, `meeting_items` | RLS decides who hears what. |
+| Who's in the room | the private presence channel `kanbo:meeting:<id>` (0048's `kanbo_realtime_allowed`, with a meeting branch; only where 0048 is in) | The people who may read the meeting see who's there and say they are (so "N here" and Hand over show); nothing is broadcast on it. |
 
 Nobody writes these tables directly: only through the functions above.
 
@@ -29,10 +30,14 @@ Nobody writes these tables directly: only through the functions above.
      run those, then this file again.
 2. Check it with the VERIFY block at the end of the file: every column should
    say `true`.
-3. Redeploy **daily-reminders** (`supabase functions deploy daily-reminders`)
-   so the daily digest words a recap properly ("Maya shared the recap: 2
-   decisions and 3 actions") and follows each person's "update" email switch.
-   Until then the digest still includes recaps, as a plain "1 update" line.
+3. Redeploy **daily-reminders** with the command in
+   [DEPLOYMENT.md › Step 18](../../DEPLOYMENT.md) (step 1 there:
+   `supabase functions deploy daily-reminders --no-verify-jwt --project-ref htnchiljplrnjkwimgla --use-api`,
+   with your Supabase token), so the daily digest words a recap properly
+   ("Maya shared the recap: 2 decisions and 3 actions") and follows each
+   person's "update" email switch. Before or after this file are both fine:
+   before it there are no recaps, and until the redeploy the digest still
+   includes them, as a plain "1 update" line.
 
 No new secrets and no new schedule.
 
@@ -41,7 +46,8 @@ No new secrets and no new schedule.
 | If you run… | What happens |
 |---|---|
 | 0041 | Nothing changes here: 0056's tables are its own, and 0041 doesn't touch their rules. |
-| 0042, 0046, 0047, 0048 | Nothing changes here. |
+| 0042, 0046, 0047 | Nothing changes here. |
+| 0048 | Nothing changes here: 0048's presence check (`kanbo_realtime_allowed`) carries the meeting room's branch too, so who's in the room and Hand over keep working. |
 
 ## How it works
 

@@ -1103,7 +1103,8 @@ end $rt$;
 
 -- ---------- 15. live presence: who may use the kanbo:* Realtime channels (u5) ----------
 -- Presence rides Supabase Realtime on PRIVATE channels, one per object: "kanbo:task:<id>",
--- "kanbo:doc:<id>", "kanbo:project:<id>" (lib/presence). Realtime Authorization asks these policies on
+-- "kanbo:doc:<id>", "kanbo:project:<id>" and, once 0056 is in, "kanbo:meeting:<id>" (lib/presence; 0056
+-- makes this same function, so either file run again keeps the meeting room's branch). Realtime Authorization asks these policies on
 -- realtime.messages when someone joins (and again when their token refreshes). Nothing is stored.
 --   read  (see who's there; receive typing, doc edits, carets): anyone who can see the object.
 --   write, extension 'presence' (say you're there): the same people.
@@ -1122,7 +1123,7 @@ declare
   v_archived timestamptz;
 begin
   if auth.uid() is null or p_topic is null or not public.can_act() then return false; end if;
-  if p_topic !~ '^kanbo:(task|doc|project):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+  if p_topic !~ '^kanbo:(task|doc|project|meeting):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
     return false;
   end if;
   if p_write and p_extension is distinct from 'presence' and p_extension is distinct from 'broadcast' then return false; end if;
@@ -1133,6 +1134,11 @@ begin
   elsif v_kind = 'project' then
     if p_write and p_extension <> 'presence' then return false; end if;
     return public.can_see_project(v_id);
+  elsif v_kind = 'meeting' then
+    -- (0056's meeting room: who's there; nothing is broadcast on it. No meetings yet: no)
+    if p_write and p_extension <> 'presence' then return false; end if;
+    if to_regprocedure('public.can_see_meeting(uuid)') is null then return false; end if;
+    return public.can_see_meeting(v_id);
   end if;
   select d.project_id, d.archived_at into v_project, v_archived from public.project_docs d where d.id = v_id;
   if v_project is null then return false; end if;

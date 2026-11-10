@@ -871,9 +871,18 @@ steps; nothing breaks while you wait.
    ("Success. No rows returned"), then run the VERIFY query at the end of that
    file (every column `true`) before the next one. Each is safe to run again,
    and each stops with a clear message if a file it needs isn't in.
-3. **Reload the app** and check: Team › People › your profile has "Working
-   week" and "Time off"; Team › Pulse has Run meeting; Team › People shows Workspace
-   health (owners and admins); /admin has Provision a business.
+3. **Reload the app** and check what each file switched on (Run meeting,
+   Workspace health and Provision a business show before the files too, so
+   look for the words that go away):
+   - 0055: Team › People › your profile has "Working week" and "Time off",
+     without "Shared hours and time off aren't switched on yet".
+   - 0056: Team › Pulse › Run meeting's start sheet no longer says "Shared
+     meetings aren't switched on yet"; in the room the dot says "Live", not
+     "On your screen only".
+   - 0057: Team › People › Workspace health (owners and admins) shows "… active
+     in the last 7 days" with a seven-day strip, not "Not switched on yet.";
+     /admin › Adoption by workspace lists your workspaces, not "Not switched
+     on yet: run migration 0057."
 
 If 0041, 0042 or 0048 is ever run again, nothing here needs running again (each
 file's "Running other files again" table says why).

@@ -37,6 +37,10 @@
 --      Deleting a meeting takes its recaps with it.
 --   5. meetings, meeting_attendees and meeting_items join the realtime
 --      publication (RLS decides who hears).
+--   6. The room's presence channel ("kanbo:meeting:<id>": who's there, and
+--      Hand over) is allowed for the people who may read the meeting
+--      (0048's kanbo_realtime_allowed, with a meeting branch; nothing is
+--      broadcast on it).
 --
 -- The notes doc is an ordinary project doc (0047) in a project of the
 -- host's that the starter picks; the meeting only remembers which.
@@ -525,6 +529,55 @@ begin
   end loop;
 end $rt$;
 
+-- ---------- 6. who's in the room: the meeting's presence channel ----------
+-- The room says who's there (and offers Hand over to them) on the PRIVATE Realtime channel
+-- "kanbo:meeting:<id>" (lib/presence). 0048's kanbo_realtime_allowed knew only tasks, docs and projects,
+-- so Realtime refused every join. The same function, with a meeting branch: read and say you're there
+-- (extension 'presence'), anyone who may read the meeting (can_see_meeting); broadcast, nobody (the
+-- presenter's place travels on the meetings table). 0048 carries the same branch (it answers no for a
+-- meeting until this file has made can_see_meeting), so running 0048 again keeps it. Only where 0048 is in.
+do $presence$
+begin
+  if to_regprocedure('public.kanbo_realtime_allowed(text,text,boolean)') is null then return; end if;
+  execute $fn$
+create or replace function public.kanbo_realtime_allowed(p_topic text, p_extension text, p_write boolean)
+returns boolean language plpgsql stable security definer set search_path = public as $$
+declare
+  v_kind text;
+  v_id uuid;
+  v_project uuid;
+  v_archived timestamptz;
+begin
+  if auth.uid() is null or p_topic is null or not public.can_act() then return false; end if;
+  if p_topic !~ '^kanbo:(task|doc|project|meeting):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+    return false;
+  end if;
+  if p_write and p_extension is distinct from 'presence' and p_extension is distinct from 'broadcast' then return false; end if;
+  v_kind := split_part(p_topic, ':', 2);
+  v_id := split_part(p_topic, ':', 3)::uuid;
+  if v_kind = 'task' then
+    return public.can_see_task(v_id);
+  elsif v_kind = 'project' then
+    if p_write and p_extension <> 'presence' then return false; end if;
+    return public.can_see_project(v_id);
+  elsif v_kind = 'meeting' then
+    -- (0056: who's in the room; nothing is broadcast on it)
+    if p_write and p_extension <> 'presence' then return false; end if;
+    if to_regprocedure('public.can_see_meeting(uuid)') is null then return false; end if;
+    return public.can_see_meeting(v_id);
+  end if;
+  select d.project_id, d.archived_at into v_project, v_archived from public.project_docs d where d.id = v_id;
+  if v_project is null then return false; end if;
+  if p_write and p_extension = 'broadcast' then
+    return v_archived is null and public.can_edit_project(v_project);
+  end if;
+  return public.can_see_project(v_project);
+end; $$
+  $fn$;
+  revoke all on function public.kanbo_realtime_allowed(text, text, boolean) from public, anon;
+  grant execute on function public.kanbo_realtime_allowed(text, text, boolean) to authenticated;
+end $presence$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0056') on conflict (version) do nothing;
 
@@ -550,5 +603,8 @@ insert into public.schema_migrations (version) values ('0056') on conflict (vers
 --   (not exists (select 1 from pg_publication where pubname = 'supabase_realtime')
 --     or (select puballtables from pg_publication where pubname = 'supabase_realtime')
 --     or (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
---          and tablename in ('meetings', 'meeting_attendees', 'meeting_items')) = 3)                            as streams;
+--          and tablename in ('meetings', 'meeting_attendees', 'meeting_items')) = 3)                            as streams,
+--   (to_regprocedure('public.kanbo_realtime_allowed(text,text,boolean)') is null
+--     or (select prosrc like '%kanbo:(task|doc|project|meeting)%' from pg_proc
+--          where oid = 'public.kanbo_realtime_allowed(text,text,boolean)'::regprocedure))                     as room_presence;
 -- ============================================================
