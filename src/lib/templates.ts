@@ -20,7 +20,7 @@ import type { Priority, Recurrence, Task, WorkspaceTemplate, WorkspacePlan, Proj
 import { toLocalISO } from "../data/data";
 import { spectrumColor } from "./projectIdentity";
 import { supabase } from "./supabase";
-import { addDays, daysBetween, parseDay, templateRecurrence, withRecurrence } from "./templatePlan";
+import { addDays, daysBetween, parseDay, templateDate, templateRecurrence, withRecurrence } from "./templatePlan";
 import { OWNER_KEY } from "../auth/localData";
 import { parseLibraryTemplate, parseTemplateBody, templateFailure, TEMPLATE_LIMITS } from "./templateRows";
 
@@ -563,7 +563,20 @@ function workingDayAfter(base: Date, days: number): string {
 }
 const RECUR_OK: readonly Recurrence[] = ["none", "daily", "weekdays", "weekly", "biweekly", "monthly"];
 
-function planTask(tt: TemplateTask, sections: readonly string[], base: Date): PlannedTask {
+/** A countdown task's day: `fromAnchor` days from the anchor day (lib/templatePlan templateDate:
+ *  never before today; a weekend moves to the Monday after, or to the Friday before when a job
+ *  due before the anchor day would otherwise land on it or after it). A milestone keeps its own
+ *  day, a weekend included. */
+export function anchoredDay(anchor: Date, fromAnchor: number, today: Date, milestone = false): string {
+  const days = Math.round(fromAnchor);
+  if (milestone) {
+    const d = addDays(anchor, days);
+    return toLocalISO(d < today ? today : d);
+  }
+  return templateDate(anchor, days, today, days < 0 ? addDays(anchor, -1) : null);
+}
+
+function planTask(tt: TemplateTask, sections: readonly string[], base: Date, anchor?: Date | null): PlannedTask {
   const focus = typeof tt.focusMin === "number" && Number.isFinite(tt.focusMin) ? Math.max(5, Math.round(tt.focusMin)) : 30;
   const out: PlannedTask = {
     title: tt.title.trim(),
@@ -573,17 +586,21 @@ function planTask(tt: TemplateTask, sections: readonly string[], base: Date): Pl
     recurrence: RECUR_OK.includes(tt.recurrence as Recurrence) ? tt.recurrence! : "none",
   };
   if (tt.section && sections.includes(tt.section)) out.section = tt.section;
-  if (typeof tt.dueInDays === "number" && Number.isFinite(tt.dueInDays)) out.dueDate = workingDayAfter(base, Math.max(0, Math.round(tt.dueInDays)));
+  if (anchor && typeof tt.fromAnchor === "number" && Number.isFinite(tt.fromAnchor)) out.dueDate = anchoredDay(anchor, tt.fromAnchor, base, !!tt.milestone);
+  else if (typeof tt.dueInDays === "number" && Number.isFinite(tt.dueInDays)) out.dueDate = workingDayAfter(base, Math.max(0, Math.round(tt.dueInDays)));
   if (typeof tt.effortHours === "number" && Number.isFinite(tt.effortHours) && tt.effortHours > 0) out.effortHours = Math.round(tt.effortHours * 4) / 4;
+  if (tt.milestone) out.milestone = true;
   return out;
 }
-function planProject(p: TemplateProject, base: Date) {
+function planProject(p: TemplateProject, base: Date, anchorDay?: string) {
   const sections = [...new Set(p.sections.map((s) => s.trim()).filter(Boolean))];
+  // a countdown project: its anchor day (as picked, else where it starts out)
+  const anchor = p.anchor ? parseDay(anchorDay) ?? addDays(base, Math.max(0, Math.round(p.anchor.defaultInDays))) : null;
   return {
     key: p.key, name: p.name, emoji: p.emoji, color: spectrumColor(p.hue),
     ...(p.description ? { description: p.description } : {}),
     sections,
-    tasks: p.tasks.filter((x) => x.title.trim()).map((x) => planTask(x, sections, base)),
+    tasks: p.tasks.filter((x) => x.title.trim()).map((x) => planTask(x, sections, base, anchor)),
     ...(p.form ? { form: { ...p.form, fields: [...p.form.fields] } } : {}),
     ...(p.rule ? { rule: { ...p.rule, actions: p.rule.actions.map((a) => ({ ...a })) } } : {}),
   };
@@ -593,14 +610,16 @@ function planProject(p: TemplateProject, base: Date) {
  *  (spectrumColor), due dates counted from `today` (one landing on a weekend
  *  moves to the Monday), defaults filled in (medium priority, 30-minute focus,
  *  no repeat). `projectKeys` keeps only those projects, in the template's
- *  order (all when omitted). */
-export function buildWorkspaceFromTemplate(template: WorkspaceTemplate, today: Date | string, opts: { projectKeys?: string[] } = {}): WorkspacePlan {
+ *  order (all when omitted). A project with an anchor (a business pack's
+ *  countdown) counts its tasks back from `anchors[key]` ("YYYY-MM-DD"), or
+ *  from its anchor's default when none is given (anchoredDay). */
+export function buildWorkspaceFromTemplate(template: Pick<WorkspaceTemplate, "id" | "name" | "projects">, today: Date | string, opts: { projectKeys?: string[]; anchors?: Record<string, string> } = {}): WorkspacePlan {
   const base = dayOf(today);
   const keep = opts.projectKeys ? new Set(opts.projectKeys) : null;
   return {
     templateId: template.id,
     name: template.name,
-    projects: template.projects.filter((p) => !keep || keep.has(p.key)).map((p) => planProject(p, base)),
+    projects: template.projects.filter((p) => !keep || keep.has(p.key)).map((p) => planProject(p, base, opts.anchors?.[p.key])),
   };
 }
 
@@ -667,7 +686,8 @@ export async function applyWorkspacePlan(plan: WorkspacePlan, ctx: { workspaceId
         dueDate: pt.dueDate, effortHours: pt.effortHours,
         tags: [], dependencies: [], subtasks: [], comments: 0, followers: [], collaborators: [],
         focusMin: pt.focusMin, dur: pt.focusMin, aiScore: 50, scheduled: null, planToday: false,
-        recurrence: pt.recurrence, position: stamp + i,
+        recurrence: pt.recurrence, position: stamp + i, createdAt: new Date(stamp).toISOString(),
+        ...(pt.milestone ? { isMilestone: true } : {}),
       };
     });
     if (built.length) {

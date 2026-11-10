@@ -167,8 +167,9 @@ function onWorkingDay(d: Date, today: Date, cap?: Date | null): Date {
   const friday = addDays(d, wd === 6 ? -1 : -2);
   return friday < today ? d : friday;
 }
-/** A template date: `days` after day 0, never before today, on a working day. */
-function templateDate(zero: Date, days: number, today: Date, cap?: Date | null): string {
+/** A template date: `days` after day 0, never before today, on a working day. (Business packs
+ *  count back from an anchor day with it too: day 0 = the anchor, `days` negative before it.) */
+export function templateDate(zero: Date, days: number, today: Date, cap?: Date | null): string {
   const d = addDays(zero, days);
   return toLocalISO(onWorkingDay(d < today ? today : d, today, cap));
 }

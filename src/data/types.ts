@@ -681,8 +681,28 @@ export interface TemplateTask {
   focusMin?: number;
   description?: string;
   recurrence?: Recurrence;
+  /** business packs: days from its project's anchor day instead (−90 = 90 days before opening, 0 = the day itself) */
+  fromAnchor?: number;
+  /** a key date (Task.isMilestone): it keeps its own day, a weekend included */
+  milestone?: boolean;
 }
-export interface TemplateForm { name: string; description?: string; fields: FormFieldKey[] }
+/** A request form; `poster` (business packs) is the wording of its printable QR poster. */
+export interface TemplateForm { name: string; description?: string; fields: FormFieldKey[]; poster?: { headline: string; line?: string } }
+/** The day a project's plan counts back from ("Opening day"), picked when the pack is used. */
+export interface TemplateAnchor {
+  label: string;
+  /** where the date starts out: this many days from today */
+  defaultInDays: number;
+}
+/** A starter doc: one of the doc templates (lib/docBlocks docTemplate) under its own title, or written out in Markdown. */
+export interface TemplateDoc {
+  title: string;
+  icon?: string;
+  from?: DocTemplateId;
+  /** a meeting doc's agenda */
+  agenda?: string[];
+  markdown?: string;
+}
 /** An automation rule; a "set_section" action's value is a section NAME, resolved to its id when applied. */
 export interface TemplateRule { name: string; trigger: AutomationTrigger; actions: AutomationAction[] }
 export interface TemplateProject {
@@ -697,6 +717,48 @@ export interface TemplateProject {
   tasks: TemplateTask[];
   form?: TemplateForm;
   rule?: TemplateRule;
+  /** business packs: its plan counts back from this day */
+  anchor?: TemplateAnchor;
+  /** business packs: its starter docs (SOPs, meeting notes) */
+  docs?: TemplateDoc[];
+}
+/** A starter key result (Goals 2.0). A number it doesn't give starts empty. */
+export interface TemplateKeyResult {
+  name: string;
+  /** an emoji (Goals 2.0) */
+  icon?: string;
+  unit?: string;
+  target?: number;
+  /** where the number starts (lower is better needs one) */
+  start?: number;
+  direction?: GoalDirection;
+  /** projects that serve it (Goals 2.0 links; left off before 0052). A key result's default to its goal's. */
+  links?: string[];
+}
+/** A starter goal: owned by whoever uses the pack, for the quarter they pick (or that whole year). */
+export interface TemplateGoal extends TemplateKeyResult {
+  /** stable within its pack */
+  key: string;
+  description?: string;
+  span?: "quarter" | "year";
+  /** its % is this project's (Goal.projectId) */
+  project?: string;
+  keyResults?: TemplateKeyResult[];
+}
+export interface TemplatePortfolio {
+  key: string;
+  name: string;
+  description?: string;
+  emoji?: string;
+  hue?: import("../lib/projectIdentity").SpectrumKey;
+  /** its projects' keys */
+  projects: string[];
+}
+/** A holding company's businesses (named when the pack is used): a project and a portfolio for
+ *  each, "{business}" in their words being its name. */
+export interface TemplatePerBusiness {
+  project: TemplateProject;
+  portfolio: Omit<TemplatePortfolio, "key" | "projects">;
 }
 export interface WorkspaceTemplate {
   id: string;
@@ -706,6 +768,14 @@ export interface WorkspaceTemplate {
   emoji: string;
   hue: import("../lib/projectIdentity").SpectrumKey;
   projects: TemplateProject[];
+  /* ---- business packs (src/packs): everything below is theirs ---- */
+  /** who it's for ("Studios and small fitness groups") */
+  audience?: string;
+  goals?: TemplateGoal[];
+  portfolios?: TemplatePortfolio[];
+  /** the workspace's update day (0053) */
+  updateRhythm?: UpdateRhythm;
+  perBusiness?: TemplatePerBusiness;
 }
 /** A template made concrete for a day (buildWorkspaceFromTemplate): real dates and colours, no ids yet. */
 export interface PlannedTask {
@@ -718,6 +788,7 @@ export interface PlannedTask {
   effortHours?: number;
   focusMin: number;
   recurrence: Recurrence;
+  milestone?: boolean;
 }
 export interface PlannedProject {
   key: string;
