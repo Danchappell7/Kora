@@ -36,6 +36,7 @@ import { getMember, toLocalISO } from "../../data/data";
 import type { Task } from "../../data/types";
 import type { AiOutcome, ExtractedTask } from "../../lib/askTypes";
 import { getProjectDoc, saveProjectDoc } from "../../lib/docs";
+import { audienceOpen } from "../../lib/projectAccess";
 import { usePresence } from "../../lib/presence";
 import { PRESETS, mayRun, meetingDay, meetingPeople, sectionOf, SECTION_LABEL } from "../../lib/meetings/agenda";
 import { extractText, linkCreated, makeTaskText, meetingDoc } from "../../lib/meetings/notes";
@@ -73,9 +74,14 @@ export interface MeetingRoomProps {
   onOpenTask: (id: string) => void;
   onOpenDoc: (projectId: string, docId: string) => void;
   onOpenMeeting?: (id: string) => void;
+  /** may you add tasks to this project? (0058: a project you can only view or comment on isn't offered) */
+  canEditProject?: (projectId: string) => boolean;
 }
 
-export function MeetingRoom({ meetingId, data, onClose: close, createTasks, deleteTask, aiExtract, onOpenTask, onOpenDoc, onOpenMeeting }: MeetingRoomProps) {
+/** Extract tasks with nowhere the meeting's people can all see (0058). */
+export const NO_TASK_PROJECT = "Tasks from a meeting go in a project everyone at it can see, and there isn't one here you can add to.";
+
+export function MeetingRoom({ meetingId, data, onClose: close, createTasks, deleteTask, aiExtract, onOpenTask, onOpenDoc, onOpenMeeting, canEditProject }: MeetingRoomProps) {
   const { me, members, workspaces, projects } = data;
   const toast = useOptionalToast();
   const phone = useMediaQuery("(max-width: 759px)");
@@ -234,6 +240,10 @@ export function MeetingRoom({ meetingId, data, onClose: close, createTasks, dele
   /* ---- lines into tasks (Extract tasks) ---- */
   const taskById = useMemo(() => new Map(data.tasks.map((t) => [t.id, t])), [data.tasks]);
   const hostProjects = useMemo(() => (meeting ? projects.filter((p) => p.workspaceId === meeting.workspaceId && !p.archivedAt) : []), [projects, meeting]);
+  // where its actions become tasks: (0058) a project everyone the meeting is for can see (D17: the server
+  // links nothing else to the meeting), and that you can add to
+  const taskProjects = useMemo(() => (meeting ? hostProjects.filter((p) => audienceOpen(meeting.preset, host, p) && (canEditProject?.(p.id) ?? true)) : []),
+    [hostProjects, meeting, host, canEditProject]);
   const [extract, setExtract] = useState<{ text: string; from?: MeetingItem } | null>(null);
   const linkWithRetry = async (fn: () => Promise<{ ok: boolean; message?: string }>) => {
     for (const wait of LINK_TRIES) {
@@ -247,6 +257,7 @@ export function MeetingRoom({ meetingId, data, onClose: close, createTasks, dele
   };
   const onExtracted = (rows: Array<Partial<Task> & { title: string }>): boolean | void => {
     if (!createTasks || !meeting) return false;
+    if (rows.some((r) => !r.projectId || !taskProjects.some((p) => p.id === r.projectId))) { toast?.error(NO_TASK_PROJECT); return false; }
     const ids = createTasks(rows);
     if (!Array.isArray(ids) || !ids.length) return;
     const from = extract?.from;
@@ -277,22 +288,23 @@ export function MeetingRoom({ meetingId, data, onClose: close, createTasks, dele
 
   /* ---- one click: an action becomes a task (its owner and day), with Undo ---- */
   // (the notes project, else the host project the owner's work is in, else one of yours)
+  // (only among the projects everyone the meeting is for can see, and you can add to)
   const taskProjectFor = (ownerId: string | null): string | undefined => {
-    if (docProject) return docProject.id;
+    if (docProject && taskProjects.some((p) => p.id === docProject.id)) return docProject.id;
     if (ownerId) {
       const n = new Map<string, number>();
-      for (const t of data.tasks) if (t.assigneeId === ownerId && t.status !== "done" && hostProjects.some((p) => p.id === t.projectId)) n.set(t.projectId, (n.get(t.projectId) ?? 0) + 1);
+      for (const t of data.tasks) if (t.assigneeId === ownerId && t.status !== "done" && taskProjects.some((p) => p.id === t.projectId)) n.set(t.projectId, (n.get(t.projectId) ?? 0) + 1);
       const best = [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
       if (best) return best[0];
     }
-    return hostProjects.find((p) => p.ownerId === me)?.id ?? hostProjects[0]?.id;
+    return taskProjects.find((p) => p.ownerId === me)?.id ?? taskProjects[0]?.id;
   };
   const quickTask = (body: string, ownerId: string | null, due: string | null): { id: string; project: string } | null => {
     const projectId = taskProjectFor(ownerId);
     if (!createTasks || !projectId) return null;
     const ids = createTasks([{ title: body, projectId, ...(ownerId ? { assigneeId: ownerId } : {}), ...(due ? { dueDate: due } : {}) }], { quiet: true });
     const id = Array.isArray(ids) ? ids[0] : undefined;
-    return id ? { id, project: hostProjects.find((p) => p.id === projectId)?.name ?? "the project" } : null;
+    return id ? { id, project: taskProjects.find((p) => p.id === projectId)?.name ?? "the project" } : null;
   };
   const madeToast = (made: { id: string; project: string }, ownerId: string | null, undo: () => void) => {
     const who = ownerId ? firstName(nameOf(ownerId) ?? "") : "";
@@ -559,7 +571,7 @@ export function MeetingRoom({ meetingId, data, onClose: close, createTasks, dele
       )}
       {extract && meeting && (
         <ExtractTasksSheet open onClose={() => setExtract(null)} initialText={extract.text} context={meeting.title}
-          projects={hostProjects} members={people} defaultProjectId={docProject?.id} currentUserId={me}
+          projects={taskProjects} members={people} defaultProjectId={docProject?.id} currentUserId={me}
           onExtractAI={aiExtract} onCreate={onExtracted} />
       )}
     </div>,

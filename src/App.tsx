@@ -4891,6 +4891,7 @@ export default function App() {
             <MeetingsHost me={currentUserId} workspaces={workspaces} members={wsMembers} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
               statusUpdates={statusUpdates} loadEvents={(ws, since) => store.listWorkspaceEventsSince(ws, since)}
               createTasks={(rows, o) => importTasks(rows, { verb: "Added", quiet: o?.quiet })} deleteTask={deleteTask} onCreateProject={createProject}
+              canEditProject={(pid) => projectRank(pid, accessCtx) >= 3}
               aiExtract={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined} onOpenTask={setDetailId}
               onOpenDoc={(projectId, docId) => { const p = projects.find((x) => x.id === projectId); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId, tab: "docs", docId }); }} />
           </Suspense>

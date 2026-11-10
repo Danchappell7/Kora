@@ -42,6 +42,8 @@ export interface MeetingsHostProps extends MeetingData {
   onOpenTask: (id: string) => void;
   /** open a doc in its project (the room closes; the meeting carries on) */
   onOpenDoc: (projectId: string, docId: string) => void;
+  /** may you add tasks to this project? (0058: the room makes tasks only where you can) */
+  canEditProject?: (projectId: string) => boolean;
 }
 
 export function MeetingsHost(props: MeetingsHostProps) {
@@ -68,7 +70,7 @@ export function MeetingsHost(props: MeetingsHostProps) {
           <MeetingRoom key={open} meetingId={open} data={data} onClose={close}
             createTasks={props.createTasks} deleteTask={props.deleteTask} aiExtract={props.aiExtract} onOpenTask={props.onOpenTask}
             onOpenDoc={(projectId, docId) => { close(); props.onOpenDoc(projectId, docId); }}
-            onOpenMeeting={(id) => setOpen(id)} />
+            onOpenMeeting={(id) => setOpen(id)} canEditProject={props.canEditProject} />
         </Suspense>
       )}
     </>

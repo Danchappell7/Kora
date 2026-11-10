@@ -300,6 +300,52 @@ describe("the room", () => {
     await waitFor(async () => expect((await listItems(r.data.id)).find((i) => i.body.startsWith("Chase legal"))?.taskId).toBe("t-new"));
     expect(screen.queryByRole("button", { name: /Carry over: Chase legal/ })).toBeNull();
   });
+  it("0058: an action becomes a task only where everyone the meeting is for can see it, and you can add to it (never the owner's Private project)", async () => {
+    // Theo's open work at Foundrise is mostly in one project; make that one Private and switch project access on
+    const wsProjects = PROJECTS.filter((p) => p.workspaceId === WS && !p.archivedAt);
+    const count = new Map<string, number>();
+    for (const t of live) if (t.assigneeId === "m-2" && t.status !== "done" && wsProjects.some((p) => p.id === t.projectId)) count.set(t.projectId, (count.get(t.projectId) ?? 0) + 1);
+    const busiest = [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+    const viewOnly = wsProjects.find((p) => p.id !== busiest && p.ownerId === "m-self")?.id ?? wsProjects.find((p) => p.id !== busiest)!.id;
+    const closed: MeetingData = {
+      ...data(),
+      workspaces: WORKSPACES.map((w) => (w.id === WS ? { ...w, projectAccess: { on: true, defaultVisibility: "workspace", membersMayMakePrivate: false } } : w)),
+      projects: PROJECTS.map((p) => (p.id === busiest ? { ...p, visibility: "private" as const } : p.workspaceId === WS ? { ...p, visibility: "workspace" as const } : p)),
+    };
+    const r = await startMeeting({ workspaceId: WS, workspaceIds: [WS], preset: "team", title: "Foundrise team meeting", agenda: AGENDA,
+      attendees: ["m-self", "m-1", "m-2"], docProjectId: null, previousId: null, me: "m-self" });
+    if (!r.ok) throw new Error(r.message);
+    const { props } = room(r.data.id, "m-self", { data: closed, canEditProject: (id: string) => id !== viewOnly });
+    await screen.findByRole("heading", { name: "Foundrise team meeting" });
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    const notes = screen.getByRole("complementary", { name: "Notes" });
+    fireEvent.click(within(notes).getByRole("radio", { name: "Action" }));
+    fireEvent.change(within(notes).getByRole("textbox", { name: "Action on Maya Lin" }), { target: { value: "Book the load test" } });
+    fireEvent.change(within(notes).getByRole("combobox", { name: "Owner" }), { target: { value: "m-2" } });
+    fireEvent.click(within(notes).getByRole("button", { name: "Add action" }));
+    const line = (await within(notes).findByText("Book the load test")).closest("li")!;
+    fireEvent.click(within(line as HTMLElement).getByRole("button", { name: "Make task" }));
+    const made = (props.createTasks.mock.calls[0][0] as { projectId: string }[])[0].projectId;
+    expect(made).not.toBe(busiest);
+    expect(made).not.toBe(viewOnly);
+    expect(wsProjects.some((p) => p.id === made)).toBe(true);
+    // Extract tasks (a decision's follow-up) offers the same projects
+    fireEvent.click(within(notes).getByRole("radio", { name: "Decision" }));
+    fireEvent.change(within(notes).getByRole("textbox", { name: "Decision on Maya Lin" }), { target: { value: "Edge sessions ship Friday" } });
+    fireEvent.click(within(notes).getByRole("button", { name: "Add decision" }));
+    const decision = (await within(notes).findByText("Edge sessions ship Friday")).closest("li")!;
+    fireEvent.click(within(decision as HTMLElement).getByRole("button", { name: "Follow-up task" }));
+    const extract = await screen.findByRole("dialog", { name: /tasks/i });
+    await act(async () => {
+      const go = within(extract).getAllByRole("button").find((b) => /^Find|^Read|^Next|^Review/.test(b.textContent ?? ""));
+      fireEvent.click(go!);
+      await new Promise((res) => setTimeout(res, 50));
+    });
+    const offered = [...within(extract).getByRole("combobox", { name: "Project for these tasks" }).querySelectorAll("option")].map((o) => o.value);
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered).not.toContain(busiest);
+    expect(offered).not.toContain(viewOnly);
+  });
   it("the wrap-up ends it: the recap goes to everyone asked, and the room becomes the recap", async () => {
     const m = await startOne();
     room(m.id);
