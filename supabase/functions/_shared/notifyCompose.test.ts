@@ -1,6 +1,9 @@
 // What a notification says: lone notices, bundles, the due list and the digest.
 import { describe, expect, it } from "vitest";
-import { composeBundle, digestEmail, digestThreads, dueEmail, eventEmail, filterDigestItems, kudosEmail, kudosPush, noticeLine, peopleList, type ComposeRow, type DigestItem } from "./notifyCompose";
+import {
+  composeBundle, digestEmail, digestThreads, dueEmail, eventEmail, filterDigestItems, kudosEmail, kudosPush, noticeLine, peopleList,
+  updateAskEmail, updateAskPush, updateDueEmail, updateDuePush, type ComposeRow, type DigestItem,
+} from "./notifyCompose";
 
 const T = "22222222-2222-4222-8222-222222222222";
 const row = (kind: string, actor: string, at: string, title = "Launch deck"): ComposeRow => ({
@@ -123,5 +126,43 @@ describe("kudos notices (0048: notify { kind: 'kudos' })", () => {
     expect(m.html).toContain("Q3 &amp; launch");
     expect(m.html).toContain('href="https://kanbo.test/?task=t-1"');
     expect(kudosEmail("Sana", "🎉", "", "Deck", "").html).not.toContain("Open in Kanbo");
+  });
+});
+
+describe("project updates (0053: the update-day reminder and Ask for an update)", () => {
+  const P = "33333333-3333-4333-8333-333333333333";
+  it("the reminder: one project says when it's due, several list themselves; it opens Today", () => {
+    const one = updateDuePush([{ projectId: P, name: "Q3 launch", when: "today", followUp: 0 }]);
+    expect(one).toMatchObject({ title: "Your Q3 launch update is due today", url: "/today", tag: "kanbo-updates", kind: "update" });
+    expect(updateDuePush([{ projectId: P, name: "Q3 launch", when: "Fri 6 Nov", followUp: 1 }]).title).toBe("Your Q3 launch update was due Fri 6 Nov");
+    const many = updateDuePush([{ projectId: P, name: "Q3 launch", when: "today", followUp: 0 }, { projectId: T, name: "Brand", when: "today", followUp: 0 }]);
+    expect(many).toMatchObject({ title: "2 project updates are waiting on you", body: "Q3 launch and Brand. Kanbo has drafts ready." });
+  });
+  it("its email links each project's Updates tab, escaped, and says nothing posts on its own", () => {
+    const m = updateDueEmail([{ projectId: P, name: "<b>Q3</b> launch", when: "today", followUp: 0 }], "https://www.kanbo.co.uk");
+    expect(m.subject).toBe("Your <b>Q3</b> launch update is due today");
+    expect(m.html).toContain("&lt;b&gt;Q3&lt;/b&gt;");
+    expect(m.html).not.toContain("<b>Q3</b>");
+    expect(m.html).toContain(`https://www.kanbo.co.uk/p/${P}/updates`);
+    expect(m.text).toMatch(/Check it, change what you like, and post/);
+    expect(m.text).toMatch(/at most twice more/);
+  });
+  it("an ask names who asked and opens the project's updates", () => {
+    expect(updateAskPush("Theo Vance", "Winter League", P)).toMatchObject({ title: "Theo Vance asked for an update", body: "On Winter League. Kanbo has a draft ready.", url: `/p/${P}/updates`, kind: "update" });
+    expect(updateAskEmail("Theo Vance", "Winter League", "https://x.example/p/1/updates").subject).toBe("Theo Vance asked for an update on Winter League");
+    expect(noticeLine("update", "Theo Vance")).toBe("Theo Vance asked for an update");
+  });
+  it("two held asks on one project go as one, opening the project rather than the Inbox", () => {
+    const ask = (actor: string, at: string): ComposeRow => ({ kind: "update", actor_name: actor, title: "Winter League", task_id: null, created_at: `2026-10-09T09:0${at}:00Z`,
+      payload: { v: 1, line: noticeLine("update", actor), url: `/p/${P}/updates` } });
+    const b = composeBundle([ask("Theo Vance", "1"), ask("Ada Lovelace", "2")], "https://www.kanbo.co.uk");
+    expect(b.push?.url).toBe(`/p/${P}/updates`);
+    expect(b.email?.html).toContain("Theo Vance asked for an update");
+  });
+  it("the digest carries your project updates, and an update alone is worth a digest", () => {
+    const m = digestEmail([], [], "2026-10-09", "https://www.kanbo.co.uk", { updates: [{ projectId: P, name: "Q3 launch", line: "due today" }] })!;
+    expect(m.subject).toBe("Your Kanbo digest: your project update");
+    expect(m.html).toContain(`/p/${P}/updates`);
+    expect(m.text).toMatch(/Kanbo has a draft ready on Today/);
   });
 });

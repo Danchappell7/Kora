@@ -44,15 +44,17 @@ export const SLACK_LIMITS = {
 } as const;
 
 export type SlackMessageKind = "test" | "standup" | "status" | "risks";
-export type SlackStatusKind = "on_track" | "at_risk" | "off_track";
+/** "on_hold" (0053): a paused project's update */
+export type SlackStatusKind = "on_track" | "at_risk" | "off_track" | "on_hold";
 
 export const STATUS_WORDS: Record<SlackStatusKind, { label: string; emoji: string }> = {
   on_track: { label: "On track", emoji: ":large_green_circle:" },
   at_risk: { label: "At risk", emoji: ":large_yellow_circle:" },
   off_track: { label: "Off track", emoji: ":red_circle:" },
+  on_hold: { label: "On hold", emoji: ":white_circle:" },
 };
 export const isStatusKind = (v: unknown): v is SlackStatusKind =>
-  v === "on_track" || v === "at_risk" || v === "off_track";
+  v === "on_track" || v === "at_risk" || v === "off_track" || v === "on_hold";
 
 /* ---------------------------------------------------------------- text */
 

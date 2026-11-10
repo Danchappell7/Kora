@@ -8,7 +8,9 @@
 //   • a bundle: everything held for one task in one window, as ONE push and
 //     ONE email — "3 comments on Launch deck from Sana and Theo", every
 //     mention named ("Sana mentioned you");
-//   • the morning due list and the daily digest (daily-reminders).
+//   • the morning due list and the daily digest (daily-reminders);
+//   • project updates (0053): the update-day reminder (daily-reminders'
+//     digest run) and "Ask for an update" (notify), and both in the digest.
 // Everything user-written is escaped; titles are one line and capped.
 // ============================================================
 import type { PushMessage } from "./webpush.ts";
@@ -54,6 +56,7 @@ export function noticeLine(kind: string, actorName: string): string {
     case "assigned": return `${w} assigned you this task`;
     case "approval": return `${w} asked about an approval`;
     case "kudos": return `${w} sent you kudos`;
+    case "update": return `${w} asked for an update`;
     default: return `${w} updated it`;
   }
 }
@@ -139,7 +142,9 @@ export function composeBundle(rows: readonly ComposeRow[], appUrl: string): Comp
     mentioners.length ? `${listJoin(mentioners)} mentioned you` : "",
     assigners.length ? `${listJoin(assigners)} assigned it to you` : "",
   ].filter(Boolean).join(" · ");
-  const path = taskId ? `/?task=${encodeURIComponent(taskId)}` : "/inbox";
+  // (a project's notices have no task: they open where their own said, e.g. its Updates tab)
+  const own = (sorted[sorted.length - 1]?.payload ?? {}) as Partial<NoticePayload>;
+  const path = taskId ? `/?task=${encodeURIComponent(taskId)}` : typeof own.url === "string" && own.url.startsWith("/") ? own.url : "/inbox";
   const push: PushMessage = {
     title: headline,
     body: [mentionLine, actors.length ? `From ${peopleList(actors)}` : ""].filter(Boolean).join(" · ") || taskTitle,
@@ -263,10 +268,12 @@ export function filterDigestItems(items: readonly DigestItem[], visibleTasks: Re
   return items.filter((a) => (!a.task_id || (visibleTasks.has(a.task_id) && !snoozedTasks.has(a.task_id))) && wants(a.kind));
 }
 
-/** The digest email: unread updates by thread, then what's due. null when there's nothing to say. */
-export function digestEmail(threads: readonly DigestThread[], due: readonly DueTask[], today: string, appUrl: string, opts: { firstName?: string; digestTime?: string } = {}):
+/** The digest email: unread updates by thread, then what's due, then your project updates (0053). null when there's nothing to say. */
+export function digestEmail(threads: readonly DigestThread[], due: readonly DueTask[], today: string, appUrl: string,
+  opts: { firstName?: string; digestTime?: string; updates?: readonly DigestUpdate[] } = {}):
   { subject: string; html: string; text: string } | null {
-  if (!threads.length && !due.length) return null;
+  const ups = opts.updates ?? [];
+  if (!threads.length && !due.length && !ups.length) return null;
   const updates = threads.reduce((n, t) => n + t.lines.length, 0);
   const shown = threads.slice(0, 25);
   const link = (taskId: string | null) => (appUrl ? `${appUrl}${taskId ? `/?task=${encodeURIComponent(taskId)}` : "/inbox"}` : "");
@@ -287,7 +294,16 @@ export function digestEmail(threads: readonly DigestThread[], due: readonly DueT
   const parts: string[] = [];
   if (threads.length) parts.push(`<strong>${esc(plural(updates, "update"))} in your Inbox</strong>`, `<ul style="margin:0;padding:0 0 0 18px">${threadHtml}</ul>${moreThreads}`);
   if (due.length) parts.push(`<strong>${esc(`${plural(due.length, "task")} due today or overdue`)}</strong>`, `<ul style="margin:0;padding:0 0 0 18px">${dueHtml}</ul>${due.length > 15 ? `<p style="color:#71717a;font-size:13px;margin:0">…and ${due.length - 15} more.</p>` : ""}`);
-  const bits = [threads.length ? plural(updates, "update") : "", due.length ? `${plural(due.length, "task")} due` : ""].filter(Boolean);
+  if (ups.length) {
+    const upHtml = ups.slice(0, 10).map((u) => {
+      const href = appUrl ? `${appUrl}/p/${encodeURIComponent(u.projectId)}/updates` : "";
+      const name = esc(oneLine(u.name, 120) || "A project");
+      return `<li style="margin:0 0 6px">${href ? `<a href="${esc(href)}" style="color:#18181b;text-decoration:none">${name}</a>` : name} <span style="color:#71717a">${esc(oneLine(u.line, 120))}</span></li>`;
+    }).join("");
+    parts.push(`<strong>${esc(ups.length === 1 ? "Your project update" : `${ups.length} project updates`)}</strong>`,
+      `<ul style="margin:0;padding:0 0 0 18px">${upHtml}</ul><p style="color:#71717a;font-size:13px;margin:0">Kanbo has a draft ready on Today. Nothing is posted until you do.</p>`);
+  }
+  const bits = [threads.length ? plural(updates, "update") : "", due.length ? `${plural(due.length, "task")} due` : "", ups.length ? (ups.length === 1 ? "your project update" : `${ups.length} project updates`) : ""].filter(Boolean);
   const mail = renderEmail({
     heading: opts.firstName ? `Your Kanbo digest, ${oneLine(opts.firstName, 40)}` : "Your Kanbo digest",
     paragraphs: parts,
@@ -295,4 +311,84 @@ export function digestEmail(threads: readonly DigestThread[], due: readonly DueT
     footnotes: [`You get one email a day${opts.digestTime ? ` at ${esc(opts.digestTime)}` : ""}, plus a push for mentions and approvals. Change this in Kanbo › Settings › Notifications.`],
   });
   return { subject: `Your Kanbo digest: ${bits.join(", ")}`, html: mail.html, text: mail.text };
+}
+
+/* ---------- project updates (0053) ---------- */
+
+/** A project update that's yours to post: its name, and why ("due today", "was due Fri 6 Nov", "Theo asked for one"). */
+export interface DigestUpdate { projectId: string; name: string; line: string }
+
+/** One project on its update day (or a follow-up day) for its owner. */
+export interface UpdateDueItem {
+  projectId: string;
+  name: string;
+  /** "today", "Fri 6 Nov" */
+  when: string;
+  /** 0 on the day, then 1 and 2 */
+  followUp: number;
+}
+
+const projectName = (n: string | null | undefined) => oneLine(n, 120) || "your project";
+const dueSays = (i: UpdateDueItem) => (i.followUp === 0 || i.when === "today" ? "due today" : `was due ${i.when}`);
+/** "Your Q3 launch update is due today" · "Your Q3 launch update was due Fri 6 Nov" · "3 project updates are waiting on you" */
+const dueHeading = (items: readonly UpdateDueItem[]) => {
+  if (items.length !== 1) return `${items.length} project updates are waiting on you`;
+  const i = items[0];
+  return i.followUp === 0 || i.when === "today" ? `Your ${projectName(i.name)} update is due today` : `Your ${projectName(i.name)} update was due ${i.when}`;
+};
+
+/** The update-day reminder's push: one a day for everything that's yours (it opens Today, where the drafts are). */
+export function updateDuePush(items: readonly UpdateDueItem[]): PushMessage {
+  const one = items.length === 1;
+  return {
+    title: dueHeading(items),
+    body: one ? "Kanbo has drafted it from this week's work. Check it and post." : `${listJoin(items.slice(0, 4).map((i) => projectName(i.name)))}. Kanbo has drafts ready.`,
+    url: "/today",
+    tag: "kanbo-updates",
+    kind: "update",
+  };
+}
+
+/** …and its email. */
+export function updateDueEmail(items: readonly UpdateDueItem[], appUrl: string): { subject: string; html: string; text: string } {
+  const one = items.length === 1;
+  const heading = dueHeading(items);
+  const list = items.slice(0, 10).map((i) => {
+    const href = appUrl ? `${appUrl}/p/${encodeURIComponent(i.projectId)}/updates` : "";
+    const name = esc(projectName(i.name));
+    return `<li style="margin:0 0 6px">${href ? `<a href="${esc(href)}" style="color:#18181b;text-decoration:none;font-weight:600">${name}</a>` : `<strong>${name}</strong>`} <span style="color:#71717a">${esc(dueSays(i))}</span></li>`;
+  }).join("");
+  const mail = renderEmail({
+    heading,
+    paragraphs: [
+      ...(one ? [] : [`<ul style="margin:0;padding:0 0 0 18px">${list}</ul>`]),
+      one ? "Kanbo has drafted it from this week's work: what finished, what's late and what's next. Check it, change what you like, and post." : "Kanbo has drafted each from this week's work. Check them, change what you like, and post.",
+    ],
+    cta: appUrl ? { label: one ? "Review the draft" : "Open Today", href: one && items[0] ? `${appUrl}/p/${encodeURIComponent(items[0].projectId)}/updates` : `${appUrl}/today` } : undefined,
+    footnotes: ["It's your team's update day. If it's still to do you'll hear at most twice more, on the next working days. Change this in Kanbo › Settings › Notifications."],
+  });
+  return { subject: oneLine(heading, 180), html: mail.html, text: mail.text };
+}
+
+/** "Ask for an update": the push to the project's owner (it opens the project's Updates tab). */
+export function updateAskPush(askerName: string, name: string, projectId: string): PushMessage {
+  return {
+    title: `${who(askerName)} asked for an update`,
+    body: `On ${projectName(name)}. Kanbo has a draft ready.`,
+    url: `/p/${encodeURIComponent(projectId)}/updates`,
+    tag: `update-ask-${projectId}`,
+    kind: "update",
+  };
+}
+
+/** …and its email. */
+export function updateAskEmail(askerName: string, name: string, link: string): { subject: string; html: string; text: string } {
+  const heading = `${who(askerName)} asked for an update on ${projectName(name)}`;
+  const mail = renderEmail({
+    heading,
+    paragraphs: ["Kanbo has drafted one from this week's work. Check it, change what you like, and post. Everyone following the project sees it."],
+    cta: link ? { label: "Review the draft", href: link } : undefined,
+    footnotes: ["Change project update emails in Kanbo › Settings › Notifications."],
+  });
+  return { subject: oneLine(heading, 180), html: mail.html, text: mail.text };
 }
