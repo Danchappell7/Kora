@@ -30,6 +30,8 @@ import { kudosCounts, kudosOnTask } from "../../lib/momentum";
 import { usePersonDropTarget } from "../../lib/dropActions";
 import { KudosButton, KudosTally } from "../momentum/KudosButton";
 import { useWorkspaceKudos } from "../momentum/useKudos";
+import { useAvailability } from "../availability/useAvailability";
+import { OffChip } from "../availability/OffChip";
 
 function useOptionalToast() { try { return useToast(); } catch { return null; } }
 
@@ -98,7 +100,9 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
 }) {
   const toast = useOptionalToast();
   const [period, setPeriod] = useState<PulsePeriod>("day");
-  const [capacities] = useState(readCapacities);
+  // (0055: the team's shared weeks, less time off, once it's on; this device's capacities before)
+  const avail = useAvailability();
+  const capacities = useMemo(() => readCapacities(workspaceId), [workspaceId, avail]); // eslint-disable-line react-hooks/exhaustive-deps
   const todayISO = toLocalISO(KANBO_TODAY);
 
   /* ---- the change history (task_events) ---- */
@@ -312,7 +316,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
               : facts.people.map((p) => (
                 <PulseRow key={p.id} p={p} tasks={tasks} people={people} doneLabel={doneLabel} onOpen={onOpen}
                   currentUserId={currentUserId} kudos={kudos} received={kudosBy[p.id]?.received ?? 0} kudosWhen={period === "week" ? "this week" : `since ${sinceWord}`}
-                  onKudos={onKudos} readOnly={readOnly} onDropTasksOnPerson={onDropTasksOnPerson} />
+                  onKudos={onKudos} readOnly={readOnly} onDropTasksOnPerson={onDropTasksOnPerson} workspaceId={workspaceId} />
               ))}
           </div>
         </div>
@@ -350,12 +354,14 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
 }
 
 /** One person's row: what they finished (with kudos), what's on today (blocked work first), and their week. */
-function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, received, kudosWhen, onKudos, readOnly, onDropTasksOnPerson }: {
+function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, received, kudosWhen, onKudos, readOnly, onDropTasksOnPerson, workspaceId }: {
   p: PulsePerson; tasks: Task[]; people: Person[]; doneLabel: string; onOpen: (id: string) => void;
   currentUserId: string; kudos: Kudos[]; received: number; kudosWhen: string;
   onKudos: (taskId: string, next: Kudos[]) => void;
   readOnly: boolean;
   onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
+  /** (0055) the workspace: "Off today" beside the name */
+  workspaceId?: string | null;
 }) {
   // a drop target for tasks dragged from anywhere (binds nothing for guests, or when the host doesn't reassign)
   const drop = usePersonDropTarget({ userId: p.id, name: p.name }, {
@@ -389,6 +395,7 @@ function PulseRow({ p, tasks, people, doneLabel, onOpen, currentUserId, kudos, r
         <span className="kpt-who-text">
           <span className="kpt-name">{p.name}</span>
           {p.role && <span className="kpt-role">{p.role}</span>}
+          {!p.guest && <OffChip userId={p.id} workspaceId={workspaceId} size="xs" />}
           {received > 0 && (
             <span className="kpt-kudos" title={`${received} kudos ${kudosWhen}`}>
               <span className="kkudos-emoji" aria-hidden="true">🎉</span><span aria-hidden="true">{received}</span>

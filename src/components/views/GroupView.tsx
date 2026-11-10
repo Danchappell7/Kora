@@ -20,6 +20,7 @@ import type { ApprovalWithTask, Goal, Project, StatusUpdate, Task, Workspace, Wo
 import { digestLine, groupDigest, offTrackPills, type BusinessDigest, type GoalPace, type GoalWhy } from "../../lib/group";
 import type { WorkspaceSignal } from "../../lib/businesses";
 import { readCapacities } from "../../lib/radar";
+import { useAvailability } from "../availability/useAvailability";
 import { BUSINESS_CSS, WorkspaceMark } from "../businesses/Businesses";
 import type { AskForUpdate } from "../../lib/updateAsks";
 import { MergedStatusPill } from "../updates/MergedStatusPill";
@@ -270,9 +271,12 @@ function BusinessSection({ d, onOpen, asks }: { d: BusinessDigest; onOpen: Group
 
 export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, onOpen, pace, signals, asks }: GroupViewProps) {
   // worked out once per change of what it reads (App re-renders every second while the focus timer runs)
+  // (0055: each business's own shared capacities, read again when they change)
+  const avail = useAvailability();
   const digests = useMemo(
-    () => groupDigest({ workspaces, members, me: currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, capacities: readCapacities(), pace, signals }),
-    [workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, pace, signals],
+    () => groupDigest({ workspaces, members, me: currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, capacities: readCapacities(), capacitiesFor: (ws) => readCapacities(ws), pace, signals }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, pace, signals, avail],
   );
   return (
     <div className="kpj-page">

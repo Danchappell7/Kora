@@ -1,0 +1,68 @@
+/* KANBO — shared weeks, time off and rates (0055): the chips, the profile's week and time off, the rate fields. */
+
+/* "Off today" / "Off until Mon": calm, never an alarm; off now reads warmer than off soon */
+.kav-chip { display: inline-flex; align-items: center; flex-shrink: 0; height: 20px; padding: 0 8px; border-radius: 999px;
+  font: 500 11px/16px var(--font-ui, var(--font-display)); white-space: nowrap; color: var(--ink-3); background: var(--fill-1); }
+.kav-chip[data-now] { color: var(--warn, var(--st-review)); background: color-mix(in oklch, var(--warn, var(--st-review)) 11%, transparent); }
+.kav-chip[data-size="xs"] { height: 18px; padding: 0 6px; font-size: 11px; }
+.kav-tag { margin-left: auto; flex-shrink: 0; padding: 0 6px; border-radius: 999px; font: 500 11px/18px var(--font-ui, var(--font-display));
+  color: var(--warn, var(--st-review)); background: color-mix(in oklch, var(--warn, var(--st-review)) 11%, transparent); white-space: nowrap; }
+.kav-note { display: block; margin-top: 4px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--warn, var(--st-review)); }
+.kav-quiet { margin: 0; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kav-summary { margin: 0; font: 500 13px/20px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+
+/* a person's week */
+.kprof-field.kav-week { gap: 12px; }
+.kav-week-row { display: flex; flex-wrap: wrap; gap: 10px 12px; }
+.kav-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.kav-hours { width: 88px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.kav-time { width: 112px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.kav-days { display: inline-flex; gap: 4px; }
+.kav-day { width: 32px; height: 32px; border-radius: 999px; border: 1px solid var(--hairline-strong); background: transparent; color: var(--ink-3);
+  font: 600 12px/1 var(--font-ui, var(--font-display)); cursor: pointer; transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease); }
+.kav-day:hover { background: var(--fill-1); color: var(--ink); }
+.kav-day[aria-pressed="true"] { border-color: transparent; background: var(--ink); color: var(--surface, #fff); }
+.kav-week-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.kav-week-foot .kprof-hint[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
+.kav-actions { display: inline-flex; gap: 6px; flex-shrink: 0; }
+
+/* time off */
+.kav-offs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.kav-off { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 0 0 8px; border-radius: var(--r-sm, 6px); }
+.kav-off:hover { background: var(--fill-1); }
+.kav-off-when { flex-shrink: 0; font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.kav-off-now { color: var(--warn, var(--st-review)); font-family: var(--font-ui, var(--font-display)); }
+.kav-off-why { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kav-off-why[data-private] { color: var(--ink-2); }
+.kav-form { display: flex; flex-direction: column; gap: 12px; padding: 12px; border-radius: var(--r-md, 8px); background: var(--fill-1); }
+.kav-form .kfield-input, .kav-form .kfield-select { background: var(--surface, var(--field-bg)); }
+
+/* Time & billing: the rates (owners and admins) */
+.kav-rate { display: inline-flex; align-items: center; gap: 8px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kav-rate-field { display: inline-flex; align-items: center; gap: 4px; height: var(--h-sm, 28px); padding: 0 8px; border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); color: var(--ink-3); }
+.kav-rate-field input { width: 56px; border: 0; background: transparent; color: var(--ink); font: 500 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; outline: none; }
+.kav-rate-field:focus-within { border-color: var(--accent); }
+.kav-rate-field[data-size="sm"] input { width: 44px; }
+.kav-rate-note { margin: 8px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+
+/* Workload (0055): a task you can move, and Kanbo's rebalance before it's applied */
+.kav-wtask { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.kav-wtask > .kload-task { flex: 1; min-width: 0; }
+.kav-wtask > .kibtn { opacity: 0; transition: opacity var(--d-1, 90ms) var(--ease); }
+.kav-wtask:hover > .kibtn, .kav-wtask > .kibtn:focus-visible, .kav-wtask > .kibtn[aria-expanded="true"] { opacity: 1; }
+@media (hover: none) { .kav-wtask > .kibtn { opacity: 1; } }
+.kav-reb { display: flex; flex-direction: column; gap: 10px; margin: 0 0 12px; padding: 12px 14px; border-radius: var(--r-md, 8px);
+  background: var(--surface, var(--fill-1)); box-shadow: inset 0 0 0 1px var(--hairline-strong); }
+.kav-reb-head { display: flex; align-items: center; gap: 8px; margin: 0; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kav-reb-head svg { color: var(--accent-text, var(--accent)); }
+.kav-reb-moves { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.kav-reb-move { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, auto); align-items: center; gap: 12px; min-height: 32px;
+  border-bottom: 1px solid var(--hairline); font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kav-reb-move:last-child { border-bottom: 0; }
+.kav-reb-title { color: var(--ink); }
+.kav-reb-hours, .kav-reb-num { font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kav-reb-who { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--ink-2); }
+.kav-reb-who svg { color: var(--ink-4, var(--ink-3)); }
+.kav-reb-after { margin: 0; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kav-reb-actions { display: flex; justify-content: flex-end; gap: 8px; }
