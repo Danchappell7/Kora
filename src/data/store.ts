@@ -1308,18 +1308,24 @@ const usageOf = (v: unknown): { used: number; limit: number } | undefined => {
   return typeof u.used === "number" && typeof u.limit === "number" && Number.isFinite(u.used) && Number.isFinite(u.limit) ? { used: u.used, limit: u.limit } : undefined;
 };
 
-// Set when the deployed ai-assist predates these modes: it answers any mode it
-// doesn't know as "prioritise" ({ items, summary }). Until the function is
-// redeployed, skip it for the rest of the session rather than pay for (and
-// wait on) answers that can't be used — the on-device rules answer instead.
-let aiModesMissing = false;
+// The deployed ai-assist answers any mode it doesn't know as "prioritise"
+// ({ items, summary }). The modes came in waves: a function that doesn't know
+// one doesn't know any later one either, but still knows the earlier ones —
+// so "portfolio" missing (ai-assist not redeployed since 0054's front end)
+// never switches off Ask, notes → tasks, standups or status drafts. Until the
+// function is redeployed, a missing mode is skipped for the rest of the
+// session rather than paid for (and waited on): the on-device rules answer.
+const AI_MODE_WAVE: Readonly<Record<string, number>> = { command: 1, extract: 1, standup: 1, status: 1, portfolio: 2 };
+/** the first wave the deployed function doesn't know (Infinity: none found missing yet) */
+let aiMissingFrom = Infinity;
 const AI_UNAVAILABLE = { data: null, source: "unavailable" } as const;
 
 /** One call to ai-assist in one of the redesign's modes. `pick` turns the
  *  reply into the caller's data, or null when it isn't usable. */
 async function callAiMode<T>(body: Record<string, unknown>, pick: (d: Record<string, unknown>) => T | null, timeout = AI_TIMEOUT_MS): Promise<AiOutcome<T>> {
   aiNoticeText = null;
-  if (!supabase || isOffline() || aiModesMissing) return AI_UNAVAILABLE;
+  const wave = AI_MODE_WAVE[String(body.mode)] ?? 99;   // (a mode not listed here: newer than all of them)
+  if (!supabase || isOffline() || wave >= aiMissingFrom) return AI_UNAVAILABLE;
   try {
     const { data, error } = await supabase.functions.invoke("ai-assist", { body, timeout });
     if (error) {
@@ -1330,8 +1336,12 @@ async function callAiMode<T>(body: Record<string, unknown>, pick: (d: Record<str
     const d = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
     if (!d) return AI_UNAVAILABLE;
     if (Array.isArray(d.items)) {
-      aiModesMissing = true;
-      console.info("[kanbo] The ai-assist function needs redeploying for Ask Kanbo, notes → tasks, standups and status drafts; using on-device rules until then.");
+      if (wave < aiMissingFrom) {
+        aiMissingFrom = wave;
+        console.info(wave <= 1
+          ? "[kanbo] The ai-assist function needs redeploying for Ask Kanbo, notes → tasks, standups and status drafts; using on-device rules until then."
+          : `[kanbo] The ai-assist function needs redeploying for ${String(body.mode)} drafts; using on-device rules for those until then.`);
+      }
       return AI_UNAVAILABLE;
     }
     const picked = pick(d);
