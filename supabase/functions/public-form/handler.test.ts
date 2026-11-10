@@ -245,11 +245,11 @@ describe("GET: a Members only or Private project (0058, Project access on)", () 
     db.access = null;
     expect(((await get()).body.form as { project: { name: string } }).project.name).toBe("Website refresh");
   });
-  it("when it can't tell, the form says it's unavailable rather than naming the project", async () => {
+  it("when it can't tell just now, the page still opens, with the form's own name rather than the project's", async () => {
     db.access = { broken: true };
     const r = await get();
-    expect(r.status).toBe(503);
-    expect(r.body.reason).toBe("unavailable");
+    expect(r.status).toBe(200);
+    expect((r.body.form as { project: unknown }).project).toEqual({ name: "Design requests", emoji: "", color: expect.any(String) });
     expect(JSON.stringify(r.body)).not.toContain("Website refresh");
   });
   it("a personal form never asks", async () => {

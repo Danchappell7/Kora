@@ -359,12 +359,13 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
     const found = await findTarget(db, token, log);
     if (!found.ok) return fail(found.reason);
     const { form, project, workspace } = found.target;
-    // a Members only or Private project (0058, switched on) isn't named on a page anyone with the link can read
+    // a Members only or Private project (0058, switched on) isn't named on a page anyone with the link can read.
+    // When that can't be told just now, the page still opens, with the form's own name (it names nothing)
     let open = true;
     if (form.workspace_id && UUID.test(String(form.project_id))) {
       try { open = await projectAccess(db).projectIsOpen(form.workspace_id, String(form.project_id)); } catch (e) {
         log?.("public-form: project access lookup failed", dbError(e));
-        return fail("unavailable");
+        open = false;
       }
     }
     const face = open ? project : { id: form.id, name: form.name, emoji: "", color: null };

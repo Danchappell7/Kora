@@ -89,8 +89,11 @@ No new secrets and no new schedule.
 - **What's queued.** The database drops Inbox notices, held email and push
   notices, and webhook deliveries for people who can't see the work, and
   clears what's waiting when a project becomes more private or someone loses
-  access. The edge functions deployed in step 1 filter as well; the database's
-  checks are the backstop for any that are still old.
+  access. That backstop covers only what the database queues itself: task
+  notices' email and push, Inbox items and webhooks. Slack stand-ups and link
+  previews, public form pages, the due-list email, the digest, calendar feeds,
+  invites and Notion follow today's rule until the functions in step 1 are
+  deployed, so never switch a business on before then.
 - **Meetings.** A team meeting's agenda carries only Whole workspace work; a
   leadership meeting's also Members only. Private projects are never on an
   agenda, and a meeting's notes doc can't be put in one its people can't open.
