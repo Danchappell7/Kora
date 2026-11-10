@@ -17,6 +17,7 @@
 import { sqlVerifier } from "../../functions/_shared/api/auth.ts";
 import { handleApiRequest } from "../../functions/_shared/api/pipeline.ts";
 import { CREATOR_GONE_ERROR, CREATOR_GONE_REASON, runDispatch } from "../../functions/_shared/api/webhookDispatch.ts";
+import { claimSync, runSync } from "../../functions/_shared/notionSync.ts";
 import { accessInstalled, personRankSql, projectAccess } from "../../functions/_shared/projectAccess.ts";
 import { loadCard, loadProjectCard, type SlackDb } from "../../functions/_shared/slackAppData.ts";
 import { handleMcpFunction, type McpDeps } from "../../functions/_shared/mcp/handler.ts";
@@ -3816,6 +3817,46 @@ async function projectAccessApiSuite(w: World) {
     for (const k of ["left", "guest", "suspended"] as const) eq(await after(k), [], `${k}: nothing waiting for their address`);
     eq(await after("stays"), ["member.joined", "task.created", "task.created"], "an endpoint whose viewer stays hears all of it");
     await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [Object.values(hooks)]);
+  });
+  // a Notion two-way sync on a Whole workspace project, run as alice, whose pages name gus (a guest on Launch only) and bob
+  await test("0058, Notion, switch on: a page whose Owner can't see the project comes in unassigned; the sync never stops on it", async () => {
+    const target = await mk("Notion launch", "workspace");
+    await pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('n', 40))
+                    on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.w1]);
+    const sync = (await one<{ id: string }>(`insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
+        values ($1::uuid, $2::uuid, '0d0d0d0d-0000-4000-8000-000000000058', $3::jsonb, 'two_way', $4::uuid) returning id::text as id`,
+      [w.w1, target, JSON.stringify({ title: "Name", assignee: { property: "Owner" } }), w.alice])).id;
+    const page = (n: number, title: string, email: string) => ({
+      object: "page", id: `1a1a1a1a-0000-4000-8000-00000000005${n}`, created_time: "2026-11-09T10:00:00.000Z", last_edited_time: "2026-11-10T10:00:00.000Z",
+      properties: { Name: { type: "title", title: [{ plain_text: title }] }, Owner: { type: "people", people: [{ id: `nu-${n}`, person: { email } }] } },
+    });
+    const pages = [page(1, "Brief the client", "gus@example.org"), page(2, "Book the venue", "bob@example.org")];
+    const api = {
+      calls: 0,
+      async me() { return { id: "bot" }; },
+      async searchDatabases() { return { results: [], next_cursor: null, has_more: false }; },
+      async database() { return {}; },
+      async query() { this.calls++; return { results: pages, next_cursor: null, has_more: false }; },
+      async page(id: string) { this.calls++; return pages.find((p) => p.id === id)!; },
+      async updatePage() { this.calls++; return {}; },
+      async users() { return { results: [], next_cursor: null, has_more: false }; },
+    };
+    let n = 0;
+    const logs: string[] = [];
+    const deps = { db: w.deps.db, notion: () => api, now: () => Date.now(), newId: () => `2b2b2b2b-0000-4000-8000-${String(++n).padStart(12, "0")}`,
+      log: (_l: string, m: string) => { logs.push(m); } };
+    for (const run of [1, 2]) {
+      await pg.query(`update public.notion_syncs set last_run_at = null where id = $1::uuid`, [sync]);
+      const row = await claimSync(w.deps.db.service, sync, 60);
+      ok(row, `run ${run} claimed`);
+      const r = await runSync(deps as never, row!, { deadline: Date.now() + 20_000 });
+      eq([r.fatal, r.error], [false, null], `run ${run}: ${logs.join("; ")}`);
+      ok(!("busy" in r && r.busy), `run ${run}: ${JSON.stringify(r)}`);
+      const made = (await pg.query<{ title: string; a: string }>(`select title, assignee_id as a from public.tasks where project_id = $1 order by title`, [target])).rows;
+      eq(made.map((t) => [t.title, t.a]), [["Book the venue", w.bob], ["Brief the client", ""]], `run ${run}: both pages are tasks, gus's unassigned (${JSON.stringify(r)}; ${logs.join("; ")})`);
+    }
+    eq((await one<{ c: string | null }>(`select last_cursor as c from public.notion_syncs where id = $1::uuid`, [sync])).c !== null, true, "the cursor moves on");
+    await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [sync]);
   });
   await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
   await test("0058, webhooks, switch off: the dispatcher judges an endpoint by its viewer too: one whose viewer left is switched off and sent nothing", async () => {

@@ -64,6 +64,7 @@
 import { parseNotionId, type NotionFieldMapping } from "./notion.ts";
 import type { Tx, UserScope } from "./api/types.ts";
 import { isNotionError, type NotionApi } from "./notionApi.ts";
+import { accessInstalled } from "./projectAccess.ts";
 import {
   baselineOf, checkMapping, formatCursor, isKanboStatus, LIMITS, ms, nextBaseline, OVERLAP_MS, oneLine, pageMeta, parseCursor,
   planSync, pullPatch, pushProperties, readBaseline, readMapping, readPage, sameBaseline, schemaOf, tagColour, tagKey, taskFromPage,
@@ -158,7 +159,11 @@ export async function readToken(service: Tx, ws: string): Promise<string | null>
   return r[0]?.t ?? null;
 }
 
-interface Ctx extends MapContext { tagLabelById: Map<string, string>; tagIdByKey: Map<string, string> }
+interface Ctx extends MapContext {
+  tagLabelById: Map<string, string>; tagIdByKey: Map<string, string>;
+  /** Project access (0058) is in: an assignee is someone who can see the sync's project (onlyWhoSees) */
+  gated?: boolean;
+}
 async function loadContext(tx: Tx, ws: string): Promise<Ctx> {
   const members = await tx.query<{ user_id: string; email: string }>(
     `select m.user_id::text as user_id, lower(btrim(m.email)) as email from public.workspace_members m
@@ -170,6 +175,45 @@ async function loadContext(tx: Tx, ws: string): Promise<Ctx> {
   for (const t of tags) { tagLabelById.set(t.id, t.label); if (!tagIdByKey.has(tagKey(t.label))) tagIdByKey.set(tagKey(t.label), t.id); }
   return { memberByEmail, emailByMember, tagLabelById, tagIdByKey };
 }
+
+/**
+ * With Project access (0058), a page's Owner names only people who can see the sync's project: the
+ * database refuses anyone else as an assignee (the sync writes as its person, as the app does), which
+ * used to stop the whole batch, run after run. Their pages come in unassigned, and a linked task keeps
+ * whom it has. Pushing still names everyone (emailByMember stays whole). On the service connection,
+ * outside the person's transaction; before 0058 (or with nobody to check) the context is as it was.
+ */
+async function onlyWhoSees(service: Tx, ctx: Ctx, ws: string, projectId: string): Promise<Ctx> {
+  if (!ctx.memberByEmail.size || !(await accessInstalled(service))) return ctx;
+  const blind = new Set((await service.query<{ u: string }>(
+    `select x.u from jsonb_array_elements_text($1::jsonb) as x(u) where public.user_project_rank(x.u::uuid, $2::uuid, $3::text) < 1`,
+    [J([...new Set(ctx.memberByEmail.values())]), ws, projectId])).map((r) => r.u));
+  return { ...ctx, gated: true, memberByEmail: new Map([...ctx.memberByEmail].filter(([, id]) => !blind.has(id))) };
+}
+
+/** 0058's refusal of an assignee who can't see the project (from the app, as the sync writes). */
+const isAssigneeRefused = (e: unknown) =>
+  (e as { code?: string } | null)?.code === "42501" && /assignee can't see this project/.test(String((e as Error)?.message ?? e));
+
+/**
+ * `write` in a savepoint. Refused for its assignee alone (someone who lost sight of the project since the
+ * run read who can see it), it's undone and `instead` (the same write with nobody new assigned) runs, so
+ * one page never stops the batch. Only where 0058 is in and the write names someone.
+ */
+async function assigneeSafe<T>(tx: Tx, write: () => Promise<T>, instead: () => Promise<T>): Promise<{ value: T; dropped: boolean }> {
+  await tx.query("savepoint notion_assignee");
+  try {
+    const value = await write();
+    await tx.query("release savepoint notion_assignee");
+    return { value, dropped: false };
+  } catch (e) {
+    await tx.query("rollback to savepoint notion_assignee");
+    await tx.query("release savepoint notion_assignee");
+    if (!isAssigneeRefused(e)) throw e;
+    return { value: await instead(), dropped: true };
+  }
+}
+const assigneeNote = (title: string) => `“${oneLine(title, 60)}”: its Notion Owner can't see this project in Kanbo, so it wasn't assigned to them.`;
 
 /** Tag labels → tag ids in the workspace, creating the missing ones (as the person). */
 async function tagIds(tx: Tx, userId: string, ws: string, ctx: Ctx, values: TagValue[]): Promise<string[]> {
@@ -198,7 +242,14 @@ type PatchOutcome = { ok: true; at: string } | { ok: false; why: "changed" | "re
  * "changed": edited (or archived, or moved) meanwhile: the caller leaves the link alone so the next
  * run merges again. "refused": RLS said no.
  */
-async function applyPatch(tx: Tx, userId: string, ws: string, ctx: Ctx, task: SyncTask, readAt: string, p: PullPatch): Promise<PatchOutcome> {
+async function applyPatch(tx: Tx, userId: string, ws: string, ctx: Ctx, task: SyncTask, readAt: string, p: PullPatch,
+                          onNote: (s: string) => void = () => {}): Promise<PatchOutcome> {
+  if (ctx.gated && p.assignee_id) {
+    const { value, dropped } = await assigneeSafe(tx, () => applyPatch(tx, userId, ws, { ...ctx, gated: false }, task, readAt, p),
+      () => applyPatch(tx, userId, ws, { ...ctx, gated: false }, task, readAt, { ...p, assignee_id: undefined }));
+    if (dropped) onNote(assigneeNote(p.title ?? task.title));
+    return value;
+  }
   const params: unknown[] = [task.id, ws, readAt];
   const sets: string[] = [];
   const add = (col: string, v: unknown, cast = "") => { params.push(v); sets.push(`${col} = $${params.length}${cast}`); };
@@ -355,7 +406,7 @@ async function settleIn(tx: Tx, run: Run, row: LinkTaskRow, page: NPage, f: Page
   if (plan.pull.length) {
     const { patch, changed } = pullPatch(f, task, run.mapping, run.ctx, plan.pull);
     if (changed.length) {
-      const out = await applyPatch(tx, run.scope.userId, run.scope.workspaceId, run.ctx, task, row.updated_at, patch);
+      const out = await applyPatch(tx, run.scope.userId, run.scope.workspaceId, run.ctx, task, row.updated_at, patch, (s) => note(run, s));
       if (!out.ok) return { kind: out.why };
       at = out.at;
       run.stats.updated++;
@@ -488,7 +539,8 @@ async function pullBatch(run: Run, pages: NPage[]) {
       type NewRow = ReturnType<typeof taskFromPage> & { tagValues: TagValue[] };
       // every missing tag in one statement, then each row's ids from the context
       await tagIds(tx, scope.userId, ws, run.ctx, creates.flatMap((c) => (c.row as NewRow).tagValues));
-      const rowsIn = [];
+      const rowsIn: { id: string; n: number; title: string; description: string; status: KanboStatus; assignee_id: string;
+                      due_date: string | null; start_date: string | null; tags: string[] }[] = [];
       for (const [n, c] of creates.entries()) {
         const r = c.row as NewRow;
         rowsIn.push({
@@ -496,7 +548,7 @@ async function pullBatch(run: Run, pages: NPage[]) {
           due_date: r.due_date, start_date: r.start_date, tags: await tagIds(tx, scope.userId, ws, run.ctx, r.tagValues),
         });
       }
-      const made = await tx.query<{ id: string; u: string }>(
+      const insert = (list: typeof rowsIn) => tx.query<{ id: string; u: string }>(
         `insert into public.tasks (id, user_id, title, description, status, priority, project_id, assignee_id, workspace_id,
                                    due_date, start_date, completed_at, tags, plan_today, position)
          select x.id, $1::uuid, x.title, x.description, x.status, 'medium', $2, x.assignee_id, $3::uuid,
@@ -504,7 +556,18 @@ async function pullBatch(run: Run, pages: NPage[]) {
                 array(select jsonb_array_elements_text(x.tags)), false, extract(epoch from clock_timestamp()) * 1000 + x.n
            from jsonb_to_recordset($4::jsonb) as x(id uuid, n int, title text, description text, status text, assignee_id text,
                                                   due_date text, start_date text, tags jsonb)
-         returning id::text as id, updated_at::text as u`, [scope.userId, run.projectId, ws, J(rowsIn)]);
+         returning id::text as id, updated_at::text as u`, [scope.userId, run.projectId, ws, J(list)]);
+      // (someone named who lost sight of the project during the run: each row on its own, theirs unassigned)
+      const made = !run.ctx.gated || !rowsIn.some((r) => r.assignee_id) ? await insert(rowsIn)
+        : (await assigneeSafe(tx, () => insert(rowsIn), async () => {
+          const out: { id: string; u: string }[] = [];
+          for (const r of rowsIn) {
+            const one = r.assignee_id ? await assigneeSafe(tx, () => insert([r]), () => insert([{ ...r, assignee_id: "" }])) : { value: await insert([r]), dropped: false };
+            if (one.dropped) { r.assignee_id = ""; note(run, assigneeNote(r.title)); }
+            out.push(...one.value);
+          }
+          return out;
+        })).value;
       const madeAt = new Map(made.map((m) => [m.id, m.u]));
       for (const [i, c] of creates.entries()) {
         const u = madeAt.get(c.id);
@@ -686,7 +749,7 @@ async function pushChanged(run: Run, limit: number) {
         const { patch, changed } = pullPatch(f, t, run.mapping, run.ctx, plan.pull);
         if (!changed.length) pulled = plan.pull;
         else {
-          const out = await applyPatch(tx, scope.userId, ws, run.ctx, t, cur.updated_at, patch);
+          const out = await applyPatch(tx, scope.userId, ws, run.ctx, t, cur.updated_at, patch, (s) => note(run, s));
           if (out.ok) { at = out.at; pulled = plan.pull; run.stats.updated++; }
           else if (out.why === "changed") return { kind: "changed" as const };
           else refused = true;
@@ -857,7 +920,7 @@ async function runLeased(deps: SyncDeps, sync: SyncRow, opts: { deadline: number
         `select workspace_id::text as ws, archived_at is not null as archived from public.projects where id = $1::uuid`, [sync.project_id]);
       if (!p[0] || p[0].ws !== ws || p[0].archived) throw new SyncStop(SYNC_TEXT.projectGone);
       return loadContext(tx, ws);
-    });
+    }).then((c) => onlyWhoSees(deps.db.service, c, ws, sync.project_id));
     run = {
       deps, api: deps.notion(token, opts.deadline), scope, projectId: sync.project_id, databaseId: sync.database_id, syncId: sync.id,
       mapping, direction: sync.direction === "from_notion" ? "from_notion" : "two_way", createOnly: false, ctx,
@@ -962,7 +1025,7 @@ async function importLeased(deps: SyncDeps, api: NotionApi, input: ImportInput,
   // the import is this sync's first run
   if (syncId) await deps.db.service.query(`update public.notion_syncs set last_run_at = now() where id = $1::uuid`, [syncId]);
 
-  const ctx = await deps.db.withUser({ ...scope, readOnly: true }, (tx) => loadContext(tx, ws));
+  const ctx = await onlyWhoSees(deps.db.service, await deps.db.withUser({ ...scope, readOnly: true }, (tx) => loadContext(tx, ws)), ws, projectId);
   const stats: SyncStats = { created: 0, updated: 0, pushed: 0, skipped: 0 };
   const run: Run = {
     deps, api, scope, projectId, databaseId, syncId, mapping, direction: input.direction, createOnly: !syncId, ctx, stats,

@@ -174,7 +174,10 @@ integrations page.
      "Leave as it is" don't change a task's status.
    - **Due date**: a date field. A date range sets the start date and due
      date.
-   - **Assignee**: a people field, matched to members by email.
+   - **Assignee**: a people field, matched to members by email. With
+     Project access on, only people who can see the project count: a page
+     whose Owner can't comes in unassigned, and a linked task keeps whom it
+     has.
    - **Tags**: a multi-select field. Missing tags are made in the workspace,
      in Notion's colours.
    - **Description**: a text field's first paragraph.
