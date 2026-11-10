@@ -259,6 +259,38 @@ export function webhookHealth(w: Pick<Webhook, "active" | "failureCount" | "last
 const TEAM_ONLY_EVENTS = new Set<WebhookEvent>(["member.joined", "approval.requested", "approval.decided", "kudos.given"]);
 export const PERSONAL_WEBHOOK_EVENTS: readonly WebhookEvent[] = WEBHOOK_EVENTS.filter((e) => !TEAM_ONLY_EVENTS.has(e));
 
+/** Events newer than 0048's list, which a database may not take yet: status_update.posted comes with 0054
+ *  (project updates). Until webhook_event_names() lists one, create_webhook / update_webhook refuse it. */
+const LATER_EVENTS = new Set<WebhookEvent>(["status_update.posted"]);
+/** What every database since 0048 takes. */
+export const BASE_WEBHOOK_EVENTS: readonly WebhookEvent[] = WEBHOOK_EVENTS.filter((e) => !LATER_EVENTS.has(e));
+
+let acceptedEvents: readonly WebhookEvent[] | null = null;
+/** The events this database takes (webhook_event_names(), anyone's to call since 0046), read once a session.
+ *  When it can't say (a blip, an older database): the ones every database since 0048 takes, never a later one,
+ *  and it asks again next time. Demo: all of them. */
+export async function acceptedWebhookEvents(): Promise<readonly WebhookEvent[]> {
+  if (!supabase) return WEBHOOK_EVENTS;
+  if (acceptedEvents) return acceptedEvents;
+  try {
+    if (isOffline()) return BASE_WEBHOOK_EVENTS;
+    const { data, error } = await supabase.rpc("webhook_event_names");
+    if (error || !Array.isArray(data)) return BASE_WEBHOOK_EVENTS;
+    const names = new Set(data.map(String));
+    const known = WEBHOOK_EVENTS.filter((e) => names.has(e));
+    if (!known.length) return BASE_WEBHOOK_EVENTS;
+    acceptedEvents = known;
+    return known;
+  } catch {
+    return BASE_WEBHOOK_EVENTS;
+  }
+}
+/** Forget what was read (the database refused an event it was thought to take; tests). */
+export function forgetAcceptedWebhookEvents(): void { acceptedEvents = null; }
+
+/** The sentence for a database that refused events someone did choose (one it doesn't take yet). */
+export const WEBHOOK_EVENTS_NOT_YET = "Kanbo can't send one of those events yet. Reload the page to see the ones you can choose.";
+
 /* ---------- wording, in British English ---------- */
 const timeFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
 const dayFmt = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
@@ -288,10 +320,11 @@ export function soonText(iso: string | null, now = Date.now()): string {
   return `at ${timeFmt.format(t)}`;
 }
 
-/** "Task created, Task completed" · "All events" · "5 events" */
-export function eventsSummary(events: readonly WebhookEvent[], personal: boolean): string {
-  const all = personal ? PERSONAL_WEBHOOK_EVENTS : WEBHOOK_EVENTS;
-  if (all.every((e) => events.includes(e))) return "All events";
+/** "Task created, Task completed" · "All events" · "5 events". `offered`: the events this database takes
+ *  (acceptedWebhookEvents), so an endpoint with every one of those reads "All events". */
+export function eventsSummary(events: readonly WebhookEvent[], personal: boolean, offered: readonly WebhookEvent[] = WEBHOOK_EVENTS): string {
+  const all = (personal ? PERSONAL_WEBHOOK_EVENTS : WEBHOOK_EVENTS).filter((e) => offered.includes(e));
+  if (all.length && all.every((e) => events.includes(e))) return "All events";
   if (events.length <= 2) return events.map((e) => WEBHOOK_EVENT_INFO[e]?.label ?? e).join(", ");
   return `${events.length} events`;
 }

@@ -20,9 +20,10 @@ import { SetGroup, SetIntro, SetNote, SetRow } from "../integrations/settingsBit
 import { copyText } from "../rituals/shared";
 import { isSupabaseConfigured } from "../../lib/supabase";
 import {
-  agoText, createWebhook, deleteWebhook, eventsSummary, isWebhookUrlShapeOk, listWebhookDeliveries, listWebhooks, MAX_CONSECUTIVE_FAILURES,
+  acceptedWebhookEvents, agoText, BASE_WEBHOOK_EVENTS, createWebhook, deleteWebhook, eventsSummary, forgetAcceptedWebhookEvents, isWebhookUrlShapeOk,
+  listWebhookDeliveries, listWebhooks, MAX_CONSECUTIVE_FAILURES,
   PERSONAL_WEBHOOK_EVENTS as PERSONAL_EVENTS, redeliverWebhookDelivery, RETRY_SCHEDULE_MIN, rotateWebhookSecret, sendTestWebhook,
-  setWebhookDemoRoles, shortWebhookUrl, soonText, updateWebhook, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS, WEBHOOK_LIMITS, webhookErrorText,
+  setWebhookDemoRoles, shortWebhookUrl, soonText, updateWebhook, WEBHOOK_EVENT_INFO, WEBHOOK_EVENTS, WEBHOOK_EVENTS_NOT_YET, WEBHOOK_LIMITS, webhookErrorText,
   webhookFailure, webhookHealth,
 } from "../../lib/webhooks";
 import type { DevWorkspace } from "./DevelopersPanel";
@@ -44,6 +45,7 @@ const EVENT_GROUPS: { label: string; events: WebhookEvent[] }[] = [
   { label: "People", events: ["member.joined"] },
   { label: "Approvals", events: ["approval.requested", "approval.decided"] },
   { label: "Kudos", events: ["kudos.given"] },
+  { label: "Project updates", events: ["status_update.posted"] },
 ];
 const hostOf = (url: string) => { try { return new URL(url).host; } catch { return url; } };
 const retryWords = RETRY_SCHEDULE_MIN.map((m) => (m < 60 ? `${m} min` : `${m / 60} h`)).join(", ");
@@ -101,7 +103,9 @@ export function WebhooksPanel({ workspaces, currentWorkspaceId }: WebhooksPanelP
 
 /* ============================================================ one scope */
 
-type Load = { state: "loading" } | { state: "ready"; hooks: Webhook[] } | { state: "problem"; text: string; unavailable: boolean };
+/** ready: the endpoints, and the events this database takes (a newer one, like status_update.posted before
+ *  0054, isn't offered until it does) */
+type Load = { state: "loading" } | { state: "ready"; hooks: Webhook[]; offered: readonly WebhookEvent[] } | { state: "problem"; text: string; unavailable: boolean };
 type Reveal = { hookId: string; host: string; secret: string; kind: "created" | "rotated" } | null;
 
 function ScopeView({ workspaceId, scopeName }: { workspaceId: string | null; scopeName: string }) {
@@ -121,8 +125,8 @@ function ScopeView({ workspaceId, scopeName }: { workspaceId: string | null; sco
   const reload = useCallback(async () => {
     setLoad((l) => (l.state === "ready" ? l : { state: "loading" }));
     try {
-      const hooks = await listWebhooks(workspaceId);
-      if (alive.current) setLoad({ state: "ready", hooks });
+      const [hooks, offered] = await Promise.all([listWebhooks(workspaceId), acceptedWebhookEvents()]);
+      if (alive.current) setLoad({ state: "ready", hooks, offered });
     } catch (e) {
       if (!alive.current) return;
       const why = webhookFailure(e);
@@ -138,9 +142,10 @@ function ScopeView({ workspaceId, scopeName }: { workspaceId: string | null; sco
   }, [msg]);
 
   const hooks = load.state === "ready" ? load.hooks : [];
+  const offered = load.state === "ready" ? load.offered : BASE_WEBHOOK_EVENTS;
   const limit = personal ? WEBHOOK_LIMITS.personal : WEBHOOK_LIMITS.perWorkspace;
   const full = hooks.length >= limit;
-  const replace = (w: Webhook) => setLoad((l) => (l.state === "ready" ? { state: "ready", hooks: l.hooks.map((h) => (h.id === w.id ? w : h)) } : l));
+  const replace = (w: Webhook) => setLoad((l) => (l.state === "ready" ? { ...l, hooks: l.hooks.map((h) => (h.id === w.id ? w : h)) } : l));
 
   const group = (children: ReactNode) => (
     <SetGroup title="Webhooks" action={load.state === "ready" && !adding ? (
@@ -175,13 +180,13 @@ function ScopeView({ workspaceId, scopeName }: { workspaceId: string | null; sco
             }} />
           )}
           {adding && (
-            <EndpointForm mode="add" personal={personal} scopeName={scopeName}
+            <EndpointForm mode="add" personal={personal} scopeName={scopeName} offered={offered}
               onCancel={() => { setAdding(false); focusAfter.current = () => addRef.current?.focus(); }}
               onSubmit={async (v) => {
                 const w = await createWebhook({ workspaceId, url: v.url, events: v.events, description: v.description });
                 if (!alive.current) return;
                 const { secret, ...hook } = w;
-                setLoad((l) => (l.state === "ready" ? { state: "ready", hooks: [...l.hooks, hook] } : l));
+                setLoad((l) => (l.state === "ready" ? { ...l, hooks: [...l.hooks, hook] } : l));
                 setAdding(false);
                 setReveal({ hookId: w.id, host: hostOf(w.url), secret, kind: "created" });
                 setMsg({ tone: "ok", text: `Endpoint added. Copy its signing secret now, then send a test.` });
@@ -194,13 +199,13 @@ function ScopeView({ workspaceId, scopeName }: { workspaceId: string | null; sco
                 : `Add one to send ${scopeName}'s task, comment, project and member events to another tool.`} />
           )}
           {hooks.map((h) => (
-            <EndpointRow key={h.id} rowId={`${ids}-row-${h.id}`} hook={h} personal={personal} scopeName={scopeName}
+            <EndpointRow key={h.id} rowId={`${ids}-row-${h.id}`} hook={h} personal={personal} scopeName={scopeName} offered={offered}
               expanded={expanded === h.id} onExpand={(on) => setExpanded(on ? h.id : null)}
               onChange={replace}
               onSecret={(secret) => setReveal({ hookId: h.id, host: hostOf(h.url), secret, kind: "rotated" })}
               onMessage={setMsg}
               onDeleted={() => {
-                setLoad((l) => (l.state === "ready" ? { state: "ready", hooks: l.hooks.filter((x) => x.id !== h.id) } : l));
+                setLoad((l) => (l.state === "ready" ? { ...l, hooks: l.hooks.filter((x) => x.id !== h.id) } : l));
                 if (reveal?.hookId === h.id) setReveal(null);
                 setMsg({ tone: "ok", text: `Endpoint for ${hostOf(h.url)} deleted.` });
                 focusAfter.current = () => addRef.current?.focus();
@@ -272,16 +277,20 @@ function SecretReveal({ reveal, onDone }: { reveal: NonNullable<Reveal>; onDone:
 
 interface FormValues { url: string; events: WebhookEvent[]; description: string | null }
 
-function EndpointForm({ mode, personal, scopeName, initial, onCancel, onSubmit }: {
+function EndpointForm({ mode, personal, scopeName, offered, initial, onCancel, onSubmit }: {
   mode: "add" | "edit";
   personal: boolean;
   scopeName: string;
+  /** the events this database takes (acceptedWebhookEvents) */
+  offered: readonly WebhookEvent[];
   initial?: FormValues;
   onCancel: () => void;
   onSubmit: (v: FormValues) => Promise<void>;
 }) {
   const ids = "kwhf" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
-  const available = personal ? PERSONAL_EVENTS : WEBHOOK_EVENTS;
+  // what this database takes (and anything the endpoint already has: saving never drops it)
+  const available = useMemo(() => (personal ? PERSONAL_EVENTS : WEBHOOK_EVENTS).filter((e) => offered.includes(e) || !!initial?.events.includes(e)),
+    [personal, offered, initial]);
   const [url, setUrl] = useState(initial?.url ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [events, setEvents] = useState<WebhookEvent[]>(initial?.events ?? ["task.created", "task.completed"]);
@@ -323,7 +332,11 @@ function EndpointForm({ mode, personal, scopeName, initial, onCancel, onSubmit }
       if (!alive.current) return;
       const why = webhookFailure(e);
       if (why === "invalid_url") { setUrlError(webhookErrorText(e)); urlRef.current?.focus(); }
-      else if (why === "invalid_events") setEventsError(webhookErrorText(e));
+      else if (why === "invalid_events") {
+        // events were chosen, so the database doesn't take one of them (yet): say that, and read its list again next time
+        if (chosen.length) forgetAcceptedWebhookEvents();
+        setEventsError(chosen.length ? WEBHOOK_EVENTS_NOT_YET : webhookErrorText(e));
+      }
       else setFormError(webhookErrorText(e));
     } finally {
       if (alive.current) setBusy(false);
@@ -397,11 +410,12 @@ function EndpointForm({ mode, personal, scopeName, initial, onCancel, onSubmit }
 
 /* ============================================================ one endpoint */
 
-function EndpointRow({ rowId, hook, personal, scopeName, expanded, onExpand, onChange, onSecret, onMessage, onDeleted }: {
+function EndpointRow({ rowId, hook, personal, scopeName, offered, expanded, onExpand, onChange, onSecret, onMessage, onDeleted }: {
   rowId: string;
   hook: Webhook;
   personal: boolean;
   scopeName: string;
+  offered: readonly WebhookEvent[];
   expanded: boolean;
   onExpand: (on: boolean) => void;
   onChange: (w: Webhook) => void;
@@ -456,7 +470,7 @@ function EndpointRow({ rowId, hook, personal, scopeName, expanded, onExpand, onC
           <span className="kset-row-label kwh-url" title={hook.canManage ? hook.url : undefined}>{shortWebhookUrl(hook.url)}</span>
           <span className="kset-row-desc">
             {hook.description ? <>{hook.description} · </> : null}
-            {eventsSummary(hook.events, personal)}
+            {eventsSummary(hook.events, personal, offered)}
           </span>
           <span className="kset-row-desc kwh-last" data-tone={health === "off" || health === "failing" ? "warn" : undefined}>
             <span title={fullTime(hook.lastDeliveryAt)}>{last}</span>
@@ -481,7 +495,7 @@ function EndpointRow({ rowId, hook, personal, scopeName, expanded, onExpand, onC
       {rowError && <p className="kwh-msg kwh-row-err" data-tone="signal" role="alert"><Icon name="alert" size={14} sw={2} /><span>{rowError}</span></p>}
       <div id={`${ids}-details`} hidden={!expanded}>
         {expanded && (
-          <EndpointDetails hook={hook} personal={personal} scopeName={scopeName} host={host} onChange={onChange} onSecret={onSecret} onMessage={onMessage} onDeleted={onDeleted}
+          <EndpointDetails hook={hook} personal={personal} scopeName={scopeName} offered={offered} host={host} onChange={onChange} onSecret={onSecret} onMessage={onMessage} onDeleted={onDeleted}
             onClose={() => { onExpand(false); requestAnimationFrame(() => document.getElementById(rowId)?.focus()); }} />
         )}
       </div>
@@ -491,10 +505,11 @@ function EndpointRow({ rowId, hook, personal, scopeName, expanded, onExpand, onC
 
 type Busy = null | "test" | "rotate" | "delete" | "redeliver";
 
-function EndpointDetails({ hook, personal, scopeName, host, onChange, onSecret, onMessage, onDeleted, onClose }: {
+function EndpointDetails({ hook, personal, scopeName, offered, host, onChange, onSecret, onMessage, onDeleted, onClose }: {
   hook: Webhook;
   personal: boolean;
   scopeName: string;
+  offered: readonly WebhookEvent[];
   host: string;
   onChange: (w: Webhook) => void;
   onSecret: (secret: string) => void;
@@ -579,7 +594,7 @@ function EndpointDetails({ hook, personal, scopeName, host, onChange, onSecret, 
 
   if (editing) {
     return (
-      <EndpointForm mode="edit" personal={personal} scopeName={scopeName}
+      <EndpointForm mode="edit" personal={personal} scopeName={scopeName} offered={offered}
         initial={{ url: hook.url, events: hook.events, description: hook.description }}
         onCancel={() => { setEditing(false); requestAnimationFrame(() => editRef.current?.focus()); }}
         onSubmit={async (v) => {

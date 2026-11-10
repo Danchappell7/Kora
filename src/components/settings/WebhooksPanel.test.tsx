@@ -103,7 +103,9 @@ describe("WebhooksPanel", () => {
     fireEvent.click(await within(group()).findByRole("button", { name: "Add endpoint" }));
     const events = screen.getByRole("group", { name: "Events to send" });
     expect(within(events).queryByRole("checkbox", { name: /Member joined/ })).toBeNull();
-    expect(within(events).getAllByRole("checkbox")).toHaveLength(7);
+    // tasks (4), comments, projects (2) and project updates (0054; every event a box of its own)
+    expect(within(events).getAllByRole("checkbox")).toHaveLength(8);
+    expect(within(events).getByRole("checkbox", { name: /Project update posted/ })).toBeInTheDocument();
     fireEvent.click(within(events).getByRole("button", { name: "Choose all" }));
     expect(within(events).getAllByRole("checkbox").every((c) => (c as HTMLInputElement).checked)).toBe(true);
     // no scope picker when there are no team workspaces
