@@ -1,8 +1,9 @@
 /* lib/group: the Group page's digest per business you run. It reads only what it's handed (rows you can
    already see), and a business you're only a member of, or one you're not in, never gets a section. */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { businessDigest, digestLine, goalsBehind, groupDigest, winsWeek, type GroupInput } from "./group";
 import { businessLead, workspaceSignals } from "./businesses";
+import { noteRhythmSchema, resetRhythmSchema } from "./updateRhythm";
 import type { ApprovalWithTask, Goal, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../data/types";
 
 const TODAY = new Date(2026, 9, 9);     // Friday 9 Oct 2026
@@ -48,6 +49,10 @@ const input = (o: Partial<GroupInput> = {}): GroupInput => ({
 });
 
 describe("the Group page's businesses", () => {
+  // (by the 14-day rule, as before 0053; "with an update day" below reads updates by the day)
+  beforeEach(() => noteRhythmSchema(false));
+  afterEach(() => resetRhythmSchema());
+
   it("one digest per business you run (owner or admin), the one that needs you most first", () => {
     const d = groupDigest(input());
     expect(d.map((x) => [x.workspace.name, x.role])).toEqual([["Alpha Studio", "owner"], ["Beta Padel", "admin"]]);
@@ -115,9 +120,17 @@ describe("the Group page's businesses", () => {
     expect(digestLine({ ...beta, projects: { needs: [], total: 1 } })).toBe("Nothing needs you");
   });
 
-  it("the latest update's call rides along when Kanbo's read of the work says worse (the project page shows the update)", () => {
+  it("the latest update's call is the row's one pill, marked when Kanbo's read of the work says worse", () => {
     const d = groupDigest(input({ statusUpdates: [upd("pa", "w-a", "at_risk", "2026-10-08T10:00:00Z")] }));
-    expect(d[0].projects.needs[0]).toMatchObject({ project: { id: "pa" }, label: "Off track", source: "work", detail: "3 overdue · Update: at risk" });
+    expect(d[0].projects.needs[0]).toMatchObject({ project: { id: "pa" }, label: "Off track", source: "work", detail: "3 overdue",
+      status: { label: "At risk", lead: "at_risk", kanbo: "off_track", mismatch: true, says: "Lead says At risk", sees: "Kanbo sees 3 overdue" } });
+  });
+
+  it("a call rosier than the work comes first, ahead of worse projects that say so", () => {
+    // pa is off track and says nothing; pa2 says On track with two overdue: pa2 first
+    const tasks = [...input().tasks, task({ id: "a5", projectId: "pa2", dueDate: "2026-10-01" }), task({ id: "a6", projectId: "pa2", dueDate: "2026-10-02" })];
+    const d = groupDigest(input({ tasks, statusUpdates: [upd("pa2", "w-a", "on_track", "2026-10-08T10:00:00Z")] }));
+    expect(d[0].projects.needs.map((n) => [n.project.id, n.status.mismatch])).toEqual([["pa2", true], ["pa", false]]);
   });
 
   it("'needs you' means what the switcher and Today mean: your own work and requests there; that business comes first", () => {
@@ -135,5 +148,15 @@ describe("the Group page's businesses", () => {
     // nothing needs you anywhere: no pill
     const calm = workspaceSignals({ workspaces: WS, tasks: [], projects: base.projects, activity: [], approvals: [], me: "me", today: "2026-10-09" });
     expect(groupDigest({ ...base, signals: calm }).some((x) => x.needsMost)).toBe(false);
+  });
+});
+
+describe("the Group page's projects, with an update day (0053)", () => {
+  it("a project past its day with nothing since the round before reads Update missing; one off track says so too", () => {
+    // (Friday 9 Oct: everyone's day, the default)
+    const [alpha, beta] = groupDigest(input({ tasks: [...input().tasks.map((x) => (x.id === "a1" ? { ...x, createdAt: "2026-09-01T09:00:00Z" } : x))] }));
+    expect(beta.projects.needs.map((n) => [n.project.id, n.why, n.label, n.detail])).toEqual([["pb", "missing", "Update missing", "Last update 19 days ago"]]);
+    // Studio Opening is off track and hasn't posted in two rounds
+    expect(alpha.projects.needs[0]).toMatchObject({ project: { id: "pa" }, why: "off_track", detail: "3 overdue · update missing" });
   });
 });

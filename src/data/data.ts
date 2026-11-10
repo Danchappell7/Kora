@@ -150,16 +150,29 @@ const demoLogo = (letter: string, from: string, to: string, mark = ""): string =
   + `<rect width="64" height="64" rx="14" fill="url(#g)"/>${mark}`
   + `<text x="32" y="44" text-anchor="middle" font-family="Inter,Helvetica,Arial,sans-serif" font-size="34" font-weight="700" fill="#fff">${letter}</text></svg>`);
 
+/* The demo's update days (0053), set from today so there's always something to show:
+   Foundrise's falls today (your launch update is due, and Platform Infra, which has never
+   posted, reads "Update missing"); Courtside Padel's was five days ago (the clubhouse
+   fit-out's update is missing). A weekend reads as Friday. Reco HQ keeps the default. */
+const demoUpdateDay = (offset: number): number => {
+  const d = new Date(KANBO_TODAY);
+  d.setDate(d.getDate() + offset);
+  const iso = d.getDay() === 0 ? 7 : d.getDay();
+  return iso > 5 ? 5 : iso;
+};
+
 /* The demo person runs three businesses (owner of Foundrise and Reco HQ, admin of
    Courtside Padel), helps out at a fourth (a member of Harbour Advisory) and is a guest
    at a fifth (Northlight Studio), so the Group page, All businesses, the switcher's dots
    and a guest's view all have real work to show. */
 export let WORKSPACES: Workspace[] = [
   { id: null, name: "Personal", kind: "personal" },
-  { id: "ws-foundrise", name: "Foundrise", kind: "team", ownerId: "m-self", logoUrl: demoLogo("F", "#3b6fe0", "#1d3f9a") },
+  { id: "ws-foundrise", name: "Foundrise", kind: "team", ownerId: "m-self", logoUrl: demoLogo("F", "#3b6fe0", "#1d3f9a"),
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(0) } },
   { id: "ws-reco", name: "Reco HQ", kind: "team", ownerId: "m-self", logoUrl: demoLogo("R", "#f08a3c", "#c4532a") },
   { id: "ws-courtside", name: "Courtside Padel", kind: "team", ownerId: "m-2",
-    logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`) },
+    logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`),
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) } },
   { id: "ws-harbour", name: "Harbour Advisory", kind: "team", ownerId: "m-3", logoUrl: demoLogo("H", "#4a4f8f", "#262a5c") },
   // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't)
   { id: "ws-northlight", name: "Northlight Studio", kind: "team", ownerId: "m-4", logoUrl: demoLogo("N", "#d4677a", "#9c3550") },
@@ -172,12 +185,16 @@ export let PROJECTS: Project[] = [
   { id: "p-personal", name: "Personal", emoji: "📌", color: spectrumColor("iris"), workspaceId: null },
   { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: spectrumColor("sky"), workspaceId: "ws-foundrise", ownerId: "m-self", contributorIds: ["m-1", "m-2", "m-3"] },
   { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1"] },
-  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"] },
+  // (infra reports on its own day, 0053: five days ago, so with nothing ever posted its update reads "Update missing")
+  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"],
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) } },
   { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-1"] },
   { id: "p-onboard", name: "Customer Onboarding", emoji: "🤝", color: spectrumColor("lagoon"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-2"] },
   { id: "p-clubhouse", name: "Clubhouse Fit-out", emoji: "🏗️", color: spectrumColor("amber"), workspaceId: "ws-courtside", ownerId: "m-2", contributorIds: ["m-self"] },
   { id: "p-league", name: "Winter League", emoji: "🎾", color: spectrumColor("citron"), workspaceId: "ws-courtside", ownerId: "m-self", contributorIds: ["m-2"] },
-  { id: "p-northwind", name: "Northwind Review", emoji: "🧭", color: spectrumColor("cobalt"), workspaceId: "ws-harbour", ownerId: "m-3", contributorIds: ["m-self"] },
+  // (a review on its own monthly rhythm, 0053; it's on hold just now)
+  { id: "p-northwind", name: "Northwind Review", emoji: "🧭", color: spectrumColor("cobalt"), workspaceId: "ws-harbour", ownerId: "m-3", contributorIds: ["m-self"],
+    updateRhythm: { cadence: "monthly", weekday: 4 } },
   { id: "p-northlight", name: "Website rebuild", emoji: "🌐", color: spectrumColor("coral"), workspaceId: "ws-northlight", ownerId: "m-4", contributorIds: ["m-self"] },
 ];
 
@@ -596,7 +613,9 @@ export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
   { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise", authorId: "m-3",
     summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way." },
   { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise", authorId: "m-self",
-    summary: "Deck is the critical path; onboarding is blocked on tokens." },
+    summary: "Deck is the critical path; onboarding is blocked on tokens.",
+    // 0053: an At risk update's plan to recover and new target date
+    recoveryPlan: "Maya takes the deck review this week, and onboarding builds on the old tokens until v2 lands.", targetDate: dayOffset(8) },
   { id: "su-launch-kickoff", projectId: "p-launch", status: "on_track", createdAt: daysAgoAt(23, 10, 10), workspaceId: "ws-foundrise", authorId: "m-left",
     summary: "Kick-off done: scope agreed with sales and support, and the launch date is set." },
   { id: "su-growth", projectId: "p-growth", status: "on_track", createdAt: daysAgoAt(3, 17, 0), workspaceId: "ws-reco", authorId: "m-self",
@@ -606,6 +625,9 @@ export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
   // (the fit-out's last word was over two weeks ago: it reads as stale)
   { id: "su-clubhouse", projectId: "p-clubhouse", status: "at_risk", createdAt: daysAgoAt(16, 16, 30), workspaceId: "ws-courtside", authorId: "m-2",
     summary: "The lighting order waits on sign-off; snagging can't start until the second fix." },
+  // 0053: On hold is an update of its own, so it stays on hold when the next one comes in
+  { id: "su-northwind", projectId: "p-northwind", status: "on_hold", createdAt: daysAgoAt(4, 11, 0), workspaceId: "ws-harbour", authorId: "m-3",
+    summary: "Paused while Northwind's board reviews the scope. We pick it up once they've met." },
 ];
 
 /* Inbox items in the other businesses (the switcher's unread dots), newest first. Kept

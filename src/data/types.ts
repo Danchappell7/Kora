@@ -4,6 +4,7 @@
    fields: tags, aiScore, aiReason, focusMin, and the
    "Plan my day" scheduling fields (energy, dur, scheduled).
    ============================================================ */
+import type { UpdateCadence, UpdateRhythm } from "../../supabase/functions/_shared/updateRhythm.ts";
 
 export type MemberType = "self" | "team" | "external";
 export type Status = "todo" | "progress" | "review" | "blocked" | "done";
@@ -52,6 +53,8 @@ export interface Workspace {
   kind: "personal" | "team";
   ownerId?: string;
   logoUrl?: string;
+  /** 0053 workspaces.update_rhythm: the team's update day (unset: weekly on Friday). Absent before 0053. */
+  updateRhythm?: UpdateRhythm | null;
 }
 
 export type Role = "owner" | "admin" | "member" | "guest";
@@ -92,6 +95,8 @@ export interface Project {
   archivedAt?: string | null;    // soft-archive: hidden but kept + restorable
   /** 0048 projects.board_settings: the board's WIP limits and "show project covers" (writers set it) */
   boardSettings?: BoardSettings;
+  /** 0053 projects.update_rhythm: its own update day, "Never" included (unset: the workspace's) */
+  updateRhythm?: UpdateRhythm | null;
 }
 
 export interface TagDef {
@@ -226,7 +231,8 @@ export interface FormDef {
   /** 0043: "Anyone with the link can submit" */
   publicEnabled?: boolean;
 }
-export type StatusKind = "on_track" | "at_risk" | "off_track";
+/** "on_hold" (0053): a paused project, posted as an update so it stays paused when the next one comes in */
+export type StatusKind = "on_track" | "at_risk" | "off_track" | "on_hold";
 export interface StatusUpdate {
   id: string;
   projectId: string;
@@ -236,7 +242,23 @@ export interface StatusUpdate {
   workspaceId?: string | null;
   /** who posted it; null once their account is deleted (shown as "Former member") */
   authorId?: string | null;
+  /** 0053: an At risk or Off track update's "Plan to recover" */
+  recoveryPlan?: string | null;
+  /** 0053: the new target date it gives ("YYYY-MM-DD") */
+  targetDate?: string | null;
 }
+
+/** 0053 update_asks: a leader asked a project's owner for an update (read by the two of them). */
+export interface UpdateAsk {
+  id: string;
+  projectId: string;
+  workspaceId: string;
+  askedBy: string;
+  ownerId: string;
+  createdAt: string;
+}
+
+export type { UpdateCadence, UpdateRhythm };
 
 export interface Comment {
   id: string;
@@ -461,7 +483,7 @@ export interface PushSubscriptionRow {
 }
 /** Notification kinds that can push. Pref keys reuse notify_prefs with a
  *  "_push" suffix ("assigned_push"…); unset = ON, like every other pref. */
-export type PushKind = "assigned" | "mention" | "comment" | "approval" | "kudos" | "due";
+export type PushKind = "assigned" | "mention" | "comment" | "approval" | "kudos" | "due" | "update";
 /** Whether push can be offered on this device:
  *  unsupported (no service worker / PushManager / Notification), unconfigured
  *  (no VITE_VAPID_PUBLIC_KEY, or demo mode), denied (the browser blocked it),

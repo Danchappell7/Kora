@@ -6,7 +6,9 @@
    · someone's work is waiting on yours (they're blocked on it);
    · a risk from Radar that touches your work (owners and admins);
    · one of your dates has slipped;
-   · a free stretch today before a deadline tomorrow.
+   · a free stretch today before a deadline tomorrow;
+   · your project update is due, or a lead asked for one (0053: the
+     caller passes it in, lib/updateDue updateNoticed).
    "Not now" waves one away for the day (the view keeps that per
    person). Pure: no React, no storage, no clock of its own.
    ============================================================ */
@@ -20,12 +22,14 @@ export type NoticedAction =
   | { kind: "open"; label: string; taskId: string }
   | { kind: "today"; label: string; taskId: string }
   | { kind: "place"; label: string; taskId: string; start: number }
-  | { kind: "risks"; label: string };
+  | { kind: "risks"; label: string }
+  /** open the project's update, Kanbo's draft ready (0053) */
+  | { kind: "update"; label: string; projectId: string };
 
 export interface Noticed {
   /** stable for the thing noticed, so "Not now" keeps it away for the day */
   id: string;
-  kind: "waiting" | "risk" | "slipped" | "slot";
+  kind: "waiting" | "risk" | "slipped" | "slot" | "update";
   tone: "signal" | "warn" | "accent";
   icon: IconName;
   title: string;
@@ -50,6 +54,8 @@ export interface NoticedInput {
   risks?: Risk[];
   /** ids waved away today */
   dismissed?: Iterable<string>;
+  /** your project updates due or asked for (lib/updateDue updateNoticed): after a teammate blocked on you */
+  updates?: Noticed[];
   /** default 3 */
   max?: number;
 }
@@ -71,7 +77,7 @@ function when(iso: string, today: string): string {
 }
 
 /** What Kanbo noticed today, most pressing first (see the file note). */
-export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], dismissed, max = 3 }: NoticedInput): Noticed[] {
+export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], dismissed, max = 3, updates = [] }: NoticedInput): Noticed[] {
   const skip = new Set(dismissed ?? []);
   const first = (id?: string) => (members.find((m) => m.id === id)?.name ?? "").trim().split(/\s+/)[0] || "A teammate";
   const mine = new Set(allTasks.filter((t) => isMine(t, me)).map((t) => t.id));
@@ -108,6 +114,9 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
       actions: [...(r.taskIds[0] ? [{ kind: "open" as const, label: "Open it", taskId: r.taskIds[0] }] : []), { kind: "risks", label: "See the risks" }],
     }, r.severity === "signal" ? 1 : 5);
   }
+
+  // (your update's due, or a lead asked for one: after anyone blocked on you)
+  for (const u of updates) push(u, 0.5);
 
   // 3. a date that's slipped (the most moved first)
   const slipped = slippingTasks(tasks, me)

@@ -41,6 +41,8 @@ export const PUSH_KINDS: readonly { key: PushKind; label: string; hint: string }
   { key: "approval", label: "Approvals", hint: "Someone asks for your approval, or decides on a request you made." },
   { key: "kudos", label: "Kudos", hint: "A teammate thanks you for something you finished." },
   { key: "due", label: "Due-date reminders", hint: "Your morning nudge about what's due." },
+  // 0053: your update day, and a lead asking for one
+  { key: "update", label: "Project updates", hint: "Your project's update is due, or a lead asks for one." },
 ];
 
 /** notify_prefs key for a kind's push toggle: "assigned" → "assigned_push". */
