@@ -44,9 +44,11 @@ them back, an update's author can't be forged, re-pointed or blanked and empties
 deleted, and re-running 0051 or 0041 keeps the lock. Then 0052's goals: a member can't set a company goal
 or edit or delete a goal they don't own or help with, a contributor can't hand one over, owners and
 contributors are members (never guests or outsiders), a leadership-only goal and its check-ins and links
-are hidden from members, a check-in's author and time can't be forged, a link never reaches another
-workspace (server-side either), periods, cycles, deleted accounts and parents, a team API key's scope,
-the backfill, and re-running 0052 or 0041 keeps every rule.
+are hidden from members, a check-in's author, time and value can't be forged or changed later (taking
+back the only one puts the value before it back), a link or a goal's project never reaches another
+workspace (server-side either), a member can't delete a goal with key results under it (they'd become
+company goals), periods, cycles, deleted accounts and parents, a team API key's scope, the backfill, and
+re-running 0052, 0041 or 0048 keeps every rule and goals in search.
 
 vitest doesn't pick these files up (none is named `*.test.*`). `metadata.test.ts` checks the
 harness opens transactions exactly as the live `db.ts` does.

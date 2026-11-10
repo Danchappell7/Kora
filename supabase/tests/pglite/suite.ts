@@ -1811,11 +1811,49 @@ async function goalsSuite(w: World) {
     await raises(asPerson(w.pg, w.carol, `insert into public.goals (user_id, workspace_id, name, parent_id) values ($1::uuid, $2::uuid, 'Under w1', $3::uuid)`, [w.carol, w.w2, g1]), /row-level security|policy|same workspace/);
   });
 
-  await test("0052: deleting a goal lets its key results go up, even when the one deleting is its owner and a member", async () => {
+  await test("0052 attack: a member can't delete a goal with key results under it (they'd go up as company goals); an owner or admin can, and they go up", async () => {
     const parent = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Old objective", owner_id: w.bob });
-    const kr = await mkGoal(w.bob, { user_id: w.bob, workspace_id: w.w1, name: "Its key result", parent_id: parent });
-    eq((await asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid returning id`, [parent])).length, 1, "bob deletes his goal");
+    // bob's key result under it, handed to alice: deleting the parent would make it a company goal he can't set
+    const kr = await mkGoal(w.bob, { user_id: w.bob, workspace_id: w.w1, name: "Its key result", parent_id: parent, owner_id: w.alice });
+    await raises(asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid`, [parent]), /only owners and admins delete a goal with key results/);
+    eq((await goal(kr)).parent, parent, "still a key result");
+    eq(await count(w.alice, "goals", "id = $1::uuid", [parent]), 1, "the goal stays");
+    // a leadership-only key result he can't even see still counts
+    const hidden = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Bob's other goal", owner_id: w.bob });
+    await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Quiet key result", parent_id: hidden, visibility: "leadership" });
+    await raises(asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid`, [hidden]), /only owners and admins delete a goal with key results/);
+    // a goal with nothing under it is his to delete
+    const leaf = await mkGoal(w.bob, { user_id: w.bob, workspace_id: w.w1, name: "A leaf of his", parent_id: parent });
+    eq((await asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid returning id`, [leaf])).length, 1, "bob deletes a goal with nothing under it");
+    eq((await asPerson(w.pg, w.alice, `delete from public.goals where id = $1::uuid returning id`, [parent])).length, 1, "an owner deletes it");
     eq((await goal(kr)).parent, null, "its key result is top-level now");
+    eq((await asPerson(w.pg, erin, `delete from public.goals where id = $1::uuid returning id`, [hidden])).length, 1, "an admin too");
+  });
+
+  await test("0052 attack: a check-in is a record: its author can't change its value (the goal never drifts from its newest), and taking back the only one puts back the value from before", async () => {
+    const g = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Drift", target: 100, current: 10, owner_id: dan });
+    const c = (await asPerson<{ id: string; prev: number }>(w.pg, dan,
+      `insert into public.goal_checkins (goal_id, value, prev_value) values ($1::uuid, 20, 999) returning id::text as id, prev_value::float8 as prev`, [g]))[0];
+    eq([c.prev, (await goal(g)).current], [10, 20], "the value before it is the server's; the goal moves");
+    eq((await asPerson(w.pg, dan, `update public.goal_checkins set value = 55, note = 'Typo fixed', prev_value = 0 where id = $1::uuid returning id`, [c.id])).length, 1, "the author fixes the note");
+    eq(await one(`select value::float8 as v, prev_value::float8 as p, note from public.goal_checkins where id = $1::uuid`, [c.id]), { v: 20, p: 10, note: "Typo fixed" }, "but not the value, nor what came before");
+    eq((await goal(g)).current, 20, "the goal still matches its newest check-in");
+    // a server-side fix to the value moves the goal with it
+    await w.pg.query(`update public.goal_checkins set value = 30 where id = $1::uuid`, [c.id]);
+    eq((await goal(g)).current, 30, "server-side fix applied");
+    eq((await asPerson(w.pg, dan, `delete from public.goal_checkins where id = $1::uuid returning id`, [c.id])).length, 1, "taken back");
+    eq((await goal(g)).current, 10, "the only one taken back: the value from before it");
+    eq(await one(`select pg_get_functiondef('public.goal_checkins_apply()'::regprocedure) ~* 'for update' as locks`), { locks: true }, "one check-in at a time per goal");
+  });
+
+  await test("0052 attack: the project a goal reads its % from is its own workspace's (another business's is refused, as for links)", async () => {
+    await raises(asPerson(w.pg, w.alice, `update public.goals set project_id = $1 where id = $2::uuid`, [w.w2Project, g1]), /project in its own workspace/);
+    await raises(asPerson(w.pg, w.alice, `insert into public.goals (user_id, workspace_id, name, project_id) values ($1::uuid, $2::uuid, 'Borrowed', $3)`, [w.alice, w.w1, w.w2Project]), /project in its own workspace/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set project_id = 'not-a-project' where id = $1::uuid`, [g1]), /project in its own workspace/);
+    eq((await asPerson(w.pg, w.alice, `update public.goals set project_id = $1 where id = $2::uuid returning id`, [w.launch, g1])).length, 1, "its own workspace's project");
+    await asPerson(w.pg, w.alice, `update public.goals set project_id = null where id = $1::uuid`, [g1]);
+    const mine = await mkGoal(w.bob, { user_id: w.bob, workspace_id: null, name: "Bob's own", target: 1 });
+    await raises(asPerson(w.pg, w.bob, `update public.goals set project_id = $1 where id = $2::uuid`, [w.launch, mine]), /project in its own workspace/);
   });
 
   await test("0052: when an account is deleted its goals stay (no owner), and its check-ins stay (no author: \"Former member\")", async () => {
@@ -1944,6 +1982,14 @@ async function goalsSuite(w: World) {
       const kinds = (await asPerson<{ kind: string }>(w.pg, w.alice, `select distinct kind from public.search_all('launch', '{}'::jsonb, 5)`)).map((r) => r.kind);
       ok(kinds.includes("project") || kinds.includes("task"), `tasks and projects still found (${kinds.join(", ")})`);
       ok((await one<{ ok: boolean }>(`select to_regclass('public.goals_fts_idx') is not null as ok`)).ok, "the goals' search index");
+    });
+
+    await test("0052: re-running 0048 (which puts its own search_all back) keeps goals in search", async () => {
+      await applyFile(w.pg, "0048_ux_wave.sql");
+      eq(await find(w.bob, "revenue"), ["Revenue to £2m", "Revenue to £3m"], "still found");
+      eq(await find(w.gus, "revenue"), [], "and still not for a guest");
+      eq((await one<{ ok: boolean }>(`select public.goal_rules_intact() and public.guest_lock_intact() as ok`)).ok, true, "the rules stand");
+      eq((await one<{ priv: boolean }>(`select has_function_privilege('authenticated', 'public.goal_search_restore()', 'execute') as priv`)).priv, false, "the hook isn't callable from the app");
     });
   }
 }

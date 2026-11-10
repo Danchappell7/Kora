@@ -23,12 +23,16 @@
 --                the goal's owner.
 --        create  a company goal (a team goal with no parent): owners and
 --                admins. A key result under a goal: whoever may edit that goal.
+--        delete  a team goal with key results under it (they'd go up to the top
+--                level, as company goals): owners and admins.
 --        personal goals stay their creator's alone.
 --   3. goal_checkins: a value, confidence and a one-line note. The author is
 --      the person posting (never the request), can't be changed and empties
---      when that account is deleted ("Former member"). The newest check-in
---      sets the goal's current value (and its confidence); deleting the
---      newest puts the one before back.
+--      when that account is deleted ("Former member"); nor can the value (a
+--      check-in is a record: take it back and post another). The newest
+--      check-in sets the goal's current value (and its confidence), one at a
+--      time per goal; deleting the newest puts the one before back (the only
+--      one: the value from before it, kept on the check-in as prev_value).
 --   4. goal_links: one goal to many projects, tasks or (shared) saved views,
 --      always in the goal's own workspace (a personal goal: your own personal
 --      work). goals.project_id stays (the project its % comes from) and is
@@ -260,12 +264,41 @@ begin
       hops := hops + 1;
     end loop;
   end if;
+
+  -- the project its % comes from is its own workspace's (a personal goal: its creator's personal
+  -- work), as its links are: never another business's project, chips and all
+  if signed_in and new.project_id is not null and (tg_op = 'INSERT' or new.project_id is distinct from old.project_id)
+     and not exists (select 1 from public.projects p where p.id::text = new.project_id
+                      and p.workspace_id is not distinct from new.workspace_id
+                      and (new.workspace_id is not null or p.user_id = new.user_id)) then
+    raise exception 'a goal can only read its progress from a project in its own workspace';
+  end if;
   return new;
 end; $$;
 revoke execute on function public.goals_v2_guard() from public, anon, authenticated;
 drop trigger if exists trg_goals_v2_guard on public.goals;
 create trigger trg_goals_v2_guard before insert or update on public.goals
   for each row execute function public.goals_v2_guard();
+
+-- Deleting a goal keeps its key results, as goals of their own (the foreign key's SET NULL),
+-- so a team goal with any under it would hand them to the top level: company goals, which
+-- are for owners and admins. They alone delete one; everyone else moves or deletes its key
+-- results first. (Deleting a workspace or an account takes its goals as it always did: those
+-- deletes arrive through a foreign key, a trigger deeper.)
+create or replace function public.goals_delete_guard() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if old.workspace_id is not null and coalesce(auth.role(), '') in ('authenticated', 'anon') and pg_trigger_depth() = 1
+     and exists (select 1 from public.goals c where c.parent_id = old.id and c.id <> old.id)
+     and coalesce(public.ws_role(old.workspace_id), '') not in ('owner', 'admin') then
+    raise exception 'only owners and admins delete a goal with key results under it: move or delete them first';
+  end if;
+  return old;
+end; $$;
+revoke execute on function public.goals_delete_guard() from public, anon, authenticated;
+drop trigger if exists trg_goals_delete_guard on public.goals;
+create trigger trg_goals_delete_guard before delete on public.goals
+  for each row execute function public.goals_delete_guard();
 
 -- ---------- 4. check-ins ----------
 create table if not exists public.goal_checkins (
@@ -278,18 +311,21 @@ create table if not exists public.goal_checkins (
   note         text check (note is null or char_length(note) <= 500),
   created_at   timestamptz not null default now()
 );
+-- the goal's value just before it (the server's): taking back the only check-in puts it back
+alter table public.goal_checkins add column if not exists prev_value numeric;
 create index if not exists goal_checkins_goal_idx on public.goal_checkins (goal_id, created_at desc);
 create index if not exists goal_checkins_ws_idx on public.goal_checkins (workspace_id);
 create index if not exists goal_checkins_author_idx on public.goal_checkins (author_id);
 
--- The goal's workspace, the author (the person posting) and the time are the server's.
--- Afterwards none of them change, except the author emptying once that account is deleted.
+-- The goal's workspace, the author (the person posting), the time and the value before it
+-- are the server's. Afterwards none of them change, except the author emptying once that
+-- account is deleted; nor does a signed-in person change the value (take it back, post another).
 create or replace function public.goal_checkins_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare signed_in boolean := coalesce(auth.role(), '') in ('authenticated', 'anon'); g record;
 begin
   if tg_op = 'INSERT' then
-    select x.workspace_id, x.owner_id, x.user_id, x.contributors into g from public.goals x where x.id = new.goal_id;
+    select x.workspace_id, x.owner_id, x.user_id, x.contributors, x.current into g from public.goals x where x.id = new.goal_id;
     -- someone who may not check in on this goal is refused by row security (and learns nothing here)
     if not found or (signed_in and not public.goal_editable(g.workspace_id, g.owner_id, g.contributors, g.user_id)) then
       if signed_in then return new; end if;
@@ -298,15 +334,15 @@ begin
     new.workspace_id := g.workspace_id;
     new.note := nullif(btrim(coalesce(new.note, '')), '');
     if signed_in then
-      new.author_id := auth.uid(); new.created_at := now();
+      new.author_id := auth.uid(); new.created_at := now(); new.prev_value := g.current;
     else
-      new.author_id := coalesce(new.author_id, g.owner_id, g.user_id);
+      new.author_id := coalesce(new.author_id, g.owner_id, g.user_id); new.prev_value := coalesce(new.prev_value, g.current);
     end if;
     return new;
   end if;
-  new.goal_id := old.goal_id; new.workspace_id := old.workspace_id;
+  new.goal_id := old.goal_id; new.workspace_id := old.workspace_id; new.prev_value := old.prev_value;
   new.note := nullif(btrim(coalesce(new.note, '')), '');
-  if signed_in then new.created_at := old.created_at; end if;
+  if signed_in then new.created_at := old.created_at; new.value := old.value; end if;
   if new.author_id is distinct from old.author_id
      and not (new.author_id is null and not exists (select 1 from auth.users u where u.id = old.author_id)) then
     new.author_id := old.author_id;
@@ -319,34 +355,40 @@ create trigger trg_goal_checkins_guard before insert or update on public.goal_ch
   for each row execute function public.goal_checkins_guard();
 
 -- The newest check-in is the goal's current value (and confidence). Runs as the
--- person posting (they may edit the goal, or they couldn't have posted).
+-- person posting (they may edit the goal, or they couldn't have posted). One at a time
+-- per goal (its row locked first), so two check-ins posted together can't leave the
+-- older one's value behind.
 create or replace function public.goal_checkins_apply() returns trigger
 language plpgsql set search_path = public as $$
-declare latest record;
+declare latest record; gid uuid := case when tg_op = 'DELETE' then old.goal_id else new.goal_id end;
 begin
-  if tg_op = 'INSERT' then
+  perform 1 from public.goals g where g.id = gid for update;
+  if tg_op <> 'DELETE' then
+    -- a new one (or a server-side fix to one's value): the newest is the goal's value
     if not exists (select 1 from public.goal_checkins c
-                    where c.goal_id = new.goal_id and c.id <> new.id
+                    where c.goal_id = gid and c.id <> new.id
                       and (c.created_at > new.created_at or (c.created_at = new.created_at and c.id > new.id))) then
-      update public.goals set current = new.value, confidence = coalesce(new.confidence, confidence) where id = new.goal_id;
+      update public.goals set current = new.value, confidence = coalesce(new.confidence, confidence) where id = gid;
     end if;
     return new;
   end if;
-  -- the newest one taken back: the one before it is the value again
+  -- the newest one taken back: the one before it is the value again (the only one: the value before it)
   if not exists (select 1 from public.goal_checkins c
-                  where c.goal_id = old.goal_id
+                  where c.goal_id = gid
                     and (c.created_at > old.created_at or (c.created_at = old.created_at and c.id > old.id))) then
     select c.value, c.confidence into latest from public.goal_checkins c
-     where c.goal_id = old.goal_id order by c.created_at desc, c.id desc limit 1;
+     where c.goal_id = gid order by c.created_at desc, c.id desc limit 1;
     if found then
-      update public.goals set current = latest.value, confidence = coalesce(latest.confidence, confidence) where id = old.goal_id;
+      update public.goals set current = latest.value, confidence = coalesce(latest.confidence, confidence) where id = gid;
+    elsif old.prev_value is not null then
+      update public.goals set current = old.prev_value where id = gid;
     end if;
   end if;
   return old;
 end; $$;
 revoke execute on function public.goal_checkins_apply() from public, anon, authenticated;
 drop trigger if exists trg_goal_checkins_apply on public.goal_checkins;
-create trigger trg_goal_checkins_apply after insert or delete on public.goal_checkins
+create trigger trg_goal_checkins_apply after insert or delete or update of value on public.goal_checkins
   for each row execute function public.goal_checkins_apply();
 
 -- ---------- 5. links: a goal to projects, tasks and saved views ----------
@@ -550,13 +592,14 @@ end $rt$;
 -- word, with a goals branch (and 'goal' among the kinds). Still SECURITY INVOKER, so a goal
 -- only comes back to someone who can read it (0041's members, 0051's guest lock, and the
 -- leadership-only rule above). Only where 0048 is in (its kanbo_fts); without it there's
--- no search_all to extend. (Re-running 0048 puts its own search_all back, without goals:
--- run this file again after it.)
-do $search$
+-- no search_all to extend. goal_search_restore() does it, here and from 0048's last
+-- section: re-running 0048 puts its own search_all back, then calls this to put goals back.
+create or replace function public.goal_search_restore()
+returns boolean language plpgsql set search_path = public as $search$
 begin
   if to_regprocedure('public.kanbo_fts(text, text)') is null then
     raise notice '0052: 0048 is not in, so goals join search when it is (run this file again then)';
-    return;
+    return false;
   end if;
   execute 'create index if not exists goals_fts_idx on public.goals using gin (public.kanbo_fts(name, description))';
   execute $fn52$
@@ -829,6 +872,12 @@ end; $$;
 $fn52$;
   execute 'revoke execute on function public.search_all(text, jsonb, integer) from public, anon';
   execute 'grant execute on function public.search_all(text, jsonb, integer) to authenticated';
+  return true;
+end $search$;
+revoke execute on function public.goal_search_restore() from public, anon, authenticated;
+do $search$
+begin
+  perform public.goal_search_restore();
 end $search$;
 
 -- ---------- done: record it ----------
@@ -850,7 +899,14 @@ insert into public.schema_migrations (version) values ('0052') on conflict (vers
 --                and exists (select 1 from public.workspace_members m where m.workspace_id = goals.workspace_id
 --                             and m.user_id = goals.user_id and m.status = 'active' and m.role <> 'guest')) as owners_filled,
 --   not has_function_privilege('authenticated', 'public.goal_rules_restore()', 'execute')
---   and not has_function_privilege('authenticated', 'public.goals_v2_guard()', 'execute')              as hooks_private,
+--   and not has_function_privilege('authenticated', 'public.goals_v2_guard()', 'execute')
+--   and not has_function_privilege('authenticated', 'public.goal_search_restore()', 'execute')
+--   and not has_function_privilege('authenticated', 'public.goals_delete_guard()', 'execute')          as hooks_private,
+--   exists (select 1 from pg_trigger where tgname = 'trg_goals_delete_guard')                          as key_results_kept,
+--   exists (select 1 from information_schema.columns where table_schema = 'public'
+--     and table_name = 'goal_checkins' and column_name = 'prev_value')
+--   and exists (select 1 from pg_trigger t where t.tgname = 'trg_goal_checkins_apply'
+--     and t.tgtype & 16 = 16)                                                                          as checkin_records,
 --   to_regprocedure('public.kanbo_fts(text, text)') is null
 --   or (pg_get_functiondef('public.search_all(text, jsonb, integer)'::regprocedure) like '%''goal''::text%'
 --       and not (select p.prosecdef from pg_proc p where p.oid = 'public.search_all(text, jsonb, integer)'::regprocedure)

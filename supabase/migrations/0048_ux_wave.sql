@@ -1256,6 +1256,16 @@ end; $$;
 revoke execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean) from public, anon;
 grant execute on function public.save_project_doc(uuid, uuid, text, jsonb, timestamptz, text, uuid[], boolean) to authenticated;
 
+-- ---------- 17. 0052's goals stay in Search when this file is run again ----------
+-- Section 3c puts this file's search_all back, which has no goals. When 0052 is in,
+-- put its goals back (as 0041 does for 0052's goal rules).
+do $goalsearch$
+begin
+  if to_regprocedure('public.goal_search_restore()') is not null then
+    perform public.goal_search_restore();
+  end if;
+end $goalsearch$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0048') on conflict (version) do nothing;
 
