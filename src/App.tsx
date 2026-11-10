@@ -58,7 +58,7 @@ import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject,
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, mayMakePrivate as mayMakePrivateHere, peopleFor as accessPeople, projectRank, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, mayMakePrivate as mayMakePrivateHere, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -1553,7 +1553,12 @@ export default function App() {
     const now = Date.now();
     if (now - lastUnsavedToastRef.current < 2000) return; // one toast per burst (an import can fail many rows at once)
     lastUnsavedToastRef.current = now;
-    const why = (e as Error)?.message;
+    let why = (e as Error)?.message;
+    // (0058's refusal, said from your side: the assignee is who can't see it, not you)
+    if (why && /assignee can't see this project/i.test(why)) {
+      const p = rows.length === 1 ? projectsRef.current.find((x) => x.id === rows[0].projectId) : undefined;
+      why = `that person can't see ${p?.name ?? "its project"}. Give it to someone on it, then Retry`;
+    }
     toastAction(rows.length === 1 ? `Couldn't save “${rows[0].title}”${why ? ` — ${why}` : ""}` : `Couldn't save ${plural(rows.length, "task")}`, "Retry", () => retryUnsavedRef.current(), UNDO_MS);
   }, [toastAction]);
 
@@ -1609,6 +1614,17 @@ export default function App() {
   /** Show a new task at once and save it. Resolves to its saved id (null if the save failed). */
   const persistTask = useCallback((raw: Task, opts: CreateOpts = {}): Promise<string | null> => {
     const me = userIdRef.current;
+    // (0058: someone who can't see its project can't be given it: the server would refuse the whole task)
+    const asked = raw.assigneeId === "m-self" ? me : raw.assigneeId;
+    const wsHere = projectWs(raw.projectId);
+    if (asked && asked !== me && wsHere && accessOn(workspacesRef.current.find((w) => w.id === wsHere))) {
+      const ctx = accessNow();
+      if (accessRoleOf(ctx, wsHere, asked) && rankFor(ctx, asked, wsHere, raw.projectId) < 1) {
+        const pname = projectsRef.current.find((p) => p.id === raw.projectId)?.name || "this project";
+        toastInfo(`${getMember(asked)?.name || wsMembersRef.current.find((m) => m.userId === asked)?.name || "They"} can't see ${pname}, so “${raw.title}” is yours.`);
+        raw = { ...raw, assigneeId: me };
+      }
+    }
     // whoever creates the row is its creator (tasks.user_id), even for a copied
     // recurrence or duplicate, so it's under your Waiting on straight away
     const t: Task = stampCreator({
@@ -1628,7 +1644,7 @@ export default function App() {
     tasksRef.current = [t, ...(tasksRef.current ?? [])];
     pendingTasksRef.current = [{ id: t.id, task: t, until: null }, ...pendingTasksRef.current.filter((p) => p.id !== t.id)];
     return startCreate(t, opts);
-  }, [startCreate]);
+  }, [startCreate, accessNow, toastInfo]);
 
   const retryUnsaved = useCallback(() => {
     const ids = unsavedRef.current; if (!ids.size) return;
@@ -1885,12 +1901,45 @@ export default function App() {
   /** Adjust a patch for where the task is going: the workspace follows the project,
    *  a section from the old project is cleared, and people who can't see the task
    *  there are dropped. Mutates `patch`; returns a note for the user, if any. */
+  /** 0058: with project access on, everyone on a task must be able to see its project (the server refuses an
+   *  assignee who can't, D10). A new assignee who can't is refused here first ("Maya can't see Seed round");
+   *  a task moved into a project its assignee can't see comes to you; collaborators and followers who can't
+   *  drop out. Changes `patch`; says what it did. */
+  const accessRetarget = useCallback((prev: Task, patch: Partial<Task>): string | null => {
+    const toWs = "workspaceId" in patch ? patch.workspaceId ?? null : prev.workspaceId ?? projectWs(prev.projectId);
+    if (!toWs || !accessOn(workspacesRef.current.find((w) => w.id === toWs))) return null;
+    const ctx = accessNow(), me = userIdRef.current;
+    const toProject = patch.projectId ?? prev.projectId;
+    const moved = toProject !== prev.projectId || toWs !== (prev.workspaceId ?? null);
+    // (someone who isn't in the workspace is the workspace check's, above: only members are asked)
+    const blind = (u: string | null | undefined) => !!u && u !== me && !!accessRoleOf(ctx, toWs, u) && rankFor(ctx, u, toWs, toProject) < 1;
+    const pname = projectsRef.current.find((p) => p.id === toProject)?.name || "this project";
+    const who = (u: string) => getMember(u)?.name || wsMembersRef.current.find((m) => m.userId === u)?.name || "They";
+    if (moved) {
+      for (const k of ["collaborators", "followers"] as const) {
+        const list = patch[k] ?? prev[k] ?? [];
+        if (list.some(blind)) patch[k] = list.filter((x) => !blind(x));
+      }
+    }
+    if ("assigneeId" in patch && patch.assigneeId !== prev.assigneeId && blind(patch.assigneeId)) {
+      const u = patch.assigneeId!;
+      delete patch.assigneeId;
+      if (!moved || !blind(prev.assigneeId)) return `${who(u)} can't see ${pname}, so “${prev.title}” stays with its assignee.`;
+      patch.assigneeId = me;
+      return `${who(u)} can't see ${pname}, so “${prev.title}” is now assigned to you.`;
+    }
+    if (moved && !("assigneeId" in patch) && blind(prev.assigneeId)) {
+      patch.assigneeId = me;
+      return `${who(prev.assigneeId)} can't see ${pname}, so “${prev.title}” is now assigned to you.`;
+    }
+    return null;
+  }, [accessNow]);
   const retarget = useCallback((prev: Task, patch: Partial<Task>): string | null => {
     if (patch.projectId !== undefined && patch.projectId !== prev.projectId) {
       if (patch.workspaceId === undefined) patch.workspaceId = projectWs(patch.projectId);
       if (!("sectionId" in patch)) patch.sectionId = undefined;
     }
-    if (!("workspaceId" in patch) || (patch.workspaceId ?? null) === (prev.workspaceId ?? null)) return null;
+    if (!("workspaceId" in patch) || (patch.workspaceId ?? null) === (prev.workspaceId ?? null)) return accessRetarget(prev, patch);
     const toWs = patch.workspaceId ?? null, me = userIdRef.current;
     const visible = new Set(toWs === null ? [] : wsMembersRef.current.filter((m) => (m.workspaceId ?? null) === toWs && m.status === "active" && m.userId).map((m) => m.userId as string));
     if (toWs !== null && visible.size === 0) return null; // member list unavailable — let the server decide
@@ -1905,8 +1954,8 @@ export default function App() {
       const where = workspacesRef.current.find((w) => w.id === toWs)?.name || "Personal";
       return `${getMember(assignee)?.name || "The assignee"} isn't in ${where}, so “${prev.title}” is now assigned to you.`;
     }
-    return null;
-  }, []);
+    return accessRetarget(prev, patch);
+  }, [accessRetarget]);
 
   /** Sub-tasks go wherever their parent goes (project, workspace) and are archived with it. */
   const cascadeToDescendants = useCallback((prev: Task, patch: Partial<Task>, all: Task[], into: Map<string, Partial<Task>>) => {
@@ -1985,7 +2034,7 @@ export default function App() {
     Object.assign(patch, releasedPlan(prev, patch));
     const fx = newStatusFx();
     if (patch.status) Object.assign(patch, onStatusChange(prev, { ...prev, ...patch }, fx));
-    if (!Object.keys(patch).length) return;
+    if (!Object.keys(patch).length) { if (note) toastInfo(note); return; }
     const patches = new Map<string, Partial<Task>>([[id, patch]]);
     cascadeToDescendants(prev, patch, all, patches);
     // a failed status change is retried as a whole, so its side effects run again too
@@ -2066,6 +2115,8 @@ export default function App() {
       if (Object.keys(p).length) { patches.set(prev.id, p); cascadeToDescendants(prev, p, all, patches); }
     }
     if (!patches.size) {
+      // (refused: someone who can't see the project, 0058)
+      if (notes.size && !opts.undoAlso) { toastInfo([...notes][0]); return; }
       // only your own plan changed (teammates' tasks): that's still a change, with its Undo
       if (opts.undoAlso) toastAction(`Updated ${plural(rows.length, "task")} in your plan`, "Undo", opts.undoAlso, {});
       else toastInfo(`Nothing to change — ${rows.length === 1 ? "it's" : "they're"} already like that.`);
@@ -2115,6 +2166,12 @@ export default function App() {
   /** patchTask behind the plan-state guard (every view's single-task edits go through
    *  it). Returns what the change replaced, on the row and in your own plan, so an
    *  Undo can put back exactly that (see undoGuarded). */
+  /** Planning a teammate's task into your own day writes your own plan (not the row), so a viewer or
+   *  commenter may (D7); a guest's plan stays read-only, as before 0058. */
+  const denyPlan = useCallback((rows: Task[]): boolean => {
+    const guests = rows.filter((r) => roleIn(r.workspaceId ?? projectWs(r.projectId)) === "guest");
+    return guests.length > 0 && denyEdit(guests);
+  }, [roleIn, denyEdit]);
   const guardedWrite = useCallback((id: string, patch: Partial<Task>): GuardedUndo | null => {
     const t = tasksRef.current?.find((x) => x.id === id); if (!t) return null;
     // (the Undo also puts back a plan a change of assignee cleared)
@@ -2126,7 +2183,7 @@ export default function App() {
     const { personal, shared } = splitPersonal(patch);
     let plan: GuardedUndo["plan"] = null;
     if (Object.keys(personal).length) {
-      if (denyEdit([t])) return null;
+      if (denyPlan([t])) return null;
       // what you saw there before: your own plan on it (the row's is its assignee's)
       const seen = seenRef.current?.find((x) => x.id === id) ?? t;
       plan = pickFields(seen, Object.keys(personal)) as GuardedUndo["plan"];
@@ -2134,7 +2191,7 @@ export default function App() {
     }
     if (Object.keys(shared).length) patchTask(id, shared);
     return { id, row: pickFields(t, rowKeys(shared)), plan };
-  }, [patchTask, denyEdit, writeOverlay]);
+  }, [patchTask, denyPlan, writeOverlay]);
   const guardedPatch = useCallback((id: string, patch: Partial<Task>) => { guardedWrite(id, patch); }, [guardedWrite]);
   /** Put back what a guarded change replaced: the row's own fields that no longer
    *  hold their old value (a change that never landed writes nothing), and your plan. */
@@ -2157,7 +2214,7 @@ export default function App() {
     const all = tasksRef.current ?? [], me = userIdRef.current;
     const theirs = Object.keys(personal).length ? all.filter((t) => ids.includes(t.id) && ownerAfter(t, patch) !== me) : [];
     if (!theirs.length) { bulkPatch(ids, patch); return; }
-    if (denyEdit(all.filter((t) => ids.includes(t.id)))) return;
+    if (Object.keys(shared).length ? denyEdit(all.filter((t) => ids.includes(t.id))) : denyPlan(theirs)) return;
     const seen = new Map((seenRef.current ?? []).map((t) => [t.id, t]));
     const before = theirs.map((t) => ({ t, plan: pickFields(seen.get(t.id) ?? t, Object.keys(personal)) }));
     theirs.forEach((t) => writeOverlay(t, personal));
@@ -2166,7 +2223,7 @@ export default function App() {
       patchFor: (t) => (theirIds.has(t.id) ? shared : patch),
       undoAlso: () => before.forEach(({ t, plan }) => writeOverlay(t, plan)),
     });
-  }, [bulkPatch, denyEdit, writeOverlay]);
+  }, [bulkPatch, denyEdit, denyPlan, writeOverlay]);
 
   const deleteTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
@@ -3540,7 +3597,8 @@ export default function App() {
       wsIds.push(prev.workspaceId, "workspaceId" in p ? p.workspaceId : undefined);
       if (Object.keys(p).length) { patches.set(id, p); cascadeToDescendants(prev, p, all, patches); }
     }
-    if (!patches.size || denyGuest(wsIds)) return;
+    if (!patches.size) { if (notes.size) toastInfo([...notes][0]); return; }
+    if (denyGuest(wsIds)) return;
     updateTasks(patches);
     if (notes.size === 1) toastInfo([...notes][0]);
   }, [retarget, cascadeToDescendants, denyGuest, updateTasks, toastInfo]);
@@ -3548,7 +3606,15 @@ export default function App() {
     tasks: tasksRef.current ?? [], updateTasks: applyMovePatches,
     toast: (m, undo) => { if (undo) toastAction(m, "Undo", undo, {}); else toastInfo(m); },
     sections: sectionsRef.current, members: wsMembersRef.current,
-  }), [applyMovePatches, toastAction, toastInfo]);
+    // 0058: who can see a task's project once it's there (project access on)
+    canSee: (userId, t) => {
+      const ws = t.workspaceId ?? projectWs(t.projectId);
+      if (!ws || !accessOn(workspacesRef.current.find((w) => w.id === ws))) return true;
+      const ctx = accessNow();
+      return !accessRoleOf(ctx, ws, userId) || rankFor(ctx, userId, ws, t.projectId) >= 1;
+    },
+    projectName: (id) => projectsRef.current.find((p) => p.id === id)?.name,
+  }), [applyMovePatches, toastAction, toastInfo, accessNow]);
   // (the moves' code comes with the first drop, or while the browser is idle: never in the first download)
   const dropMoves = useCallback((run: (m: typeof import("./lib/dropMoves")) => void) => {
     import("./lib/dropMoves").then(run, (e: unknown) => { reportError(e, { op: "dropMoves" }); toastError("Couldn't move those tasks. Check your connection and try again."); });
@@ -4514,7 +4580,7 @@ export default function App() {
             if (position !== undefined) patch.position = position;
             if (Object.keys(patch).length) guardedPatch(id, patch);
           }} onBulkPatch={allMy ? (ids, p) => { if (assignableHere(ids, p)) guardedBulkPatch(ids, p); } : guardedBulkPatch} onBulkDelete={bulkDelete}
-          onPatch={allMy ? (id, p) => { if (assignableHere([id], p)) guardedPatch(id, p); } : guardedPatch} onQuickAdd={allMy && activeReadOnly ? undefined : quickAddTask} onOpenImport={activeReadOnly ? undefined : () => openImport()} members={allMy ? biz.people : assignees} allTags={tags}
+          onPatch={allMy ? (id, p) => { if (assignableHere([id], p)) guardedPatch(id, p); } : guardedPatch} onQuickAdd={allMy && activeReadOnly ? undefined : quickAddTask} onOpenImport={activeReadOnly ? undefined : () => openImport()} members={allMy ? biz.people : inProject ? projectPeople(assignees) : assignees} allTags={tags}
           archivedTasks={archivedTasks}
           sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (openProject ? sections.filter((s) => s.projectId === openProject.id) : sections)}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
@@ -4762,7 +4828,8 @@ export default function App() {
       )}
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
       {focusOpen && <Suspense fallback={null}><FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...seen.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} /></Suspense>}
-      <Deferred when={newTaskOpen}><NewTaskModal open={newTaskOpen} onClose={() => { setNewTaskOpen(false); setNewTaskTemplate(null); }} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsEditable} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
+      <Deferred when={newTaskOpen}><NewTaskModal open={newTaskOpen} onClose={() => { setNewTaskOpen(false); setNewTaskTemplate(null); }} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsEditable} allTags={tags} members={wsMembers} currentUserId={currentUserId}
+        canSee={wsGated ? (u, pid) => { const w = projectWs(pid); return !w || rankFor(accessCtx, u, w, pid) >= 1; } : undefined} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
         tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length}
         // 0048 templates: "/" or Template ▾ in the form, the library's "Use template", the whole plan through App's create paths
         workspaceId={workspace} initialTemplate={newTaskTemplate} onApplyTemplate={applyTemplatePlan}

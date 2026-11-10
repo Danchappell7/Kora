@@ -20,6 +20,10 @@ export interface MoveDeps {
   /** workspace memberships: reassigning checks the person is an active member of each task's workspace
    *  (none given: the server decides) */
   members?: readonly Pick<WorkspaceMember, "userId" | "workspaceId" | "status">[];
+  /** 0058: can this person see the task's project (as it'd be: project access on)? None given: everyone can */
+  canSee?: (userId: string, task: Pick<Task, "workspaceId" | "projectId">) => boolean;
+  /** a project's name, for what's said about it */
+  projectName?: (projectId: string) => string | undefined;
 }
 
 export interface MoveOutcome { moved: string[]; skipped: string[]; message: string }
@@ -73,11 +77,15 @@ export function moveTasksToProject(taskIds: string[], project: Pick<Project, "id
     return { moved: [], skipped, message };
   }
   const section = firstSection(project.id, deps.sections);
-  const before = moved.map((t) => ({ id: t.id, patch: { projectId: t.projectId, sectionId: t.sectionId, workspaceId: t.workspaceId ?? null } as Partial<Task> }));
+  // (0058: one whose assignee can't see the project there comes to you: App's move says so too)
+  const yours = moved.filter((t) => !!t.assigneeId && !!deps.canSee && !deps.canSee(t.assigneeId, { workspaceId: pws, projectId: project.id }));
+  const before = moved.map((t) => ({ id: t.id, patch: { projectId: t.projectId, sectionId: t.sectionId, workspaceId: t.workspaceId ?? null,
+    ...(yours.includes(t) ? { assigneeId: t.assigneeId } : {}) } as Partial<Task> }));
   void deps.updateTasks(moved.map((t) => ({ id: t.id, patch: { projectId: project.id, sectionId: section, workspaceId: pws } })));
   let message = moved.length === 1 ? `Moved ${quote(moved[0].title)} to ${name}` : `Moved ${tasksWord(moved.length)} to ${name}`;
   if (already.length) message += ` · ${already.length} ${already.length === 1 ? "was" : "were"} already there`;
   if (elsewhere.length) message += ` · ${elsewhere.length} in another workspace stayed put`;
+  if (yours.length) message += ` · ${yours.length === 1 ? "1 is" : `${yours.length} are`} now yours: ${yours.length === 1 ? "its assignee can't" : "their assignees can't"} see ${name}`;
   deps.toast(message, () => { void deps.updateTasks(before); });
   return { moved: moved.map((t) => t.id), skipped, message };
 }
@@ -91,16 +99,22 @@ export function reassignTasks(taskIds: string[], person: Pick<Member, "id" | "na
   const moved: Task[] = [];
   const already: Task[] = [];
   const outside: Task[] = [];
+  const blind: Task[] = [];
   for (const t of picked) {
     if (t.assigneeId === person.id) { already.push(t); continue; }
     const ws = t.workspaceId ?? null;
     // a personal task has no team to hand it to
     if (ws === null || t.archivedAt || !isMember(ws)) { outside.push(t); continue; }
+    // (0058: nor can it go to someone who can't see its project)
+    if (deps.canSee && !deps.canSee(person.id, t)) { blind.push(t); continue; }
     moved.push(t);
   }
-  const skipped = [...already, ...outside].map((t) => t.id);
+  const skipped = [...already, ...outside, ...blind].map((t) => t.id);
+  const blindWhere = blind.length ? deps.projectName?.(blind[0].projectId) ?? "that project" : "";
   if (!moved.length) {
-    const message = already.length && !outside.length
+    const message = blind.length && !outside.length
+      ? `${person.name || "They"} can't see ${[...new Set(blind.map((t) => deps.projectName?.(t.projectId) ?? "that project"))].join(" or ")}, so ${blind.length === 1 ? `${quote(blind[0].title)} stays` : "these tasks stay"} with ${blind.length === 1 ? "its assignee" : "their assignees"}`
+      : already.length && !outside.length
       ? (already.length === 1 ? `${quote(already[0].title)} is already with ${first}` : `Already with ${first}`)
       : outside.length ? `${person.name || "They"} can't take ${outside.length === 1 ? quote(outside[0].title) : "these tasks"}: ${outside.some((t) => (t.workspaceId ?? null) === null) ? "personal tasks stay yours" : "they're not in that workspace"}`
         : "";
@@ -112,6 +126,7 @@ export function reassignTasks(taskIds: string[], person: Pick<Member, "id" | "na
   let message = moved.length === 1 ? `Assigned ${quote(moved[0].title)} to ${first}` : `Assigned ${tasksWord(moved.length)} to ${first}`;
   if (already.length) message += ` · ${already.length} ${already.length === 1 ? "was" : "were"} already theirs`;
   if (outside.length) message += ` · ${outside.length} stayed put`;
+  if (blind.length) message += ` · ${blind.length} stayed put: ${first} can't see ${blind.length === 1 ? blindWhere : "their projects"}`;
   deps.toast(message, () => { void deps.updateTasks(before); });
   return { moved: moved.map((t) => t.id), skipped, message };
 }

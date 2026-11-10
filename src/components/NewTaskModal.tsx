@@ -86,7 +86,9 @@ function subtaskOf(s: Partial<Task> & { title: string }, parent: Task, position:
 /** "9 Oct" — the repeat preview's short dates */
 const shortDay = (iso: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso); return m ? `${+m[3]} ${MONTHS[+m[2] - 1]}` : iso; };
 
-export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, members, currentUserId, defaultStatus = "todo", defaultProjectId, tagUsage, templates: templatesProp, onApplyTemplate, initialTemplate, onBrowseTemplates, workspaceId }: {
+export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag, projects, allTags, members, currentUserId, defaultStatus = "todo", defaultProjectId, tagUsage, templates: templatesProp, onApplyTemplate, initialTemplate, onBrowseTemplates, workspaceId, canSee }: {
+  /** 0058: can this person see that project (project access on)? Only they can be assigned it. Omit: everyone here can */
+  canSee?: (userId: string, projectId: string) => boolean;
   open: boolean;
   onClose: () => void;
   onCreate: (t: Task) => void;
@@ -159,7 +161,7 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   // (a personal project has no team members, so it's just you).
   const peopleIn = (pid: string) => {
     const ws = projects.find((p) => p.id === pid)?.workspaceId ?? null;
-    const active = members.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === ws);
+    const active = members.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === ws && (!canSee || canSee(m.userId, pid)));
     return active.length > 0 ? active.map((m) => ({ id: m.userId!, name: m.name || m.email })) : [{ id: currentUserId, name: "You" }];
   };
   const wsOf = (pid: string) => projects.find((p) => p.id === pid)?.workspaceId ?? null;

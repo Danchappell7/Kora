@@ -78,6 +78,27 @@ describe("App · project access on (Foundrise)", () => {
     await waitFor(() => expect(within(sidebarProjects()).getByRole("button", { name: /Payroll & contracts \(copy\)\s*, private/ })).toBeInTheDocument());
   });
 
+  it("a Members only project's assignee picker offers only the people who can see it", async () => {
+    inWs("ws-foundrise", "/p/p-seed/list");
+    await boot();
+    const btns = await screen.findAllByRole("button", { name: /Change assignee for|Unassigned\. Assign/ }, { timeout: 8000 });
+    fireEvent.click(btns[0]);
+    const pop = (await screen.findByRole("dialog", { name: /Assignee for/ }).catch(() => null)) ?? document.body;
+    const offered = within(pop as HTMLElement).getAllByRole("menuitemradio").map((x) => x.textContent?.trim() ?? "");
+    expect(offered.some((x) => /Sana Rao/.test(x))).toBe(true);
+    // (Maya and Ana aren't on it; Theo may be, added by the test above)
+    expect(offered.some((x) => /Maya Lin|Ana Ruiz/.test(x))).toBe(false);
+  }, 30_000);
+
+  it("moving a task into a project its assignee can't see gives it to you, and says why", async () => {
+    inWs("ws-foundrise", "/p/p-launch/list");
+    await boot();
+    fireEvent.click(await screen.findByText("Ship onboarding redesign to staging", {}, { timeout: 8000 }));
+    const panel = await screen.findByRole("dialog", { name: /Ship onboarding redesign to staging/ });
+    fireEvent.change(within(panel).getByLabelText("Project"), { target: { value: "p-seed" } });
+    expect(await screen.findByText("Maya Lin can't see Seed round, so “Ship onboarding redesign to staging” is now assigned to you.")).toBeInTheDocument();
+  }, 30_000);
+
   it("New project asks who can see it", async () => {
     inWs("ws-foundrise", "/projects");
     await boot();

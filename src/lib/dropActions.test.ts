@@ -114,6 +114,30 @@ describe("reassigning tasks", () => {
   });
 });
 
+describe("0058: who can see the project", () => {
+  // (Maya can't see Seed round; everyone can see Launch)
+  const canSee = (u: string, t: Pick<Task, "projectId">) => !(u === "maya" && t.projectId === "p-seed");
+  const projectName = (id: string) => ({ "p-seed": "Seed round", "p-launch": "Launch" } as Record<string, string>)[id];
+  it("a task in a project someone can't see isn't handed to them; the rest are", () => {
+    const d = deps([task("a", { projectId: "p-seed" }), task("b")], { canSee, projectName });
+    const out = reassignTasks(["a", "b"], { id: "maya", name: "Maya Lin" }, d.deps);
+    expect(out.moved).toEqual(["b"]);
+    expect(d.updates[0]).toEqual([{ id: "b", patch: { assigneeId: "maya" } }]);
+    expect(d.toasts[0].message).toBe("Assigned “Task b” to Maya · 1 stayed put: Maya can't see Seed round");
+    const alone = deps([task("a", { projectId: "p-seed" })], { canSee, projectName });
+    expect(reassignTasks(["a"], { id: "maya", name: "Maya Lin" }, alone.deps).message).toBe("Maya Lin can't see Seed round, so “Task a” stays with its assignee");
+    expect(alone.updates).toEqual([]);
+  });
+  it("moving a task into a project its assignee can't see says it's now yours, and Undo gives it back", () => {
+    const d = deps([task("a", { assigneeId: "maya" })], { canSee, projectName });
+    const out = moveTasksToProject(["a"], { id: "p-seed", name: "Seed round", workspaceId: "ws" }, d.deps);
+    expect(out.moved).toEqual(["a"]);
+    expect(d.toasts[0].message).toBe("Moved “Task a” to Seed round · 1 is now yours: its assignee can't see Seed round");
+    d.toasts[0].undo!();
+    expect(d.updates[1]).toEqual([{ id: "a", patch: { projectId: "p-old", sectionId: "s-old", workspaceId: "ws", assigneeId: "maya" } }]);
+  });
+});
+
 describe("the drop-target hooks", () => {
   it("a project row registers as a “project” target named after it, and hands the drop over", () => {
     const onDrop = vi.fn();
