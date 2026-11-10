@@ -1,0 +1,98 @@
+/* ============================================================
+   KANBO — a portfolio's own page (0054, phase one): its identity band,
+   the sentence that says how the programme is going (the Today
+   brief's voice), owner · target date · followers, Table and Updates,
+   multi-add, and a portfolio update Kanbo drafts for its owner.
+   Quiet Precision: the portfolio wears its hue on the cover band and
+   tile, and nothing else shouts.
+   ============================================================ */
+
+/* ---------------- add several projects at once ---------------- */
+.kpf-pick { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 4px; padding: 12px; border-radius: var(--r-md, 8px);
+  background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kpf-pick-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kpf-pick-title { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kpf-pick-note { margin: 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpf-pick-group { display: flex; flex-direction: column; gap: 6px; }
+.kpf-pick-biz { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpf-pick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.kpf-pick-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 32px; padding: 0 12px 0 8px; border: 0; border-radius: 16px; cursor: pointer;
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--hairline-strong); font: 500 13px/16px var(--font-ui, var(--font-display)); color: var(--ink-2);
+}
+.kpf-pick-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kpf-pick-chip:hover { background: var(--fill-2); }
+.kpf-pick-chip[aria-pressed="true"] { background: color-mix(in oklch, var(--accent) 13%, var(--surface)); box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--accent) 60%, transparent); color: var(--ink); }
+.kpf-pick-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.kpf-head-acts { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+@media (max-width: 559px) { .kpf-pick-chip { height: 40px; } .kpf-pick-foot > .kbtn { flex: 1 1 0; } }
+
+/* ---------------- the page ---------------- */
+.kpf-page { container-type: inline-size; }
+.kpf-back { display: inline-flex; align-items: center; gap: 4px; margin: 10px 0 0; padding: 0 6px 0 2px; height: 28px; border: 0; border-radius: 6px;
+  background: transparent; cursor: pointer; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpf-back:hover { background: var(--fill-1); color: var(--ink-2); }
+.kpf-hero { position: relative; margin-top: 8px; }
+.kpf-hero-body { display: flex; align-items: flex-start; gap: 14px; margin-top: 8px; }
+.kpf-name-block { min-width: 0; flex: 1 1 auto; }
+.kpf-eyebrow { display: inline-flex; align-items: center; gap: 6px; font: 600 11px/16px var(--font-ui, var(--font-display)); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
+.kpf-name { margin: 2px 0 0; font: 600 28px/34px var(--font-head, var(--font-display)); letter-spacing: -0.02em; color: var(--ink); overflow-wrap: anywhere; }
+.kpf-name-input.kpj-field { width: calc(100% + 9px); height: 40px; margin: 2px 0 0 -9px; padding: 0 8px; border-color: transparent; background: transparent;
+  font: 600 28px/34px var(--font-head, var(--font-display)); letter-spacing: -0.02em; }
+.kpf-name-input.kpj-field:hover { border-color: var(--hairline-strong); }
+.kpf-name-input.kpj-field:focus { border-color: var(--accent); background: var(--surface); }
+.kpf-hero-acts { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; padding-top: 18px; }
+.kpf-sentence { margin: 16px 0 0; max-width: 820px; font: 600 24px/32px var(--font-head, var(--font-display)); letter-spacing: -0.02em; color: var(--ink); text-wrap: balance; }
+.kpf-sentence-sub { margin: 6px 0 0; max-width: 760px; font: 400 15px/24px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kpf-desc { margin: 10px 0 0; max-width: 760px; }
+.kpf-desc textarea.kpj-field { width: calc(100% + 11px); min-height: 40px; margin-left: -11px; border-color: transparent; background: transparent; resize: none; color: var(--ink-2);
+  field-sizing: content; overflow: hidden; }
+.kpf-desc textarea.kpj-field:hover { border-color: var(--hairline-strong); }
+.kpf-desc textarea.kpj-field:focus { border-color: var(--accent); background: var(--surface); }
+.kpf-desc-text { margin: 0; font: 400 14px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); white-space: pre-wrap; }
+
+.kpf-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 16px 0 0; padding: 12px 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
+.kpf-fact { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; }
+.kpf-fact-label { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpf-fact-value { display: inline-flex; align-items: center; gap: 6px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kpf-fact select.kpj-field { height: 30px; width: auto; max-width: 200px; }
+.kpf-off { font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+
+.kpf-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 18px 0 4px; }
+.kpf-tabs-end { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+
+/* ---------------- Updates: the portfolio's own, then each project's latest ---------------- */
+.kpf-updates { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; max-width: var(--read-max, 760px); margin-top: 8px; }
+.kpf-h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font: 600 15px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kpf-compose { padding: 16px; border-radius: var(--r-lg, 12px); background: var(--surface); box-shadow: var(--e1, 0 0 0 1px var(--hairline)); }
+.kpf-compose-note { margin: 0 0 10px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpf-hist { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.kpf-hist > li { display: grid; gap: 6px; padding: 14px 0; border-top: 1px solid var(--hairline); }
+.kpf-hist > li:first-child { border-top: 0; padding-top: 4px; }
+.kpf-latest { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.kpf-latest > li { display: grid; grid-template-columns: 28px minmax(0, 1fr); column-gap: 12px; padding: 14px 0; border-top: 1px solid var(--hairline); }
+.kpf-latest > li:first-child { border-top: 0; padding-top: 4px; }
+.kpf-latest-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.kpf-latest-name { padding: 0; border: 0; background: none; cursor: pointer; font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); text-align: left; }
+.kpf-latest-name:hover { text-decoration: underline; text-underline-offset: 3px; }
+.kpf-latest-meta { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpf-latest-text { margin: 4px 0 0; font: 400 14px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@container (max-width: 640px) {
+  .kpf-hero-body { flex-wrap: wrap; }
+  .kpf-hero-acts { width: 100%; justify-content: flex-start; padding-top: 0; }
+  .kpf-name, .kpf-name-input.kpj-field { font-size: 22px; line-height: 28px; }
+  .kpf-sentence { font-size: 19px; line-height: 26px; }
+  .kpf-facts { gap: 6px 14px; }
+  .kpf-tabs-end { width: 100%; margin-left: -8px; }
+  .kpf-compose { padding: 12px; }
+}
+@media print { .kpf-back, .kpf-hero-acts, .kpf-tabs-end, .kpf-compose { display: none !important; } }
+
+/* ---------------- Insights for one portfolio ---------------- */
+.kpf-scope { flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; box-sizing: border-box; width: 100%;
+  max-width: var(--list-max, 1120px); margin: 0 auto; padding: 10px var(--gutter, 32px) 0; }
+.kpf-scope-in { display: inline-flex; align-items: center; gap: 8px; margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpf-scope-in > select.kpj-field { width: auto; min-width: 160px; max-width: 260px; }
+.kpf-scope-note { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+@media (max-width: 640px) { .kpf-scope { padding: 8px 16px 0; } }

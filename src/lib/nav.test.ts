@@ -60,6 +60,15 @@ describe("addresses round-trip", () => {
     expect(routeOf("/search", "?q=launch")).toEqual({ view: "search" });
   });
 
+  it("a portfolio's own page (0054): /projects/portfolios/:id, and its Updates", () => {
+    expect(routeOf("/projects/portfolios/pf-q3")).toEqual({ view: "portfolios", portfolioId: "pf-q3" });
+    expect(routeOf("/projects/portfolios/pf%20q3/updates")).toEqual({ view: "portfolios", portfolioId: "pf q3", tab: "updates" });
+    expect(pathOf({ view: "portfolios", portfolioId: "pf q3" })).toBe("/projects/portfolios/pf%20q3");
+    expect(pathOf({ view: "portfolios", portfolioId: "pf", tab: "updates" })).toBe("/projects/portfolios/pf/updates");
+    expect(canonicalPath("/projects/portfolios/pf/updates", "?task=t1")).toBe("/projects/portfolios/pf/updates?task=t1");
+    expect(placeOf({ view: "portfolios", portfolioId: "pf" })).toBe("projects");
+  });
+
   it("names the canonical paths from the brief", () => {
     expect(pathOf({ view: "plan" })).toBe("/today");
     expect(pathOf({ view: "myweek" })).toBe("/today/week");

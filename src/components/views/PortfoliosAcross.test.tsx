@@ -39,18 +39,21 @@ describe("PortfoliosView · in Personal, across businesses", () => {
     expect(onUpdate).toHaveBeenCalledWith("pf-x", { projectIds: ["p-launch", "p-clubhouse"] });
   });
 
-  it("the picker lists every business's projects under its name", () => {
+  it("the picker lists every business's projects under its name, and adds several at once (0054)", () => {
     const { onUpdate } = renderPf();
-    fireEvent.click(screen.getByRole("button", { name: "Add a project to Every opening" }));
-    const picker = screen.getByRole("group", { name: "Projects you can add to Every opening" });
+    fireEvent.click(screen.getByRole("button", { name: "Add projects to Every opening" }));
+    const picker = screen.getByRole("group", { name: "Add projects to Every opening" });
     const groups = within(picker).getAllByRole("group").map((g) => g.getAttribute("aria-label"));
     // (Northlight Studio too: a guest there can see its projects)
     expect(groups).toEqual(["Foundrise", "Reco HQ", "Courtside Padel", "Harbour Advisory", "Northlight Studio"]);
-    expect(within(within(picker).getByRole("group", { name: "Reco HQ" })).getByRole("button", { name: "Add Customer Onboarding to Every opening" })).toBeInTheDocument();
+    expect(within(within(picker).getByRole("group", { name: "Reco HQ" })).getByRole("button", { name: "Customer Onboarding" })).toBeInTheDocument();
     // what's already in it isn't offered
-    expect(within(picker).queryByRole("button", { name: "Add Clubhouse Fit-out to Every opening" })).toBeNull();
-    fireEvent.click(within(picker).getByRole("button", { name: "Add Winter League to Every opening" }));
-    expect(onUpdate).toHaveBeenCalledWith("pf-x", { projectIds: ["p-launch", "p-clubhouse", "p-gone", "p-league"] });
+    expect(within(picker).queryByRole("button", { name: "Clubhouse Fit-out" })).toBeNull();
+    fireEvent.click(within(picker).getByRole("button", { name: "Winter League" }));
+    fireEvent.click(within(picker).getByRole("button", { name: "Customer Onboarding" }));
+    expect(within(picker).getByRole("button", { name: "Winter League" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(picker).getByRole("button", { name: "Add 2 projects" }));
+    expect(onUpdate).toHaveBeenCalledWith("pf-x", { projectIds: ["p-launch", "p-clubhouse", "p-gone", "p-league", "p-onboard"] });
   });
 
   it("the exec table reads every business too, the unseen project last", () => {
@@ -76,7 +79,7 @@ describe("PortfoliosView · in Personal, across businesses", () => {
     renderPf({ portfolios: [team], projects: live.filter((p) => p.workspaceId === "ws-foundrise"), acrossBusinesses: undefined });
     expect(screen.queryByText("Only you can see this")).toBeNull();
     expect(screen.queryByText("No longer visible to you")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Add a project to Q3" }));
-    expect(screen.queryByRole("button", { name: "Add Winter League to Q3" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add projects to Q3" }));
+    expect(screen.queryByRole("button", { name: "Winter League" })).toBeNull();
   });
 });

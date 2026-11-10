@@ -251,3 +251,5 @@ function GoalsReadOnly({ ordered, progress, projects, todayIso }: {
 
 /* ---------------- PORTFOLIOS ---------------- */
 export { PortfoliosView } from "../portfolios/PortfoliosView";
+// 0054: a portfolio's own page, in the same lazily loaded chunk
+export { PortfolioPage } from "../portfolios/PortfolioPage";

@@ -8,6 +8,8 @@
    "Update missing" past the day and its follow-ups, "Due today" on
    the day; before 0053, the old 14-day rule. A workspace's owners and
    admins can ask a project's owner for its update from its row.
+   0054: each portfolio opens its own page (PortfolioPage), and several
+   projects can be added at once from Cards or Table.
    ============================================================ */
 import { useMemo, useState } from "react";
 import { Avatar, Button, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, Segmented } from "../primitives";
@@ -24,12 +26,13 @@ import { WorkspaceMark } from "../businesses/Businesses";
 import { shortName } from "../../lib/businesses";
 import { MergedStatusPill } from "../updates/MergedStatusPill";
 import { AskForUpdateButton } from "../updates/AskForUpdate";
+import { AddProjectsPicker } from "./AddProjectsPicker";
 import "../project/projects.css";
 import "../updates/updates.css";
 
 /* A Personal portfolio across businesses: each project says which business it's from, a project you can no
    longer see keeps its place (and can be taken out), and the card says who can see it. */
-const ACROSS_CSS = `
+export const ACROSS_CSS = `
 .kpj-pf-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .kpj-pf-name > .kpj-pf-open { flex: 0 1 auto; }
 .kpj-pf-biz { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 1; min-width: 0; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); white-space: nowrap; }
@@ -82,7 +85,7 @@ function Adder({ label, placeholder, onAdd, onCancel }: { label: string; placeho
 }
 
 /** One project as a portfolio reads it: its tasks, Kanbo's read, the latest update, the one pill and how fresh its update is. */
-interface PfRow { p: Project; ptasks: Task[]; health: ProjectHealth | null; latest?: StatusUpdate; status: MergedStatus; fresh: UpdateFreshness }
+export interface PfRow { p: Project; ptasks: Task[]; health: ProjectHealth | null; latest?: StatusUpdate; status: MergedStatus; fresh: UpdateFreshness }
 
 /** The rows of a portfolio, mismatches first (then the worse off, then as they were added). */
 export function portfolioRows(projects: Project[], tasks: Task[], idx: TaskIndex, statusUpdates: StatusUpdate[], today: Date, workspaces?: readonly Workspace[]): PfRow[] {
@@ -102,7 +105,7 @@ export function portfolioRows(projects: Project[], tasks: Task[], idx: TaskIndex
 type PfView = "cards" | "table";
 const readView = (): PfView => { try { return localStorage.getItem("kanbo-portfolio-view") === "table" ? "table" : "cards"; } catch { return "cards"; } };
 
-export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, acrossBusinesses, readOnly = false, asks }: {
+export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, acrossBusinesses, readOnly = false, asks, onOpenPortfolio }: {
   portfolios: Portfolio[];
   projects: Project[];
   /** the workspace's tasks, archived projects' included: a finished project that's been
@@ -121,6 +124,8 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
   readOnly?: boolean;
   /** 0053: "Ask for an update" on a row whose update is due or missing (owners and admins) */
   asks?: AskForUpdate;
+  /** 0054: open a portfolio's own page */
+  onOpenPortfolio?: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [pickFor, setPickFor] = useState<string | null>(null);
@@ -213,14 +218,32 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                   </>
                 );
 
+                const available = projects.filter((p) => p.id !== "p-personal" && !pf.projectIds.includes(p.id));
+                const picking = pickFor === pf.id;
+                // several at once (0054), from Cards or Table
+                const picker = picking ? (
+                  <AddProjectsPicker portfolioName={pf.name} available={available} workspaces={across?.workspaces}
+                    emptyNote={across ? "Every project you can see is already in this portfolio." : "Every project in this workspace is already in this portfolio."}
+                    onAdd={(ids) => { onUpdate(pf.id, { projectIds: [...pf.projectIds, ...ids.filter((id) => !pf.projectIds.includes(id))] }); setPickFor(null); }}
+                    onCancel={() => setPickFor(null)} />
+                ) : null;
+                const addBtn = !readOnly && (
+                  <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} aria-label={`Add projects to ${pf.name}`} onClick={() => setPickFor((x) => x === pf.id ? null : pf.id)}>Projects</Button>
+                );
+                const openPage = onOpenPortfolio && (
+                  <Button variant="ghost" size="sm" icon="arrowUpRight" aria-label={`Open portfolio ${pf.name}`} onClick={() => onOpenPortfolio(pf.id)}>Open</Button>
+                );
+
                 if (view === "table") {
                   return (
                     <section key={pf.id} className="kpj-pf-exec" aria-label={pf.name} data-across={across ? "" : undefined}>
                       <div className="kpj-pf-exec-head">
                         <h2 className="kpj-pf-exec-name">{pf.name}</h2>
                         {summary}
+                        <span className="kpf-head-acts">{addBtn}{openPage}</span>
                       </div>
-                      {rows.length === 0 && gone.length === 0 ? <p className="kpj-card-meta">{readOnly ? "No projects in this portfolio yet." : "No projects in this portfolio yet. Switch to Cards to add some."}</p> : (
+                      {picker}
+                      {rows.length === 0 && gone.length === 0 ? <p className="kpj-card-meta">{readOnly ? "No projects in this portfolio yet." : "No projects in this portfolio yet. Add some with + Projects."}</p> : (
                         <PortfolioTable rows={rows} tasks={tasks} idx={idx} statusUpdates={statusUpdates} label={`${pf.name} projects`} onOpenProject={onOpenProject}
                           bizOf={across ? biz : undefined} extraRows={goneRows(true)} askFor={askFor} />
                       )}
@@ -228,14 +251,6 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                   );
                 }
 
-                const available = projects.filter((p) => p.id !== "p-personal" && !pf.projectIds.includes(p.id));
-                const picking = pickFor === pf.id;
-                const pick = (p: Project) => (
-                  <button key={p.id} type="button" className="kpj-chip" aria-label={`Add ${p.name} to ${pf.name}`}
-                    onClick={() => { onUpdate(pf.id, { projectIds: [...pf.projectIds, p.id] }); setPickFor(null); }}>
-                    <ProjectDot color={p.color} size={8} /> {p.name}
-                  </button>
-                );
                 return (
                   <article key={pf.id} className="kpj-card kup-pf-card" aria-label={`Portfolio ${pf.name}`} data-across={across ? "" : undefined}>
                     <div className="kpj-card-head">
@@ -244,31 +259,17 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                         : <DraftInput value={pf.name} required label={`Portfolio name: ${pf.name}`} onCommit={(v) => onUpdate(pf.id, { name: v })} className="kpj-name-input" />}
                       <div className="kpj-card-side">
                         {summary}
+                        {openPage}
                         {!readOnly && <>
-                          <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} aria-label={`Add a project to ${pf.name}`} onClick={() => setPickFor((x) => x === pf.id ? null : pf.id)}>Project</Button>
+                          {addBtn}
                           <IconButton icon="trash" size="sm" tone="danger" label={`Delete portfolio ${pf.name}`}
                             onClick={() => { if (window.confirm(`Delete portfolio “${pf.name}”? The projects themselves are kept. This can't be undone.`)) onDelete(pf.id); }} />
                         </>}
                       </div>
                     </div>
-                    {picking && (available.length > 0 ? (
-                      <div className="kpj-card-row" role="group" aria-label={`Projects you can add to ${pf.name}`}>
-                        {across
-                          // every business you're in, each under its logo
-                          ? across.workspaces.map((w) => {
-                            const here = available.filter((p) => (p.workspaceId ?? null) === (w.id ?? null));
-                            return here.length === 0 ? null : (
-                              <div key={w.id ?? "personal"} className="kpj-pick-group" role="group" aria-label={w.name}>
-                                <span className="kpj-pick-head" aria-hidden="true"><WorkspaceMark workspace={w} size={16} />{w.name}</span>
-                                {here.map(pick)}
-                              </div>
-                            );
-                          })
-                          : available.map(pick)}
-                      </div>
-                    ) : <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>{across ? "Every project you can see is already in this portfolio." : "Every project in this workspace is already in this portfolio."}</p>)}
+                    {picker}
                     {rows.length === 0 && gone.length === 0 ? (
-                      <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>{readOnly ? "No projects in this portfolio yet." : "No projects yet. Add one with + Project."}</p>
+                      <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>{readOnly ? "No projects in this portfolio yet." : "No projects yet. Add some with + Projects."}</p>
                     ) : rows.map((r) => {
                       const { p, ptasks, health, latest, status, fresh } = r;
                       // top-level tasks, the same rule as the Table and the project's own header
@@ -320,7 +321,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
 
 /** The exec view of a portfolio: one row per project with its call (one pill), progress,
  *  next milestone and its update against its update day. */
-function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject, bizOf, extraRows, askFor }: {
+export function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject, bizOf, extraRows, askFor }: {
   rows: PfRow[]; tasks: Task[]; idx: TaskIndex; statusUpdates: StatusUpdate[]; label: string; onOpenProject: (id: string) => void;
   /** across businesses: the business a project is from, under its name */
   bizOf?: (p: Project) => React.ReactNode;

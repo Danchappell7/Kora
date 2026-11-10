@@ -173,7 +173,7 @@ describe("PortfoliosView — the numbers and who said it", () => {
     const { container } = render(<PortfoliosView {...base} readOnly />);
     expect(screen.getByRole("heading", { name: "Q3" })).toBeInTheDocument();
     expect(container.querySelectorAll("input")).toHaveLength(0);
-    expect(screen.queryByRole("button", { name: /New portfolio|Add a project|Delete portfolio|Remove Launch/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /New portfolio|Add a project|Add projects|Delete portfolio|Remove Launch/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Open project Launch" })).toBeInTheDocument();
   });
   it("a guest with nothing to read is told who portfolios are for", () => {
