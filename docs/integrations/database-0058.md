@@ -21,7 +21,7 @@ as every kind of person, against the live database (0001–0050) and then with
 | Who can see a project | `projects.visibility` (`workspace`, `members`, `private`); `set_project_visibility(project, visibility)` | **Whole workspace**: everyone in the workspace (guests only if they're added). **Members only**: the project's people, plus the workspace's owners and admins. **Private**: the project's people, plus the workspace's owner. Changed by the workspace's owner, the project's owner, its editors (not guests), and admins (not on Private projects). Nobody but the owner can change it so that they'd lose access themselves. Every project there today is Whole workspace. |
 | A project's people | `project_members` (editor, commenter, viewer); `set_project_member`, `remove_project_member` | Filled once from each project's contributors (editors; guests are commenters; never the project's owner, who always edits). A guest is never more than a commenter (someone made a guest after making a project still owns it, and comments on it). Read by anyone who can see the project. Written only through the functions; `contributor_ids` is kept in step both ways, so older tabs keep working. |
 | Guests invited onto projects | `project_member_invites`; `set_invite_projects(invite, grants)` | Owners and admins choose the projects a new guest will see; they become that guest's project rows when the invite is accepted. |
-| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
+| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
 
 What each person can do on a project (one rank, the same table the app uses,
 `src/lib/projectAccessMatrix.json`): **view** (read, follow, plan, mark updates
@@ -39,7 +39,8 @@ docs, and post updates).
 
 A task (section, rule, form, update) that isn't in one of the workspace's
 projects counts as Whole workspace, so guests don't see it. While a project is
-in the bin, what it left behind keeps the project's access.
+in the bin, and after it's deleted for good, what it left behind keeps the
+project's access, and nobody but the workspace's owner can add to it.
 
 ## Owner steps
 
@@ -103,7 +104,12 @@ No new secrets and no new schedule.
   deleted. A task whose project has gone comes back into the workspace's first
   Whole workspace project if its project was Whole workspace, and only with its
   project if that was Members only or Private ("Restore the project first";
-  once the project is deleted for good it can't come back).
+  once the project is deleted for good it can't come back). A project in the
+  bin is read-only (an old tab or the offline queue can't add work to it;
+  the workspace's owner still can). When a Members only or Private project is
+  deleted for good, anything still in it (written while the switch was off,
+  say) goes to the bin as items of its own, with the project's access, rather
+  than becoming work everyone reads. Its id is never used for a new project.
 - **Sub-tasks** always have their parent's project while the switch is on.
   Turning it on frees any sub-task that was moved to another project on its
   own while it was off: it stays in its project as a task of its own, so

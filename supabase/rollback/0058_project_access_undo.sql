@@ -10,7 +10,8 @@
 -- who's on which project (project_members, project_member_invites), each project's
 -- visibility, the workspaces' settings (every switch is turned off: with no rules behind
 -- it, a switch that says "on" would only mislead the app), trash.access,
--- audit_events.project_id / access and webhooks.url_set_by. While it's out, the app keeps a
+-- audit_events.project_id / access, webhooks.url_set_by and the ids of projects deleted for
+-- good (project_ids_retired: nothing reads it while 0058 is out). While it's out, the app keeps a
 -- project's people in contributor_ids again (as before 0058) and nothing keeps project_members
 -- in step. Running 0058 again afterwards puts every rule back and brings project_members back
 -- to contributor_ids (people taken off meanwhile, or who left the workspace, lose their rows;
@@ -360,6 +361,7 @@ delete from public.schema_migrations where version = '0058';
 --
 -- drop table if exists public.project_member_invites;
 -- drop table if exists public.project_members;
+-- drop table if exists public.project_ids_retired;
 -- alter table public.projects drop column if exists visibility;
 -- alter table public.workspaces drop column if exists project_access, drop column if exists project_access_default,
 --   drop column if exists project_access_member_private, drop column if exists project_access_changed_at;

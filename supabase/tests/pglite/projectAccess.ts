@@ -563,12 +563,26 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
   });
 
   if (before0058) {
-    await test("0058 seeds project_members from contributor_ids (editors; guests comment; never the owner, a removed or suspended person)", async () => {
+    await test("0058 seeds project_members from contributor_ids in their order (editors; guests comment; never the owner or a removed person; a suspended one keeps their place)", async () => {
       const rows = await q<{ p: string; u: string; role: string }>(`select project_id::text as p, user_id::text as u, role from public.project_members where workspace_id = $1::uuid order by 1, 2`, [w.ws]);
       const got = rows.map((r) => `${Object.entries(w.proj).find(([, v]) => v === r.p)![0]}:${people([r.u])[0]}:${r.role}`).sort();
-      eq(got, ["PM:GC:commenter", "PM:GV:commenter", "PM:MC:editor", "PM:ME:editor", "PM:MV:editor", "PP:ME:editor", "PW:GC:commenter"], "seeded");
+      eq(got, ["PM:GC:commenter", "PM:GV:commenter", "PM:MC:editor", "PM:ME:editor", "PM:MV:editor", "PP:ME:editor", "PP:S:editor", "PW:GC:commenter"], "seeded");
       const kept = await one<{ c: string[] }>(`select contributor_ids::text[] as c from public.projects where id = $1::uuid`, [w.proj.PP]);
       eq(kept.c.length, 3, "contributor_ids isn't rewritten by the seeding (R and S stay in PP's)");
+      // the mirror keeps contributor_ids' order, and a role change (here, or someone made a guest) rewrites nothing
+      const pmIds = ["ME", "MC", "MV", "GC", "GV"].map((k) => w.id[k as Who]);
+      const order = await one<{ m: string[] }>(`select array(select user_id::text from public.project_members where project_id = $1::uuid order by created_at, id) as m`, [w.proj.PM]);
+      eq(order.m, pmIds, "seeded in contributor_ids' order");
+      const after = await scenario(async (run) => {
+        await run(w.id.O, `select public.set_project_member($1::uuid, $2::uuid, 'viewer')`, [w.proj.PM, w.id.MC]);
+        await run(null, `update public.workspace_members set role = 'guest' where workspace_id = $1::uuid and user_id = $2::uuid`, [w.ws, w.id.MV]);
+        const role = (await run(null, `select role from public.project_members where project_id = $1::uuid and user_id = $2::uuid`, [w.proj.PM, w.id.MV]))[0].role;
+        await run(w.id.O, `select public.set_project_member($1::uuid, $2::uuid, 'commenter')`, [w.proj.PM, w.id.M2]);
+        const added = (await run(null, `select contributor_ids::text[] as c from public.projects where id = $1::uuid`, [w.proj.PM]))[0].c;
+        return { role, added };
+      });
+      eq(after.role, "commenter", "made a guest: their editor row comments");
+      eq(after.added, [...pmIds, w.id.M2], "role changes kept contributor_ids as it was; someone added goes last");
       eq((await q(`select 1 from public.projects where visibility is distinct from 'workspace' and workspace_id = $1::uuid`, [w.ws])).length, 0, "every project starts Whole workspace");
       const hist = await one<{ n: number }>(`select count(*)::int as n from public.audit_events where workspace_id = $1::uuid and action = 'task.renamed' and project_id is not null`, [w.ws]);
       eq(hist.n, 4, "the history's existing rows know their project now");
@@ -1241,6 +1255,136 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     ok(/its project was deleted for good/.test(got.purged.restoreO), `a Private project's task after the project is purged: ${got.purged.restoreO || "restored"}`);
     eq([got.purged.binA, got.purged.histA, got.purged.histO, got.purged.firstHistA], [0, 0, 1, 0], "the history keeps it Private after the purge");
     eq(got.old, { binM2: 0, histA: 0, binO: 1 }, "a row from before 0058 follows the project's own bin row");
+  });
+
+  /** The access a project deleted for good was retired with (1g), or null. (hasRetired is asked before a
+   *  scenario: a query outside its transaction would wait for it.) */
+  const retiredVis = async (hasRetired: boolean, run: (who: string | null, sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>, id: string) =>
+    hasRetired ? (await run(null, `select access ->> 'visibility' as v from public.project_ids_retired where id = $1::uuid`, [id]))[0]?.v ?? null : null;
+  await test("0058, switch on: a Private project deleted for good keeps its id and its people's work (no new project takes the id; work written into it after the delete stays theirs and goes to the bin with it)", async () => {
+    const hasSearch = await hasFn("public.search_all(text,jsonb,integer)");
+    const hasRetired = await has("project_ids_retired");
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const binOf = async (item: string) => (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null order by deleted_at desc limit 1`, [item]))[0]?.id as string;
+      const e = async (who: Who | null, sql: string, p: unknown[] = []) => errOf(await tryRun(who ? w.id[who] : null, sql, p)) || "ok";
+      const n = async (who: Who, sql: string, p: unknown[] = []) => (await run(w.id[who], sql, p)).length;
+      const pp = w.proj.PP;
+      const ins = (title: string) => [`insert into public.tasks (user_id, title, description, project_id, assignee_id, workspace_id) values ($1::uuid, $2, 'zebra late body', $3, $1::text, $4::uuid) returning id::text as id`, title] as const;
+      const newTask = async (who: Who, title: string) => {
+        const [sql, t] = ins(title);
+        const r = await tryRun(w.id[who], sql, [w.id[who], t, pp, w.ws]);
+        return "error" in r ? r.error : String(r.rows[0].id);
+      };
+      // Oona bins a PP task on its own first (it waits in the bin), then PP itself
+      const early = (await run(w.id.O, ins("Zebra early bin")[0], [w.id.O, "Zebra early bin", pp, w.ws]))[0].id as string;
+      await run(w.id.O, `insert into public.comments (task_id, user_id, body) values ($1::uuid, $2::uuid, 'zebra early comment')`, [early, w.id.O]);
+      await run(w.id.O, `delete from public.tasks where id = $1::uuid`, [early]);
+      const megPW = (await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra Meg PW', $2, $1::text, $3::uuid) returning id::text as id`, [w.id.ME, w.proj.PW, w.ws]))[0].id as string;
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [pp]);
+      // in the bin: Meg (its editor, an old tab or her offline queue) writes nothing into it; Oona (the owner) still may
+      const inBin = {
+        megTask: await newTask("ME", "Zebra late task"),
+        megMove: await e("ME", `update public.tasks set project_id = $2 where id = $1::uuid returning id`, [megPW, pp]),
+        megSection: await e("ME", `insert into public.sections (user_id, workspace_id, project_id, name) values ($1::uuid, $2::uuid, $3, 'Zebra late section') returning id`, [w.id.ME, w.ws, pp]),
+        impostor: await e("M2", `insert into public.projects (id, user_id, owner_id, name, workspace_id) values ($1::uuid, $2::uuid, $2::uuid, 'innocent', $3::uuid) returning id`, [pp, w.id.M2, w.ws]),
+      };
+      const ownerLate = await newTask("O", "Zebra owner late");
+      // the off window: Meg's old tab writes into it as before, with a sub-task and a section
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      const offTask = await newTask("ME", "Zebra off task");
+      await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, 'Zebra off sub', $2, $1::text, $3::uuid, $4::uuid)`, [w.id.ME, pp, w.ws, offTask]);
+      await run(w.id.ME, `insert into public.sections (user_id, workspace_id, project_id, name) values ($1::uuid, $2::uuid, $3, 'Zebra off section')`, [w.id.ME, w.ws, pp]);
+      await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [w.ws]);
+      const lateTitles = `select title from public.tasks where title in ('Zebra off task', 'Zebra off sub', 'Zebra owner late') order by title`;
+      const whileBinned = {
+        closed: ((await run(null, `select public.closed_project_ids($1::uuid) as c`, [w.ws]))[0].c as string[]).includes(pp),
+        open: (await run(null, `select public.project_is_open($1::uuid, $2) as o`, [w.ws, pp]))[0].o,
+        M2: await n("M2", lateTitles), A: await n("A", lateTitles), ME: await n("ME", lateTitles), O: await n("O", lateTitles),
+        megEdits: (await run(w.id.ME, `update public.tasks set title = 'Zebra off task!' where id = $1::uuid returning id`, [offTask])).length,
+      };
+      // Oona deletes PP for good (the early task still waits in the bin)
+      await run(w.id.O, `select public.purge_trash($1::uuid)`, [await binOf(pp)]);
+      const stragglerBins = `select title from public.trash where kind = 'task' and project_id = $1 and restored_at is null and title in ('Zebra off task', 'Zebra owner late') order by title`;
+      const offBin = await binOf(offTask);
+      const purged = {
+        left: (await run(null, `select count(*)::int as n from public.tasks where workspace_id = $1::uuid and project_id = $2`, [w.ws, pp]))[0].n,
+        sections: (await run(null, `select count(*)::int as n from public.sections where workspace_id = $1::uuid and project_id = $2`, [w.ws, pp]))[0].n,
+        bins: (await run(null, stragglerBins, [pp])).map((r) => r.title),
+        binAccess: (await run(null, `select access ->> 'visibility' as v from public.trash where id = $1::uuid`, [offBin]))[0]?.v,
+        binOf: { ME: await n("ME", stragglerBins, [pp]), M2: await n("M2", stragglerBins, [pp]), A: await n("A", stragglerBins, [pp]), O: await n("O", stragglerBins, [pp]) },
+        restoreO: await e("O", `select public.restore_from_trash($1::uuid)`, [offBin]),
+        retired: await retiredVis(hasRetired, run, pp),
+        search: hasSearch ? await n("M2", `select 1 from public.search_all('Zebra off task', '{}'::jsonb, 50) s where s.title in ('Zebra off task', 'Zebra off sub', 'Zebra owner late')`) : 0,
+      };
+      // a project under PP's id: from the app, a personal one, a Private one an admin makes, the service, or re-numbering one
+      const m2Own = (await run(w.id.M2, `insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, 'Zebra M2 own', $2::uuid) returning id::text as id`, [w.id.M2, w.ws]))[0].id as string;
+      const impostor = {
+        member: await e("M2", `insert into public.projects (id, user_id, owner_id, name, workspace_id) values ($1::uuid, $2::uuid, $2::uuid, 'innocent', $3::uuid) returning id`, [pp, w.id.M2, w.ws]),
+        personal: await e("M2", `insert into public.projects (id, user_id, owner_id, name) values ($1::uuid, $2::uuid, $2::uuid, 'innocent') returning id`, [pp, w.id.M2]),
+        adminPrivate: await e("A", `insert into public.projects (id, user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $2::uuid, $2::uuid, 'x', $3::uuid, 'private') returning id`, [pp, w.id.A, w.ws]),
+        service: await e(null, `insert into public.projects (id, user_id, owner_id, name, workspace_id) values ($1::uuid, $2::uuid, $2::uuid, 'x', $3::uuid) returning id`, [pp, w.id.O, w.ws]),
+        renumber: await e("M2", `update public.projects set id = $2::uuid where id = $1::uuid returning id`, [m2Own, pp]),
+      };
+      // what's left of PP stays its people's: the early bin row and the history
+      const history = `select 1 from public.audit_events where target_id in ($1, $2) or project_id = $1`;
+      const after = {
+        earlyBin: { M2: await n("M2", `select 1 from public.trash where item_id = $1::uuid`, [early]), MC: await n("MC", `select 1 from public.trash where item_id = $1::uuid`, [early]) },
+        restoreM2: await e("M2", `select public.restore_from_trash($1::uuid)`, [await binOf(early)]),
+        history: { A: await n("A", history, [pp, early]), M2: await n("M2", history, [pp, early]), O: Math.min(1, await n("O", history, [pp, early])) },
+        // a write into the id after the purge: read-only to its people, nothing to anyone else
+        megTask: await newTask("ME", "Zebra after purge"),
+        m2Task: await newTask("M2", "Zebra after purge"),
+        rank: Object.fromEntries(await Promise.all((["ME", "M2", "A", "O"] as const).map(async (k) =>
+          [k, (await run(null, `select public.user_project_rank($1::uuid, $2::uuid, $3) as r`, [w.id[k], w.ws, pp]))[0].r]))),
+        closed: ((await run(null, `select public.closed_project_ids($1::uuid) as c`, [w.ws]))[0].c as string[]).includes(pp),
+      };
+      return { inBin, ownerLate: /^[0-9a-f-]{36}$/.test(ownerLate), whileBinned, purged, impostor, after };
+    });
+    const refused = /row-level security|not authorized/;
+    ok(refused.test(got.inBin.megTask), `Meg adding a task to the binned PP: ${got.inBin.megTask}`);
+    ok(refused.test(got.inBin.megMove), `Meg moving a task into it: ${got.inBin.megMove}`);
+    ok(refused.test(got.inBin.megSection), `Meg adding a section to it: ${got.inBin.megSection}`);
+    ok(/id in use/.test(got.inBin.impostor), `a project under its id while it's in the bin: ${got.inBin.impostor}`);
+    eq(got.ownerLate, true, "the workspace's owner may still write into it");
+    eq(got.whileBinned, { closed: true, open: false, M2: 0, A: 0, ME: 3, O: 3, megEdits: 0 },
+      "while it's in the bin: closed to the stand-up, read by its people only, and Meg can't change what she wrote in the off window");
+    eq([got.purged.left, got.purged.sections], [0, 0], "deleted for good: no task or section still names it");
+    eq(got.purged.bins, ["Zebra off task", "Zebra owner late"], "the late work went to the bin (the sub-task in its parent's entry)");
+    eq(got.purged.binAccess, "private", "keeping PP's access");
+    eq(got.purged.binOf, { ME: 2, M2: 0, A: 0, O: 2 }, "read by PP's people only");
+    ok(/deleted for good/.test(got.purged.restoreO), `restoring it: ${got.purged.restoreO}`);
+    eq(got.purged.retired, "private", "PP's id is retired with its access");
+    eq(got.purged.search, 0, "search finds none of it for Moe");
+    for (const [k, v] of Object.entries(got.impostor)) ok(/id in use/.test(v), `a project under PP's id (${k}): ${v}`);
+    eq(got.after.earlyBin, { M2: 0, MC: 0 }, "the early task's bin row stays PP's people's");
+    ok(/not found/.test(got.after.restoreM2), `Moe restoring it: ${got.after.restoreM2}`);
+    eq(got.after.history, { A: 0, M2: 0, O: 1 }, "and the history");
+    ok(refused.test(got.after.megTask), `Meg writing into the id after the purge: ${got.after.megTask}`);
+    ok(/can't see this project/.test(got.after.m2Task), `Moe writing into it: ${got.after.m2Task}`);
+    eq(got.after.rank, { ME: 1, M2: 0, A: 0, O: 3 }, "ranks on the retired id: its people read, the owner keeps edit");
+    eq(got.after.closed, true, "and it's still closed to the stand-up");
+  });
+
+  await test("0058, switch on: a Whole workspace project deleted for good leaves later work where it is (as before 0058), and its id is retired too", async () => {
+    const hasRetired = await has("project_ids_retired");
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const binOf = async (item: string) => (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null order by deleted_at desc limit 1`, [item]))[0]?.id as string;
+      const pid = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra open', $2::uuid, 'workspace') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [pid]);
+      // (written by the service, past the bin: a form or an old function)
+      const t = (await run(null, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra open late', $2, 'nobody', $3::uuid) returning id::text as id`, [w.id.ME, pid, w.ws]))[0].id as string;
+      await run(null, `update public.trash set purge_after = now() - interval '1 day' where id = $1::uuid`, [await binOf(pid)]);
+      await run(null, `select public.trash_housekeeping()`);
+      return {
+        pid,
+        task: (await run(null, `select project_id as p from public.tasks where id = $1::uuid`, [t]))[0]?.p,
+        M2: (await run(w.id.M2, `select 1 from public.tasks where id = $1::uuid`, [t])).length,
+        retired: await retiredVis(hasRetired, run, pid),
+        impostor: errOf(await tryRun(w.id.M2, `insert into public.projects (id, user_id, owner_id, name, workspace_id) values ($1::uuid, $2::uuid, $2::uuid, 'x', $3::uuid) returning id`, [pid, w.id.M2, w.ws])),
+      };
+    });
+    eq([got.task, got.M2, got.retired], [got.pid, 1, "workspace"], "the task stays where it was, every member still reads it, and the id is retired");
+    ok(/id in use/.test(got.impostor), `a project under its id: ${got.impostor}`);
   });
 
   await test("0058, switch on: a task whose Whole workspace project has gone comes back in a Whole workspace project, never in the workspace's first project if that's Private", async () => {
