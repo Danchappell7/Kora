@@ -63,7 +63,7 @@ export function AskForUpdateButton({ project, asks, compact }: { project: Projec
     );
   }
   return (
-    <Button variant="ghost" size="sm" icon="send" loading={a.busy} onClick={(e) => { e.stopPropagation(); void a.ask(); }} aria-label={a.label}>
+    <Button variant="ghost" size="sm" icon="bell" loading={a.busy} onClick={(e) => { e.stopPropagation(); void a.ask(); }} aria-label={a.label}>
       {compact ? "Ask" : "Ask for an update"}
     </Button>
   );

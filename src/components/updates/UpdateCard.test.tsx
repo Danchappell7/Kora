@@ -42,7 +42,8 @@ describe("an update and its conversation", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Update" }), { target: { value: "Hero copy is in." } });
     fireEvent.click(screen.getByRole("button", { name: "On track" }));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
-    expect(onEdit).toHaveBeenCalledWith(U, { summary: "Hero copy is in.", status: "on_track", sections: U.sections });
+    // (moving the call to On track drops any plan to recover; the Ask keeps who it's for)
+    expect(onEdit).toHaveBeenCalledWith(U, { summary: "Hero copy is in.", status: "on_track", sections: U.sections, recoveryPlan: null, targetDate: null, askUserIds: ["m-self"] });
     unmount();
 
     const member = card();
@@ -58,6 +59,21 @@ describe("an update and its conversation", () => {
     expect(onDelete).toHaveBeenCalledWith(U);
   });
 
+  it("the author's edit changes a plan to recover, its new date, and who an Ask is for (someone new hears)", async () => {
+    const onEdit = vi.fn(async () => true);
+    card({ me: "m-3", onEdit, update: { ...U, recoveryPlan: "Copy lands Monday.", targetDate: "2026-12-01" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit update" }));
+    const plan = screen.getByPlaceholderText("What will get it back on track, and who's doing it?");
+    expect(plan).toHaveValue("Copy lands Monday.");
+    fireEvent.change(plan, { target: { value: "Maya writes the copy on Monday." } });
+    const who = screen.getByRole("group", { name: "Who the asks are for" });
+    expect(within(who).queryByRole("button", { name: "Sana" })).toBeNull();   // (never the author)
+    fireEvent.click(within(who).getByRole("button", { name: "Maya" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
+    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: "su-1" }), expect.objectContaining({
+      status: "at_risk", recoveryPlan: "Maya writes the copy on Monday.", targetDate: "2026-12-01", askUserIds: ["m-self", "m-1"] }));
+  });
   it("a guest reacts and replies, but never edits or deletes, even their own", () => {
     card({ me: "m-3", canWrite: false });
     expect(screen.queryByRole("button", { name: "Update actions" })).toBeNull();
@@ -149,5 +165,18 @@ describe("the Updates tab, with its conversation", () => {
     render(<ProjectPanels {...props({ conversation: { me: "m-self", lead: false, focusUpdateId: "su-1" } })} />);
     await waitFor(() => expect(screen.getByText(/^Seen by/)).toHaveTextContent("Seen by 1"));
     expect(screen.getByRole("textbox", { name: "Reply to Sana Rao" })).toBeInTheDocument();
+  });
+
+  it("from the Inbox, someone who doesn't own the project lands on the update that asked them, its reply box ready, not on a drafted composer", async () => {
+    const scrolled = vi.fn();
+    const before = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    render(<ProjectPanels {...props({ project: { ...P, ownerId: "m-3" }, conversation: { me: "m-self", lead: false, focusUpdateId: "su-1" } })} />);
+    const reply = await screen.findByRole("textbox", { name: "Reply to Sana Rao" });
+    await waitFor(() => expect(reply).toHaveFocus());
+    expect(scrolled).toHaveBeenCalled();
+    // the composer is there to write in, but nobody drafted an update for them
+    expect(screen.getByRole("textbox", { name: "Update" })).toHaveValue("");
+    Element.prototype.scrollIntoView = before;
   });
 });

@@ -139,7 +139,7 @@ export async function addUpdateComment(updateId: string, body: string, mentions:
   const text = body.trim().slice(0, COMMENT_MAX);
   if (!text) throw new ConversationError("failed", "Write something first.");
   if (!supabase) {
-    const c: UpdateComment = { id: `uc-demo-${++seq}`, updateId, authorId: me, authorName: getMember(me)?.name ?? "You", body: text,
+    const c: UpdateComment = { id: `uc-local-${++seq}`, updateId, authorId: me, authorName: getMember(me)?.name ?? "You", body: text,
       mentions: [...new Set(mentions)].filter((m) => m !== me), createdAt: new Date().toISOString(), editedAt: null };
     put(updateId, { comments: [...threadOf(threads, updateId).comments, c] });
     return c;

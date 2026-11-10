@@ -758,14 +758,14 @@ describe("TodayView: your project update (0053)", () => {
   it("shows the host's update line under the brief, and its Kanbo noticed nudge opens the update", () => {
     const open = vi.fn();
     const nudge = { id: "update:p1", kind: "update" as const, tone: "accent" as const, icon: "notes" as const, title: "Your Q3 launch update is due today",
-      body: "Kanbo has a draft ready.", actions: [{ kind: "update" as const, label: "Review the draft", projectId: "p1" }] };
+      body: "Kanbo has a draft ready.", actions: [{ kind: "update" as const, label: "Review and post", projectId: "p1" }] };
     renderToday([task({ id: "a", dueDate: today() })], { updates: { items: [], line: <p>THE UPDATE LINE</p>, noticed: [nudge], open, sheet: <div>THE SHEET</div> } });
     const brief = screen.getByRole("region", { name: "Your day in brief" });
     expect(within(brief).getByText("THE UPDATE LINE")).toBeInTheDocument();
     expect(screen.getByText("THE SHEET")).toBeInTheDocument();
     const noticed = screen.getByRole("region", { name: "Kanbo noticed" });
     expect(within(noticed).getByText("Your Q3 launch update is due today")).toBeInTheDocument();
-    fireEvent.click(within(noticed).getByRole("button", { name: "Review the draft" }));
+    fireEvent.click(within(noticed).getByRole("button", { name: "Review and post" }));
     expect(open).toHaveBeenCalledWith("p1");
   });
 });

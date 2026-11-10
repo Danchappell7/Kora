@@ -14,7 +14,7 @@ describe("the conversation on an update, demo", () => {
     const { result } = renderHook(() => useUpdateConversation(["su-launch", "su-none"]));
     await act(async () => { await loadUpdateConversation(["su-launch"]); });
     const t = threadOf(result.current.threads, "su-launch");
-    expect(t.comments.map((c) => c.authorName)).toEqual(["Maya Lin", "Theo Vance"]);
+    expect(t.comments.map((c) => c.authorName)).toEqual(["Maya Lin", "Theo Vance", "Maya Lin"]);
     expect(t.reactions["👍"]).toEqual(["m-1", "m-2"]);
     expect(t.seenBy).toEqual(["m-1", "m-2", "m-3"]);
     expect(threadOf(result.current.threads, "su-none")).toEqual({ comments: [], reactions: {}, seenBy: [] });

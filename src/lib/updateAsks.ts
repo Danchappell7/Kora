@@ -10,7 +10,7 @@
    offered.
    ============================================================ */
 import { useEffect, useSyncExternalStore } from "react";
-import type { Project, Role, StatusUpdate, UpdateAsk } from "../data/types";
+import type { Project, Role, StatusUpdate, UpdateAsk, WorkspaceMember } from "../data/types";
 import { errText } from "./rowUtils";
 import { supabase } from "./supabase";
 
@@ -104,8 +104,8 @@ export async function askForUpdate(project: Pick<Project, "id" | "workspaceId" |
     const m = errText(error);
     if (/recent|already asked/i.test(m)) throw new AskError("recent", "Someone asked about this project today.");
     if (/too many/i.test(m)) throw new AskError("recent", "You've asked for a lot of updates today. Try again tomorrow.");
-    if (/not authori[sz]ed|not allowed|no owner|own project/i.test(m)) throw new AskError("not_allowed", "Only the workspace's owners and admins can ask.");
-    throw new AskError("failed", "Couldn't ask just now. Try again in a moment.");
+    const why = askRefusal(m);
+    throw why ? new AskError("not_allowed", why) : new AskError("failed", "Couldn't ask just now. Try again in a moment.");
   }
   const a = parseAsk(Array.isArray(data) ? data[0] : data);
   if (!a) throw new AskError("failed", "Couldn't ask just now. Try again in a moment.");
@@ -113,6 +113,17 @@ export async function askForUpdate(project: Pick<Project, "id" | "workspaceId" |
   tell();
   notifyAsk(a.id);
   return a;
+}
+
+/** What ask_for_update's refusal means for the person who tapped Ask (null: not a refusal). */
+export function askRefusal(message: string): string | null {
+  if (/owner has left/i.test(message)) return "Its owner isn't in the workspace any more. Pick a new owner first.";
+  if (/owner is a guest/i.test(message)) return "Its owner is a guest here, so they can't post updates. Pick a new owner first.";
+  if (/archived/i.test(message)) return "This project is archived.";
+  if (/no owner/i.test(message)) return "This project has no owner to ask yet.";
+  if (/own project/i.test(message)) return "It's your own project.";
+  if (/not authori[sz]ed|not allowed/i.test(message)) return "Only the workspace's owners and admins can ask.";
+  return null;
 }
 
 /* ---------- reading them ---------- */
@@ -149,12 +160,21 @@ export interface AskForUpdate {
   ask: (p: Project) => Promise<UpdateAsk>;
 }
 
-/** The rows' AskForUpdate for the signed-in person (`roleIn`: their role in a workspace). */
-export function useAskForUpdate(me: string, roleIn: (workspaceId: string | null | undefined) => Role | null): AskForUpdate | undefined {
+/** Can a project's owner post its update? Still in its workspace, and not as a guest. (Someone the list doesn't
+ *  name: the database decides, and says so if they've left.) */
+export function ownerCanPost(p: Pick<Project, "workspaceId" | "ownerId">, members: readonly WorkspaceMember[]): boolean {
+  const m = members.find((x) => x.userId === p.ownerId && (x.workspaceId ?? null) === (p.workspaceId ?? null));
+  return !m || (m.status === "active" && m.role !== "guest");
+}
+
+/** The rows' AskForUpdate for the signed-in person (`roleIn`: their role in a workspace; `ownerOk`: whether a
+ *  project's owner can be asked, ownerCanPost). */
+export function useAskForUpdate(me: string, roleIn: (workspaceId: string | null | undefined) => Role | null,
+  ownerOk: (p: Project) => boolean = () => true): AskForUpdate | undefined {
   const asks = useUpdateAsks(me);
   if (!asksOn()) return undefined;
   return {
-    canAsk: (p) => canAskFor(p, me, roleIn(p.workspaceId)),
+    canAsk: (p) => canAskFor(p, me, roleIn(p.workspaceId)) && ownerOk(p),
     asked: (p) => recentAsk(asks, p.id),
     ask: (p) => askForUpdate(p, me),
   };

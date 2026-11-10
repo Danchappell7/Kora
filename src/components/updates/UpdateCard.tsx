@@ -8,8 +8,8 @@
    Anyone who reads it (guests too) reacts and replies; you edit or
    delete your own replies, and leads remove any.
    ============================================================ */
-import { useRef, useState, type ReactNode } from "react";
-import { Avatar, Button, Icon, IconButton, Pill, Segmented } from "../primitives";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Avatar, Button, DateChip, Icon, IconButton, Pill, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { getMember, KANBO_TODAY, timeAgo } from "../../data/data";
 import type { StatusKind, StatusUpdate, UpdateComment, UpdateSections } from "../../data/types";
@@ -21,15 +21,21 @@ import {
   type UpdateThread,
 } from "../../lib/updateConversation";
 import { resolveMentions } from "../taskDetailHelpers";
-import { POP_STYLE, STATUS_OPTIONS } from "../project/StatusComposer";
+import { PLAN_MAX, POP_STYLE, STATUS_OPTIONS, takesPlan } from "../project/StatusComposer";
 import { UpdatePlanNote } from "./UpdateDay";
 import "../project/projects.css";
 import "./conversation.css";
+import "./updates.css";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
 
-export interface UpdateEditPatch { summary: string; status: StatusKind; sections: UpdateSections | null }
+/** What an edit saves: the call, the words, the sections, the plan to recover and new date (At risk and Off track
+ *  only: moving the call elsewhere drops them), and who its Asks are for. */
+export interface UpdateEditPatch {
+  summary: string; status: StatusKind; sections: UpdateSections | null;
+  recoveryPlan: string | null; targetDate: string | null; askUserIds: string[];
+}
 
 /** An update's sections as a short list (Asks say who they're for). */
 export function UpdateSectionsList({ sections, askUserIds, me }: { sections?: UpdateSections; askUserIds?: string[]; me?: string }) {
@@ -54,16 +60,28 @@ export function UpdateSectionsList({ sections, askUserIds, me }: { sections?: Up
   );
 }
 
-/** The author's editor: the call, the words and the sections. */
-function UpdateEditor({ update, onSave, onCancel }: { update: StatusUpdate; onSave: (p: UpdateEditPatch) => Promise<boolean>; onCancel: () => void }) {
+/** The author's editor: the call, the words, the sections and who an Ask is for, and an At risk or Off track
+ *  update's plan to recover and new date. */
+function UpdateEditor({ update, people, onSave, onCancel }: {
+  update: StatusUpdate; people: { id: string; name: string }[]; onSave: (p: UpdateEditPatch) => Promise<boolean>; onCancel: () => void;
+}) {
   const [summary, setSummary] = useState(update.summary);
   const [status, setStatus] = useState<StatusKind>(update.status);
   const [sections, setSections] = useState<UpdateSections>(update.sections ?? {});
+  const [plan, setPlan] = useState(update.recoveryPlan ?? "");
+  const [target, setTarget] = useState<string | null>(update.targetDate ?? null);
+  const [asks, setAsks] = useState<string[]>(update.askUserIds ?? []);
   const [saving, setSaving] = useState(false);
+  const withPlan = takesPlan(status);
+  const asking = !!sections.asks?.trim();
   const save = async () => {
     if (!summary.trim() || saving) return;
     setSaving(true);
-    const ok = await onSave({ summary: summary.trim(), status, sections: hasSections(sections) ? sections : null });
+    const ok = await onSave({
+      summary: summary.trim(), status, sections: hasSections(sections) ? sections : null,
+      recoveryPlan: withPlan ? plan.trim().slice(0, PLAN_MAX) || null : null, targetDate: withPlan ? target : null,
+      askUserIds: asking ? asks : [],
+    });
     setSaving(false);
     if (ok) onCancel();
   };
@@ -81,7 +99,30 @@ function UpdateEditor({ update, onSave, onCancel }: { update: StatusUpdate; onSa
               onChange={(e) => setSections((s) => ({ ...s, [k]: e.target.value }))} />
           </label>
         ))}
+        {people.length > 0 && asking && (
+          <div className="kuc-sec-who" role="group" aria-label="Who the asks are for">
+            <span className="kuc-sec-who-label">Ask</span>
+            {people.map((p) => (
+              <button key={p.id} type="button" className="kuc-chip" aria-pressed={asks.includes(p.id)}
+                onClick={() => setAsks((xs) => (xs.includes(p.id) ? xs.filter((x) => x !== p.id) : [...xs, p.id].slice(0, 20)))}>{firstName(p.name)}</button>
+            ))}
+            <span className="kuc-sec-who-note">Anyone you add here hears about it under Needs your reply.</span>
+          </div>
+        )}
       </fieldset>
+      {withPlan && (
+        <div className="kup-plan">
+          <label className="kup-plan-label">
+            <span>Plan to recover <span className="kup-opt">optional</span></span>
+            <textarea className="kpj-field kup-plan-field" rows={2} value={plan} maxLength={PLAN_MAX} onChange={(e) => setPlan(e.target.value)}
+              placeholder="What will get it back on track, and who's doing it?" />
+          </label>
+          <div className="kup-plan-date">
+            <span className="kup-plan-label-text" aria-hidden="true">New target date <span className="kup-opt">optional</span></span>
+            <DateChip size="sm" tone="plain" label="New target date" value={target ?? undefined} placeholder="Add a date" onChange={(d) => setTarget(d ?? null)} />
+          </div>
+        </div>
+      )}
       <div className="kuc-edit-foot">
         <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
         <Button variant="primary" size="sm" onClick={() => void save()} disabled={!summary.trim() || saving} loading={saving}>Save</Button>
@@ -149,7 +190,7 @@ export function UpdateCard({ update, me, canWrite, lead, thread, conversation, p
   onDelete?: (u: StatusUpdate) => void;
   /** e.g. Share to Slack on the latest */
   actions?: ReactNode;
-  /** open its replies (arriving from the Inbox) */
+  /** open its replies, and bring it into view with the reply box ready (arriving from the Inbox) */
   defaultOpen?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -161,6 +202,17 @@ export function UpdateCard({ update, me, canWrite, lead, thread, conversation, p
   const [err, setErr] = useState<string | null>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const pickRef = useRef<HTMLButtonElement>(null);
+  const replyRef = useRef<HTMLTextAreaElement>(null);
+  // arriving from the Inbox: the update that asked you, in view, its reply box ready (once its thread is in)
+  const brought = useRef(false);
+  useEffect(() => {
+    if (!defaultOpen || !conversation || brought.current) return;
+    const el = replyRef.current;
+    if (!el) return;
+    brought.current = true;
+    el.closest("li")?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    el.focus({ preventScroll: true });
+  }, [defaultOpen, conversation]);
   const by = updateAuthor(update);
   const mine = !!me && update.authorId === me;
   const canEdit = mine && canWrite && !!onEdit;
@@ -219,14 +271,15 @@ export function UpdateCard({ update, me, canWrite, lead, thread, conversation, p
         </Popover>
       </div>
       {editing && onEdit ? (
-        <UpdateEditor update={update} onSave={(p) => onEdit(update, p)} onCancel={() => setEditing(false)} />
+        <UpdateEditor update={update} people={people.filter((p) => p.id !== me && p.name.trim())} onSave={(p) => onEdit(update, p)} onCancel={() => setEditing(false)} />
       ) : (
         <>
           <p className="kpj-history-text">{update.summary}</p>
           <UpdateSectionsList sections={update.sections} askUserIds={update.askUserIds} me={me} />
         </>
       )}
-      <UpdatePlanNote update={update} />
+      {/* (while it's being edited, the editor holds the plan) */}
+      {!editing && <UpdatePlanNote update={update} />}
       {conversation && (
         <div className="kuc-foot">
           <span className="kuc-reacts">
@@ -272,7 +325,7 @@ export function UpdateCard({ update, me, canWrite, lead, thread, conversation, p
           )}
           {me && (
             <div className="kuc-reply">
-              <textarea className="kpj-field" rows={2} maxLength={COMMENT_MAX} value={draft} aria-label={`Reply to ${by ?? "this update"}`}
+              <textarea ref={replyRef} className="kpj-field" rows={2} maxLength={COMMENT_MAX} value={draft} aria-label={`Reply to ${by ?? "this update"}`}
                 placeholder={people.length ? "Reply… @mention someone to ask them" : "Reply…"} onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(); } }} />
               <div className="kuc-reply-foot">

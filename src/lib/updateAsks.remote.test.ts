@@ -43,13 +43,17 @@ describe("update asks, signed in", () => {
   });
 
   it("says why when the database refuses", async () => {
-    const cases: [string, string][] = [
-      ["already asked recently", "recent"], ["too many asks today", "recent"], ["not authorized", "not_allowed"],
-      ["not allowed: the owner has left", "not_allowed"], ["connection reset", "failed"],
+    const cases: [string, string, RegExp][] = [
+      ["already asked recently", "recent", /today/], ["too many asks today", "recent", /tomorrow/], ["not authorized", "not_allowed", /owners and admins/],
+      // (an admin who can ask hears what's really wrong, not that only admins can)
+      ["not allowed: the owner has left", "not_allowed", /^Its owner isn't in the workspace any more/],
+      ["not allowed: the owner is a guest", "not_allowed", /^Its owner is a guest here/],
+      ["not allowed: the project is archived", "not_allowed", /^This project is archived/],
+      ["connection reset", "failed", /Try again/],
     ];
-    for (const [message, reason] of cases) {
+    for (const [message, reason, says] of cases) {
       rpc.mockResolvedValueOnce({ data: null, error: { code: "P0001", message } });
-      await expect(askForUpdate(project, "me")).rejects.toMatchObject({ reason });
+      await expect(askForUpdate(project, "me")).rejects.toMatchObject({ reason, message: expect.stringMatching(says) });
     }
     expect(invoke).not.toHaveBeenCalled();
   });

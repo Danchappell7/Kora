@@ -1,9 +1,9 @@
 /* lib/updateDue and lib/updateAsks: only a project's OWNER hears about its update — on its day and the two
    working days after, or once a lead asks — and only leads may ask, about someone else's project. */
 import { describe, it, expect, afterEach, vi } from "vitest";
-import type { Project, StatusUpdate, Task, UpdateAsk, Workspace } from "../data/types";
+import type { Project, StatusUpdate, Task, UpdateAsk, Workspace, WorkspaceMember } from "../data/types";
 import { dueUpdatesFor, draftedFrom, dueVerb, updateNoticed } from "./updateDue";
-import { asksAwaiting, askForUpdate, canAskFor, recentAsk, resetUpdateAsks, AskError } from "./updateAsks";
+import { asksAwaiting, askForUpdate, canAskFor, ownerCanPost, recentAsk, resetUpdateAsks, AskError } from "./updateAsks";
 
 const FRI = new Date(2026, 10, 13);        // Friday 13 Nov 2026
 const WS: Workspace[] = [{ id: "w", name: "Foundry", kind: "team" }];
@@ -43,7 +43,7 @@ describe("your updates for Today", () => {
     vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(2026, 10, 13, 10));
     const one = dueUpdatesFor({ me: "me", projects: [proj("launch")], tasks, statusUpdates: [], asks: [], today: FRI, workspaces: WS });
     const [n] = updateNoticed(one, FRI);
-    expect(n).toMatchObject({ kind: "update", title: "Your launch update is due today", actions: [{ kind: "update", label: "Review the draft", projectId: "launch" }] });
+    expect(n).toMatchObject({ kind: "update", title: "Your launch update is due today", actions: [{ kind: "update", label: "Review and post", projectId: "launch" }] });
     const two = dueUpdatesFor({ me: "me", projects: [proj("launch"), proj("brand")], tasks, statusUpdates: [], asks: [ask("brand")], today: FRI, workspaces: WS });
     expect(updateNoticed(two, FRI)[0]).toMatchObject({ title: "2 project updates are waiting on you", body: "brand and launch. Kanbo has drafts ready. Each takes a minute to check." });
     expect(updateNoticed([], FRI)).toEqual([]);
@@ -60,6 +60,16 @@ describe("Ask for an update", () => {
     expect(canAskFor(proj("mine"), "me", "owner")).toBe(false);
     expect(canAskFor({ ...p, archivedAt: "2026-10-01" }, "me", "owner")).toBe(false);
     expect(canAskFor({ ...p, workspaceId: null }, "me", "owner")).toBe(false);
+  });
+  it("never of an owner who's only a guest there, or has left (a guest can't post an update)", () => {
+    const p = proj("launch", { ownerId: "sana" });
+    const m = (role: WorkspaceMember["role"], status: WorkspaceMember["status"] = "active"): WorkspaceMember =>
+      ({ id: "m", workspaceId: "w", userId: "sana", email: "", name: "Sana", role, status });
+    expect(ownerCanPost(p, [m("member")])).toBe(true);
+    expect(ownerCanPost(p, [m("guest")])).toBe(false);
+    expect(ownerCanPost(p, [m("member", "invited")])).toBe(false);
+    // (someone the list doesn't name: the database decides)
+    expect(ownerCanPost(p, [])).toBe(true);
   });
   it("asks once in 20 hours (the demo keeps the database's rule)", async () => {
     const p = proj("launch", { ownerId: "sana" });

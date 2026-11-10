@@ -96,6 +96,6 @@ export function updateNoticed(items: readonly DueUpdate[], today: Date): Noticed
     id: `update:${items.map((d) => `${d.project.id}:${d.reason === "asked" ? d.ask?.id : d.state?.kind === "due" ? d.state.due : ""}`).join(",")}`,
     kind: "update", tone: "accent", icon: "notes",
     title, body,
-    actions: [{ kind: "update", label: items.length > 1 ? `Start with ${first.project.name}` : "Review the draft", projectId: first.project.id }],
+    actions: [{ kind: "update", label: items.length > 1 ? `Start with ${first.project.name}` : "Review and post", projectId: first.project.id }],
   }];
 }

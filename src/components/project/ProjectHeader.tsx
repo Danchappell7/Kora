@@ -158,7 +158,7 @@ interface MenuItem { id: string; label: string; icon: IconName; run: () => void;
 
 /** The page header's actions: Draft update (Kanbo writes it) · Post update (an empty field) ·
  *  ⋯ Project actions. Both buttons open the same composer, on the project's one shared draft. */
-export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate, onEditIdentity, onPlanTasks }: {
+export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate, onEditIdentity, onPlanTasks, people }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -175,6 +175,8 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   onEditIdentity?: (patch: { emoji: string; color: string }) => void;
   /** 0047: "Add tasks with Kanbo" (the AI planner, adding to this project) */
   onPlanTasks?: () => void;
+  /** 0054: who an Ask in the update can be for (people who can read it; never you) */
+  people?: { id: string; name: string }[];
 }): JSX.Element {
   const canPost = !readOnly && !!onPostStatus;
   const [identityOpen, setIdentityOpen] = useState(false);
@@ -252,7 +254,7 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
       )}
       <IconButton ref={moreRef} icon="more" label="Project actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen}
         onClick={() => setMenuOpen((v) => !v)} />
-      {canPost && <ComposerPopover open={open !== null && !inPage} anchorRef={open === "draft" ? draftRef : postRef} onClose={() => setOpen(null)} c={c} />}
+      {canPost && <ComposerPopover open={open !== null && !inPage} anchorRef={open === "draft" ? draftRef : postRef} onClose={() => setOpen(null)} c={c} people={people} />}
       <Popover open={menuOpen} anchorRef={moreRef} onClose={() => { setMenuOpen(false); setSaved(null); }} role="menu" label={`Actions for ${project.name}`}
         align="end" minWidth={208} className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
         {items.flatMap((it) => [
@@ -382,12 +384,14 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
   // who an Ask or a reply can be for: the project's people who can read it, not you
   const people = useMemo(() => members.filter((m) => m.id !== me), [members, me]);
   // draft first: the composer opens on the on-device draft of this week (the AI one is a click away),
-  // unless this project already has a draft in hand (yours, or one Kanbo is writing)
+  // unless this project already has a draft in hand (yours, or one Kanbo is writing). Someone arriving
+  // from the Inbox to answer an update on a project they don't own came to reply, not to write one.
+  const arriving = !!conversation?.focusUpdateId && history.some((u) => u.id === conversation.focusUpdateId) && project.ownerId !== me;
   const seeded = useRef<string | null>(null);
   useEffect(() => {
     if (!canPost || seeded.current === project.id) return;
     seeded.current = project.id;
-    if (!c.text.trim() && !c.drafting) c.draft("template");
+    if (!c.text.trim() && !c.drafting && !arriving) c.draft("template");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPost, project.id]);
 
@@ -508,8 +512,8 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
           <dt>Status</dt>
           <dd>
             {(() => { const p = projectStatusPill(project, facts.latest); return <Pill tone={p.tone} title={p.title}>{p.label}</Pill>; })()}
-            {/* (how fresh the update is, only when the pill and the stale note don't say it already) */}
-            <span className="kpj-card-meta">{kanbosRead(facts, { withUpdate: !stale && !!facts.latest })}</span>
+            {/* (how fresh the update is, only when the pill, the stale note and the update day don't say it already) */}
+            <span className="kpj-card-meta">{kanbosRead(facts, { withUpdate: !stale && !!facts.latest && !rhythmOnFor(project) })}</span>
             {editable && !facts.latest && (
               <select className="kpj-field" data-size="sm" value={project.status ?? ""} aria-label="Status set by hand"
                 onChange={(e) => onUpdate(project.id, { status: e.target.value })}>
@@ -517,14 +521,17 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
                 {PROJECT_STATUSES.map((s) => <option key={s.v} value={s.v}>{s.label}</option>)}
               </select>
             )}
-            {/* once updates are posting, the call is theirs; putting it on hold by hand still stays put */}
-            {editable && facts.latest && (
+            {/* once updates are posting, the call is theirs; putting it on hold by hand still stays put. On hold
+                because the latest update says so: it comes off with the next update, so this says that */}
+            {editable && facts.latest && (project.status !== "on_hold" && facts.latest.status === "on_hold" ? (
+              <span className="kpj-card-meta">On hold from the latest update. Post an update to take it off hold.</span>
+            ) : (
               <select className="kpj-field" data-size="sm" value={project.status === "on_hold" ? "on_hold" : ""} aria-label="On hold"
                 onChange={(e) => onUpdate(project.id, { status: e.target.value })}>
                 <option value="">Active</option>
                 <option value="on_hold">On hold</option>
               </select>
-            )}
+            ))}
             {stale && !rhythmOnFor(project) && <span className="kpj-card-meta kpj-warn">{facts.lastUpdateDays == null ? "No update yet" : `No update in ${facts.lastUpdateDays} days`}</span>}
           </dd>
 

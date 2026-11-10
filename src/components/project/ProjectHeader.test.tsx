@@ -465,8 +465,19 @@ describe("ProjectPanels", () => {
     expect(screen.queryByText(/no updates yet/)).toBeNull();
     unmount();
     const nineDaysAgo = (() => { const x = new Date(); x.setDate(x.getDate() - 9); return x.toISOString(); })();
+    const { unmount: gone } = render(<ProjectPanels {...base({ tab: "about", statusUpdates: [{ ...UPDATES[1], createdAt: nineDaysAgo }] })} />);
+    // (with update days, its Update day row says where the update stands: Kanbo's read doesn't count the days too)
+    expect(screen.queryByText(/no update for 9 days/)).toBeNull();
+    gone();
+    noteRhythmSchema(false);
     render(<ProjectPanels {...base({ tab: "about", statusUpdates: [{ ...UPDATES[1], createdAt: nineDaysAgo }] })} />);
     expect(screen.getByText(/· no update for 9 days$/)).toBeInTheDocument();
+  });
+
+  it("About: On hold because the latest update says so reads On hold, and says how it comes off (not a select that says Active)", () => {
+    render(<ProjectPanels {...base({ tab: "about", statusUpdates: [{ ...UPDATES[1], status: "on_hold" }] })} />);
+    expect(screen.queryByRole("combobox", { name: "On hold" })).toBeNull();
+    expect(screen.getByText("On hold from the latest update. Post an update to take it off hold.")).toBeInTheDocument();
   });
 
   it("About: counts open work with its sub-tasks, as overdue and blocked do, so they always add up", () => {

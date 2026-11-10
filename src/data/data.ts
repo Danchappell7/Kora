@@ -638,6 +638,11 @@ export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
   // 0053: On hold is an update of its own, so it stays on hold when the next one comes in
   { id: "su-northwind", projectId: "p-northwind", status: "on_hold", createdAt: daysAgoAt(4, 11, 0), workspaceId: "ws-harbour", authorId: "m-3",
     summary: "Paused while Northwind's board reviews the scope. We pick it up once they've met." },
+  // 0054: Northlight's (where Daniel is a guest): he reads it, replies and reacts, never more
+  { id: "su-northlight", projectId: "p-northlight", status: "on_track", createdAt: daysAgoAt(1, 15, 20), workspaceId: "ws-northlight", authorId: "m-4",
+    summary: "The sitemap is signed off and the homepage copy is in review.",
+    sections: { highlights: "Sitemap and page list signed off.", asks: "Daniel, can you send notes on the homepage copy by Friday?", next: "Photography picks, then the booking widget." },
+    askUserIds: ["m-self"] },
 ];
 
 /* 0054: the conversation on the demo's updates. Sana's brand update asks Daniel something (his
@@ -650,6 +655,9 @@ export const DEMO_UPDATE_THREADS: Record<string, { comments: UpdateComment[]; re
         body: "I can take the deck review this week if Theo sends the numbers by Wednesday." },
       { id: "uc-demo-2", updateId: "su-launch", authorId: "m-2", authorName: "Theo Vance", createdAt: daysAgoAt(8, 9, 15), editedAt: null,
         body: "Numbers will be with you Wednesday morning." },
+      // (this afternoon's: the Inbox's "Maya replied" is this one)
+      { id: "uc-demo-5", updateId: "su-launch", authorId: "m-1", authorName: "Maya Lin", createdAt: minutesAgo(180), editedAt: null,
+        body: "Deck review is booked for Thursday at 10. I'll bring the new numbers." },
     ],
     reactions: { "👍": ["m-1", "m-2"], "👀": ["m-3"] },
     seenBy: ["m-1", "m-2", "m-3"],
@@ -662,6 +670,15 @@ export const DEMO_UPDATE_THREADS: Record<string, { comments: UpdateComment[]; re
     reactions: { "🎉": ["m-1"] },
     seenBy: ["m-1", "m-2"],
   },
+  // (a guest's reply: Daniel answers Idris's Ask)
+  "su-northlight": {
+    comments: [
+      { id: "uc-demo-4", updateId: "su-northlight", authorId: "m-self", authorName: "Daniel Okai", createdAt: daysAgoAt(1, 16, 5), editedAt: null,
+        body: "Notes are in the doc. The second hero line is the one." },
+    ],
+    reactions: { "👍": ["m-self"] },
+    seenBy: ["m-self"],
+  },
 };
 
 /* 0054: project updates in the Inbox (task-less, kind "update"): Sana's asks you something,
@@ -670,7 +687,7 @@ export const DEMO_UPDATE_ACTIVITY: Activity[] = ([
   { id: "a-demo-up-1", taskId: null, taskTitle: "Brand Refresh", kind: "update", detail: "Sana Rao", createdAt: daysAgoAt(2, 16, 5),
     meta: { statusUpdateId: "su-brand", projectId: "p-brand", updateEvent: "posted", updateStatus: "on_track", ask: true } },
   { id: "a-demo-up-2", taskId: null, taskTitle: "Q3 Product Launch", kind: "update", detail: "Maya Lin", createdAt: minutesAgo(180),
-    meta: { statusUpdateId: "su-launch", projectId: "p-launch", updateEvent: "comment", commentId: "uc-demo-1", ask: false } },
+    meta: { statusUpdateId: "su-launch", projectId: "p-launch", updateEvent: "comment", commentId: "uc-demo-5", ask: false } },
 ] satisfies Activity[]).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
 
 /* 0054: the Q3 launch portfolio's last update, posted by Daniel a week ago. */
