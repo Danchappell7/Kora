@@ -265,7 +265,8 @@ export function GoalLinks({ goal, links, projects, tasks, canEdit, onLink, onUnl
   onUnlink: (link: GoalLink) => void;
 }) {
   const projectOf = (id: string) => getProject(id) ?? projects.find((p) => p.id === id);
-  const shown = links.filter((l) => l.kind !== "project" || projectOf(l.targetId) || l.targetId === goal.projectId);
+  // (work that's since been deleted drops out of the list)
+  const shown = links.filter((l) => l.kind === "view" || (l.kind === "project" ? !!projectOf(l.targetId) || l.targetId === goal.projectId : tasks.some((t) => t.id === l.targetId)));
   const has = (kind: string, id: string) => links.some((l) => l.kind === kind && l.targetId === id);
   const progressFrom = goal.projectId && !has("project", goal.projectId) ? goal.projectId : null;
   if (!shown.length && !progressFrom && !canEdit) return null;
@@ -277,7 +278,7 @@ export function GoalLinks({ goal, links, projects, tasks, canEdit, onLink, onUnl
       {shown.map((l) => {
         const p = l.kind === "project" ? projectOf(l.targetId) : undefined;
         const t = l.kind === "task" ? tasks.find((x) => x.id === l.targetId) : undefined;
-        const label = l.kind === "project" ? p?.name ?? "Archived project" : l.kind === "task" ? t?.title ?? "A task you can't see" : "Saved view";
+        const label = l.kind === "project" ? p?.name ?? "Archived project" : l.kind === "task" ? t?.title ?? "" : "Saved view";
         return (
           <LinkChip key={l.id} icon={l.kind === "project" ? "folder" : l.kind === "task" ? "check" : "layers"} emoji={p?.emoji} label={label}
             onRemove={canEdit && !(l.kind === "project" && l.targetId === goal.projectId) ? () => onUnlink(l) : undefined} />
