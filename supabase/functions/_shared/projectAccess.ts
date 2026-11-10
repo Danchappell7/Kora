@@ -126,14 +126,25 @@ export function projectAccess(db: AccessDb): ProjectAccess {
       `select public.user_can_see_project($1::uuid, $2::uuid) as v`, [userId, projectId]);
     return a.missing ? true : a.value === true;
   };
-  /** the first check alone (it may say "missing", and then nobody is asked), then the rest together */
+  /** One check first (it may say "missing", and then nobody is asked), then the rest together. A person
+   *  whose own check fails is left out (never told unchecked) rather than failing everyone's notice;
+   *  only when no check can be made at all does it throw (and the caller sends nothing). */
   const everyone = async (ids: readonly string[], check: (id: string) => Promise<boolean>): Promise<string[]> => {
     const list = [...new Set(ids)];
     if (!list.length) return [];
-    const first = await check(list[0]);
-    if (missing) return list;
-    const rest = await Promise.all(list.slice(1).map(check));
-    return list.filter((_, i) => (i === 0 ? first : rest[i - 1]));
+    const ok = new Map<string, boolean>();
+    let at = 0, lastErr: unknown = null;
+    for (; at < list.length && !ok.size; at++) {
+      try { ok.set(list[at], await check(list[at])); } catch (e) { if (!(e instanceof AccessLookupFailed)) throw e; lastErr = e; }
+      if (missing) return list;
+    }
+    if (!ok.size) throw lastErr;
+    const rest = await Promise.allSettled(list.slice(at).map(check));
+    rest.forEach((r, i) => {
+      if (r.status === "fulfilled") ok.set(list[at + i], r.value);
+      else if (!(r.reason instanceof AccessLookupFailed)) throw r.reason;
+    });
+    return list.filter((id) => ok.get(id) === true);
   };
 
   return {

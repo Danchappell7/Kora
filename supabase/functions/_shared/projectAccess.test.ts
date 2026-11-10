@@ -141,9 +141,14 @@ describe("a lookup that fails is never 'allowed'", () => {
     const silent = { rpc: vi.fn() };   // a stub that answers nothing at all
     await expect(projectAccess(silent).canSeeTask(MAYA, T1)).rejects.toBeInstanceOf(AccessLookupFailed);
   });
-  it("one failed person fails the whole list (it's never sent to the others as if checked)", async () => {
+  it("one failed person is left out (never told unchecked); the others, each checked, still are", async () => {
     const db = rpcDb((fn, a) => (a.p_user === GUS ? { data: null, error: { code: "08006", message: "connection reset" } } : { data: true, error: null }));
-    await expect(projectAccess(db).usersWhoCanSeeTask(T1, [MAYA, GUS, THEO])).rejects.toBeInstanceOf(AccessLookupFailed);
+    expect(await projectAccess(db).usersWhoCanSeeTask(T1, [MAYA, GUS, THEO])).toEqual([MAYA, THEO]);
+    // (the first one failing too: the next one asks first)
+    expect(await projectAccess(db).usersWhoCanSeeTask(T1, [GUS, MAYA])).toEqual([MAYA]);
+  });
+  it("when no check can be made at all, the whole notice waits (nothing is sent)", async () => {
+    await expect(projectAccess(flaky()).usersWhoCanSeeProject(PAY, [MAYA, THEO, GUS])).rejects.toBeInstanceOf(AccessLookupFailed);
   });
 });
 

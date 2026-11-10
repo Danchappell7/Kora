@@ -941,11 +941,19 @@ steps; nothing breaks while you wait.
 4. **Turn it on for one business first.** Pick the one with the fewest guests.
    In each guest's projects, open About › Contributors and tick them (a guest is
    added as a commenter), until the preview names every guest with the projects
-   they should keep. Choose "New projects start as" and whether members may make
-   projects private, then switch it on and confirm. Then mark that business's
+   they should keep, and no longer says a guest has open tasks they won't see
+   (the preview names them: add the guest to that project, or hand the task
+   on). If a project is already Members only or Private, the preview names who'd
+   lose it. Choose "New projects start as" and whether members may make
+   projects private, then switch it on and confirm. (Switching on also frees any
+   sub-task that was moved to another project on its own: it stays where it is,
+   as a task of its own.) Then mark that business's
    HR, finance and leadership projects Members only or Private (About › People &
    access › Manage); it asks before anyone loses access and names them. Check
-   it as a guest would (or ask one): they see only their projects. From now on,
+   it as a guest would (or ask one): they see only their projects. Each
+   person's profile on Team › People lists the projects they're on. If a
+   project you make private syncs to Notion, its tasks keep going to that Notion
+   database: stop its sync first if that database is shared more widely. From now on,
    inviting a guest (Team › People › Invite people, role Guest) asks "Projects
    they can see". Do the other businesses on later days, one at a time.
 5. **Rollback, if you need it.** Switch Project access off in Settings ›

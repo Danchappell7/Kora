@@ -119,6 +119,16 @@ they've already had: Inbox items, emails, push notices, Slack posts and
 webhooks already delivered; meeting agendas and recaps already stored; shared
 templates; exports; and a device's offline copy until its next load.
 
+- **Notion.** A two-way Notion sync set up on a project keeps copying its tasks
+  into its Notion database after the project is made Members only or Private
+  (it runs as the person who set it up, who can still see it). Anyone who can
+  read that Notion database sees them. Stop the sync first if the database is
+  shared more widely than the project.
+- **Task history names.** A task's history row keeps the name its author had
+  when it was written (0038 falls back to their email when they had no name),
+  so a guest reading a task in their project can see the name of a teammate
+  who isn't one of their project's people.
+
 ## Rollback
 
 | Level | How | Effect |
