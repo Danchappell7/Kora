@@ -23,6 +23,8 @@ export interface WrapContext {
   onMakeTask?: (it: MeetingItem) => void;
   onDelete?: (it: MeetingItem) => void;
   agendaTitle: (key: string | null) => string | undefined;
+  /** where a line was logged, when that says something ("on Radar risks"; nothing for the owner's own item) */
+  whereOf?: (it: MeetingItem) => string | undefined;
 }
 
 /** "3 decisions and 4 actions, 2 of them tasks with an owner." */
@@ -46,7 +48,7 @@ function Lines({ title, items, ctx, empty }: { title: string; items: readonly Me
         <ul className="kmtg-lines">
           {items.map((it) => (
             <NoteLine key={it.id} it={it} nameOf={ctx.nameOf} taskById={ctx.taskById} onOpenTask={ctx.onOpenTask} onMakeTask={ctx.onMakeTask} onDelete={ctx.onDelete}
-              where={it.agendaKey && it.agendaKey !== "wrap" && it.agendaKey !== "overview" ? ctx.agendaTitle(it.agendaKey) : undefined} />
+              where={ctx.whereOf?.(it)} />
           ))}
         </ul>
       ) : <p className="kmtg-none">{empty}</p>}

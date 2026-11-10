@@ -56,7 +56,7 @@ export function NoteLine({ it, nameOf, taskById, onOpenTask, onMakeTask, onDelet
   );
 }
 
-export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onAdd, onDelete, onMakeTask, nameOf, taskById, onOpenTask, composerRef, scope, onScope }: {
+export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onAdd, onDelete, onMakeTask, nameOf, taskById, onOpenTask, composerRef, scope, onScope, whereOf }: {
   items: readonly MeetingItem[];
   /** the item on the stage (null: the wrap-up, where lines are logged at large) */
   agendaKey: string | null;
@@ -72,6 +72,8 @@ export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onA
   composerRef?: RefObject<HTMLInputElement>;
   scope: "item" | "all";
   onScope: (s: "item" | "all") => void;
+  /** where a line was logged ("on Radar risks"), for the whole meeting's list */
+  whereOf?: (it: MeetingItem) => string | undefined;
 }) {
   const [kind, setKind] = useState<MeetingItemKind>("note");
   const [text, setText] = useState("");
@@ -108,7 +110,7 @@ export function RoomNotes({ items, agendaKey, agendaTitle, people, canWrite, onA
           {shown.map((it) => (
             <NoteLine key={it.id} it={it} nameOf={nameOf} taskById={taskById} onOpenTask={onOpenTask}
               onMakeTask={canWrite ? onMakeTask : undefined} onDelete={canWrite ? onDelete : undefined}
-              where={scope === "all" && it.agendaKey && it.agendaKey !== agendaKey ? agendaTitle(it.agendaKey) : undefined} />
+              where={scope === "all" && it.agendaKey !== agendaKey ? whereOf?.(it) : undefined} />
           ))}
         </ul>
       ) : (

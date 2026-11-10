@@ -103,7 +103,7 @@ const GROUP_CSS = `
 .kgrp-calm > svg { color: var(--ok, var(--st-done)); flex-shrink: 0; }
 .kgrp-wins-n { display: block; margin: 0 0 4px; font: 600 24px/30px var(--font-head); letter-spacing: -0.01em; color: var(--ink); }
 .kgrp-wins-n small { margin-left: 6px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); letter-spacing: 0; }
-.kgrp-go { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; }
+.kgrp-go, .kgrp-meet { flex-shrink: 0; }
 /* what's calm, in one line (a phone's: the calm blocks fold into it) */
 .kgrp-calmline { display: none; flex-wrap: wrap; gap: 2px 14px; margin: 12px 0 0; padding: 0; list-style: none; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kgrp-calmline li { display: inline-flex; align-items: center; gap: 6px; }
@@ -114,6 +114,7 @@ const GROUP_CSS = `
   .kgrp-title { flex: 1 1 0; }
   .kgrp-go { order: 2; align-self: flex-start; margin: 2px -8px 0 0; }
   .kgrp-side { order: 3; width: 100%; }
+  .kgrp-meet { order: 4; margin: -4px 0 0 -8px; }
 }
 @media (max-width: 859px) {
   .kgrp-biz { padding: 16px 14px 14px; border-radius: var(--r-lg, 12px); }
@@ -180,9 +181,9 @@ function BusinessSection({ d, onOpen, asks, runMeetings }: { d: BusinessDigest; 
             )}
           </div>
         ) : null}
+        {/* 0056: this business's leadership meeting (you run it: an owner or admin) */}
+        {runMeetings && <span className="kgrp-meet"><RunMeetingButton scope={{ workspaceId: wsId, preset: "leadership", canLead: true }} variant="ghost" /></span>}
         <span className="kgrp-go">
-          {/* 0056: this business's leadership meeting (you run it: an owner or admin) */}
-          {runMeetings && <RunMeetingButton scope={{ workspaceId: wsId, preset: "leadership", canLead: true }} variant="ghost" />}
           <Button variant="ghost" size="sm" iconRight="arrowRight" onClick={() => go({ kind: "business" })} aria-label={`Open ${ws.name}`}>Open</Button>
         </span>
       </div>

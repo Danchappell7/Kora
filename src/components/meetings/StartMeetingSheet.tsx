@@ -133,7 +133,7 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
       case "risks": return n ? `${n} ${n === 1 ? "risk" : "risks"}` : "Nothing on the Radar";
       case "goals": return n ? `${n} behind` : "Every goal on pace";
       case "projects": return n ? `${n} to look at` : "Nothing to look at";
-      case "actions": return facts.from ? `${n} from ${facts.from.title.replace(/,.*$/, "")}${facts.from.endedAt ? `, ${meetingDay(new Date(facts.from.endedAt))}` : ""}` : "No meeting here yet";
+      case "actions": return facts.from ? `${n} from ${facts.from.endedAt ? meetingDay(new Date(facts.from.endedAt)) : "last time"}` : "No meeting here yet";
     }
   };
 
@@ -191,7 +191,7 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
                 <button key={p.id} type="button" className="kmtg-person" aria-pressed={on} disabled={p.id === me}
                   title={p.id === me ? "You're running it" : on ? `Leave ${p.name} out` : `Ask ${p.name}`}
                   onClick={() => setAway((cur) => { const n = new Set(cur); if (n.has(p.id)) n.delete(p.id); else n.add(p.id); return n; })}>
-                  {getMember(p.id) ? <Avatar id={p.id} size={22} /> : <span className="kmtg-initial" aria-hidden="true">{p.name.charAt(0)}</span>}
+                  <span aria-hidden="true" style={{ display: "inline-flex" }}>{getMember(p.id) ? <Avatar id={p.id} size={22} /> : <span className="kmtg-initial">{p.name.charAt(0)}</span>}</span>
                   <span>{p.id === me ? "You" : firstName(p.name)}</span>
                 </button>
               );

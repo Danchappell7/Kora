@@ -66,7 +66,8 @@ describe("App · across businesses", () => {
     await waitFor(() => expect(switcher).toHaveAccessibleName(/other workspaces have something for you$/));
     fireEvent.click(switcher);
     const menu = await screen.findByRole("dialog", { name: "Workspaces" });
-    await waitFor(() => expect(within(menu).getByRole("button", { name: "Courtside Padel, 2 unread, needs you: 1 approval · 1 overdue" })).toBeInTheDocument());
+    // (Theo's mention and approval request, and, 0056, the recap of yesterday's leadership meeting)
+    await waitFor(() => expect(within(menu).getByRole("button", { name: "Courtside Padel, 3 unread, needs you: 1 approval · 1 overdue" })).toBeInTheDocument());
     expect(within(menu).getByRole("button", { name: /^Harbour Advisory, 1 unread/ })).toBeInTheDocument();
   });
 

@@ -1241,7 +1241,7 @@ export function InboxView({
         <SectionLabel count={updateItems.length}>{updateItems.some((a) => a.kind === "update") ? "Project updates" : "Meeting recaps"}</SectionLabel>
         <div role="list" className="kinbox-rows">{topRows(rows)}</div>
         <p className="kinbox-note">{updateItems.some((a) => a.kind === "meeting")
-          ? "Updates on the projects you own or work on, replies on yours, anything an update asks you, and the recaps of meetings you were asked to."
+          ? "Updates on the projects you own or work on, replies on yours, anything an update asks you, and the recaps of meetings you were in."
           : "Updates on the projects you own or work on, replies on yours, and anything an update asks you."}</p>
       </section>
     ) : (

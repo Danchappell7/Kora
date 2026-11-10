@@ -1761,7 +1761,11 @@ describe("store (demo mode) — the redesign's seed and AI", () => {
     // …and (0054) two project updates: Sana's asks you something, Maya replied on yours
     const updates = new Set(["a-demo-up-1", "a-demo-up-2"]);
     expect(feed.filter((a) => updates.has(a.id)).map((a) => [a.kind, a.meta?.ask])).toEqual([["update", false], ["update", true]]);
-    expect(feed.filter((a) => !extra.has(a.id) && !elsewhere.has(a.id) && !updates.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
+    // …and (0056) two meeting recaps: Foundrise's team meeting (Maya ran it) and Courtside's leadership meeting (Theo)
+    const recaps = new Set(["a-demo-mtg-1", "a-demo-mtg-2"]);
+    expect(feed.filter((a) => recaps.has(a.id)).map((a) => [a.kind, a.detail, a.meta?.workspaceId]).sort())
+      .toEqual([["meeting", "Maya Lin", "ws-foundrise"], ["meeting", "Theo Vance", "ws-courtside"]]);
+    expect(feed.filter((a) => !extra.has(a.id) && !elsewhere.has(a.id) && !updates.has(a.id) && !recaps.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
     expect(feed.filter((a) => extra.has(a.id)).map((a) => a.kind).sort()).toEqual(["approval", "approval", "approval", "comment", "comment", "doc_mention", "kudos"]);
     expect(feed[0].kind).toBe("created");                  // logged just now, kept
     await s.clearInbox(["a-new"]);

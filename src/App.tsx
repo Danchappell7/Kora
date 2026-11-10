@@ -647,7 +647,7 @@ export default function App() {
       // 0054: a project update (no task) belongs to its project's workspace (a portfolio's: its portfolio's)
       || (a.kind === "update" && updateItemWorkspace(a, projects, portfolios) === workspace)
       // 0056: a meeting's recap, to its business
-      || (a.kind === "meeting" && (a.meta?.workspaceId ?? null) === workspace));
+      || (a.kind === "meeting" && !!a.meta?.workspaceId && a.meta.workspaceId === workspace));
   }, [tasks, activity, workspace, projects, portfolios]);
   const scopedActivityRef = useRef<Activity[]>([]); scopedActivityRef.current = scopedActivity;
   // unread = not read on the server (any device), and not your own actions

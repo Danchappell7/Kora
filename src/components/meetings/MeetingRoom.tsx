@@ -186,6 +186,12 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
   const [agendaOpen, setAgendaOpen] = useState(false);
   const agendaKey = item ? (item.kind === "wrap" ? "wrap" : item.key) : null;
   const agendaTitle = useCallback((key: string | null) => (key ? agenda.find((a) => a.key === key)?.title : undefined), [agenda]);
+  // "on Radar risks", "on Sana Rao" (nothing for the overview, the wrap-up, or an action on its owner's own item)
+  const whereOf = useCallback((it: MeetingItem) => {
+    const a = it.agendaKey ? agenda.find((x) => x.key === it.agendaKey) : undefined;
+    if (!a || a.kind === "overview" || a.kind === "wrap" || (a.kind === "person" && a.personId === it.ownerId)) return undefined;
+    return `on ${a.title}`;
+  }, [agenda]);
   const add = useCallback(async (input: ItemInput): Promise<boolean> => {
     if (!meeting) return false;
     const r = await addItem(meeting.id, input, me);
@@ -323,11 +329,11 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
   /* ---- the screen ---- */
   if (typeof document === "undefined") return null;
   const stageCtx: StageContext = { taskById, nameOf, onOpenTask, wsName, agenda, onGo: live ? go : undefined };
-  const wrapCtx: WrapContext = { nameOf, taskById, onOpenTask, onMakeTask: canWrite && createTasks ? makeTask : undefined, onDelete: canWrite ? (it) => void remove(it) : undefined, agendaTitle };
+  const wrapCtx: WrapContext = { nameOf, taskById, onOpenTask, onMakeTask: canWrite && createTasks ? makeTask : undefined, onDelete: canWrite ? (it) => void remove(it) : undefined, agendaTitle, whereOf };
   const notes = meeting && live ? (
     <RoomNotes items={items} agendaKey={agendaKey} agendaTitle={agendaTitle} people={people} canWrite={canWrite} onAdd={add}
       onDelete={(it) => void remove(it)} onMakeTask={createTasks ? makeTask : undefined} nameOf={nameOf} taskById={taskById} onOpenTask={onOpenTask}
-      composerRef={composerRef} scope={scope} onScope={setScope} />
+      composerRef={composerRef} scope={scope} onScope={setScope} whereOf={whereOf} />
   ) : null;
   const budget = meeting ? PRESETS[meeting.preset].minutes : 15;
 
@@ -340,7 +346,8 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
           <h1 className="kmtg-title">{meeting?.title ?? "Meeting"}</h1>
           <p className="kmtg-top-sub">
             {meeting === undefined ? "Opening…" : !meeting ? "Not available" : live ? (
-              <><span className="kmtg-livedot" aria-hidden="true" />{meetingsMode() === "local" && !isDemoMeetings() ? "On your screen only" : "Live"}{presenterName ? ` · ${presenterName === "You" ? "You're presenting" : `${presenterName} is presenting`}` : ""}</>
+              <><span className="kmtg-livedot" aria-hidden="true" />{meetingsMode() === "local" && !isDemoMeetings() ? (phone ? "Your screen" : "On your screen only") : "Live"}{presenterName
+                ? ` · ${presenterName === "You" ? (phone ? "presenting" : "You're presenting") : `${presenterName} ${phone ? "presents" : "is presenting"}`}` : ""}</>
             ) : <>Recap · {meeting.preset === "leadership" ? "Leadership" : "Team"} meeting{meeting.endedAt ? `, ${meetingDay(new Date(meeting.endedAt))}` : ""}</>}
           </p>
         </div>
