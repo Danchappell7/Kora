@@ -12,6 +12,7 @@ import { reportError } from "../lib/monitoring";
 import { parseActivityMeta } from "../lib/activityMeta";
 import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
 import { noteRhythmSchema, parseRhythm, rhythmRow, type UpdateRhythm } from "../lib/updateRhythm";
+import { noteRolloutSchema, parseRollout, rolloutRow } from "../lib/rolloutPlan";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
 import { demoNotifyActivity } from "../lib/notifyDemo";
 import type { BoardSettingsChange } from "../components/tasks/otherViewsLogic";
@@ -23,7 +24,7 @@ import {
 } from "./data";
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
 import { parseSections, sectionsAsText } from "../lib/updateSections";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings, RolloutPlan } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -294,10 +295,13 @@ export interface NewActivity {
   detail: string;
 }
 
-interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; created_at?: string | null; update_rhythm?: unknown; }
-interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; title?: string | null; }
+interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; created_at?: string | null; update_rhythm?: unknown; rollout?: unknown; }
+interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; title?: string | null; joined_at?: string | null; created_at?: string | null; }
 function rowToWsMember(r: MemberRow): WorkspaceMember {
-  return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status, title: r.title ?? undefined };
+  return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status, title: r.title ?? undefined,
+    // 0058: when they joined (absent before it), and when an invite went out
+    ...("joined_at" in r ? { joinedAt: r.joined_at ?? null } : {}),
+    ...(r.status === "invited" && r.created_at ? { invitedAt: r.created_at } : {}) };
 }
 
 const MEMBER_COLORS = [
@@ -1539,6 +1543,14 @@ export const store = {
           { id: "wm-nl-0", workspaceId: "ws-northlight", userId: idris.id, email: idris.email, name: idris.name, role: "owner", status: "active" },
           { id: "wm-nl-1", workspaceId: "ws-northlight", userId: self.id, email: self.email, name: self.name, role: "guest", status: "active" },
         );
+        // 0058: two people invited to Foundrise a week ago who haven't joined yet (the Workspace health card's
+        // "Resend all"), and Daniel joined Harbour Advisory three days ago (Today's "Welcome to Harbour Advisory")
+        demoMembers.push(
+          { id: "wm-inv-0", workspaceId: "ws-foundrise", userId: null, email: "priya@foundrise.co", name: "Priya Shah", role: "member", status: "invited", invitedAt: new Date(KANBO_TODAY.getTime() - 7 * 86_400_000).toISOString() },
+          { id: "wm-inv-1", workspaceId: "ws-foundrise", userId: null, email: "jonas@foundrise.co", name: "Jonas Berg", role: "member", status: "invited", invitedAt: new Date(KANBO_TODAY.getTime() - 6 * 86_400_000).toISOString() },
+        );
+        const joined = new Date(KANBO_TODAY.getTime() - 3 * 86_400_000).toISOString();
+        demoMembers = demoMembers.map((m) => (m.workspaceId === "ws-harbour" && m.userId === "m-self" ? { ...m, joinedAt: joined } : m));
       }
       // a living inbox from the first load (anything already logged this session stays)
       if (!demoInboxSeeded) {
@@ -1661,10 +1673,13 @@ export const store = {
       { ...PERSONAL_WORKSPACE },
       ...wsRows.map((w) => ({ id: w.id, name: w.name, kind: "team" as const, ownerId: w.owner_id, logoUrl: w.logo_url ?? undefined,
         // 0053: the team's update day (null: weekly on Friday)
-        ...("update_rhythm" in w ? { updateRhythm: parseRhythm(w.update_rhythm) } : {}) })),
+        ...("update_rhythm" in w ? { updateRhythm: parseRhythm(w.update_rhythm) } : {}),
+        // 0058: the rollout plan (null: nothing planned yet)
+        ...("rollout" in w ? { rollout: parseRollout(w.rollout) } : {}) })),
     ];
     // update days are read and set once 0053 is run (the column comes back, even when it's empty)
     noteRhythmSchema(wsRows.some((w) => "update_rhythm" in w) || ((projData as ProjectRow[] | null) ?? []).some((p) => "update_rhythm" in p));
+    if (wsRows.length) noteRolloutSchema(wsRows.some((w) => "rollout" in w));
     const { data: memData, error: memErr } = await supabase.from("workspace_members").select("*");
     const members = (memErr && failed("members", memErr)?.members)
       || ((memData as MemberRow[] | null) ?? []).map(rowToWsMember);
@@ -1875,6 +1890,13 @@ export const store = {
     if (error) throw error;
   },
 
+  /** 0058: the workspace's rollout plan (owners and admins; null: start again). */
+  async setWorkspaceRollout(workspaceId: string, plan: RolloutPlan | null): Promise<void> {
+    if (!supabase) { demoWorkspaces = demoWorkspaces.map((w) => w.id === workspaceId ? { ...w, rollout: plan } : w); return; }
+    const { error } = await supabase.rpc("set_workspace_rollout", { p_ws: workspaceId, p_rollout: rolloutRow(plan) });
+    if (error) throw error;
+  },
+
   async deleteWorkspace(workspaceId: string): Promise<void> {
     if (!supabase) { demoWorkspaces = demoWorkspaces.filter((w) => w.id !== workspaceId); return; }
     const { error } = await supabase.rpc("delete_workspace", { p_ws: workspaceId });
@@ -1883,7 +1905,7 @@ export const store = {
 
   async inviteMember(workspaceId: string, email: string, role: Role = "member", name = ""): Promise<InvitedMember> {
     if (!supabase) {
-      const m: WorkspaceMember = { id: newId(), workspaceId, userId: null, email, name, role, status: "invited" };
+      const m: WorkspaceMember = { id: newId(), workspaceId, userId: null, email, name, role, status: "invited", invitedAt: new Date().toISOString() };
       demoMembers = [...demoMembers, m];
       return m;
     }

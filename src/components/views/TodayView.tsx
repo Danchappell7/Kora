@@ -10,7 +10,9 @@
    The host's cards under the brief ("Get set up", the week's wins) fold
    to a row each beside the rail, side by side, so the day keeps its
    room; one you open stays open for the day. (The day also keeps a
-   minimum of its own: what's above it scrolls away instead.)
+   minimum of its own: what's above it scrolls away instead.) A new
+   member's "Welcome to <workspace>" (0058) comes first.
+   Kanbo noticed also carries a rollout's one next fix for its leads.
    ============================================================ */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PlanView, useDayClock, dayEventsFor, type CaptureTemplates } from "./PlanView";
@@ -100,6 +102,11 @@ export interface TodayViewProps {
   /* ---- 0053 (Today works without) ---- */
   /** your project updates due today or asked for: a line under the brief, a "Kanbo noticed" nudge, and the sheet they open */
   updates?: TodayUpdates;
+  /* ---- 0058 (Today works without) ---- */
+  /** "Welcome to <workspace>" for someone who joined lately: the first card under the brief */
+  welcomeSlot?: TodayCardSlot;
+  /** leading a team's rollout: Kanbo noticed's one next fix (lib/rollout healthNudge), and running it */
+  rollout?: { noticed: Noticed[]; onFix: (fix: string) => void };
 }
 
 /** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
@@ -107,7 +114,7 @@ export interface TodayViewProps {
 export interface TodayCardFold { folded: boolean; onFold: (folded: boolean) => void }
 /** A card under the brief: as it is, or made for the fold Today gives it. */
 export type TodayCardSlot = ReactNode | ((fold: TodayCardFold | null) => ReactNode);
-type CardKey = "setup" | "wins";
+type CardKey = "welcome" | "setup" | "wins";
 
 /** "Not now" on a noticed card lasts the day, per person, on this device. */
 const noticedKey = (me: string) => `kanbo-noticed:${me || "local"}`;
@@ -136,7 +143,7 @@ const cardsKey = (me: string) => `kanbo-today-cards:${me || "local"}`;
 function readOpenCards(me: string, day: string): CardKey[] {
   try {
     const v = JSON.parse(localStorage.getItem(cardsKey(me)) || "null");
-    return v && v.day === day && Array.isArray(v.open) ? v.open.filter((x: unknown): x is CardKey => x === "setup" || x === "wins") : [];
+    return v && v.day === day && Array.isArray(v.open) ? v.open.filter((x: unknown): x is CardKey => x === "welcome" || x === "setup" || x === "wins") : [];
   } catch { return []; }
 }
 function writeOpenCards(me: string, day: string, open: CardKey[]) {
@@ -296,6 +303,7 @@ function TodayDay({
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
   setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false, goalFor, goalsBehind, onOpenGoal, updates,
+  welcomeSlot, rollout,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -521,8 +529,9 @@ function TodayDay({
   const [dismissed, setDismissed] = useState<string[]>(() => readDismissed(me, day));
   useEffect(() => { setDismissed(readDismissed(me, day)); }, [me, day]);
   const updateNudge = updates?.noticed;
-  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, goalsBehind: onOpenGoal ? goalsBehind : undefined, dismissed, updates: updateNudge }),
-    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, goalsBehind, onOpenGoal, dismissed, updateNudge]);
+  const rolloutNudge = rollout?.noticed;
+  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, goalsBehind: onOpenGoal ? goalsBehind : undefined, dismissed, updates: updateNudge, rollout: rolloutNudge }),
+    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, goalsBehind, onOpenGoal, dismissed, updateNudge, rolloutNudge]);
   const dismiss = (n: Noticed) => {
     const next = [...dismissed.filter((x) => x !== n.id), n.id];
     setDismissed(next); writeDismissed(me, day, next);
@@ -540,6 +549,7 @@ function TodayDay({
       const next = [...dismissed.filter((x) => x !== n.id), n.id];
       setDismissed(next); writeDismissed(me, day, next);
     } else if (a.kind === "update") updates?.open(a.projectId);
+    else if (a.kind === "fix") rollout?.onFix(a.fix);
     else {
       const t = tasks.find((x) => x.id === a.taskId) ?? allTasks.find((x) => x.id === a.taskId);
       if (!t) return;
@@ -628,8 +638,9 @@ function TodayDay({
         )}
       </div>
       {setupSlot === undefined && !readOnly && <SetupChip steps={setup} />}
-      {(setupSlot !== undefined || winsSlot !== undefined) && (
+      {(setupSlot !== undefined || winsSlot !== undefined || welcomeSlot !== undefined) && (
         <div className="ktoday-cards">
+          {card(welcomeSlot, "welcome", stacked)}
           {card(setupSlot, "setup", stacked)}
           {card(winsSlot, "wins", stacked)}
         </div>

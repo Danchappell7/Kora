@@ -21,7 +21,7 @@ import type { NewProject } from "../data/store";
 import type { Project, WorkspaceTemplate } from "../data/types";
 import "./project/projects.css";
 
-export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects, onApplyTemplate, onPlanWithKanbo, packs }: {
+export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects, onApplyTemplate, onPlanWithKanbo, packs, startIn }: {
   open: boolean;
   onClose: () => void;
   /** templateId: the template it was started from, if any — a built-in one
@@ -37,6 +37,8 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   onPlanWithKanbo?: (typedName: string) => void;
   /** business packs in the gallery, set up in this workspace (needs onApplyTemplate too; omit for templates only) */
   packs?: PackHost;
+  /** open on the packs and templates (0058: the first run's "Pick a pack", Get set up's pack item) */
+  startIn?: "team";
 }) {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("");
@@ -45,7 +47,7 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   const [templateId, setTemplateId] = useState("");
   // "Save as template" answers in place: saved, or this device's storage refused it
   const [saved, setSaved] = useState<null | "saved" | "failed">(null);
-  const [mode, setMode] = useState<"blank" | "team">("blank");
+  const [mode, setMode] = useState<"blank" | "team">(startIn && onApplyTemplate ? startIn : "blank");
   const [applying, setApplying] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const teamRef = useRef<HTMLDivElement>(null);
@@ -60,7 +62,7 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   // every opening starts on the form (reset while rendering, so the gallery never flashes)
   const [wasOpen, setWasOpen] = useState(open);
-  if (wasOpen !== open) { setWasOpen(open); if (open) { setMode("blank"); setApplying(false); flow.reset(); } }
+  if (wasOpen !== open) { setWasOpen(open); if (open) { setMode(startIn && onApplyTemplate ? startIn : "blank"); setApplying(false); flow.reset(); } }
 
   useEffect(() => {
     if (!open) return;

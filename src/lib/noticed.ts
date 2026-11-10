@@ -10,7 +10,9 @@
    · your project update is due, or a lead asked for one (0053: the
      caller passes it in, lib/updateDue updateNoticed);
    · a key result (or goal) of yours behind pace, with a one-tap
-     check-in (lib/goalFlow says which).
+     check-in (lib/goalFlow says which);
+   · leading a team's rollout (0058): the one fix that helps it most
+     (the caller passes it in, lib/rollout healthNudge).
    "Not now" waves one away for the day (the view keeps that per
    person). Pure: no React, no storage, no clock of its own.
    ============================================================ */
@@ -28,12 +30,14 @@ export type NoticedAction =
   | { kind: "checkin"; label: string; goalId: string }
   | { kind: "goal"; label: string; goalId: string }
   /** open the project's update, Kanbo's draft ready (0053) */
-  | { kind: "update"; label: string; projectId: string };
+  | { kind: "update"; label: string; projectId: string }
+  /** one of the Workspace health card's fixes (0058, lib/rollout healthNudge): the host runs it */
+  | { kind: "fix"; label: string; fix: string };
 
 export interface Noticed {
   /** stable for the thing noticed, so "Not now" keeps it away for the day */
   id: string;
-  kind: "waiting" | "risk" | "slipped" | "slot" | "goal" | "update";
+  kind: "waiting" | "risk" | "slipped" | "slot" | "goal" | "update" | "rollout";
   tone: "signal" | "warn" | "accent";
   icon: IconName;
   title: string;
@@ -62,6 +66,8 @@ export interface NoticedInput {
   dismissed?: Iterable<string>;
   /** your project updates due or asked for (lib/updateDue updateNoticed): after a teammate blocked on you */
   updates?: Noticed[];
+  /** a team's owners and admins: the rollout's one next fix (lib/rollout healthNudge), after your own work */
+  rollout?: Noticed[];
   /** default 3 */
   max?: number;
 }
@@ -83,7 +89,7 @@ function when(iso: string, today: string): string {
 }
 
 /** What Kanbo noticed today, most pressing first (see the file note). */
-export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], goalsBehind = [], dismissed, max = 3, updates = [] }: NoticedInput): Noticed[] {
+export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], goalsBehind = [], dismissed, max = 3, updates = [], rollout = [] }: NoticedInput): Noticed[] {
   const skip = new Set(dismissed ?? []);
   const first = (id?: string) => (members.find((m) => m.id === id)?.name ?? "").trim().split(/\s+/)[0] || "A teammate";
   const mine = new Set(allTasks.filter((t) => isMine(t, me)).map((t) => t.id));
@@ -171,6 +177,9 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
       actions: [{ kind: "checkin", label: "Check in", goalId: g.goalId }, { kind: "goal", label: "Open it", goalId: g.goalId }],
     }, 2.5);
   }
+
+  // 6. leading a rollout: the one fix that helps the team most (lib/rollout healthNudge), after your own work
+  for (const n of rollout.slice(0, 1)) push(n, 4.5);
 
   return out.sort((a, b) => a.rank - b.rank).slice(0, max).map(({ rank: _r, ...n }) => n);
 }

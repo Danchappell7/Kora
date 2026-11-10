@@ -15,6 +15,11 @@
      the tour).
    • otherwise (the default): "Your five places", then "Take me to
      Today", so it never offers a tour that nothing would start.
+   With `team` (0058), after the name it asks who Kanbo is for: "Just
+   me" goes on exactly as before (your first project, in Personal);
+   "My team" or "A whole business" names and creates the workspace,
+   then one sheet offers a business pack, an import and a pilot-group
+   invite (components/rollout/TeamStart), before the same last step.
    ============================================================ */
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Icon, KanboLogo, EmojiPicker, Button, Kbd, projectPaint } from "./primitives";
@@ -23,6 +28,8 @@ import { useFocusTrap } from "../hooks/useFocusTrap";
 import { PLACES, type PlaceId } from "../lib/nav";
 import { declineTour, startTour, TOUR_MINUTES } from "../lib/onboarding";
 import { CompassGlyph } from "./onboarding/glyphs";
+import { TeamFork, TeamNameStep, TeamStartStep, type TeamStartHost } from "./rollout/TeamStart";
+import type { TeamKind } from "../lib/rollout";
 import type { IconName, Profile } from "../data/types";
 import type { NewProject } from "../data/store";
 
@@ -44,7 +51,10 @@ const PLACE_LINES: Record<PlaceId, string> = {
   team: "Who's doing what, and what's at risk.",
 };
 
-const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project"];
+const STEP_TITLES = ["Welcome", "What should we call you?", "Create your first project", "", "Who's Kanbo for?", "Name your workspace", "Set up your workspace"];
+/* the steps by number: 0 welcome · 1 your name · 2 your first project · 3 the last word ·
+   (0058, with `team`) 4 who it's for · 5 the workspace's name · 6 setting it up */
+const FORK = 4, TEAM_NAME = 5, TEAM_START = 6;
 const MINUTES_WORD = ["zero", "one", "two", "three", "four", "five"][TOUR_MINUTES] ?? String(TOUR_MINUTES);
 
 /** The first run's last word: offer the guided tour (shared with the welcome modal). */
@@ -68,7 +78,7 @@ export function TourHandover({ name, onShowMeAround, onSkip, lede }: { name?: st
   );
 }
 
-export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish, onGoToday, tourAvailable = false, onStartTour, onSkipTour }: {
+export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onCreateProject, onFinish, onGoToday, tourAvailable = false, onStartTour, onSkipTour, team }: {
   open: boolean;
   profile: Profile | null;
   workspaceId: string | null;
@@ -85,6 +95,8 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   onStartTour?: () => void;
   /** "Skip the tour" (default: lib/onboarding declineTour — recorded as skipped) */
   onSkipTour?: () => void;
+  /** 0058: ask who Kanbo is for after the name, and set a team up (without it, the first run is the solo one) */
+  team?: TeamStartHost;
 }) {
   const [step, setStep] = useState(0);
   const [firstName, setFirstName] = useState(profile?.firstName || "");
@@ -110,9 +122,15 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
     setLastName(profLast);
   }, [profFirst, profLast]);
 
+  // the team path (0058): which one, and the workspace it made
+  const [kind, setKind] = useState<TeamKind>("solo");
+  const [made, setMade] = useState<{ id: string; name: string } | null>(null);
+
   // they already told us their name: no need to ask again
   const hasName = !!profFirst.trim();
-  const steps = hasName ? [0, 2, 3] : [0, 1, 2, 3];
+  const named = hasName ? [0] : [0, 1];
+  const steps = !team ? [...named, 2, 3] : kind === "solo" ? [...named, FORK, 2, 3] : [...named, FORK, TEAM_NAME, TEAM_START, 3];
+  const afterName = team ? FORK : 2;
 
   const onEscape = () => {
     if (pickerOpen) { setPickerOpen(false); return; }
@@ -130,7 +148,16 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   const saveName = async () => {
     setBusy(true);
     try { await onSaveProfile({ firstName: firstName.trim(), lastName: lastName.trim(), pronouns: profile?.pronouns || "" }); } catch { /* non-blocking */ }
-    setBusy(false); go(2);
+    setBusy(false); go(afterName);
+  };
+  const pick = (k: TeamKind) => { setKind(k); go(k === "solo" ? 2 : TEAM_NAME); };
+  const createTeam = async (n: string): Promise<boolean> => {
+    if (!team || kind === "solo") return false;
+    const id = await team.create(n, kind);
+    if (!id) return false;
+    setMade({ id, name: n });
+    go(TEAM_START);
+    return true;
   };
   const createProject = () => {
     const n = projName.trim();
@@ -160,7 +187,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   };
 
   const position = steps.indexOf(step);
-  const stepTitle = step === 3 ? (tourAvailable ? "You're all set" : "Your five places") : STEP_TITLES[step];
+  const stepTitle = step === 3 ? (tourAvailable ? "You're all set" : "Your five places") : step === TEAM_START && made ? `Set up ${made.name}` : STEP_TITLES[step];
 
   return (
     <div className="kbackdrop ksheet-layer konb-layer" data-side="center">
@@ -179,7 +206,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
               </div>
               <div className="konb-acts" data-stack="">
                 {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-                <Button autoFocus data-autofocus variant="hero" size="lg" full iconRight="arrowRight" onClick={() => go(hasName ? 2 : 1)}>Get started</Button>
+                <Button autoFocus data-autofocus variant="hero" size="lg" full iconRight="arrowRight" onClick={() => go(hasName ? afterName : 1)}>Get started</Button>
                 <Button variant="ghost" onClick={onFinish}>Skip for now</Button>
               </div>
             </div>
@@ -203,7 +230,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
                 </div>
               </div>
               <div className="konb-acts">
-                <Button variant="ghost" size="lg" onClick={() => go(2)}>Skip</Button>
+                <Button variant="ghost" size="lg" onClick={() => go(afterName)}>Skip</Button>
                 <Button type="submit" variant="primary" size="lg" iconRight="arrowRight" disabled={!firstName.trim()} loading={busy} className="konb-grow">
                   {busy ? "Saving…" : "Continue"}
                 </Button>
@@ -255,8 +282,19 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
             </form>
           )}
 
+          {step === FORK && team && <TeamFork key="fork" onPick={pick} />}
+
+          {step === TEAM_NAME && team && kind !== "solo" && (
+            <TeamNameStep key={`name-${kind}`} kind={kind} onBack={() => go(FORK)} onCreate={createTeam} />
+          )}
+
+          {step === TEAM_START && team && kind !== "solo" && made && (
+            <TeamStartStep key="start" kind={kind} name={made.name} workspaceId={made.id} host={team} onContinue={() => go(3)} />
+          )}
+
           {step === 3 && tourAvailable && (
-            <TourHandover key="handover" name={greetName || undefined} onShowMeAround={() => finishWith("start")} onSkip={() => finishWith("skip")} />
+            <TourHandover key="handover" name={greetName || undefined} onShowMeAround={() => finishWith("start")} onSkip={() => finishWith("skip")}
+              lede={made ? `Next, a quick look around ${made.name}: your places, capture and planning your day, then the team's rhythm: Pulse, goals, project updates and what you're waiting on. It takes about four minutes.` : undefined} />
           )}
 
           {step === 3 && !tourAvailable && (

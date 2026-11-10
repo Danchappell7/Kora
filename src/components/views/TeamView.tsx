@@ -1,12 +1,13 @@
 /* ============================================================
    KANBO — Team › People: who's here, what they're working on and how
    full their week is; invites (several at once), roles, and each
-   person's profile. Plus WorkspaceSettingsPanel (logo, name, Close
+   person's profile. Owners and admins see the Workspace health card
+   (0058) above them. Plus WorkspaceSettingsPanel (logo, name, Close
    workspace), which Settings › Workspace renders — it's no longer on
    this page.
    ============================================================ */
 import { useState, useEffect, useMemo, useRef } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { Icon, IconButton, Avatar, Button, EmptyState, Meter, Pill, SectionLabel, Segmented, Sheet, StatusGlyph, ProjectDot } from "../primitives";
 import { getProject, getMember, KANBO_TODAY, PROJECTS } from "../../data/data";
 import { can, canManageMember, assignableRoles, removeMemberQuestion, GUEST_LINE, ROLE_META } from "../../lib/permissions";
@@ -571,7 +572,7 @@ const ROLE_FILTER: Record<RoleFilter, (r: Role) => boolean> = {
 /** One invite's outcome in a multi-invite: ok, refused (with the reason) or not an email. */
 type InviteResult = { email: string; ok: boolean; text: string };
 
-export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson }: {
+export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot }: {
   tasks: Task[];
   workspace: string | null;
   workspaces?: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -602,6 +603,8 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   /** 0048: tasks dropped on a person's row (lib/dnd): reassign them (lib/dropActions reassignTasks).
    *  Without it, or for guests, the rows take no drops. */
   onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
+  /** 0058: owners and admins: the Workspace health card (components/rollout), above the people */
+  healthSlot?: ReactNode;
   /** The workspace settings moved to Settings › Workspace (WorkspaceSettingsPanel);
       these are still accepted so older hosts compile, and are ignored. */
   onUpdateWorkspace?: (workspaceId: string, name: string, logoUrl: string | null) => void;
@@ -794,6 +797,7 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
     <div className="kppl">
       <style>{PEOPLE_CSS}</style>
       <div className="kppl-inner">
+        {canManage && healthSlot}
         <div className="kppl-bar">
           <label className="kppl-find">
             <Icon name="search" size={16} sw={1.75} />
