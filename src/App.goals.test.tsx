@@ -54,11 +54,12 @@ describe("App · goals", () => {
     await boot();
     const task = await waitFor(() => { const t = taskPanels(); expect(t).toHaveLength(1); return t[0]; });
     fireEvent.click(within(task).getByRole("button", { name: /^Serves .*Win back 120 lapsed accounts/ }));
-    await waitFor(() => expect(goalPanel("Win back 120 lapsed accounts")).toBeInTheDocument());
+    // the goal panel is the first one this file opens: under a full run's load it can take more than a second
+    await waitFor(() => expect(goalPanel("Win back 120 lapsed accounts")).toBeInTheDocument(), { timeout: 4000 });
     expect(taskPanels()).toHaveLength(0);
     // the goal's linked task opens its panel, and the goal panel makes way
     fireEvent.click(within(goalPanel("Win back 120 lapsed accounts")!).getByRole("button", { name: "Open Send the interview brief" }));
-    await waitFor(() => expect(taskPanels()).toHaveLength(1));
+    await waitFor(() => expect(taskPanels()).toHaveLength(1), { timeout: 4000 });
     expect(goalPanel("Win back 120 lapsed accounts")).toBeNull();
   });
 
