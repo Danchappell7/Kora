@@ -1062,8 +1062,8 @@ begin
 end; $$;
 
 -- projects, before: a new project's visibility; visibility only through set_project_visibility();
--- an owner change by a manager to a non-guest (switch on, or a project that isn't Whole workspace);
--- contributor_ids mirrors project_members
+-- an owner change by a manager to a non-guest, and a move to another workspace or Personal by a
+-- manager (switch on, or a project that isn't Whole workspace); contributor_ids mirrors project_members
 create or replace function public.pa_trg_projects_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -1116,11 +1116,23 @@ begin
      and coalesce(current_setting('kanbo.pa_write', true), '') <> 'on' then
     raise exception 'not authorized';
   end if;
+  -- a move out of its workspace (to Personal, or another one) is its managers' while the switch is on,
+  -- or on a project that isn't Whole workspace (the off window too): 0041 lets any writer make a team
+  -- project their own Personal one, and a move and back would hand them its ownership and drop its people
+  if direct and new.workspace_id is distinct from old.workspace_id and old.workspace_id is not null
+     and (public.pa_on(old.workspace_id) or old.visibility <> 'workspace')
+     and not public.pa_can_manage(old.id) then
+    raise exception 'not authorized';
+  end if;
   if new.workspace_id is null then new.visibility := 'workspace'; end if;     -- moved to Personal: nothing to gate
-  if direct and new.owner_id is distinct from old.owner_id and new.workspace_id is not null
-     and (public.pa_on(new.workspace_id) or old.visibility <> 'workspace') then
+  -- (judged where it was, else where it's going: an owner change on the way out or in counts too)
+  if direct and new.owner_id is distinct from old.owner_id and coalesce(old.workspace_id, new.workspace_id) is not null
+     and (public.pa_on(coalesce(old.workspace_id, new.workspace_id)) or old.visibility <> 'workspace') then
     if not public.pa_can_manage(old.id) then raise exception 'not authorized'; end if;
-    if public.user_ws_role(new.owner_id, new.workspace_id) not in ('owner', 'admin', 'member') then raise exception 'invalid owner'; end if;
+    if new.workspace_id is not null
+       and public.user_ws_role(new.owner_id, new.workspace_id) not in ('owner', 'admin', 'member') then
+      raise exception 'invalid owner';
+    end if;
   end if;
   if new.contributor_ids is distinct from old.contributor_ids and coalesce(current_setting('kanbo.pa_sync', true), '') <> 'on' then
     -- an older tab writing contributor_ids: today's rule while the switch is off (on a Whole workspace

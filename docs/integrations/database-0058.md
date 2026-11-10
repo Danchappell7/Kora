@@ -114,7 +114,9 @@ No new secrets and no new schedule.
   keeps the switch-on rule (the workspace's owner, the project's owner, its
   editors, admins on Members only), for its people and its owner alike, so
   nobody can add themselves or take one over while it's off and keep that
-  when it's turned back on.
+  when it's turned back on. Moving a project out of its workspace (to
+  Personal, or another workspace) follows the same rule, switch on or off: a
+  move there and back can't hand anyone a project or drop its people.
 - **The history** of something deleted for good (by hand or by the bin's
   30-day clear-out) keeps the project and access it had, so a Private task's
   or project's name never reaches admins who couldn't see it.

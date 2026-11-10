@@ -186,10 +186,12 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
 
     const proj = {} as Record<Proj, string>;
     const contrib: Record<Proj, Who[]> = { PW: ["GC"], PM: ["ME", "MC", "MV", "GC", "GV"], PP: ["ME", "R", "S"], PQ: [] };
-    for (const p of PROJ) {
+    // (made in this order, a second apart: PGlite's clock moves in milliseconds, and "the workspace's first project" mustn't be a tie)
+    for (const [i, p] of PROJ.entries()) {
       proj[p] = (await one<{ id: string }>(
-        `insert into public.projects (user_id, owner_id, name, workspace_id, contributor_ids, description) values ($1::uuid, $1::uuid, $2, $3::uuid, $4::uuid[], 'zebra project') returning id::text as id`,
-        [id[OWNER[p]], `Zebra ${p}`, ws, contrib[p].map((x) => id[x])])).id;
+        `insert into public.projects (user_id, owner_id, name, workspace_id, contributor_ids, description, created_at)
+         values ($1::uuid, $1::uuid, $2, $3::uuid, $4::uuid[], 'zebra project', now() - make_interval(secs => $5)) returning id::text as id`,
+        [id[OWNER[p]], `Zebra ${p}`, ws, contrib[p].map((x) => id[x]), 60 - i])).id;
     }
     const rows: World["rows"] = {};
     const key: World["key"] = {};
@@ -805,6 +807,38 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq(await stored("M2", "PW", "MC"), "viewer", "and a Whole workspace project is today's rule (any member)");
     ok(okOf(await attempt(w.id.M2, `update public.projects set owner_id = $2::uuid where id = $1::uuid returning id`, [w.proj.PW, w.id.M2], off)), "a Whole workspace project's owner: today's rule");
     eq((await attempt(w.id.M2, `select id from public.tasks where project_id = $1`, [w.proj.PP]) as { rows: unknown[] }).rows.length, 0, "on again: M2 reads nothing of PP");
+  });
+
+  await test("0058: a project moved to Personal or another workspace and back can't hand anyone its ownership or drop its people (only its managers move one, switch on, and in the off window unless it's Whole workspace)", async () => {
+    type Via = "Personal" | "ws2";
+    const roundTrip = (who: Who, p: Proj, via: Via, on: boolean) => scenario(async (run, _exec, tryRun) => {
+      if (!on) await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      if (via === "ws2") {
+        await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, $3, $4, 'member', 'active')`,
+          [w.ws2, w.id[who], `${who.toLowerCase()}.pa@example.org`, NAME[who]]);
+      }
+      const people = async () => Number((await run(null, `select count(*)::int as n from public.project_members where project_id = $1::uuid`, [w.proj[p]]))[0].n);
+      const before = await people();
+      const out = via === "Personal"
+        ? await tryRun(w.id[who], `update public.projects set workspace_id = null, user_id = $2::uuid, owner_id = $2::uuid where id = $1::uuid returning id`, [w.proj[p], w.id[who]])
+        : await tryRun(w.id[who], `update public.projects set workspace_id = $3::uuid, owner_id = $2::uuid where id = $1::uuid returning id`, [w.proj[p], w.id[who], w.ws2]);
+      if (okOf(out)) await tryRun(w.id[who], `update public.projects set workspace_id = $2::uuid where id = $1::uuid returning id`, [w.proj[p], w.ws]);
+      const after = (await run(null, `select owner_id::text as o, workspace_id::text as ws from public.projects where id = $1::uuid`, [w.proj[p]]))[0];
+      return { moved: okOf(out), err: errOf(out), owner: after.o === w.id[OWNER[p]] ? OWNER[p] : after.o === w.id[who] ? who : String(after.o),
+               home: after.ws === w.ws, kept: (await people()) === before };
+    });
+    // refused: a member with no say over it, switch on (any project) and in the off window (Members only, Private)
+    for (const [who, p, via, on] of [["M2", "PW", "Personal", true], ["M2", "PW", "ws2", true], ["MC", "PM", "Personal", true], ["MV", "PM", "ws2", true],
+                                     ["M2", "PP", "Personal", false], ["M2", "PM", "ws2", false], ["MC", "PM", "Personal", false], ["A", "PP", "ws2", false]] as const) {
+      const r = await roundTrip(who, p, via, on);
+      ok(!r.moved && (r.err === "" || /not authorized/.test(r.err)), `${who} moving ${p} to ${via}, switch ${on ? "on" : "off"}: ${r.err || (r.moved ? "moved" : "nothing")}`);
+      eq([r.owner, r.home, r.kept], [OWNER[p], true, true], `${who}, ${p} via ${via} (switch ${on ? "on" : "off"}): its owner, workspace and people stay`);
+    }
+    // allowed: its managers (switch on), and anyone on a Whole workspace project in the off window (today's rule)
+    for (const [who, p, via, on] of [["O", "PP", "Personal", true], ["ME", "PQ", "ws2", true], ["A", "PM", "Personal", true], ["M2", "PW", "Personal", false]] as const) {
+      const r = await roundTrip(who, p, via, on);
+      ok(r.moved, `${who} moving ${p} to ${via}, switch ${on ? "on" : "off"}: ${r.err || "refused"}`);
+    }
   });
 
   // ---------------------------------------------------------------- 7. triggers on tasks
