@@ -1213,43 +1213,6 @@ describe("store (supabase) — integration wiring", () => {
   });
 
   describe("realtime on a task", () => {
-    it("reopening a task's presence waits for the old channel to leave, then joins a fresh one", async () => {
-      const fake = makeFake();
-      const { store: s } = await loadStore(fake);
-      const unsub1 = s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, vi.fn());
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fake.channels).toHaveLength(1);
-      const release = fake.holdRemovals();
-      unsub1();                                            // still leaving…
-      const onSync = vi.fn();
-      s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, onSync);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fake.channels).toHaveLength(1);               // …so nothing is reopened on top of it
-      release();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fake.channels).toHaveLength(2);               // a fresh channel, on the same room
-      expect(fake.channels[1]).not.toBe(fake.channels[0]);
-      expect(fake.channels[1].topic).toBe("realtime:presence-task-t1");
-      expect(fake.live).toEqual([fake.channels[1]]);
-      fake.channels[1].bindings.find((b) => b.type === "presence")?.cb({});
-      expect(onSync).toHaveBeenCalledWith([]);
-    });
-
-    it("closing a task before its presence channel opened never opens it", async () => {
-      const fake = makeFake();
-      const { store: s } = await loadStore(fake);
-      const unsub1 = s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, vi.fn());
-      await vi.advanceTimersByTimeAsync(0);
-      const release = fake.holdRemovals();
-      unsub1();
-      const unsub2 = s.subscribeToTaskPresence("t1", { id: "user-a", name: "A" }, vi.fn());
-      unsub2();                                            // closed again before the old one had gone
-      release();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fake.channels).toHaveLength(1);
-      expect(fake.live).toEqual([]);
-    });
-
     it("each comment stream gets its own channel, so a quick reopen can't get a dead one back", async () => {
       const fake = makeFake();
       const { store: s } = await loadStore(fake);

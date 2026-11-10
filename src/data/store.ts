@@ -13,12 +13,13 @@ import { parseActivityMeta } from "../lib/activityMeta";
 import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
 import { noteRhythmSchema, parseRhythm, rhythmOn, rhythmRow, type UpdateRhythm } from "../lib/updateRhythm";
 import { noteRolloutSchema, parseRollout, rolloutRow } from "../lib/rolloutPlan";
+import { accessOn, accessSchema, canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, noteAccessSchema, projectRank, roleOf, taskRank, type AccessCtx } from "../lib/projectAccess";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
 import { demoMeetingActivity } from "../lib/meetings/demo";
 import { demoNotifyActivity } from "../lib/notifyDemo";
 import type { BoardSettingsChange } from "../components/tasks/otherViewsLogic";
 import {
-  TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
+  TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData, DEMO_PROJECT_MEMBERS,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
   DEMO_ACTIVITY, DEMO_ACTIVITY_ELSEWHERE, DEMO_UPDATE_ACTIVITY, DEMO_GOALS, DEMO_GOAL_CHECKINS, DEMO_GOAL_LINKS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
   EVENTS, KANBO_TODAY,
@@ -26,7 +27,7 @@ import {
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
 import { parseSections, sectionsAsText } from "../lib/updateSections";
 import { noteUpdateColumns } from "../lib/updateSchema";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings, RolloutPlan } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings, RolloutPlan, ProjectMember, ProjectRole, ProjectVisibility, ProjectAccessSettings } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -54,6 +55,9 @@ export interface Bootstrap {
   statusUpdates: StatusUpdate[];
   automationRules: AutomationRule[];
   forms: FormDef[];
+  /** 0058's project_members (who's on which project); null until 0058 is run; undefined when they
+   *  couldn't be read this time (keep what's on screen) */
+  projectMembers?: ProjectMember[] | null;
   /** Parts whose query failed on this load. Their lists above are the last
    *  good copy cached on this device (or empty), not the server's, so a
    *  caller that already has them on screen should keep its own. */
@@ -91,6 +95,10 @@ export interface NewProject {
   workspaceId: string | null;
   /** The starter template picked for it (the caller adds its tasks; not stored). */
   templateId?: string;
+  /** 0058: who can see it (sent only where project access is on; the server fills in the workspace's default otherwise) */
+  visibility?: ProjectVisibility;
+  /** 0058: people to add to it once it's made (editors; guests commenters) */
+  memberIds?: string[];
 }
 
 /* fields the prototype derived on load; persisted as columns in Supabase */
@@ -256,12 +264,15 @@ export function stampCreator(t: Task, userId: string): Task {
   return !userId || t.createdBy === userId ? t : { ...t, createdBy: userId };
 }
 
-interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; archived_at?: string | null; board_settings?: unknown; update_rhythm?: unknown; }
+interface ProjectRow { id: string; name: string; emoji: string | null; color: string | null; workspace_id: string | null; description?: string | null; status?: string | null; owner_id?: string | null; contributor_ids?: string[] | null; archived_at?: string | null; board_settings?: unknown; update_rhythm?: unknown; visibility?: string | null; }
+const VISIBILITY_SET = new Set(["workspace", "members", "private"]);
 function rowToProject(r: ProjectRow): Project {
   const board = parseBoardSettings(r.board_settings); // 0048
   return { id: r.id, name: r.name, emoji: r.emoji ?? "📁", color: r.color ?? "oklch(0.74 0.14 230)", workspaceId: r.workspace_id ?? null, description: r.description ?? undefined, status: r.status ?? undefined, ownerId: r.owner_id ?? undefined, contributorIds: r.contributor_ids ?? undefined, archivedAt: r.archived_at ?? null, ...(board ? { boardSettings: board } : {}),
     // 0053: its own update day (null: the workspace's)
-    ...("update_rhythm" in r ? { updateRhythm: parseRhythm(r.update_rhythm) } : {}) };
+    ...("update_rhythm" in r ? { updateRhythm: parseRhythm(r.update_rhythm) } : {}),
+    // 0058: who can see it (absent before 0058)
+    ...("visibility" in r && typeof r.visibility === "string" && VISIBILITY_SET.has(r.visibility) ? { visibility: r.visibility as ProjectVisibility } : {}) };
 }
 
 interface TagRow { id: string; label: string; color: string; workspace_id?: string | null; }
@@ -297,10 +308,34 @@ export interface NewActivity {
   detail: string;
 }
 
-interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; created_at?: string | null; update_rhythm?: unknown; rollout?: unknown; }
+interface WorkspaceRow { id: string; name: string; owner_id: string; logo_url?: string | null; created_at?: string | null; update_rhythm?: unknown; rollout?: unknown;
+  project_access?: boolean | null; project_access_default?: string | null; project_access_member_private?: boolean | null; project_access_changed_at?: string | null; }
+/** 0058: the workspace's project access settings, read from its row (absent before 0058). */
+function rowToAccess(w: WorkspaceRow): { projectAccess?: ProjectAccessSettings } {
+  if (!("project_access" in w)) return {};
+  const def = typeof w.project_access_default === "string" && VISIBILITY_SET.has(w.project_access_default) ? w.project_access_default as ProjectVisibility : "workspace";
+  return { projectAccess: { on: w.project_access === true, defaultVisibility: def, membersMayMakePrivate: w.project_access_member_private === true, changedAt: w.project_access_changed_at ?? null } };
+}
+/** A workspaces row as the app shows it. */
+function rowToWorkspace(w: WorkspaceRow): Workspace {
+  return { id: w.id, name: w.name, kind: "team", ownerId: w.owner_id, logoUrl: w.logo_url ?? undefined,
+    ...(w.created_at ? { createdAt: w.created_at } : {}),
+    // 0053: the team's update day (null: weekly on Friday)
+    ...("update_rhythm" in w ? { updateRhythm: parseRhythm(w.update_rhythm) } : {}),
+    // 0057: the rollout plan (null: nothing planned yet)
+    ...("rollout" in w ? { rollout: parseRollout(w.rollout) } : {}),
+    // 0058: project access
+    ...rowToAccess(w) };
+}
+interface ProjectMemberRow { id: string; project_id: string; workspace_id: string; user_id: string; role: string; created_at?: string | null }
+const ROLE_SET = new Set(["editor", "commenter", "viewer"]);
+function rowToProjectMember(r: ProjectMemberRow): ProjectMember {
+  return { id: r.id, projectId: r.project_id, workspaceId: r.workspace_id, userId: r.user_id, role: (ROLE_SET.has(r.role) ? r.role : "viewer") as ProjectRole, ...(r.created_at ? { createdAt: r.created_at } : {}) };
+}
 interface MemberRow { id: string; workspace_id: string; user_id: string | null; email: string; name: string; role: Role; status: "invited" | "active"; title?: string | null; joined_at?: string | null; created_at?: string | null; }
 function rowToWsMember(r: MemberRow): WorkspaceMember {
-  return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email, name: r.name, role: r.role, status: r.status, title: r.title ?? undefined,
+  // (0058: a guest's view of someone on their projects carries no email)
+  return { id: r.id, workspaceId: r.workspace_id, userId: r.user_id, email: r.email ?? "", name: r.name, role: r.role, status: r.status, title: r.title ?? undefined,
     // 0057: when they joined (absent before it), and when an invite went out
     ...("joined_at" in r ? { joinedAt: r.joined_at ?? null } : {}),
     ...(r.status === "invited" && r.created_at ? { invitedAt: r.created_at } : {}) };
@@ -389,6 +424,12 @@ let demoArchived: Activity[] = [];
 let demoProfile: Profile | null = null;
 let demoWorkspaces: Workspace[] = [];
 let demoMembers: WorkspaceMember[] = [];
+/** 0058 in the demo: who's on which project (seeded once, then the five access calls change it) */
+let demoProjectMembers: ProjectMember[] | null = null;
+/** the demo's rank questions, asked as Daniel (m-self) */
+function demoAccessCtx(projects: Project[] = PROJECTS): AccessCtx {
+  return { me: "m-self", workspaces: demoWorkspaces, projects, wsMembers: demoMembers, members: demoProjectMembers ?? [] };
+}
 const demoAttachments: Record<string, Attachment[]> = {};
 // the seeded inbox goes in once per page session, so reading or clearing it
 // sticks across reloads of the demo workspace
@@ -815,6 +856,22 @@ async function loadAllRows<T extends { id: string }>(client: SupabaseClient, tab
   }
   return rows;
 }
+/* 0058: who's on which project. Until 0058 is run the table is missing: that's remembered for ten
+   minutes (as task_user_state is), so a reload doesn't ask again and log a 404 each time. */
+let accessTableMissingAt = 0;
+const ACCESS_RECHECK_MS = 10 * 60_000;
+async function loadProjectMembers(client: SupabaseClient): Promise<ProjectMember[] | null | undefined> {
+  if (accessTableMissingAt && Date.now() - accessTableMissingAt < ACCESS_RECHECK_MS) return null;
+  try {
+    const rows = await loadAllRows<ProjectMemberRow>(client, "project_members");
+    accessTableMissingAt = 0;
+    return rows.sort((a, b) => byText(a.created_at ?? undefined, b.created_at ?? undefined) || byText(a.id, b.id)).map(rowToProjectMember);
+  } catch (e) {
+    if (isMissingTable(e, "project_members")) { accessTableMissingAt = Date.now(); return null; }
+    if (!isNetworkError(e)) reportOnce("boot-project-members", e, { op: "bootstrap", part: "project_members" });
+    return undefined;
+  }
+}
 const byText = (a: string | undefined, b: string | undefined) => (a ?? "").localeCompare(b ?? "");
 /** goals: by position (unset last), then oldest first, then id — a stable order, so lists don't reshuffle */
 const goalOrder = (a: GoalRow, b: GoalRow) =>
@@ -834,7 +891,11 @@ async function insertTaskRow(client: SupabaseClient, t: Task, id: string, uid: s
   for (let i = 0; i < 8; i++) {
     const { data, error } = await client.from("tasks").upsert(row, { onConflict: "id", ignoreDuplicates: true }).select("id");
     // no row back = it already exists (an earlier attempt landed) — keep the local copy
-    if (!error) return { ...t, id: (data as { id: string }[] | null)?.[0]?.id ?? id };
+    if (!error) {
+      const saved = (data as { id: string }[] | null)?.[0]?.id ?? id;
+      taskWsById.set(saved, t.workspaceId ?? null);
+      return { ...t, id: saved };
+    }
     const stripped = withoutMissingColumn(row, error.message);
     if (!stripped) throw error;
     row = stripped;
@@ -855,11 +916,29 @@ async function upsertTaskRows(client: SupabaseClient, rows: Record<string, unkno
   }
   throw new Error("createTasksBatch: could not persist after stripping unknown columns");
 }
+/* 0058: the workspaces where project access is on and you aren't the owner. A task UPDATE there that
+   matches no row is the server refusing it (you can view the project, but not change it), so it's
+   said and undone, never shown as saved. Everywhere else an update is sent exactly as before. */
+let accessGatedWs = new Set<string>();
+/** each loaded (or created) task's workspace, for that test */
+const taskWsById = new Map<string, string | null>();
 async function updateTaskRow(client: SupabaseClient, id: string, patch: Partial<Task>): Promise<void> {
   let row = patchToRow(patch);
+  const ws = taskWsById.get(id);
+  const gated = !!ws && accessGatedWs.has(ws);
   for (let i = 0; i < 8 && Object.keys(row).length; i++) {
-    const { error } = await client.from("tasks").update(row).eq("id", id);
-    if (!error) return;
+    const { data, error } = gated
+      ? await client.from("tasks").update(row).eq("id", id).select("id")
+      : await client.from("tasks").update(row).eq("id", id);
+    if (!error) {
+      if (gated && !((data as { id: string }[] | null) ?? []).length) {
+        // still there for you to read: refused (one that's gone, or out of sight, is as before)
+        const { data: seen } = await client.from("tasks").select("id").eq("id", id).maybeSingle();
+        if (seen) throw Object.assign(new Error("You can view this project, but not change it."), { code: "42501" });
+      }
+      if ("workspaceId" in patch) taskWsById.set(id, patch.workspaceId ?? null);
+      return;
+    }
     const stripped = withoutMissingColumn(row, error.message);
     if (!stripped) throw error;
     row = stripped; // nothing left to write once every column is stripped
@@ -1499,37 +1578,32 @@ const GOAL_TABLES = ["goal_checkins", "goal_links"];
 const RESYNC_AFTER_HIDDEN_MS = 60_000;
 let channelSeq = 0;
 
-/* A channel whose topic must stay fixed (everyone viewing a task joins the
-   same presence room) can't be reopened while the last one is still leaving:
-   realtime-js hands back the leaving channel for that topic, which never
-   re-joins, and drops every channel with that topic once it has closed. So a
-   new subscription waits for its predecessor's removal to settle first. */
-const leavingTopics = new Map<string, Promise<void>>();
-function openFixedTopic(client: SupabaseClient, name: string, open: () => RealtimeChannel): () => void {
-  let disposed = false;
-  let channel: RealtimeChannel | null = null;
-  const start = async () => {
-    // one still registered under this topic (a leave that never settled)
-    // would be handed back instead of a fresh channel: take it down first
-    for (let i = 0; i < 3 && !disposed; i++) {
-      const stale = client.getChannels().find((c) => c.topic === "realtime:" + name);
-      if (!stale) break;
-      await client.removeChannel(stale).catch(() => "error");
-    }
-    if (!disposed) channel = open();
-  };
-  const pending = leavingTopics.get(name);
-  (pending ? pending.then(start) : start()).catch((e) => reportError(e, { op: "realtime-open", topic: name }));
-  return () => {
-    if (disposed) return;
-    disposed = true;
-    const ch = channel;
-    channel = null;
-    if (!ch) return;
-    const gone: Promise<void> = client.removeChannel(ch).then(() => {}, () => {})
-      .finally(() => { if (leavingTopics.get(name) === gone) leavingTopics.delete(name); });
-    leavingTopics.set(name, gone);
-  };
+/* ---------- 0058: project access calls ---------- */
+/** A refusal from one of 0058's functions: "not authorized" and "not found" typed, a missing
+ *  function (0058 not run) as access_missing, anything else with the server's code. */
+function accessFailure(error: { message?: string; code?: string } | unknown): Error {
+  const code = String((error as { code?: unknown })?.code ?? "");
+  const msg = String((error as { message?: unknown })?.message ?? "");
+  if (code === "42883" || code === "PGRST202") return Object.assign(new Error("Project access isn't switched on yet."), { code: "access_missing" });
+  if (/^not authorized$/i.test(msg)) return Object.assign(new Error(msg), { code: "not_authorized" });
+  if (/^not found$/i.test(msg)) return Object.assign(new Error(msg), { code: "not_found" });
+  return Object.assign(new Error(msg || "Couldn't save that."), code ? { code } : {});
+}
+function offlineGuard(): void {
+  if (isOffline()) throw Object.assign(new Error("You're offline. Try again when you're back."), { code: "offline" });
+}
+const visibilityOfDemo = (p: Project): ProjectVisibility => p.visibility ?? "workspace";
+/** the demo's pending invites' projects */
+const demoInviteGrants = new Map<string, { projectId: string; role: ProjectRole }[]>();
+/** An old-style "these are its contributors" edit, as 0058's member calls: who's added (as editors;
+ *  the server makes guests commenters) and who's taken off. */
+async function syncProjectPeople(client: SupabaseClient, projectId: string, wanted: string[]): Promise<void> {
+  const { data, error } = await client.from("project_members").select("user_id").eq("project_id", projectId);
+  if (error) throw error;
+  const have = new Set(((data as { user_id: string }[] | null) ?? []).map((r) => r.user_id));
+  const want = new Set(wanted);
+  for (const u of want) if (!have.has(u)) await store.setProjectMember(projectId, u, "editor");
+  for (const u of have) if (!want.has(u)) await store.removeProjectMember(projectId, u);
 }
 
 /* ============================================================
@@ -1578,6 +1652,10 @@ export const store = {
         );
         const joined = new Date(KANBO_TODAY.getTime() - 3 * 86_400_000).toISOString();
         demoMembers = demoMembers.map((m) => (m.workspaceId === "ws-harbour" && m.userId === "m-self" ? { ...m, joinedAt: joined } : m));
+        // 0058: a guest at Foundrise (Ana, the freelance designer on Brand Refresh) and one at Reco HQ (Leah, the accountant)
+        const ana = MEMBERS.find((m) => m.id === "m-5"), leah = MEMBERS.find((m) => m.id === "m-6");
+        if (ana) demoMembers.push({ id: "wm-g-0", workspaceId: "ws-foundrise", userId: ana.id, email: ana.email, name: ana.name, role: "guest", status: "active" });
+        if (leah) demoMembers.push({ id: "wm-g-1", workspaceId: "ws-reco", userId: leah.id, email: leah.email, name: leah.name, role: "guest", status: "active" });
       }
       // a living inbox from the first load (anything already logged this session stays)
       if (!demoInboxSeeded) {
@@ -1589,9 +1667,14 @@ export const store = {
         // 0048: a bundle of three comments on the launch deck and a kudos (lib/notifyDemo)
         demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity()), ...seedCopy(DEMO_ACTIVITY_ELSEWHERE), ...seedCopy(DEMO_UPDATE_ACTIVITY ?? []), ...seedCopy(demoMeetingActivity())].filter((a) => !logged.has(a.id))].sort(newestFirst);
       }
+      // 0058: who's on which project, and only what Daniel can see (as the database's rules would have it)
+      if (!demoProjectMembers) demoProjectMembers = DEMO_PROJECT_MEMBERS.map((m) => ({ ...m }));
+      const seenBy = demoAccessCtx(PROJECTS);
+      const demoProjects = PROJECTS.filter((p) => projectRank(p.id, seenBy) >= 1);
+      const demoTasks = TASKS.filter((t) => taskRank({ workspaceId: getProject(t.projectId)?.workspaceId ?? null, projectId: t.projectId }, seenBy) >= 1);
       return {
-        tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
-        workspaces: demoWorkspaces, members: demoMembers,
+        tasks: demoTasks.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: demoProjects, tags: { ...BUILTIN_TAGS },
+        workspaces: demoWorkspaces, members: demoMembers, projectMembers: demoProjectMembers.map((m) => ({ ...m })),
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
         sections: [], customFields: [], savedSearches: [],
         goals: seedCopy(DEMO_GOALS), goalExtras: { checkins: seedCopy(DEMO_GOAL_CHECKINS), links: seedCopy(DEMO_GOAL_LINKS) },
@@ -1610,6 +1693,8 @@ export const store = {
     scopeQueueTo(uid);
     const restore = (snap: Snapshot): Bootstrap => {
       setReferenceData(snap.ref);
+      // (0058: the last load had project access's table, so its locks and roles still apply offline)
+      if (snap.boot.projectMembers !== undefined) noteAccessSchema(snap.boot.projectMembers !== null);
       // their plans as last loaded on this device, with any unsaved writes
       restorePlanState(uid);
       mirrorLandedBeforePlans(uid);
@@ -1698,16 +1783,13 @@ export const store = {
       .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
     const workspaces: Workspace[] = (wsErr && failed("workspaces", wsErr)?.workspaces) || [
       { ...PERSONAL_WORKSPACE },
-      ...wsRows.map((w) => ({ id: w.id, name: w.name, kind: "team" as const, ownerId: w.owner_id, logoUrl: w.logo_url ?? undefined,
-        ...(w.created_at ? { createdAt: w.created_at } : {}),
-        // 0053: the team's update day (null: weekly on Friday)
-        ...("update_rhythm" in w ? { updateRhythm: parseRhythm(w.update_rhythm) } : {}),
-        // 0057: the rollout plan (null: nothing planned yet)
-        ...("rollout" in w ? { rollout: parseRollout(w.rollout) } : {}) })),
+      ...wsRows.map(rowToWorkspace),
     ];
     // update days are read and set once 0053 is run (the column comes back, even when it's empty)
     noteRhythmSchema(wsRows.some((w) => "update_rhythm" in w) || ((projData as ProjectRow[] | null) ?? []).some((p) => "update_rhythm" in p));
     if (wsRows.length) noteRolloutSchema(wsRows.some((w) => "rollout" in w));
+    // 0058: project access is read and set once the switch's column comes back
+    if (wsRows.length) noteAccessSchema(wsRows.some((w) => "project_access" in w));
     const { data: memData, error: memErr } = await supabase.from("workspace_members").select("*");
     const members = (memErr && failed("members", memErr)?.members)
       || ((memData as MemberRow[] | null) ?? []).map(rowToWsMember);
@@ -1786,6 +1868,8 @@ export const store = {
       const { data: fmData } = await supabase.from("forms").select("*").order("created_at");
       forms = ((fmData as FormRow[] | null) ?? []).map(rowToForm);
     } catch { /* table not present yet */ }
+    // 0058: who's on which project (null before 0058; undefined when it couldn't be read this time)
+    const projectMembers = await loadProjectMembers(supabase);
 
     // this person's own plans (0043): the table missing means plans stay on the
     // device; a read that failed this time keeps the device's last copy
@@ -1795,6 +1879,12 @@ export const store = {
       if (planRows) loadPlanState(uid, planRows); else restorePlanState(uid);
       mirrorLandedBeforePlans(uid);
     }
+
+    // 0058: where an update that matches nothing is a refusal (the switch on, and not your workspace)
+    accessGatedWs = new Set(workspaces.filter((w) => !!w.id && w.projectAccess?.on
+      && members.find((m) => m.workspaceId === w.id && m.userId === uid && m.status === "active")?.role !== "owner").map((w) => w.id!));
+    taskWsById.clear();
+    taskRows.forEach((r) => taskWsById.set(r.id, r.workspace_id ?? null));
 
     const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
     setReferenceData(ref);
@@ -1816,6 +1906,7 @@ export const store = {
       statusUpdates,
       automationRules,
       forms,
+      projectMembers,
       ...(Object.keys(partial).length ? { partial } : {}),
     };
     // signed out (or someone else signed in) while this was loading — e.g. a
@@ -1897,10 +1988,8 @@ export const store = {
     // (someone whose first load had no team workspace learns here whether 0053's update days and 0057's rollout plan are in)
     noteRhythmSchema("update_rhythm" in ws || rhythmOn());
     noteRolloutSchema("rollout" in ws);
-    return { id: ws.id, name: ws.name, kind: "team", ownerId: ws.owner_id, logoUrl: ws.logo_url ?? undefined,
-      ...(ws.created_at ? { createdAt: ws.created_at } : {}),
-      ...("update_rhythm" in ws ? { updateRhythm: parseRhythm(ws.update_rhythm) } : {}),
-      ...("rollout" in ws ? { rollout: parseRollout(ws.rollout) } : {}) };
+    noteAccessSchema("project_access" in ws || accessSchema());
+    return rowToWorkspace(ws);
   },
 
   // upload a workspace logo (reuses the public avatars bucket; uid-scoped path)
@@ -2163,18 +2252,145 @@ export const store = {
   },
 
   async createProject(input: NewProject, userId: string): Promise<Project> {
-    if (!supabase) { const { templateId: _template, ...rest } = input; return { id: newId(), ...rest }; }
+    const { templateId: _template, memberIds = [], visibility, ...rest } = input;
+    const ws = input.workspaceId ? WORKSPACES.find((w) => w.id === input.workspaceId) : undefined;
+    // 0058: who can see it goes in the same insert, only where project access is on (the server
+    // gives every other new project the workspace's default)
+    const vis = visibility && input.workspaceId && accessOn(ws) ? visibility : undefined;
+    if (!supabase) {
+      const id = newId();
+      const p: Project = { id, ...rest, ownerId: userId, ...(input.workspaceId && accessSchema() ? { visibility: vis ?? ws?.projectAccess?.defaultVisibility ?? "workspace" } : {}) };
+      if (input.workspaceId && demoProjectMembers) {
+        const added = memberIds.filter((u) => u !== userId && roleOf({ wsMembers: demoMembers }, input.workspaceId, u));
+        demoProjectMembers = [...demoProjectMembers, ...added.map((u) => ({ id: newId(), projectId: id, workspaceId: input.workspaceId!, userId: u,
+          role: (roleOf({ wsMembers: demoMembers }, input.workspaceId, u) === "guest" ? "commenter" : "editor") as ProjectRole, createdAt: new Date().toISOString() }))];
+        if (added.length) p.contributorIds = added;
+      }
+      return p;
+    }
     const uid = await authUid(userId);
     // owner defaults to the creator; retry without owner_id if 0035 isn't applied yet
-    let payload: Record<string, unknown> = { user_id: uid, owner_id: uid, name: input.name, emoji: input.emoji, color: input.color, workspace_id: input.workspaceId };
+    let payload: Record<string, unknown> = { user_id: uid, owner_id: uid, name: input.name, emoji: input.emoji, color: input.color, workspace_id: input.workspaceId,
+      ...(vis ? { visibility: vis } : {}) };
     for (let i = 0; i < 3; i++) {
       const { data, error } = await supabase.from("projects").insert(payload).select("*").single();
-      if (!error) return rowToProject(data as ProjectRow);
+      if (!error) {
+        const p = rowToProject(data as ProjectRow);
+        // then its people (best-effort: the project is made either way, and About shows who's on it)
+        const added: string[] = [];
+        for (const u of memberIds.filter((x) => x !== uid)) {
+          try { await store.setProjectMember(p.id, u, "editor"); added.push(u); }
+          catch (e) { reportOnce("project-member-add", e, { op: "createProject" }); }
+        }
+        return added.length ? { ...p, contributorIds: [...new Set([...(p.contributorIds ?? []), ...added])] } : p;
+      }
       const stripped = withoutMissingColumn(payload, error.message);
       if (!stripped) throw error;
       payload = stripped;
     }
     throw new Error("createProject failed");
+  },
+
+  /* ---------- 0058: project access (none of these is queued offline) ---------- */
+
+  /** The workspace's switch and its settings (its owner only). */
+  async setProjectAccess(workspaceId: string, patch: { on?: boolean; defaultVisibility?: ProjectVisibility; membersMayMakePrivate?: boolean }): Promise<ProjectAccessSettings> {
+    if (!supabase) {
+      const w = demoWorkspaces.find((x) => x.id === workspaceId);
+      if (!w) throw accessFailure({ message: "not authorized" });
+      if (roleOf({ wsMembers: demoMembers }, workspaceId, "m-self") !== "owner") throw accessFailure({ message: "not authorized" });
+      const cur = w.projectAccess ?? { on: false, defaultVisibility: "workspace" as const, membersMayMakePrivate: false };
+      const next: ProjectAccessSettings = { on: patch.on ?? cur.on, defaultVisibility: patch.defaultVisibility ?? cur.defaultVisibility,
+        membersMayMakePrivate: patch.membersMayMakePrivate ?? cur.membersMayMakePrivate, changedAt: new Date().toISOString() };
+      demoWorkspaces = demoWorkspaces.map((x) => (x.id === workspaceId ? { ...x, projectAccess: next } : x));
+      return next;
+    }
+    offlineGuard();
+    const { data, error } = await supabase.rpc("set_project_access", { p_ws: workspaceId, p_on: patch.on ?? null, p_default: patch.defaultVisibility ?? null, p_member_private: patch.membersMayMakePrivate ?? null });
+    if (error) throw accessFailure(error);
+    const r = (data ?? {}) as { on?: boolean; default?: string; member_private?: boolean; changed_at?: string | null };
+    return { on: r.on === true, defaultVisibility: (VISIBILITY_SET.has(String(r.default)) ? r.default : "workspace") as ProjectVisibility,
+      membersMayMakePrivate: r.member_private === true, changedAt: r.changed_at ?? null };
+  },
+
+  /** Who can see a project (its managers; Private needs an owner, an admin, or a workspace that lets members). */
+  async setProjectVisibility(projectId: string, visibility: ProjectVisibility): Promise<ProjectVisibility> {
+    if (!supabase) {
+      const ctx = demoAccessCtx();
+      const p = PROJECTS.find((x) => x.id === projectId);
+      if (!p || !p.workspaceId || projectRank(p.id, ctx) < 1) throw accessFailure({ message: "not found" });
+      if (!canSetVisibility(p, ctx) || (visibility === "private" && visibilityOfDemo(p) !== "private" && !mayMakePrivate(p.workspaceId, ctx)) || !keepsEdit(p, visibility, ctx)) {
+        throw accessFailure({ message: "not authorized" });
+      }
+      return visibility;
+    }
+    offlineGuard();
+    const { data, error } = await supabase.rpc("set_project_visibility", { p_project: projectId, p_visibility: visibility });
+    if (error) throw accessFailure(error);
+    return (VISIBILITY_SET.has(String(data)) ? data : visibility) as ProjectVisibility;
+  },
+
+  /** Add someone to a project or change their role (its managers). Answers the role stored
+   *  ("owner" for the project's own owner: nothing is written). */
+  async setProjectMember(projectId: string, userId: string, role: ProjectRole): Promise<ProjectRole | "owner"> {
+    if (!supabase) {
+      const ctx = demoAccessCtx();
+      const p = PROJECTS.find((x) => x.id === projectId);
+      if (!p || !p.workspaceId || projectRank(p.id, ctx) < 1) throw accessFailure({ message: "not found" });
+      if (!canManagePeople(p, ctx)) throw accessFailure({ message: "not authorized" });
+      const theirs = roleOf(ctx, p.workspaceId, userId);
+      if (!theirs) throw accessFailure({ message: "not a member of this workspace" });
+      if (userId === p.ownerId) return "owner";
+      const stored: ProjectRole = theirs === "guest" && role === "editor" ? "commenter" : role;
+      const list = demoProjectMembers ?? [];
+      demoProjectMembers = list.some((m) => m.projectId === projectId && m.userId === userId)
+        ? list.map((m) => (m.projectId === projectId && m.userId === userId ? { ...m, role: stored } : m))
+        : [...list, { id: newId(), projectId, workspaceId: p.workspaceId, userId, role: stored, createdAt: new Date().toISOString() }];
+      return stored;
+    }
+    offlineGuard();
+    const { data, error } = await supabase.rpc("set_project_member", { p_project: projectId, p_user: userId, p_role: role });
+    if (error) throw accessFailure(error);
+    return (data === "owner" || ROLE_SET.has(String(data)) ? data : role) as ProjectRole | "owner";
+  },
+
+  /** Take someone off a project (its managers), or leave it yourself. Answers whether anyone went. */
+  async removeProjectMember(projectId: string, userId: string): Promise<boolean> {
+    if (!supabase) {
+      const ctx = demoAccessCtx();
+      const p = PROJECTS.find((x) => x.id === projectId);
+      if (!p || !p.workspaceId || projectRank(p.id, ctx) < 1) throw accessFailure({ message: "not found" });
+      if (!(canManagePeople(p, ctx) || userId === "m-self") || userId === p.ownerId) throw accessFailure({ message: "not authorized" });
+      const before = (demoProjectMembers ?? []).length;
+      demoProjectMembers = (demoProjectMembers ?? []).filter((m) => !(m.projectId === projectId && m.userId === userId));
+      return demoProjectMembers.length < before;
+    }
+    offlineGuard();
+    const { data, error } = await supabase.rpc("remove_project_member", { p_project: projectId, p_user: userId });
+    if (error) throw accessFailure(error);
+    return data === true;
+  },
+
+  /** The projects a pending invite brings (owners and admins): replaces its grants. Answers how many are stored. */
+  async setInviteProjects(memberId: string, grants: { projectId: string; role: ProjectRole }[]): Promise<number> {
+    if (!supabase) {
+      const m = demoMembers.find((x) => x.id === memberId && x.status === "invited");
+      if (!m) throw accessFailure({ message: "not found" });
+      demoInviteGrants.set(memberId, grants.map((g) => ({ ...g, role: m.role === "guest" && g.role === "editor" ? "commenter" : g.role })));
+      return grants.length;
+    }
+    offlineGuard();
+    const { data, error } = await supabase.rpc("set_invite_projects", { p_member: memberId, p_grants: grants.map((g) => ({ project_id: g.projectId, role: g.role })) });
+    if (error) throw accessFailure(error);
+    return typeof data === "number" ? data : grants.length;
+  },
+
+  /** 0058: who's on which project, read again (after one of the calls above). null before 0058. */
+  async listProjectMembers(): Promise<ProjectMember[] | null> {
+    if (!supabase) return (demoProjectMembers ?? []).map((m) => ({ ...m }));
+    const got = await loadProjectMembers(supabase);
+    if (got === undefined) throw new Error("Couldn't read who's on each project.");
+    return got;
   },
 
   async setProjectArchived(id: string, archived: boolean): Promise<void> {
@@ -2203,7 +2419,11 @@ export const store = {
     if ("description" in patch) row.description = patch.description ?? null;
     if ("status" in patch) row.status = patch.status ?? null;
     if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;
-    if ("contributorIds" in patch) row.contributor_ids = patch.contributorIds ?? [];
+    if ("contributorIds" in patch) {
+      // 0058: a project's people are project_members, changed one person at a time (contributor_ids follows)
+      if (accessSchema()) await syncProjectPeople(supabase, id, patch.contributorIds ?? []);
+      else row.contributor_ids = patch.contributorIds ?? [];
+    }
     if ("updateRhythm" in patch) row.update_rhythm = patch.updateRhythm ? rhythmRow(patch.updateRhythm) : null;   // 0053
     if (Object.keys(row).length === 0) return;
     // Resilient update: projects.description/status arrive in migration 0015. If
@@ -3661,25 +3881,6 @@ export const store = {
       closeGoals();
       planChannelOpeners.delete(openPlans);
     };
-  },
-
-  /* Live presence on a single task: announce that I'm viewing it and get the
-     list of everyone else currently viewing. Returns an unsubscribe fn. */
-  subscribeToTaskPresence(taskId: string, me: { id: string; name: string }, onSync: (people: { id: string; name: string }[]) => void): () => void {
-    if (!supabase) return () => {};
-    const client = supabase;
-    const topic = `presence-task-${taskId}`;
-    return openFixedTopic(client, topic, () => {
-      const channel = client.channel(topic, { config: { presence: { key: me.id } } });
-      channel.on("presence", { event: "sync" }, () => {
-        const state = channel.presenceState() as Record<string, { id: string; name: string }[]>;
-        const seen = new Map<string, string>();
-        Object.values(state).flat().forEach((p) => { if (p && p.id) seen.set(p.id, p.name); });
-        onSync([...seen].map(([id, name]) => ({ id, name })));
-      });
-      channel.subscribe((status) => { if (status === "SUBSCRIBED") void channel.track({ id: me.id, name: me.name }); });
-      return channel;
-    });
   },
 
   /* Live comment stream for one task: fires onInsert with each new comment as

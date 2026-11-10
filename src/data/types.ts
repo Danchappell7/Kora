@@ -59,6 +59,31 @@ export interface Workspace {
   rollout?: RolloutPlan | null;
   /** when it was made (workspaces.created_at; the demo's seed has none: a business going a while) */
   createdAt?: string;
+  /** 0058 project access: the switch (off by default), what a new project starts as, and whether
+   *  members may make projects private. Absent before 0058. */
+  projectAccess?: ProjectAccessSettings | null;
+}
+
+/** 0058: who can see a project. Whole workspace (everyone there; guests only if they're on it),
+ *  Members only (its people, plus the workspace's owners and admins), Private (its people, plus the owner). */
+export type ProjectVisibility = "workspace" | "members" | "private";
+/** 0058: someone's role on a project. Guests are commenters at most. */
+export type ProjectRole = "editor" | "commenter" | "viewer";
+/** 0058 project_members: one person on one project (the project's owner never has a row). */
+export interface ProjectMember {
+  id: string;
+  projectId: string;
+  workspaceId: string;
+  userId: string;
+  role: ProjectRole;
+  createdAt?: string;
+}
+/** 0058 workspaces.project_access* */
+export interface ProjectAccessSettings {
+  on: boolean;
+  defaultVisibility: ProjectVisibility;
+  membersMayMakePrivate: boolean;
+  changedAt?: string | null;
 }
 
 /** 0057: a workspace's rollout plan. Each part is optional; the champion and the pilot group are
@@ -114,6 +139,8 @@ export interface Project {
   boardSettings?: BoardSettings;
   /** 0053 projects.update_rhythm: its own update day, "Never" included (unset: the workspace's) */
   updateRhythm?: UpdateRhythm | null;
+  /** 0058 projects.visibility (absent before 0058: Whole workspace) */
+  visibility?: ProjectVisibility;
 }
 
 export interface TagDef {
