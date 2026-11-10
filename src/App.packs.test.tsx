@@ -64,7 +64,8 @@ describe("App · business packs", () => {
     const sidebar = screen.getByRole("navigation", { name: "Main" }).closest("aside") ?? document.body;
     expect(within(sidebar).getAllByText("New studio opening").length).toBeGreaterThan(0);
     // Undo: off the screen, and deleted
-    await act(async () => { fireEvent.click(within(done).getByRole("button", { name: "Undo setup" })); });
+    fireEvent.click(within(done).getByRole("button", { name: "Undo setup" }));
+    await act(async () => { fireEvent.click(within(done).getByRole("button", { name: "Remove it all" })); });
     expect(await screen.findByRole("heading", { name: "Taken back" })).toBeInTheDocument();
     expect(del).toHaveBeenCalledTimes(5);
     expect(rhythm).toHaveBeenLastCalledWith(ws, null);

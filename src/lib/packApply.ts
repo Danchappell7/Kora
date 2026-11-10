@@ -8,7 +8,8 @@
      2. their docs;
      3. the goals, each owned by whoever used the pack, with their key
         results under them and links to the work that serves them;
-     4. the portfolios;
+     4. the portfolios (a holding company's business that's already in
+        Kanbo: in Personal, with that business's own projects);
      5. the workspace's update day.
    A step that fails is named in `failed` and the rest carry on, as
    for a team template. A step whose migration isn't run yet is named
@@ -150,7 +151,8 @@ export async function applyPackPlan(plan: PackPlan, ctx: { workspaceId: string |
     const projectIds = pf.projectKeys.map((k) => idByKey[k]).filter((x): x is string => !!x);
     if (!projectIds.length) continue;
     let made: Portfolio;
-    try { made = await deps.createPortfolio({ workspaceId: wsOf(projectIds[0]), name: pf.name, projectIds }); }
+    // (a business already in Kanbo: in Personal, its own projects beside the one made for it)
+    try { made = await deps.createPortfolio({ workspaceId: pf.personal ? null : wsOf(projectIds[0]), name: pf.name, projectIds: [...new Set([...projectIds, ...(pf.projectIds ?? [])])] }); }
     catch { out.failed.push(pf.name); continue; }
     const look = { ...(pf.description ? { description: pf.description } : {}), ...(pf.emoji ? { emoji: pf.emoji } : {}), ...(pf.color ? { color: pf.color } : {}) };
     if (deps.updatePortfolio && Object.keys(look).length) {

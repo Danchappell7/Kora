@@ -10,6 +10,11 @@ import type { PackContext, PackPick, PackPlan } from "../../lib/packPlan";
 /** Where the pack is going, for the preview (lib/packPlan PackContext and the words for what it can't do). */
 export interface PackUiContext extends PackContext {
   mode: "workspace" | "project";
+  /** going into a team workspace (a routine for the team is nobody's yet there; in Personal it's yours) */
+  team?: boolean;
+  /** New project in a workspace that's only just been made (the first run's pack): set it up as New
+   *  workspace would, its update day ticked */
+  newWorkspace?: boolean;
   /** why the update day is left out, when it is */
   updateDayNote?: string;
 }

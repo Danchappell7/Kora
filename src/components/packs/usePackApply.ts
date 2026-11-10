@@ -63,6 +63,7 @@ export function packContextFor(input: { workspaceId: string | null; role: Role |
   const lead = input.mode === "workspace" || runs(input.role);
   return {
     mode: input.mode,
+    team,
     today: input.today,
     goalsV2: input.goalsV2,
     // (a company goal is for owners and admins since 0052; before it, and in Personal, anyone's)
@@ -195,15 +196,21 @@ export function usePackApply(input: PackAppHost) {
   const hostFor = useCallback((at: { workspaceId: string | null; mode: "workspace" | "project"; open?: PackHost["open"] }): PackHost => {
     const me = userIdRef.current;
     const role = at.mode === "workspace" ? "owner" : roleInWorkspace(members, me, at.workspaceId);
-    const others = businessesYouRun(workspaces, members, me).filter((w) => w.id !== at.workspaceId).map((w) => w.name);
+    const runs = businessesYouRun(workspaces, members, me).filter((w) => w.id !== at.workspaceId);
+    const others = runs.map((w) => w.name);
     const context = packContextFor({ workspaceId: at.workspaceId, role, mode: at.mode, goalsV2, rhythmOn: rhythmOn(), businesses: others, today: KANBO_TODAY });
+    // a holding company's business that's already in Kanbo: its live projects (read when the plan's made)
+    context.projectsOf = (business) => {
+      const w = runs.find((x) => x.name.trim().toLowerCase() === business.trim().toLowerCase());
+      return w ? projectsRef.current.filter((p) => p.workspaceId === w.id && !p.archivedAt).map((p) => p.id) : null;
+    };
     return {
       context,
       ...(at.mode === "project" ? { apply: (pack: WorkspaceTemplate, pick: PackPick) => apply(pack, pick, at.workspaceId, context) } : {}),
       undo, printPoster,
       ...(at.open ? { open: at.open } : {}),
     };
-  }, [workspaces, members, goalsV2, userIdRef, apply, undo, printPoster]);
+  }, [workspaces, members, goalsV2, userIdRef, projectsRef, apply, undo, printPoster]);
 
   return useMemo(() => ({ apply, undo, printPoster, hostFor }), [apply, undo, printPoster, hostFor]);
 }

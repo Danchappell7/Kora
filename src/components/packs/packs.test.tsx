@@ -139,7 +139,13 @@ describe("New workspace › a business pack", () => {
     fireEvent.click(made.getByRole("button", { name: /Open 3 goals/ }));
     expect(onClose).toHaveBeenCalled();
     expect(h.open).toHaveBeenCalledWith({ view: "goals", tab: "2027-Q1" });
-    await act(async () => { fireEvent.click(within(done).getByRole("button", { name: "Undo setup" })); });
+    // Undo asks first, with what goes (and that a printed poster stops working); Keep it changes nothing
+    fireEvent.click(within(done).getByRole("button", { name: "Undo setup" }));
+    expect(within(done).getByText(/^Remove 4 projects and 29 starter tasks, 3 goals with 6 key results, .+ and 1 request form\? A QR poster you've printed stops working\.$/)).toBeInTheDocument();
+    fireEvent.click(within(done).getByRole("button", { name: "Keep it" }));
+    expect(h.undo).not.toHaveBeenCalled();
+    fireEvent.click(within(done).getByRole("button", { name: "Undo setup" }));
+    await act(async () => { fireEvent.click(within(done).getByRole("button", { name: "Remove it all" })); });
     expect(h.undo).toHaveBeenCalledTimes(1);
     expect(await screen.findByRole("heading", { name: "Taken back" })).toBeInTheDocument();
     expect(screen.getByText(/Everything Boutique fitness group set up has been removed\. Deleted projects wait in the recycle bin/)).toBeInTheDocument();

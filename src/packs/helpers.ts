@@ -7,14 +7,18 @@
    • after(section, title, days, hours, extras): `days` after it.
    • onTheDay(section, title, extras): the anchor day itself, as a
      milestone ("Opening day").
+   • monthly(section, title, dayOfMonth, hours, extras): every month,
+     by that day of it ("numbers in by the 10th").
    Extras are anything else a task can have: priority ("low" …
    "urgent"), focusMin (its focus block, in minutes), description
    (Markdown), recurrence ("daily", "weekdays", "weekly", "biweekly",
-   "monthly").
+   "monthly"), forTeam (a routine whoever's on shift picks up, like
+   opening checks: it's nobody's yet, so it doesn't land on your day).
+   Dates skip weekends and the Christmas break (24 Dec to 1 Jan).
    ============================================================ */
 import type { TemplateTask } from "../data/types";
 
-type Extras = Partial<Omit<TemplateTask, "section" | "title" | "dueInDays" | "fromAnchor" | "effortHours">>;
+type Extras = Partial<Omit<TemplateTask, "section" | "title" | "dueInDays" | "fromAnchor" | "dayOfMonth" | "effortHours">>;
 
 export const t = (section: string, title: string, days: number, hours: number, extras: Extras = {}): TemplateTask =>
   ({ section, title, dueInDays: days, effortHours: hours, ...extras });
@@ -27,3 +31,6 @@ export const after = (section: string, title: string, days: number, hours: numbe
 
 export const onTheDay = (section: string, title: string, extras: Extras = {}): TemplateTask =>
   ({ section, title, fromAnchor: 0, milestone: true, priority: "high", ...extras });
+
+export const monthly = (section: string, title: string, dayOfMonth: number, hours: number, extras: Extras = {}): TemplateTask =>
+  ({ section, title, dayOfMonth, effortHours: hours, recurrence: "monthly", ...extras });

@@ -6,7 +6,7 @@
    used: "{business}" in its words becomes that business's name.
    ============================================================ */
 import type { WorkspaceTemplate } from "../data/types";
-import { t } from "./helpers";
+import { monthly, t } from "./helpers";
 
 const BOARD_PACK = `> 📦 What every business sends by the 10th, so the board pack goes out a week before the meeting.
 ## From each business
@@ -47,10 +47,10 @@ export const HOLDING_PACK: WorkspaceTemplate = {
       sections: ["Board pack", "Meeting", "Actions"],
       tasks: [
         t("Board pack", "Agree the board calendar for the year", 7, 1, { priority: "high" }),
-        t("Board pack", "Collect each business's monthly numbers by the 10th", 10, 1, { recurrence: "monthly" }),
-        t("Board pack", "Put the board pack together and send it out", 14, 3, { recurrence: "monthly", focusMin: 90 }),
-        t("Meeting", "Board meeting", 21, 2, { recurrence: "monthly", priority: "high", focusMin: 120 }),
-        t("Actions", "Send the minutes and actions", 22, 1, { recurrence: "monthly" }),
+        monthly("Board pack", "Collect each business's monthly numbers by the 10th", 10, 1),
+        monthly("Board pack", "Put the board pack together and send it out", 14, 3, { focusMin: 90 }),
+        monthly("Meeting", "Board meeting", 21, 2, { priority: "high", focusMin: 120 }),
+        monthly("Actions", "Send the minutes and actions", 23, 1),
       ],
       docs: [
         { title: "What goes in the board pack", icon: "📦", markdown: BOARD_PACK },
@@ -86,12 +86,12 @@ export const HOLDING_PACK: WorkspaceTemplate = {
       description: "{business} as the group sees it: its numbers, its plan and its reviews.",
       sections: ["Every month", "This quarter", "This year"],
       tasks: [
-        t("Every month", "{business}: monthly numbers in by the 10th", 10, 0.5, { recurrence: "monthly" }),
+        monthly("Every month", "{business}: monthly numbers in by the 10th", 10, 0.5),
         t("This year", "{business}: agree this year's plan and budget", 30, 3, { priority: "high", focusMin: 90 }),
         t("This quarter", "{business}: quarterly review with its leadership", 60, 2, { focusMin: 90 }),
       ],
     },
-    portfolio: { name: "{business}", emoji: "🏢", description: "Everything the group is doing with {business}. Add its projects here as they start." },
+    portfolio: { name: "{business}", emoji: "🏢", description: "Everything the group is doing with {business}, and its own projects. Add new ones here as they start." },
   },
   goals: [
     {

@@ -46,13 +46,14 @@ export const ADVISORY_PACK: WorkspaceTemplate = {
   projects: [
     {
       key: "engagement", name: "Client engagement", emoji: "🤝", hue: "cobalt",
-      description: "One engagement from first call to close, with a sign-off at every step that needs one.",
+      description: "One engagement from first call to close, with a sign-off at every step that needs one. For each new client, use Duplicate in this project's menu.",
       sections: ["Proposal", "Kick-off", "Delivery", "Sign-off", "Close"],
       tasks: [
         t("Proposal", "Qualify the enquiry: the problem, budget, timing and who decides", 2, 1, { priority: "high" }),
+        t("Proposal", "Check for conflicts before we say yes", 3, 0.5, { priority: "urgent" }),
         t("Proposal", "Write the proposal: scope, approach, team and fees", 5, 4, { priority: "high", focusMin: 120 }),
         t("Proposal", "Partner sign-off on the proposal before it goes", 6, 0.5, { priority: "high" }),
-        t("Kick-off", "Engagement letter signed and conflicts checked", 10, 1, { priority: "urgent" }),
+        t("Kick-off", "Engagement letter signed by the client", 10, 1, { priority: "urgent" }),
         t("Kick-off", "Kick-off meeting: goals, contacts and ways of working", 12, 1.5, { focusMin: 60, description: "**Goals**\n\n**Contacts on both sides**\n\n**How we'll work together**\n\n**Next steps**" }),
         t("Delivery", "Draft the findings and recommendations", 30, 12, { focusMin: 120 }),
         t("Sign-off", "Partner review of the draft", 33, 1.5, { priority: "high", focusMin: 60 }),

@@ -17,7 +17,8 @@
    • Goals are only for those who may set the business's goals, the
      update day only for owners and admins of a team workspace, once
      update days are switched on.
-   • A holding company's businesses each get a project and a portfolio.
+   • A holding company's businesses each get a project and a portfolio
+     (one already in Kanbo: in Personal, with its own projects in it).
    Pure: no React, no I/O.
    ============================================================ */
 import type {
@@ -66,6 +67,9 @@ export interface PackContext {
   canSetUpdateDay: boolean;
   /** the other businesses you run (a holding company's starting list) */
   businesses?: string[];
+  /** a business already in Kanbo (one you run, by name): its live projects. Its portfolio goes in Personal,
+   *  which holds projects from any business, with those beside the group's project for it. */
+  projectsOf?: (business: string) => string[] | null;
 }
 
 export const isPartOn = (pick: Pick<PackPick, "off">, part: string): boolean => !pick.off.includes(part);
@@ -133,13 +137,23 @@ export function expandPack(pack: WorkspaceTemplate, businesses: readonly string[
 
 /* ---------- where a pick starts ---------- */
 
-/** Everything ticked (but the update day, when it's added to a workspace that has one already),
+/** A countdown's day as it starts out: `days` from today, out of the Christmas break (20 Dec to 3 Jan:
+ *  an opening or a finals day there is rarely what anyone wants). */
+export function defaultAnchorDay(today: Date, days: number): string {
+  const d = addDays(today, Math.max(0, Math.round(days)));
+  const m = d.getMonth(), day = d.getDate();
+  if (m === 11 && day >= 20) return toLocalISO(new Date(d.getFullYear() + 1, 0, 4));
+  if (m === 0 && day <= 3) return toLocalISO(new Date(d.getFullYear(), 0, 4));
+  return toLocalISO(d);
+}
+
+/** Everything ticked (but the update day, when it's added to a workspace that's going already),
  *  each countdown on its default day, goals for packQuarter. */
-export function defaultPick(pack: WorkspaceTemplate, ctx: Pick<PackContext, "today" | "businesses"> & { mode?: "workspace" | "project" }): PackPick {
+export function defaultPick(pack: WorkspaceTemplate, ctx: Pick<PackContext, "today" | "businesses"> & { mode?: "workspace" | "project"; newWorkspace?: boolean }): PackPick {
   const anchors: Record<string, string> = {};
-  for (const p of pack.projects) if (p.anchor) anchors[p.key] = toLocalISO(addDays(ctx.today, Math.max(0, Math.round(p.anchor.defaultInDays))));
+  for (const p of pack.projects) if (p.anchor) anchors[p.key] = defaultAnchorDay(ctx.today, p.anchor.defaultInDays);
   return {
-    packId: pack.id, off: ctx.mode === "project" ? [packPart.updates] : [], anchors, quarter: packQuarter(ctx.today),
+    packId: pack.id, off: ctx.mode === "project" && !ctx.newWorkspace ? [packPart.updates] : [], anchors, quarter: packQuarter(ctx.today),
     businesses: pack.perBusiness ? cleanBusinesses(ctx.businesses ?? []).slice(0, 6) : [],
   };
 }
@@ -177,7 +191,12 @@ export interface PlannedPackGoal extends PlannedKeyResult {
   keyResults: PlannedKeyResult[];
 }
 export interface PlannedPackDoc { projectKey: string; title: string; icon: string; body: DocBlock[] }
-export interface PlannedPackPortfolio { key: string; name: string; description?: string; emoji?: string; color?: string; projectKeys: string[] }
+export interface PlannedPackPortfolio {
+  key: string; name: string; description?: string; emoji?: string; color?: string; projectKeys: string[];
+  /** a business already in Kanbo: the portfolio's in Personal, with that business's own projects in it too */
+  personal?: boolean;
+  projectIds?: string[];
+}
 export interface PlannedPoster { projectKey: string; formName: string; headline: string; line?: string }
 
 export interface PackPlan extends WorkspacePlan {
@@ -266,15 +285,21 @@ export function buildPackPlan(pack: WorkspaceTemplate, pick: PackPick, ctx: Pack
       };
     });
 
+  const perBusiness = new Set(pack.perBusiness ? cleanBusinesses(pick.businesses).map((_, i) => businessKey(i)) : []);
   const portfolios: PlannedPackPortfolio[] = (full.portfolios ?? [])
     .filter((pf) => on(packPart.portfolio(pf.key)))
-    .map((pf) => ({
-      key: pf.key, name: pf.name,
-      ...(pf.description ? { description: pf.description } : {}),
-      ...(pf.emoji ? { emoji: pf.emoji } : {}),
-      ...(pf.hue ? { color: spectrumColor(pf.hue) } : {}),
-      projectKeys: pf.projects.filter((k) => keys.has(k)),
-    }))
+    .map((pf) => {
+      // a business already in Kanbo: in Personal, beside its own projects (a team workspace's portfolio holds only its own)
+      const own = perBusiness.has(pf.key) ? ctx.projectsOf?.(pf.name) ?? null : null;
+      return {
+        key: pf.key, name: pf.name,
+        ...(pf.description ? { description: pf.description } : {}),
+        ...(pf.emoji ? { emoji: pf.emoji } : {}),
+        ...(pf.hue ? { color: spectrumColor(pf.hue) } : {}),
+        projectKeys: pf.projects.filter((k) => keys.has(k)),
+        ...(own ? { personal: true, projectIds: own } : {}),
+      };
+    })
     .filter((pf) => pf.projectKeys.length > 0);
 
   const updateRhythm = pack.updateRhythm && ctx.canSetUpdateDay && on(packPart.updates) ? rhythmToSave(pack.updateRhythm, ctx.today) : null;

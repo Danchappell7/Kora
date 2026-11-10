@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { BUSINESS_PACKS, findPack } from "../packs";
 import {
-  buildPackPlan, cleanBusinesses, defaultPick, expandPack, isPartOn, packCounts, packCountsLine, packHasParts, packPart, packQuarter,
+  buildPackPlan, cleanBusinesses, defaultAnchorDay, defaultPick, expandPack, isPartOn, packCounts, packCountsLine, packHasParts, packPart, packQuarter,
   packQuarterChoices, packStats, tasksBehind, type PackContext, type PackPick,
 } from "./packPlan";
-import { anchoredDay } from "./templates";
+import { anchoredDay, monthDay } from "./templates";
 import { SPECTRUM } from "./projectIdentity";
 import { blockText } from "./docBlocks";
 import { periodRange } from "./goalPeriods";
@@ -50,7 +50,11 @@ describe("business packs: the content", () => {
         expect(t.title, p.name).not.toMatch(/^\s|\s$/);
         // a countdown task needs its project's anchor day; every task has a day
         if (typeof t.fromAnchor === "number") expect(p.anchor, `${p.name}: ${t.title}`).toBeTruthy();
+        else if (typeof t.dayOfMonth === "number") expect(t.dayOfMonth, `${p.name}: ${t.title}`).toBeLessThanOrEqual(28);
         else expect(typeof t.dueInDays, `${p.name}: ${t.title}`).toBe("number");
+        // a title that names its day of the month is due on it
+        const named = /by the (\d+)(st|nd|rd|th)\b/.exec(t.title)?.[1];
+        if (named) expect(t.dayOfMonth, `${p.name}: ${t.title}`).toBe(Number(named));
         if (!t.milestone) expect(t.effortHours, t.title).toBeGreaterThan(0);
       }
       for (const a of p.rule?.actions ?? []) if (a.type === "set_section") expect(p.sections).toContain(a.value);
@@ -113,6 +117,29 @@ describe("counting back from an anchor day", () => {
     expect(anchoredDay(saturday, 0, TODAY, true)).toBe("2027-02-06");
     expect(anchoredDay(new Date(2026, 10, 20), -30, TODAY)).toBe("2026-11-10");
     expect(anchoredDay(new Date(2026, 9, 1), 0, TODAY, true)).toBe("2026-11-10");
+  });
+
+  it("work isn't due over the Christmas break (24 Dec to 1 Jan): after it, or before the day when the day's just after it", () => {
+    expect(anchoredDay(new Date(2026, 11, 20), 5, TODAY)).toBe("2027-01-04");     // Fri 25 Dec → Mon 4 Jan
+    expect(anchoredDay(new Date(2027, 0, 12), -14, TODAY)).toBe("2027-01-04");    // Tue 29 Dec → Mon 4 Jan, still before the day
+    expect(anchoredDay(new Date(2027, 0, 4), -3, TODAY)).toBe("2026-12-23");      // Fri 1 Jan, and the day's Mon 4 Jan: Wed 23 Dec
+    expect(anchoredDay(new Date(2026, 11, 25), 0, TODAY, true)).toBe("2026-12-25"); // a key date keeps its own day
+  });
+
+  it("\"by the 10th\": the next 10th of a month, a day off moving to the working day before", () => {
+    expect(monthDay(TODAY, 10)).toBe("2026-11-10");                  // today is the 10th
+    expect(monthDay(new Date(2026, 10, 11), 10)).toBe("2026-12-10");  // past it: next month's
+    expect(monthDay(TODAY, 14)).toBe("2026-11-13");                  // Sat 14 → Fri 13
+    expect(monthDay(new Date(2027, 0, 9), 10)).toBe("2027-01-11");   // Sun 10, and Sat 9 is today: Mon 11
+    expect(monthDay(new Date(2026, 11, 2), 31)).toBe("2026-12-23");   // (at most the 28th) Mon 28 Dec is in the break: the working day before it
+  });
+
+  it("a countdown's day starts out of the Christmas break", () => {
+    expect(defaultAnchorDay(TODAY, 42)).toBe("2027-01-04");          // Tue 22 Dec → Mon 4 Jan
+    expect(defaultAnchorDay(new Date(2026, 11, 1), 31)).toBe("2027-01-04");   // Sat 1 Jan
+    expect(defaultAnchorDay(TODAY, 90)).toBe("2027-02-08");
+    const startup = findPack("pack-startup")!;
+    expect(defaultPick(startup, { today: TODAY }).anchors.launch).toBe("2027-01-04");
   });
 
   it("the plan dates the opening from the day picked, and says how many tasks start out behind", () => {
@@ -277,6 +304,64 @@ describe("a holding company's businesses", () => {
     // the template itself is untouched
     expect(holding.projects).toHaveLength(3);
     expect(expandPack(fitness, ["X"])).toBe(fitness);
+  });
+
+  it("a business already in Kanbo gets its portfolio in Personal, with its own projects beside the group's one for it", () => {
+    const projectsOf = (b: string) => (b.toLowerCase() === "reco hq" ? ["p-reco-1", "p-reco-2"] : null);
+    const plan = buildPackPlan(holding, pick(holding, { businesses: ["Reco HQ", "North Gym"] }), ctx({ projectsOf }));
+    expect(plan.portfolios.map((pf) => [pf.name, pf.personal ?? false, pf.projectKeys, pf.projectIds ?? []])).toEqual([
+      ["Reco HQ", true, ["business-1"], ["p-reco-1", "p-reco-2"]],
+      ["North Gym", false, ["business-2"], []],
+    ]);
+  });
+
+  it("the board's month: numbers by the 10th, the pack by the 14th, the meeting on the 21st (working days), each monthly", () => {
+    const plan = buildPackPlan(holding, pick(holding, { businesses: ["North Gym"] }), ctx());
+    const due = (title: string) => plan.projects.flatMap((p) => p.tasks).find((t) => t.title === title)!;
+    expect(due("Collect each business's monthly numbers by the 10th")).toMatchObject({ dueDate: "2026-11-10", recurrence: "monthly" });
+    expect(due("North Gym: monthly numbers in by the 10th")).toMatchObject({ dueDate: "2026-11-10", recurrence: "monthly" });
+    expect(due("Put the board pack together and send it out").dueDate).toBe("2026-11-13");   // Sat 14 → Fri 13
+    expect(due("Board meeting").dueDate).toBe("2026-11-20");                                 // Sat 21 → Fri 20
+    // and nothing lands on Christmas Day
+    expect(due("Plan the year end and the audit").dueDate).toBe("2027-01-04");
+    expect(plan.projects.flatMap((p) => p.tasks).some((t) => t.dueDate && t.dueDate >= "2026-12-24" && t.dueDate <= "2027-01-01")).toBe(false);
+  });
+});
+
+describe("routines for the team", () => {
+  it("daily opening and closing checks are the team's: marked in the plan, and only those", () => {
+    for (const id of ["pack-fitness", "pack-venue"]) {
+      const pack = findPack(id)!;
+      const tasks = buildPackPlan(pack, pick(pack), ctx()).projects.flatMap((p) => p.tasks);
+      expect(tasks.filter((t) => t.forTeam).every((t) => t.recurrence === "daily")).toBe(true);
+      expect(tasks.filter((t) => t.forTeam).map((t) => t.title).sort()).toEqual(id === "pack-fitness" ? ["Closing checklist", "Opening checklist"] : ["Closing checks", "Opening checks"]);
+    }
+  });
+  it("the venue's league runs after the draw, and the court's daily check is the opening checks' (once)", () => {
+    const venue = findPack("pack-venue")!;
+    const plan = buildPackPlan(venue, pick(venue), ctx());
+    const league = plan.projects.find((p) => p.key === "tournament")!;
+    const due = (t: string) => league.tasks.find((x) => x.title.startsWith(t))!.dueDate!;
+    expect(due("Update the league table") > due("Close entries and make the draw")).toBe(true);
+    expect(due("Publish the league fixtures") > due("Close entries and make the draw")).toBe(true);
+    expect(due("Finals day") > due("Update the league table")).toBe(true);
+    expect(plan.projects.flatMap((p) => p.tasks).filter((t) => /brush the courts|check the nets/i.test(t.title))).toEqual([]);
+  });
+  it("the advisory firm checks for conflicts before it writes the proposal", () => {
+    const advisory = findPack("pack-advisory")!;
+    const tasks = advisory.projects.find((p) => p.key === "engagement")!.tasks;
+    const at = (t: string) => tasks.findIndex((x) => x.title.startsWith(t));
+    expect(at("Check for conflicts")).toBeGreaterThan(-1);
+    expect(at("Check for conflicts")).toBeLessThan(at("Write the proposal"));
+    expect(tasks[at("Check for conflicts")].section).toBe("Proposal");
+  });
+});
+
+describe("a pack from New project in a workspace that's only just been made", () => {
+  it("ticks the update day, as New workspace would", () => {
+    expect(defaultPick(fitness, { today: TODAY, mode: "project" }).off).toEqual([packPart.updates]);
+    expect(defaultPick(fitness, { today: TODAY, mode: "project", newWorkspace: true }).off).toEqual([]);
+    expect(defaultPick(fitness, { today: TODAY, mode: "workspace" }).off).toEqual([]);
   });
 });
 

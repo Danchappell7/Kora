@@ -122,17 +122,35 @@ export function PackDone({ flow, host, onOpen }: { flow: PackFlow; host: Pick<Pa
   );
 }
 
-/** The summary's footer: Undo setup (until it's been taken back) and Done. */
+/** What Undo setup would remove, in a sentence ("Remove 4 projects and 24 starter tasks, 3 goals with 6 key results …?"). */
+export function undoQuestion(o: PackOutcome): string {
+  const c = packOutcomeCounts(o.applied);
+  const parts = [c.projects, c.goals, c.portfolios, c.docs, c.forms].filter(Boolean);
+  const what = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0] ?? "everything it set up";
+  return `Remove ${what}?${o.applied.posters.length ? " A QR poster you've printed stops working." : ""}`;
+}
+
+/** The summary's footer: Undo setup (until it's been taken back; it asks first, with what goes) and Done. */
 export function PackDoneFooter({ flow, onDone, canUndo = true }: { flow: PackFlow; onDone: () => void; canUndo?: boolean }) {
   const undoing = flow.busy === "undo";
+  const [asking, setAsking] = useState(false);
+  if (canUndo && !flow.undone && flow.outcome && (asking || undoing)) {
+    return (
+      <>
+        <p className="kbpk-undo-q" role="status">{undoQuestion(flow.outcome)}</p>
+        <Button variant="ghost" onClick={() => setAsking(false)} disabled={undoing}>Keep it</Button>
+        <Button variant="danger" icon="undo" loading={undoing} onClick={() => { void flow.takeBack().finally(() => setAsking(false)); }}>
+          {undoing ? "Taking it back…" : "Remove it all"}
+        </Button>
+      </>
+    );
+  }
   return (
     <>
       {canUndo && !flow.undone && (
-        <Button variant="ghost" icon="undo" loading={undoing} onClick={() => { void flow.takeBack(); }} style={{ marginRight: "auto" }}>
-          {undoing ? "Taking it back…" : "Undo setup"}
-        </Button>
+        <Button variant="ghost" icon="undo" onClick={() => setAsking(true)} style={{ marginRight: "auto" }}>Undo setup</Button>
       )}
-      <Button variant="primary" onClick={onDone} disabled={undoing}>Done</Button>
+      <Button variant="primary" onClick={onDone}>Done</Button>
     </>
   );
 }

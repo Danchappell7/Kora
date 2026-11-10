@@ -66,7 +66,7 @@ export const FITNESS_PACK: WorkspaceTemplate = {
       anchor: { label: "Opening day", defaultInDays: 90 },
       sections: ["90 days out", "60 days out", "30 days out", "Opening week", "After opening"],
       tasks: [
-        before("90 days out", "Agree the fit-out plan, budget and handover date with the contractor", 90, 3, { priority: "high", focusMin: 90 }),
+        before("90 days out", "Agree the fit-out plan with the contractor", 90, 3, { priority: "high", focusMin: 90, description: "**Budget**\n\n**Handover date**\n\n**What's in and what's out**\n\n**Who signs off changes**" }),
         before("90 days out", "Set the opening timetable and class mix", 84, 2, { focusMin: 60 }),
         before("90 days out", "Open founding-member presales", 80, 2, { priority: "high", focusMin: 60, description: "**Founding rate**\n\n**How many spots**\n\n**When presales close**\n\n**Where we'll promote it**\n- " }),
         before("60 days out", "Order signage, reception kit and retail stock", 60, 2, { focusMin: 60 }),
@@ -132,8 +132,8 @@ export const FITNESS_PACK: WorkspaceTemplate = {
       description: "The daily, weekly and monthly jobs that keep the studio running and members coming back.",
       sections: ["Every day", "Every week", "Every month"],
       tasks: [
-        t("Every day", "Opening checklist", 0, 0.25, { recurrence: "daily", focusMin: 15, description: "Work through **Opening and closing checklist** in this project's docs." }),
-        t("Every day", "Closing checklist", 0, 0.25, { recurrence: "daily", focusMin: 15, description: "Work through **Opening and closing checklist** in this project's docs." }),
+        t("Every day", "Opening checklist", 0, 0.25, { recurrence: "daily", focusMin: 15, forTeam: true, description: "Work through **Opening and closing checklist** in this project's docs." }),
+        t("Every day", "Closing checklist", 0, 0.25, { recurrence: "daily", focusMin: 15, forTeam: true, description: "Work through **Opening and closing checklist** in this project's docs." }),
         t("Every week", "Check class fill and waitlists for next week", 3, 0.5, { recurrence: "weekly" }),
         t("Every week", "Call members who haven't booked in two weeks", 4, 1, { recurrence: "weekly", focusMin: 60 }),
         t("Every month", "Count retail stock and reorder", 20, 1, { recurrence: "monthly" }),

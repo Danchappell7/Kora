@@ -57,6 +57,8 @@ export interface Workspace {
   updateRhythm?: UpdateRhythm | null;
   /** 0058 workspaces.rollout: the rollout checklist (null: nothing planned yet). Absent before 0058. */
   rollout?: RolloutPlan | null;
+  /** when it was made (workspaces.created_at; the demo's seed has none: a business going a while) */
+  createdAt?: string;
 }
 
 /** 0058: a workspace's rollout plan. Each part is optional; the champion and the pilot group are
@@ -700,6 +702,10 @@ export interface TemplateTask {
   fromAnchor?: number;
   /** a key date (Task.isMilestone): it keeps its own day, a weekend included */
   milestone?: boolean;
+  /** business packs: due on this day of the month (the next one from the day it's used: "by the 10th") */
+  dayOfMonth?: number;
+  /** business packs: a routine the team picks up (opening checks, say): nobody's yet, in a team workspace */
+  forTeam?: boolean;
 }
 /** A request form; `poster` (business packs) is the wording of its printable QR poster. */
 export interface TemplateForm { name: string; description?: string; fields: FormFieldKey[]; poster?: { headline: string; line?: string } }
@@ -804,6 +810,8 @@ export interface PlannedTask {
   focusMin: number;
   recurrence: Recurrence;
   milestone?: boolean;
+  /** left for the team (unassigned in a team workspace) */
+  forTeam?: boolean;
 }
 export interface PlannedProject {
   key: string;

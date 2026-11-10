@@ -50,7 +50,11 @@ describe("applyPackPlan", () => {
     expect(a.notYet).toEqual([]);
     expect(a.projects.map((p) => p.name)).toEqual(["New studio opening", "Timetable change", "Instructor onboarding", "Studio maintenance", "Studio routines"]);
     expect(a.tasks).toHaveLength(34);
-    expect(a.tasks.every((t) => t.assigneeId === "u-me" && t.status === "todo" && !t.planToday)).toBe(true);
+    expect(a.tasks.every((t) => t.status === "todo" && !t.planToday)).toBe(true);
+    // the daily opening and closing checklists are the team's to pick up; the rest is yours
+    const team = a.tasks.filter((t) => t.assigneeId === "");
+    expect(team.map((t) => t.title).sort()).toEqual(["Closing checklist", "Opening checklist"]);
+    expect(a.tasks.filter((t) => t.assigneeId !== "").every((t) => t.assigneeId === "u-me")).toBe(true);
     expect(a.tasks.find((t) => t.title === "Opening day")).toMatchObject({ isMilestone: true, dueDate: "2027-02-08" });
     expect(a.forms.map((f) => f.name)).toEqual(["Report a maintenance problem"]);
     expect(a.rules.map((r) => r.name)).toEqual(["New reports land in Reported"]);
@@ -167,6 +171,27 @@ describe("applyPackPlan", () => {
     const gym = a.projects.find((p) => p.name === "North Gym")!;
     expect(a.portfolios.map((pf) => [pf.name, pf.projectIds])).toEqual([["North Gym", [gym.id]], ["Harbour Cafe", [a.projects.find((p) => p.name === "Harbour Cafe")!.id]]]);
     expect(a.tasks.filter((t) => t.projectId === gym.id).map((t) => t.title)).toContain("North Gym: agree this year's plan and budget");
+  });
+
+  it("a business already in Kanbo: its portfolio goes in Personal, holding its own projects too", async () => {
+    const holding = findPack("pack-holding")!;
+    const plan = buildPackPlan(holding, pick(holding, { businesses: ["Reco HQ", "North Gym"] }), ctx({ projectsOf: (b) => (b === "Reco HQ" ? ["p-reco"] : null) }));
+    const { deps } = fakeDeps();
+    const a = await applyPackPlan(plan, { workspaceId: "ws-h", me: "u-me" }, deps);
+    const reco = a.projects.find((p) => p.name === "Reco HQ")!;
+    expect(a.portfolios.map((pf) => [pf.name, pf.workspaceId, pf.projectIds])).toEqual([
+      ["Reco HQ", null, [reco.id, "p-reco"]],
+      ["North Gym", "ws-h", [a.projects.find((p) => p.name === "North Gym")!.id]],
+    ]);
+  });
+
+  it("the team's routines are nobody's yet in a team workspace, and yours in Personal", async () => {
+    const venue = findPack("pack-venue")!;
+    const plan = buildPackPlan(venue, pick(venue), ctx());
+    const team = await applyPackPlan(plan, { workspaceId: "ws-1", me: "u-me" }, fakeDeps().deps);
+    expect(team.tasks.filter((t) => !t.assigneeId).map((t) => t.title).sort()).toEqual(["Closing checks", "Opening checks"]);
+    const mine = await applyPackPlan(plan, { workspaceId: null, me: "u-me" }, fakeDeps().deps);
+    expect(mine.tasks.every((t) => t.assigneeId === "u-me")).toBe(true);
   });
 
   it("counts what was made for the summary", async () => {

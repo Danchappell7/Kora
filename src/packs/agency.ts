@@ -34,7 +34,7 @@ export const AGENCY_PACK: WorkspaceTemplate = {
   projects: [
     {
       key: "campaign", name: "Client campaign", emoji: "📣", hue: "orchid",
-      description: "One campaign from signed brief to results, with clear approval rounds.",
+      description: "One campaign from signed brief to results, with clear approval rounds. For each new campaign, use Duplicate in this project's menu.",
       sections: ["Brief", "Concepts", "Production", "Client review", "Live"],
       tasks: [
         t("Brief", "Brief signed off by the client", 3, 1, { priority: "high", description: "Use **Creative brief** in this project's docs. Nothing starts until it's signed off." }),

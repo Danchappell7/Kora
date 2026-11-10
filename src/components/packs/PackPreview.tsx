@@ -37,11 +37,12 @@ export function keyResultTarget(k: Pick<TemplateKeyResult, "target" | "unit" | "
 }
 
 /** "Mon 9 Feb · weekly" · "Today" · "Fri 13 Feb · key date" */
-function taskWhen(t: PlannedTask, today: string): string {
+function taskWhen(t: PlannedTask, today: string, team: boolean): string {
   const bits: string[] = [];
   if (t.dueDate) bits.push(cap(dueDayWords(t.dueDate, today)));
   if (t.recurrence !== "none") bits.push(templateRepeatLabel(t.recurrence).toLowerCase());
   if (t.milestone) bits.push("key date");
+  if (t.forTeam && team) bits.push("for the team");
   return bits.join(" · ");
 }
 
@@ -129,7 +130,10 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
 
         {pack.perBusiness && (
           <Section title="Businesses in the group" count={pick.businesses.filter((b) => b.trim()).length} id={`${uid}-biz`}>
-            <p className="kbpk-hint">Each one gets a project for its numbers and reviews, and a portfolio of its own to add its projects to.</p>
+            <p className="kbpk-hint">
+              Each one gets a project for its numbers and reviews, and a portfolio of its own to add its projects to.
+              {pick.businesses.some((b) => b.trim() && context.projectsOf?.(b)) && " One that's already in Kanbo gets its portfolio in Personal, with its own projects already in it."}
+            </p>
             <ul className="kbpk-biz">
               {pick.businesses.map((b, i) => (
                 <li key={i} className="kbpk-bizrow">
@@ -168,7 +172,7 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
                         {pp.tasks.map((t, i) => (
                           <li key={i} data-milestone={t.milestone || undefined}>
                             <span className="kbpk-tt">{t.title}</span>
-                            <span className="kbpk-tw">{taskWhen(t, today)}</span>
+                            <span className="kbpk-tw">{taskWhen(t, today, !!context.team)}</span>
                           </li>
                         ))}
                       </ol>
@@ -186,10 +190,10 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
 
         {(pack.goals?.length ?? 0) > 0 && (
           <Section title="Goals" count={context.canSetGoals ? plan.goals.length : 0} id={`${uid}-goals`}
-            aside={(
+            aside={context.canSetGoals && (
               <label className="kbpk-inline">
                 <span>For</span>
-                <select className="kbpk-field" data-size="sm" value={pick.quarter} disabled={!context.canSetGoals}
+                <select className="kbpk-field" data-size="sm" value={pick.quarter}
                   onChange={(e) => { const v = e.target.value; flow.edit((pk) => ({ ...pk, quarter: v })); }}>
                   {packQuarterChoices(context.today).map((q) => <option key={q.value} value={q.value}>{q.label}</option>)}
                 </select>
@@ -201,7 +205,7 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
               {pack.goals!.map((g) => {
                 const checked = context.canSetGoals && on(packPart.goal(g.key));
                 const meta = [
-                  context.goalsV2 && "owned by you",
+                  context.goalsV2 && context.canSetGoals && "owned by you",
                   g.span === "year" && `for ${year}`,
                   g.project && (projOn(g.project) ? `progress follows ${projectName(g.project)}` : `${projectName(g.project)} is unticked`),
                 ].filter(Boolean).join(" · ");
@@ -285,13 +289,17 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
                 lead={<span className="kbpk-glyph" data-kind="updates"><Icon name="calendar" size={12} sw={2} /></span>}
                 name={`Project ${updateDayWords(pack.updateRhythm).charAt(0).toLowerCase()}${updateDayWords(pack.updateRhythm).slice(1)}`}
                 meta={context.canSetUpdateDay
-                  ? `Each project's owner is reminded to post a short update${context.mode === "project" ? ". This changes the update day for the whole workspace." : "."}`
+                  ? `Each project's owner is reminded to post a short update${context.mode === "project" && !context.newWorkspace ? ". This changes the update day for the whole workspace." : "."}`
                   : context.updateDayNote ?? "The update day stays as it is."} />
             </ul>
           </Section>
         )}
       </fieldset>
-      <p className="kbpk-foot-note">Starter tasks are assigned to you. Rename, move or delete anything afterwards.</p>
+      <p className="kbpk-foot-note">
+        {context.team && plan.projects.some((p) => p.tasks.some((t) => t.forTeam))
+          ? "Starter tasks are assigned to you, and daily routines are left for whoever's on shift to pick up. Rename, move or delete anything afterwards."
+          : "Starter tasks are assigned to you. Rename, move or delete anything afterwards."}
+      </p>
     </div>
   );
 }
