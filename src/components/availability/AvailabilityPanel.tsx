@@ -48,7 +48,8 @@ export function AvailabilityPanel({ workspaceId, userId, name, isSelf, myRole }:
       </div>
     );
   }
-  if (!seesTimeOff(workspaceId, s) && !isSelf) return null;
+  // (a guest at this business sees none of it, their own included: guests read and comment only)
+  if (!seesTimeOff(workspaceId, s)) return null;
   const guest = roleOf(workspaceId, userId, s) === "guest";
   const say = (r: { ok: boolean; message?: string }, done: string) => {
     if (!toast) return;

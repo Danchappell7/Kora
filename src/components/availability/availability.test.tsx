@@ -6,6 +6,9 @@ import { resetDemoAvailability } from "../../lib/availabilitySync";
 import { ToastProvider } from "../Toast";
 import { OffChip, OffNote, OffTag } from "./OffChip";
 import { AvailabilityPanel } from "./AvailabilityPanel";
+import { useAvailabilitySync } from "./useAvailability";
+import * as brief from "../../lib/brief";
+import type { WorkspaceMember } from "../../data/types";
 
 // Tuesday 10 November 2026, mid-morning
 const NOW = new Date(2026, 10, 10, 10);
@@ -120,5 +123,34 @@ describe("a person's week and time off, in their profile", () => {
     const { unmount } = panel();
     expect(screen.getAllByText("Shared hours and time off aren't switched on yet. They need the 0055 database update.").length).toBeGreaterThan(0);
     unmount();
+  });
+});
+
+describe("useAvailabilitySync", () => {
+  const wm = (userId: string, role: WorkspaceMember["role"], workspaceId = "ws-foundrise"): WorkspaceMember =>
+    ({ id: `wm-${workspaceId}-${userId}`, workspaceId, userId, email: `${userId}@x.io`, name: userId, role, status: "active" });
+  function Host(props: { members: WorkspaceMember[]; enabled?: boolean; onShared?: (n: number) => void }) {
+    useAvailabilitySync({ me: "m-self", workspace: "ws-foundrise", members: props.members, today: "2026-11-10", enabled: props.enabled ?? true, onShared: props.onShared });
+    return null;
+  }
+  afterEach(() => brief.setWorkingDay(480, 1080));
+
+  it("knows who's where, loads the shared weeks, hands this device's capacities over once and sets Today's working day", async () => {
+    localStorage.setItem("kanbo-capacity", JSON.stringify({ "m-2": 30 }));
+    const onShared = vi.fn();
+    const members = [wm("m-self", "owner"), wm("m-1", "member"), wm("m-2", "member"), wm("m-4", "guest", "ws-northlight")];
+    render(<Host members={members} onShared={onShared} />);
+    await waitFor(() => expect(getAvailability().status).toBe("on"));
+    expect(getAvailability()).toMatchObject({ me: "m-self", activeWs: "ws-foundrise", roles: { "ws-foundrise": { "m-self": "owner", "m-1": "member", "m-2": "member" }, "ws-northlight": { "m-4": "guest" } } });
+    await waitFor(() => expect(onShared).toHaveBeenCalledWith(1));
+    expect(getAvailability().weeks.find((w) => w.userId === "m-2")?.weeklyHours).toBe(30);
+    // your week here sets the working day
+    await act(async () => { updateAvailability((st) => ({ weeks: [...st.weeks, { workspaceId: "ws-foundrise", userId: "m-self", weeklyHours: null, workDays: [1, 2, 3, 4, 5], dayStart: 450, dayEnd: 990 }] })); });
+    expect([brief.WORK_START, brief.WORK_END]).toEqual([450, 990]);
+  });
+  it("waits until it's enabled (the real account is known)", async () => {
+    render(<Host members={[wm("m-self", "owner")]} enabled={false} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(getAvailability().status).toBe("unknown");
   });
 });

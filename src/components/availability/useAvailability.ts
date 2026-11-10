@@ -56,15 +56,17 @@ export function useAvailabilitySync({ me, workspace, members, today, enabled, on
     if (!enabled) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop = () => {};
+    const later = () => { clearTimeout(timer); timer = setTimeout(() => { if (alive) void refreshAvailability(todayRef.current); }, RELOAD_MS); };
     const load = async () => {
       const status = await refreshAvailability(todayRef.current);
       if (!alive || status !== "on") return;
+      // live only once the tables are there (before 0055 a channel naming them is refused)
+      stop = subscribeAvailabilityChanges(later);
       const n = await uploadLocalCapacities();
       if (alive && n > 0) shared.current?.(n);
     };
     void load();
-    const later = () => { clearTimeout(timer); timer = setTimeout(() => { if (alive) void refreshAvailability(todayRef.current); }, RELOAD_MS); };
-    const stop = subscribeAvailabilityChanges(later);
     const onVisible = () => { if (document.visibilityState === "visible") later(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { alive = false; clearTimeout(timer); stop(); document.removeEventListener("visibilitychange", onVisible); };
