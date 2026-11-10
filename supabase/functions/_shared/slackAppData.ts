@@ -19,6 +19,11 @@
 // webhooks and checks as POST /v1/tasks — the Slack app is just another
 // way in, never a way round.
 //
+// Project access (0058): a link preview is read by the whole channel, so a
+// card says whether its project is open to the whole workspace (closedProject:
+// the switch is on and the project is Members only or Private). Both come
+// from the row as JSON (to_jsonb), so a database before 0058 just says "open".
+//
 // Pure (Tx / UserDb are interfaces): the PGlite replay runs these against
 // the real migrations (scratchpad/pgtest-slack), vitest the edges.
 // ============================================================
@@ -166,9 +171,9 @@ const asPerson = <T>(db: SlackDb, userId: string, ws: string | null, readOnly: b
   db.withUser({ userId, workspaceId: ws, readOnly }, fn);
 
 const MEMBER_NAME = `coalesce(nullif(btrim(coalesce(pr.first_name, '') || ' ' || coalesce(pr.last_name, '')), ''), nullif(m.name, ''), m.email)`;
-/** a task's project (tasks.project_id is text: a uuid, or "p-personal") */
+/** a task's project (tasks.project_id is text: a uuid, or "p-personal"); visibility (0058) read as JSON, null before it */
 const PROJECT_JOIN = `left join lateral (
-    select p.name, p.emoji from public.projects p
+    select p.name, p.emoji, to_jsonb(p) ->> 'visibility' as visibility from public.projects p
      where case when t.project_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then p.id = t.project_id::uuid else false end
   ) p on true`;
 const ASSIGNEE_NAME = `(select ${MEMBER_NAME} from public.workspace_members m left join public.profiles pr on pr.id = m.user_id
@@ -229,11 +234,24 @@ export async function taskScope(db: SlackDb, userId: string, taskId: string): Pr
 export interface CardRow {
   id: string; title: string; status: string; priority: string; workspace_id: string | null; due_date: string | null; due_time: string | null;
   assignee_id: string | null; user_id: string; created_at: string | Date; project_name: string | null; project_emoji: string | null; assignee_name: string | null;
+  /** 0058: the project's visibility and the workspace's switch, as JSON text (null before 0058) */
+  project_visibility?: string | null; access_on?: string | null;
 }
+/** the workspace's Project access switch (0058) as JSON text: "true" / "false", null before 0058 */
+const ACCESS_ON = (ws: string) => `(select to_jsonb(paw) ->> 'project_access' from public.workspaces paw where paw.id = ${ws})`;
 const CARD_COLS = `t.id::text as id, t.title, t.status, t.priority, t.workspace_id::text as workspace_id, t.due_date::text as due_date, t.due_time,
-  t.assignee_id, t.user_id::text as user_id, t.created_at, p.name as project_name, p.emoji as project_emoji, ${ASSIGNEE_NAME} as assignee_name`;
+  t.assignee_id, t.user_id::text as user_id, t.created_at, p.name as project_name, p.emoji as project_emoji, ${ASSIGNEE_NAME} as assignee_name,
+  p.visibility as project_visibility, ${ACCESS_ON("t.workspace_id")} as access_on`;
 
-export interface LoadedCard extends TaskCard { workspaceId: string | null; createdBy: string; createdAt: string }
+/** Is a project closed to the whole workspace (0058: the switch on, and Members only or Private)? */
+export const isClosedProject = (accessOn: unknown, visibility: unknown) =>
+  String(accessOn ?? "") === "true" && typeof visibility === "string" && visibility !== "" && visibility !== "workspace";
+
+export interface LoadedCard extends TaskCard {
+  workspaceId: string | null; createdBy: string; createdAt: string;
+  /** its project isn't open to the whole workspace (0058): a channel sees a neutral card */
+  closedProject: boolean;
+}
 /**
  * A row → a card. assigneeName is the assignee's real name, never "You": a link preview is read by the
  * whole channel, not just the person who shared it. The cards only that person sees (their own
@@ -246,6 +264,7 @@ export function toCard(r: CardRow, me: string): LoadedCard {
     projectName: r.project_name, projectEmoji: r.project_emoji, personal: r.workspace_id == null,
     dueDate: r.due_date, dueTime: r.due_time, assigneeName: r.assignee_name,
     assignedToMe: !!r.assignee_id && r.assignee_id === me, workspaceId: r.workspace_id, createdBy: r.user_id, createdAt: created,
+    closedProject: isClosedProject(r.access_on, r.project_visibility),
   };
 }
 
@@ -259,16 +278,19 @@ export async function loadCard(db: SlackDb, userId: string, ws: string | null, t
   return rs[0] ? toCard(rs[0], userId) : null;
 }
 
-/** A project link's preview data (team workspace only). */
+/** A project link's preview data (team workspace only); closedProject: not open to the whole workspace (0058). */
 export async function loadProjectCard(db: SlackDb, userId: string, ws: string, projectId: string) {
   if (!isUuid(projectId)) return null;
-  const rs = await asPerson(db, userId, ws, true, (tx) => tx.query<{ id: string; name: string; emoji: string | null; description: string | null; open: number; done: number }>(
-    `select p.id::text as id, p.name, p.emoji, p.description,
+  const rs = await asPerson(db, userId, ws, true, (tx) => tx.query<{ id: string; name: string; emoji: string | null; description: string | null; open: number; done: number; visibility: string | null; access_on: string | null }>(
+    `select p.id::text as id, p.name, p.emoji, p.description, to_jsonb(p) ->> 'visibility' as visibility, ${ACCESS_ON("p.workspace_id")} as access_on,
             (select count(*)::int from public.tasks t where t.project_id = p.id::text and t.parent_id is null and t.archived_at is null and t.status <> 'done') as open,
             (select count(*)::int from public.tasks t where t.project_id = p.id::text and t.parent_id is null and t.archived_at is null and t.status = 'done') as done
        from public.projects p where p.id = $1::uuid and p.workspace_id = $2::uuid and p.archived_at is null`, [projectId, ws]));
   const r = rs[0];
-  return r ? { id: r.id, name: r.name, emoji: r.emoji, description: r.description, openCount: Number(r.open) || 0, doneCount: Number(r.done) || 0 } : null;
+  return r ? {
+    id: r.id, name: r.name, emoji: r.emoji, description: r.description, openCount: Number(r.open) || 0, doneCount: Number(r.done) || 0,
+    closedProject: isClosedProject(r.access_on, r.visibility),
+  } : null;
 }
 
 /** App Home: what's due today or overdue for the person (assigned to them in the team workspace, or in their Personal list). */

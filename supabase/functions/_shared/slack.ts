@@ -430,6 +430,8 @@ export interface StandupInput {
   /** YYYY-MM-DD: the first day "done" counts from (default: the last workday) */
   since?: string;
   tz?: string;
+  /** tasks in Members only and Private projects (0058, Project access on): never named, only counted */
+  privateTasks?: StandupTaskRow[];
 }
 
 const MAX_TITLES = 5;
@@ -457,18 +459,13 @@ export function buildStandupText(input: StandupInput): string {
   const today = input.today;
   const since = input.since ?? lastWorkdayIso(today);
   const tz = input.tz ?? "Europe/London";
-  const tasks = input.tasks.filter((t) => !t.archived_at);
   const doneByEvent = new Set((input.events ?? [])
     .filter((e) => e.field === "status" && e.new_value === "done" && zonedNow(new Date(e.created_at), tz).day >= since)
     .map((e) => e.task_id));
-  const finished = tasks.filter((t) => t.status === "done" && ((!!t.completed_at && t.completed_at.slice(0, 10) >= since) || doneByEvent.has(t.id)));
-  const open = tasks.filter((t) => t.status !== "done");
-  const blocked = open.filter((t) => t.status === "blocked");
-  // an overdue task is listed once, as overdue, whatever else it is
-  const overdue = open.filter((t) => t.status !== "blocked" && !!t.due_date && t.due_date < today);
-  const late = new Set(overdue.map((t) => t.id));
-  const doing = open.filter((t) => (t.status === "progress" || t.status === "review") && !late.has(t.id));
-  const dueToday = open.filter((t) => t.status === "todo" && t.due_date === today);
+  const { finished, doing, dueToday, overdue, blocked } = standupGroups(input.tasks, doneByEvent, today, since);
+  // private work is counted, never named: the tasks of it the stand-up would have listed
+  const hidden = standupGroups(input.privateTasks ?? [], doneByEvent, today, since);
+  const hiddenCount = new Set([...hidden.finished, ...hidden.doing, ...hidden.dueToday, ...hidden.overdue, ...hidden.blocked].map((t) => t.id)).size;
 
   const firsts = new Map<string, number>();
   input.members.forEach((m) => { const f = firstNameOf(m.name); firsts.set(f, (firsts.get(f) ?? 0) + 1); });
@@ -503,5 +500,19 @@ export function buildStandupText(input: StandupInput): string {
 
   const lines = people.slice(0, MAX_PEOPLE);
   if (people.length > MAX_PEOPLE) lines.push(`…and ${people.length - MAX_PEOPLE} more people.`);
-  return [`*Stand-up — ${fmtDay(today)}*`, lede.join(" "), "", ...(lines.length ? lines : ["Nobody has anything to report yet."])].join("\n");
+  const tail = hiddenCount ? [`+${counted(hiddenCount, "task", "tasks")} in private projects`] : [];
+  return [`*Stand-up — ${fmtDay(today)}*`, lede.join(" "), "", ...(lines.length ? lines : ["Nobody has anything to report yet."]), ...tail].join("\n");
+}
+
+/** The stand-up's groups. An overdue task is in one group only, as overdue, whatever else it is. */
+function standupGroups(rows: readonly StandupTaskRow[], doneByEvent: ReadonlySet<string>, today: string, since: string) {
+  const tasks = rows.filter((t) => !t.archived_at);
+  const finished = tasks.filter((t) => t.status === "done" && ((!!t.completed_at && t.completed_at.slice(0, 10) >= since) || doneByEvent.has(t.id)));
+  const open = tasks.filter((t) => t.status !== "done");
+  const blocked = open.filter((t) => t.status === "blocked");
+  const overdue = open.filter((t) => t.status !== "blocked" && !!t.due_date && t.due_date < today);
+  const late = new Set(overdue.map((t) => t.id));
+  const doing = open.filter((t) => (t.status === "progress" || t.status === "review") && !late.has(t.id));
+  const dueToday = open.filter((t) => t.status === "todo" && t.due_date === today);
+  return { finished, doing, dueToday, overdue, blocked };
 }

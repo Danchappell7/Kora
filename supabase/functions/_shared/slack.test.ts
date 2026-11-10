@@ -275,6 +275,28 @@ describe("buildStandupText", () => {
     expect(text).toContain("Nothing has been finished since Friday. Nothing is in progress and nothing is blocked.");
     expect(text.endsWith("Nobody has anything to report yet.")).toBe(true);
   });
+  it("Project access (0058): private work is counted in one line, never named", () => {
+    const text = buildStandupText({
+      today, members,
+      tasks: [t("a", { status: "progress" })],
+      privateTasks: [
+        t("p1", { title: "Salary bands", status: "progress", assignee_id: "u2" }),
+        t("p2", { title: "Board pack", due_date: "2026-10-01" }),                       // overdue
+        t("p3", { title: "Payroll run", status: "done", completed_at: "2026-10-05" }),
+        t("p4", { title: "Someday", status: "todo" }),                                  // nothing to report: not counted
+        t("p5", { title: "Old", status: "done", completed_at: "2026-09-01" }),           // too old: not counted
+      ],
+    });
+    const lines = text.split("\n");
+    expect(lines[lines.length - 1]).toBe("+3 tasks in private projects");
+    // the lede and the people are the open work's only
+    expect(lines[1]).toBe("Nothing has been finished since yesterday. 1 is in progress and nothing is blocked.");
+    expect(lines).toContain("• *Maya* — doing: Task a");
+    for (const secret of ["Salary", "Board pack", "Payroll", "Tom"]) expect(text).not.toContain(secret);
+    expect(buildStandupText({ today, members, tasks: [], privateTasks: [t("p1", { status: "blocked" })] }).endsWith("Nobody has anything to report yet.\n+1 task in private projects")).toBe(true);
+    // nothing private to report: no line (and none before 0058 / with the switch off)
+    expect(buildStandupText({ today, members, tasks: [], privateTasks: [t("p4", { status: "todo" })] })).toBe(buildStandupText({ today, members, tasks: [] }));
+  });
   it("caps long lists and disambiguates first names", () => {
     const many = Array.from({ length: 8 }, (_, i) => t(`x${i}`, { status: "progress" }));
     const text = buildStandupText({ today, members: [{ id: "u1", name: "Sam Lee" }, { id: "u2", name: "Sam Cole" }], tasks: many });

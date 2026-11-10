@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ACTIONS, cardFacts, createdMessage, createModal, decodeMeta, descriptionFromMessage, dueLabel, encodeMeta, helpMessage, homeView, link,
-  linkPromptMessage, LIMITS, noticeMessage, optionsPayload, projectUnfurl, publicName, readModal, taskUnfurl, taskUrl, titleFromMessage, undoneMessage,
+  linkPromptMessage, LIMITS, noticeMessage, optionsPayload, privateUnfurl, projectUnfurl, publicName, readModal, taskUnfurl, taskUrl, titleFromMessage, undoneMessage,
   updatedMessage, type TaskCard,
 } from "./slackAppBlocks.ts";
 
@@ -208,6 +208,20 @@ describe("unfurls and Home", () => {
     const s = JSON.stringify(u);
     for (const bit of ["Ship it", "In progress", "Fri 23 Oct, 15:00", ACTIONS.complete, `${APP}/?task=${ID}`]) expect(s).toContain(bit);
     expect(JSON.stringify(taskUnfurl({ ...card, status: "done" }, APP))).not.toContain(ACTIONS.complete);
+  });
+  it("a private project's link (0058): a neutral card that names nothing, with only Open in Kanbo", () => {
+    for (const kind of ["task", "project"] as const) {
+      const u = privateUnfurl(kind, ID, APP);
+      const s = JSON.stringify(u);
+      expect(s).toContain(kind === "task" ? "A task in a private Kanbo project" : "A private Kanbo project");
+      expect(s).toContain("Open in Kanbo");
+      expect(s).toContain(kind === "task" ? `${APP}/?task=${ID}` : `${APP}/p/${ID}`);
+      expect(s).not.toContain(ACTIONS.complete);
+      expect(s).not.toContain(ACTIONS.assignMe);
+      // nothing from the card: no title, project, status, assignee or counts
+      for (const bit of ["Launch", "In progress", "U999", "open task", "Fri 23 Oct"]) expect(s).not.toContain(bit);
+      expect(s).not.toContain(card.title.slice(0, 12));
+    }
   });
   it("Home: unlinked people see how to link, never tasks", () => {
     const v = homeView({ linked: false, appUrl: APP });

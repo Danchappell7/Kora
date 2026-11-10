@@ -35,6 +35,11 @@
 // Everything shown in Slack is built in slackAppBlocks.ts (escaped). The bot
 // token and signing secret never reach a log line, a reply or the database.
 //
+// Project access (0058): a channel is the whole team's, so a link to a
+// Members only or Private project (or a task in one) unfurls as a neutral
+// card, even for someone who can see it, owners too. Replies only the person
+// sees (their confirmation, the Home tab) are theirs and stay as they are.
+//
 // Pure (database, Slack and the clock are passed in): vitest drives it with
 // a stubbed Slack Web API (slackAppHandler.test.ts); the PGlite replay runs
 // it against the real migrations (scratchpad/pgtest-slack).
@@ -45,7 +50,7 @@ import { verifySlackRequest } from "./slackAppVerify.ts";
 import type { SlackApi, SlackApiAnswer } from "./slackAppApi.ts";
 import {
   ACTIONS, createdMessage, createModal, decodeMeta, descriptionFromMessage, helpMessage, homeView, linkPromptMessage, MODAL_CALLBACK,
-  noticeMessage, optionsPayload, personalOption, PERSONAL, projectUnfurl, readModal, SHORTCUT_CALLBACK, taskUnfurl, titleFromMessage,
+  noticeMessage, optionsPayload, personalOption, PERSONAL, privateUnfurl, projectUnfurl, readModal, SHORTCUT_CALLBACK, taskUnfurl, titleFromMessage,
   undoneMessage, updatedMessage, BLOCK, type ModalMeta, type SlackMessage, type TaskCard,
 } from "./slackAppBlocks.ts";
 import { decodeSlackText, parseSlackTask, readableSlackText, resolveMention, safeTz, slashIntent, zonedToday, type Member } from "./slackAppParse.ts";
@@ -660,12 +665,13 @@ async function onLinkShared(deps: SlackAppDeps, teamId: string, slackUserId: str
   for (const url of links) {
     const target = kanboLinkTarget(url, deps.appUrl);
     if (!target) continue;
+    // a channel is the whole team's: a Members only or Private project (0058) unfurls as a neutral card
     if (target.kind === "task") {
       const card = await loadCard(deps.db, link.userId, ws, target.id);
-      if (card) unfurls[url] = taskUnfurl(card, deps.appUrl);
+      if (card) unfurls[url] = card.closedProject ? privateUnfurl("task", card.id, deps.appUrl) : taskUnfurl(card, deps.appUrl);
     } else {
       const proj = await loadProjectCard(deps.db, link.userId, ws, target.id);
-      if (proj) unfurls[url] = projectUnfurl(proj, deps.appUrl);
+      if (proj) unfurls[url] = proj.closedProject ? privateUnfurl("project", proj.id, deps.appUrl) : projectUnfurl(proj, deps.appUrl);
     }
   }
   if (!Object.keys(unfurls).length) return;

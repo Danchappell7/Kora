@@ -413,6 +413,22 @@ export function projectUnfurl(p: { id: string; name: string; emoji?: string | nu
   };
 }
 
+/**
+ * The preview for a link to a Members only or Private project, or to a task in one (0058, Project access on).
+ * The whole channel reads a preview, and a Slack channel is the whole team's: it names nothing (no title,
+ * status, assignee or counts), only where to open it. Kanbo shows the rest to whoever may see it.
+ */
+export function privateUnfurl(kind: "task" | "project", id: string, appUrl: string): Json {
+  const url = kind === "task" ? taskUrl(appUrl, id) : projectUrl(appUrl, id);
+  return {
+    blocks: [
+      section(kind === "task" ? ":lock: *A task in a private Kanbo project*" : ":lock: *A private Kanbo project*"),
+      { type: "actions", block_id: "private_actions", elements: [button("Open in Kanbo", ACTIONS.open, { url, value: id })] },
+      context("Only the people on it can see it in Kanbo."),
+    ],
+  };
+}
+
 /* ------------------------------------------------------------ App Home */
 
 export interface HomeTask extends TaskCard { overdue?: boolean }

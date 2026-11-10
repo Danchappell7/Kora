@@ -11,6 +11,12 @@
 // blocked): buildStandupText in _shared/slack.ts. It follows Pulse closely
 // but doesn't need to match it word for word.
 //
+// A channel is the whole team's: with Project access on (0058), tasks in
+// Members only and Private projects are never named, only counted in one
+// line ("+3 tasks in private projects"). If that can't be checked, nothing
+// is posted (recorded as kanbo_error, and the next run tries again). Before
+// 0058, or with the switch off, every task is named, as before.
+//
 // Only the scheduler may run it: x-cron-secret: <CRON_SECRET>, or the
 // service-role key as a bearer token. Anyone else gets 401.
 //
@@ -42,6 +48,8 @@ import {
   isWeekday, lastWorkdayIso, safeErrorNote, zonedNow, type StandupEventRow, type StandupMember, type StandupTaskRow,
 } from "../_shared/slack.ts";
 import { clearStandupFailure, markStandupHeartbeat, recordStandupFailure } from "../_shared/slackHealth.ts";
+import { projectAccess } from "../_shared/projectAccess.ts";
+import { splitStandupTasks } from "../_shared/slackAccess.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PAGE = 1000;
@@ -189,6 +197,8 @@ async function standupFor(supa: Db, workspaceId: string, today: string, tz: stri
     for (const p of data ?? []) archived.add(p.id);
   }
   const live = tasks.filter((t) => !archived.has(String(t.project_id ?? "")));
+  // Members only and Private projects (0058): counted, never named. A failed check throws: nothing is posted
+  const { open, hidden } = splitStandupTasks(live, await projectAccess(supa).closedProjects(workspaceId));
 
   // status changes to done since the last workday, for tasks without a completed_at
   const doneIds = live.filter((t) => t.status === "done" && !t.completed_at).map((t) => t.id);
@@ -200,7 +210,7 @@ async function standupFor(supa: Db, workspaceId: string, today: string, tz: stri
     events.push(...((data ?? []) as StandupEventRow[]));
   }
 
-  return buildStandupText({ tasks: live, events, members, today, since, tz });
+  return buildStandupText({ tasks: open, privateTasks: hidden, events, members, today, since, tz });
 }
 
 function safeEq(a: string, b: string) {

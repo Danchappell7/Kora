@@ -19,12 +19,19 @@
 //   4xx/5xx { error: "<sentence>", reason, retryAfter?, detail? }
 //        400 invalid · 401 not signed in · 403 not_allowed · 409 not_connected
 //        429 rate_limited · 502 slack_rejected · 503 unavailable (0043 not run)
+//        post_status only: 404 invalid (no such project, or the person posting
+//        can't see it: it's read as them) · 403 private_project ("This project
+//        is private, so it isn't posted to the team channel.": Project access
+//        is on and it's Members only or Private, 0058) · 503 unavailable
+//        (who can see it couldn't be checked: nothing is posted)
 //
 // Who may do what (decided by the database's own slack_status(), called as
 // the caller, so it's the same rule as everywhere else):
 //   test, status owners and admins (can_manage)
 //   post_*       owners, admins and members (can_post); never guests,
 //                suspended or unapproved accounts, or outsiders
+// A channel is the whole team's, so a project update goes only for a project
+// open to the whole workspace (_shared/slackAccess.ts); before 0058, any.
 //
 // Safety: the URL is re-checked against the webhook rule before every
 // request and redirects are never followed (no SSRF through a stored URL);
@@ -47,6 +54,8 @@ import {
   type SlackMessageKind, type SlackStatusKind,
 } from "../_shared/slack.ts";
 import { clearStandupFailure, loadAutopostHealth } from "../_shared/slackHealth.ts";
+import { projectAccess } from "../_shared/projectAccess.ts";
+import { statusPostProject } from "../_shared/slackAccess.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -58,7 +67,7 @@ const MAX_BODY = 64_000;
 const SLACK_TIMEOUT_MS = 10_000;
 const ACTIONS: Record<string, SlackMessageKind> = { test: "test", post_standup: "standup", post_status: "status", post_risks: "risks" };
 
-type Reason = "invalid" | "not_allowed" | "not_connected" | "rate_limited" | "slack_rejected" | "unavailable";
+type Reason = "invalid" | "not_allowed" | "not_connected" | "rate_limited" | "slack_rejected" | "unavailable" | "private_project";
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 const refuse = (status: number, reason: Reason, error: string, extra: Record<string, unknown> = {}) =>
@@ -138,6 +147,14 @@ Deno.serve(async (req) => {
     if (!kind) return refuse(400, "invalid", "That request wasn't understood.");
     if (!s.connected) return refuse(409, "not_connected", "Slack isn't connected to this workspace.");
 
+    // ---- the project (post_status): read as the caller, and open to the whole channel (0058) ----
+    let projectName: string | undefined;
+    if (kind === "status") {
+      const check = await statusPostProject(asUser, projectAccess(admin), workspaceId, projectId);
+      if (!check.ok) return refuse(check.status, check.reason, check.error);
+      projectName = check.projectName;
+    }
+
     // ---- how often ----
     await sweep(admin);
     const limits = kind === "test"
@@ -165,12 +182,6 @@ Deno.serve(async (req) => {
     }
 
     const { data: ws } = await admin.from("workspaces").select("name").eq("id", workspaceId).maybeSingle();
-    let projectName: string | undefined;
-    if (kind === "status") {
-      const { data: p } = await admin.from("projects").select("id,name,workspace_id").eq("id", projectId).maybeSingle();
-      if (!p || String(p.workspace_id ?? "") !== workspaceId) return refuse(400, "invalid", "That project isn't in this workspace.");
-      projectName = p.name ?? undefined;
-    }
     const actorName = `${prof?.first_name ?? ""} ${prof?.last_name ?? ""}`.trim() || (user.email ? user.email.split("@")[0] : "") || "Someone";
     const link = appUrl ? (kind === "status" ? `${appUrl}/p/${projectId}` : kind === "test" ? appUrl : `${appUrl}/team/pulse`) : null;
     const message = buildSlackMessage({

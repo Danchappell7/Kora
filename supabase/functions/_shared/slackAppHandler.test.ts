@@ -40,6 +40,9 @@ interface Script {
   slackAdmin?: boolean;
   /** each as-the-person transaction takes this long */
   userDelayMs?: number;
+  /** what loadCard / loadProjectCard read as the person (a task card row, a project card row) */
+  card?: Record<string, unknown>;
+  projectCard?: Record<string, unknown>;
 }
 function harness(script: Script = {}, slackDelayMs = 0) {
   const sql: string[] = [];
@@ -65,6 +68,8 @@ function harness(script: Script = {}, slackDelayMs = 0) {
       }
       if (/from public\.slack_user_links/.test(text)) return (isLinked(args[1]) ? [{ user_id: MIA, slack_user_name: "Mia", can_act: script.canAct !== false }] : []) as T[];
       if (/from public\.slack_teams/.test(text)) return (script.ws === undefined ? [] : [{ team_name: "acme", ws: script.ws, ws_name: "Acme" }]) as T[];
+      if (script.card && /from public\.tasks t left join lateral/.test(text)) return [script.card] as T[];
+      if (script.projectCard && /from public\.projects p where p\.id = \$1::uuid and p\.workspace_id/.test(text)) return [script.projectCard] as T[];
       return [] as T[];
     },
   };
@@ -349,6 +354,34 @@ describe("events", () => {
     const at = h.sql.findIndex((q) => /update public\.slack_user_links/.test(q));
     expect(at).toBeGreaterThan(-1);
     expect(h.params[at]).toEqual(["TACME", "UMIA", true, null]);
+  });
+  it("link_shared (0058): a task or project closed to the workspace unfurls as a neutral card; an open one, before 0058 too, in full", async () => {
+    const WS = "aaaaaaaa-0000-4000-8000-0000000000ws";
+    const task = { id: MIA, title: "Salary bands", status: "progress", priority: "high", workspace_id: WS, due_date: null, due_time: null, assignee_id: null,
+      user_id: MIA, created_at: "2026-11-01T09:00:00Z", project_name: "Board pay", project_emoji: "💷", assignee_name: "Theo" };
+    const proj = { id: MIA, name: "Board pay", emoji: "💷", description: "Pay for the board", open: 3, done: 1 };
+    const share = async (script: Script, url: string) => {
+      const h = harness({ linked: true, ws: WS, ...script });
+      await h.run(event({ type: "event_callback", team_id: "TACME", event_id: `Ev-${Math.random()}`, event: { type: "link_shared", user: "UMIA", channel: "C1", message_ts: "1.2", links: [{ url }] } }));
+      await h.settle();
+      return JSON.stringify(h.calls.find((c) => c.method === "chat.unfurl")?.args ?? null);
+    };
+    const taskUrl = `https://www.kanbo.co.uk/?task=${MIA}`, projectUrl = `https://www.kanbo.co.uk/p/${MIA}`;
+    for (const visibility of ["members", "private"]) {
+      const t = await share({ card: { ...task, project_visibility: visibility, access_on: "true" } }, taskUrl);
+      expect(t).toContain("A task in a private Kanbo project");
+      for (const secret of ["Salary bands", "Board pay", "Theo", "In progress"]) expect(t).not.toContain(secret);
+      const p = await share({ projectCard: { ...proj, visibility, access_on: "true" } }, projectUrl);
+      expect(p).toContain("A private Kanbo project");
+      for (const secret of ["Board pay", "Pay for the board", "3 open"]) expect(p).not.toContain(secret);
+    }
+    // a Whole workspace project, the switch off, or a database before 0058 (no such fields): as before
+    for (const extra of [{ project_visibility: "workspace", access_on: "true" }, { project_visibility: "private", access_on: "false" }, {}]) {
+      expect(await share({ card: { ...task, ...extra } }, taskUrl)).toContain("Salary bands");
+    }
+    for (const extra of [{ visibility: "workspace", access_on: "true" }, { visibility: "members", access_on: "false" }, {}]) {
+      expect(await share({ projectCard: { ...proj, ...extra } }, projectUrl)).toContain("Board pay");
+    }
   });
   it("link_shared from someone unlinked: no unfurl, no task read", async () => {
     const h = harness({ linked: false });
