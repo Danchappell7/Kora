@@ -31,8 +31,10 @@ import {
   ImportTasksModal, OnboardingModal, WelcomeModal, QuickCapture, ExtractTasksSheet, ShutdownSheet, WeeklyReview,
   FocusMode, PlannerHost, TrialBanner, UpgradeModal, Paywall, likelyNext, everyScreen, prefetchRoute,
   TourHost, SetupChecklist, HelpMenu, QuickAddSheet, prefetchQuickAdd, TemplateLibrary, SaveAsTemplate, TodayStreak, TodayWins,
-  SlackLinkPage, GroupView, GoalPanelHost,
+  SlackLinkPage, GroupView, GoalPanelHost, MeetingsHost,
 } from "./lazyViews";
+// 0056 meetings: "Run meeting" and the Inbox's recaps ask the host (mounted the first time one's wanted)
+import { requestMeetingOpen, useMeetingRequest } from "./components/meetings/meetingBus";
 import type { GroupTarget } from "./components/views/GroupView";
 // 0053 project updates: the update day, Ask for an update, and your own on Today
 import { useTodayUpdates } from "./components/updates/TodayUpdates";
@@ -251,6 +253,10 @@ export default function App() {
   // the goal open in the goal panel (from a Goals row, a chip, the brief, Kanbo noticed, ⌘K); `checkin`: composer out
   // (one panel at a time: a goal opened from a task's Serves chip, Search or Kanbo noticed takes the task panel's place)
   const [goalPanel, setGoalPanel] = useState<{ id: string; checkin?: boolean } | null>(null);
+  // 0056: the meeting host (and its code) arrives the first time a meeting is started or opened
+  const meetingReq = useMeetingRequest();
+  const [meetingsOn, setMeetingsOn] = useState(false);
+  if (meetingReq && !meetingsOn) setMeetingsOn(true);
   const openGoal = useCallback((id: string, opts?: { checkin?: boolean }) => { setDetailId(null); setGoalPanel({ id, checkin: !!opts?.checkin }); }, []);
   const closeGoal = useCallback(() => setGoalPanel(null), []);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
@@ -639,7 +645,9 @@ export default function App() {
       || (a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace)
       || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace))
       // 0054: a project update (no task) belongs to its project's workspace (a portfolio's: its portfolio's)
-      || (a.kind === "update" && updateItemWorkspace(a, projects, portfolios) === workspace));
+      || (a.kind === "update" && updateItemWorkspace(a, projects, portfolios) === workspace)
+      // 0056: a meeting's recap, to its business
+      || (a.kind === "meeting" && (a.meta?.workspaceId ?? null) === workspace));
   }, [tasks, activity, workspace, projects, portfolios]);
   const scopedActivityRef = useRef<Activity[]>([]); scopedActivityRef.current = scopedActivity;
   // unread = not read on the server (any device), and not your own actions
@@ -2722,6 +2730,8 @@ export default function App() {
     const projs = [...new Set(built.map((t) => t.projectId))];
     toastSuccess(`${verb} ${plural(built.length, "task")}${projs.length === 1 ? ` ${verb === "Added" ? "to" : "into"} “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
     noteElsewhere(projs);
+    // (0056: a meeting links its actions to the tasks it made)
+    return built.map((t) => t.id);
   }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
 
   // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
@@ -4204,7 +4214,7 @@ export default function App() {
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
       case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
-        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} asks={updateAsks} />;
+        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} asks={updateAsks} runMeetings />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)
       case "portfolios": {
@@ -4259,6 +4269,8 @@ export default function App() {
           setUpdateFocus(a.meta?.statusUpdateId ?? null);
           setRoute(r);
         }}
+        // 0056: a meeting's recap opens it
+        onOpenMeeting={(a) => { if (a.meta?.meetingId) requestMeetingOpen(a.meta.meetingId); }}
         // 0048: bundles and the quiet-hours line follow your prefs ("Change" opens them); snoozes look after themselves
         notifyPrefs={profile?.notifyPrefs} onOpenNotificationSettings={() => openSettings("notifications")} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
@@ -4284,6 +4296,8 @@ export default function App() {
         personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })}
         // 0048: a task dropped on a person is handed to them (Undo); kudos read live
         onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson}
+        // 0056: Run meeting (never a guest's)
+        meeting={workspace && !personal && !activeReadOnly ? { workspaceId: workspace, preset: "team", canLead: isAdmin } : null}
         goalsSlot={<TeamGoals goals={goalFlow.goals.filter((g) => (g.workspaceId ?? null) === workspace)} reads={goalFlow.reads} today={KANBO_TODAY} onOpenGoal={openGoal} onOpenGoals={() => setRoute({ view: "goals" })} />} />;
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
@@ -4526,6 +4540,17 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       )}
+      {meetingsOn && (
+        <ErrorBoundary inline floating name="meetings">
+          <Suspense fallback={null}>
+            <MeetingsHost me={currentUserId} workspaces={workspaces} members={wsMembers} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
+              statusUpdates={statusUpdates} loadEvents={(ws, since) => store.listWorkspaceEventsSince(ws, since)}
+              createTasks={(rows) => importTasks(rows, { verb: "Added" })} onCreateProject={createProject}
+              aiExtract={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined} onOpenTask={setDetailId}
+              onOpenDoc={(projectId, docId) => { const p = projects.find((x) => x.id === projectId); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId, tab: "docs", docId }); }} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
@@ -4657,7 +4682,7 @@ export default function App() {
       <Deferred when={extract.open}><ExtractTasksSheet open={extract.open} onClose={() => setExtract({ open: false })} initialText={extract.text} context={extract.context}
         projects={wsProjects} members={assignees} defaultProjectId={openProject?.id} currentUserId={currentUserId}
         onExtractAI={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined}
-        onCreate={(rows) => importTasks(rows, { verb: "Added" })} /></Deferred>
+        onCreate={(rows) => { importTasks(rows, { verb: "Added" }); }} /></Deferred>
       <Deferred when={shutdownOpen}><ShutdownSheet open={shutdownOpen} onClose={() => setShutdownOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} userName={currentUser?.name}
         onPatch={guardedPatch} onComment={(taskId, body) => addComment(taskId, body)} focusMinutesToday={focus.focusMinToday} readOnly={activeReadOnly} /></Deferred>
       <Deferred when={weeklyOpen}><WeeklyReview open={weeklyOpen} onClose={() => setWeeklyOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} onPatch={guardedPatch}

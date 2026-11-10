@@ -13,6 +13,7 @@ import { parseActivityMeta } from "../lib/activityMeta";
 import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
 import { noteRhythmSchema, parseRhythm, rhythmRow, type UpdateRhythm } from "../lib/updateRhythm";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
+import { demoMeetingActivity } from "../lib/meetings/demo";
 import { demoNotifyActivity } from "../lib/notifyDemo";
 import type { BoardSettingsChange } from "../components/tasks/otherViewsLogic";
 import {
@@ -1548,7 +1549,7 @@ export const store = {
         const docMention: Activity = { id: "a-demo-doc-1", taskId: null, taskTitle: "Launch brief", kind: "doc_mention", detail: "Sana Rao",
           createdAt: new Date(Date.now() - 125 * 60_000).toISOString(), meta: { docId: "doc-launch-brief", projectId: "p-launch" } };
         // 0048: a bundle of three comments on the launch deck and a kudos (lib/notifyDemo)
-        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity()), ...seedCopy(DEMO_ACTIVITY_ELSEWHERE), ...seedCopy(DEMO_UPDATE_ACTIVITY ?? [])].filter((a) => !logged.has(a.id))].sort(newestFirst);
+        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity()), ...seedCopy(DEMO_ACTIVITY_ELSEWHERE), ...seedCopy(DEMO_UPDATE_ACTIVITY ?? []), ...seedCopy(demoMeetingActivity())].filter((a) => !logged.has(a.id))].sort(newestFirst);
       }
       return {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },

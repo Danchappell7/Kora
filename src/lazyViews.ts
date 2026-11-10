@@ -94,6 +94,7 @@ const templateLibrary = screen(() => import("./components/templates/TemplateLibr
 const saveAsTemplate = screen(() => import("./components/templates/SaveAsTemplate"));
 const momentum = screen(() => import("./components/momentum/TodayMomentum"));          // Today's streak and wins
 const goalPanel = screen(() => import("./components/goals/GoalPanelHost"));            // 0052: a goal, opened from anywhere
+const meetings = screen(() => import("./components/meetings/MeetingsHost"));          // 0056: a meeting, started or opened from anywhere
 // 0049: /link/slack (the Slack app's one-time link). Rare: fetched only when it's opened, never ahead
 const slackLink = chunk(() => import("./components/slack/SlackLinkPage"));
 
@@ -125,6 +126,7 @@ export const SaveAsTemplate = lazyComponent(saveAsTemplate, (m) => m.SaveAsTempl
 export const TodayStreak = lazyComponent(momentum, (m) => m.TodayStreak, "TodayStreak");
 export const TodayWins = lazyComponent(momentum, (m) => m.TodayWins, "TodayWins");
 export const GoalPanelHost = lazyComponent(goalPanel, (m) => m.GoalPanelHost, "GoalPanelHost");
+export const MeetingsHost = lazyComponent(meetings, (m) => m.MeetingsHost, "MeetingsHost");
 export const SlackLinkPage = lazyComponent(slackLink, (m) => m.SlackLinkPage, "SlackLinkPage");
 
 /** A finger landed on the phone bar's +: fetch the quick add sheet before the tap ends. */

@@ -223,7 +223,7 @@ export interface DigestThread {
   latest: string;
 }
 
-const DIGEST_ORDER = ["mention", "doc_mention", "approval", "assigned", "comment", "kudos", "update", "integration"];
+const DIGEST_ORDER = ["mention", "doc_mention", "approval", "assigned", "comment", "kudos", "update", "meeting", "integration"];
 const digestRank = (k: string) => { const i = DIGEST_ORDER.indexOf(k); return i < 0 ? 99 : i; };
 
 /** The thread an item belongs to: its task; a project update's, its project (a portfolio update's, its portfolio);
@@ -266,11 +266,17 @@ export function digestThreads(items: readonly DigestItem[]): DigestThread[] {
         if (replies.length) lines.push(`${plural(replies.length, "reply", "replies")} on your update${names(replies) ? ` from ${names(replies)}` : ""}`);
         if (posted > 0) lines.push(posted === 1 ? `${names(xs.filter((x) => x.meta?.ask !== true && x.meta?.update_event !== "comment")) || "Someone"} posted an update` : `${posted} updates posted`);
       }
+      // 0056: a meeting's recap (its own thread): who shared it, and what it left
+      else if (kind === "meeting") {
+        const d = Number(xs[0].meta?.decisions ?? 0), a = Number(xs[0].meta?.actions ?? 0);
+        const left = [d > 0 ? plural(d, "decision") : "", a > 0 ? plural(a, "action") : ""].filter(Boolean).join(" and ");
+        lines.push(`${ppl || "Someone"} shared the recap${left ? `: ${left}` : ""}`);
+      }
       else if (kind === "integration") lines.push(oneLine(xs[0].detail || "An integration needs you", 120));
       else lines.push(plural(xs.length, "update"));
     }
     out.push({
-      taskId: list[0].task_id, title: oneLine(list[0].task_title, 140) || (list[0].kind === "integration" ? "Integrations" : "A task"),
+      taskId: list[0].task_id, title: oneLine(list[0].task_title, 140) || (list[0].kind === "integration" ? "Integrations" : list[0].kind === "meeting" ? "A meeting" : "A task"),
       lines, mention: list.some((x) => x.kind === "mention" || x.kind === "doc_mention"), latest: list[0].created_at,
     });
   }
