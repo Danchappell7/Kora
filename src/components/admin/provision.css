@@ -1,0 +1,77 @@
+/* ============================================================
+   KANBO — /admin › Provision a business (kprv-*) and Adoption by
+   workspace (kadp-*), 0058. Panels like the console's others
+   (surface, hairline, 16px radius); Paper & Navy tokens with
+   fallbacks; phones get one column and 44px targets.
+   ============================================================ */
+
+.kprv, .kadp {
+  position: relative; margin: 0 0 18px; padding: 16px 20px 18px; border-radius: var(--r-xl, 16px);
+  background: var(--surface); border: 1px solid var(--hairline); box-shadow: var(--e1-drop, none);
+}
+.kprv-head, .kadp-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; color: var(--accent-text, var(--accent)); }
+.kprv-title, .kadp-title { margin: 0; font-size: 15px; line-height: 20px; font-weight: 600; color: var(--ink); }
+.kprv-lede { margin: 6px 0 14px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); max-width: 640px; text-wrap: pretty; }
+
+/* ---- the form ---- */
+.kprv-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+.kprv-field { display: grid; gap: 6px; min-width: 0; }
+.kprv-label { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kprv-optional { font-weight: 500; color: var(--ink-4); }
+.kprv-input {
+  width: 100%; min-width: 0; height: 36px; padding: 0 12px; border-radius: var(--r-md, 8px); box-sizing: border-box;
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); color: var(--ink);
+  font: 500 13.5px/20px var(--font-ui, var(--font-display));
+}
+.kprv-input[aria-invalid="true"] { border-color: var(--signal, var(--prio-urgent)); }
+.kprv-hint, .kprv-error { grid-column: 1 / -1; margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kprv-error { color: var(--signal, var(--prio-urgent)); }
+.kprv-acts { grid-column: 1 / -1; display: flex; gap: 8px; }
+
+/* ---- how it went ---- */
+.kprv-steps { display: grid; gap: 2px; margin: 0 0 12px; padding: 0; list-style: none; }
+.kprv-step { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; box-shadow: inset 0 1px 0 var(--hairline); }
+.kprv-step:first-child { box-shadow: none; }
+.kprv-step-mark {
+  display: grid; place-items: center; width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%;
+  background: var(--fill-1); color: var(--ink-3);
+}
+.kprv-step[data-state="done"] .kprv-step-mark { background: color-mix(in oklch, var(--ok, var(--st-done)) 14%, transparent); color: var(--ok, var(--st-done)); }
+.kprv-step[data-state="failed"] .kprv-step-mark { background: color-mix(in oklch, var(--signal, var(--prio-urgent)) 12%, transparent); color: var(--signal, var(--prio-urgent)); }
+.kprv-step[data-state="skipped"] { opacity: 0.6; }
+.kprv-step-text { display: grid; min-width: 0; }
+.kprv-step-label { font: 600 13.5px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kprv-step-detail { font: 400 12.5px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+
+/* ---- adoption ---- */
+.kadp-sum { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.kadp-sort { display: inline-flex; gap: 4px; margin-left: auto; }
+.kadp-note { margin: 12px 0 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kadp-retry { padding: 0; border: 0; background: none; color: var(--accent-text, var(--accent)); font: inherit; cursor: pointer; text-decoration: underline; }
+.kadp-table { width: 100%; margin-top: 12px; border-collapse: collapse; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kadp-table th, .kadp-table td { padding: 9px 8px; text-align: left; vertical-align: middle; box-shadow: inset 0 -1px 0 var(--hairline); }
+.kadp-table thead th { font: 600 11px/16px var(--font-ui, var(--font-display)); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
+.kadp-table tbody th { font-weight: 600; color: var(--ink); }
+.kadp-table th:first-child, .kadp-table td:first-child { padding-left: 0; }
+.kadp-name { display: block; }
+.kadp-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kadp-num { text-align: right !important; font-variant-numeric: tabular-nums; width: 90px; }
+.kadp-active { display: inline-flex; align-items: center; gap: 10px; }
+.kadp-bar { display: inline-block; width: 96px; height: 6px; border-radius: 999px; background: var(--track, var(--fill-1)); overflow: hidden; }
+.kadp-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--ok, var(--st-done)); }
+.kadp-bar > span[data-low] { background: var(--warn, var(--st-review)); }
+.kadp-count { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kadp-last { color: var(--ink-3); white-space: nowrap; }
+
+@media (max-width: 720px) {
+  .kprv, .kadp { padding: 14px 14px 16px; }
+  .kprv-form { grid-template-columns: minmax(0, 1fr); }
+  .kprv-input { height: 44px; font-size: 16px; }
+  .kadp-sort { margin-left: 0; width: 100%; }
+  .kadp-table thead { display: none; }
+  .kadp-table tr { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 0; box-shadow: inset 0 -1px 0 var(--hairline); }
+  .kadp-table th, .kadp-table td { box-shadow: none; padding: 0; }
+  .kadp-table tbody th { grid-column: 1 / -1; }
+  .kadp-table .kadp-num { display: none; }
+  .kadp-last { text-align: right; }
+}
