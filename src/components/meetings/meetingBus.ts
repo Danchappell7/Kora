@@ -46,6 +46,9 @@ const liveListeners = new Set<() => void>();
 const wants = new Map<number, string[]>();
 let seq = 0;
 let unsub: (() => void) | null = null;
+/** where `unsub` listens (shared once 0056 answers; this browser's copy before), and the mode watch */
+let boundTo: MeetingsMode | null = null;
+let offMode: (() => void) | null = null;
 let fetching = 0;
 
 async function refresh(): Promise<void> {
@@ -58,13 +61,26 @@ async function refresh(): Promise<void> {
   liveListeners.forEach((fn) => fn());
 }
 
+/** Listen where meetings live now (again, if that's changed). */
+function bind(): void {
+  if (unsub) unsub();
+  boundTo = meetingsMode();
+  unsub = subscribeLiveMeetings(() => { void refresh(); }, () => new Map(live.map((m) => [m.id, m.status])));
+}
+
 function want(id: number, ids: string[]): () => void {
   wants.set(id, ids);
-  if (!unsub) unsub = subscribeLiveMeetings(() => { void refresh(); }, () => new Map(live.map((m) => [m.id, m.status])));
+  if (!unsub) {
+    bind();
+    // the first button can mount before anyone has asked whether 0056 is on (it listened to this browser's copy):
+    // once the answer's in, listen where meetings live, so a teammate's meeting shows without leaving the page
+    offMode = subscribeMeetingsMode(() => { if (unsub && meetingsMode() !== boundTo) { bind(); void refresh(); } });
+    void probeMeetings();
+  }
   if (ids.some((x) => !watched.includes(x))) void refresh();
   return () => {
     wants.delete(id);
-    if (!wants.size && unsub) { unsub(); unsub = null; live = []; watched = []; }
+    if (!wants.size && unsub) { unsub(); unsub = null; offMode?.(); offMode = null; boundTo = null; live = []; watched = []; }
   };
 }
 
@@ -72,6 +88,7 @@ function want(id: number, ids: string[]): () => void {
 export function resetMeetingBus(): void {
   request = null; live = []; watched = []; wants.clear(); fetching = 0;
   if (unsub) { unsub(); unsub = null; }
+  offMode?.(); offMode = null; boundTo = null;
 }
 
 /** Tell every "Live now" button to look again (after you start or end one). */

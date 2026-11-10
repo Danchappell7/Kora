@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   availabilityOn, awayNote, backOn, canAddTimeOff, canChangeTimeOff, canEditWeek, canSeeRates, capacityInWeek, capacityUploads, daysOffInWeek, EMPTY_AVAILABILITY,
-  getAvailability, hoursWords, myWorkingDay, offOnDayNote, offShare, rateFor, reasonHere, resetAvailability, seesTimeOff, spanWords, updateAvailability,
+  forTeamAt, getAvailability, hoursWords, myWorkingDay, offOnDayNote, offShare, rateFor, reasonHere, resetAvailability, seesTimeOff, spanWords, teamAtSees, updateAvailability,
   weekCapacities, workDaysWords, type AvailabilityState, type TimeOff,
 } from "./availability";
 
@@ -82,6 +82,22 @@ describe("time off in words", () => {
     expect(workDaysWords([1, 3, 5])).toBe("Mon, Wed, Fri");
     expect(workDaysWords([1, 2, 3, 4, 5, 6, 7])).toBe("Every day");
     expect(hoursWords({ dayStart: 570, dayEnd: 1440 })).toBe("09:30–24:00");
+  });
+});
+
+describe("what a business's whole team reads (a meeting's agenda)", () => {
+  it("time off the person recorded, or recorded at that business; never a lead's at another business", () => {
+    const at = (workspaceId: string | null, createdBy?: string) => ({ ...off("maya", "2026-11-10", "2026-11-10"), workspaceId, ...(createdBy ? { createdBy } : {}) });
+    expect(teamAtSees(at("ws", "me"), "ws")).toBe(true);        // a lead here recorded it
+    expect(teamAtSees(at("other", "maya"), "ws")).toBe(true);   // she recorded it herself, at the other business
+    expect(teamAtSees(at(null), "ws")).toBe(true);              // her own, outside any business
+    expect(teamAtSees(at("other", "tom"), "ws")).toBe(false);   // a lead at the other business: only its team reads it
+    expect(teamAtSees(at("other"), "ws")).toBe(false);          // (who recorded it not known: not this team's)
+    // the person starting the meeting is on both teams and reads that row; the agenda at "ws" doesn't carry it
+    const s = state({ timeOff: [at("other", "tom")] });
+    expect(awayNote("maya", "2026-11-10", { ws: "ws" }, s)?.label).toBe("Off today");
+    expect(awayNote("maya", "2026-11-10", { ws: "ws" }, forTeamAt("ws", s))).toBeNull();
+    expect(awayNote("maya", "2026-11-10", { ws: "other" }, forTeamAt("other", s))?.label).toBe("Off today");
   });
 });
 

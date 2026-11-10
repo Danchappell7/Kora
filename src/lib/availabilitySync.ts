@@ -24,7 +24,7 @@ import { readLocalCapacities } from "./radar";
 /* ---------- rows ---------- */
 
 interface WeekRow { workspace_id: string; user_id: string; weekly_hours: number | string | null; work_days: number[] | null; day_start: number | null; day_end: number | null }
-interface TimeOffRow { id: string; user_id: string; workspace_id?: string | null; starts_on: string; ends_on: string; half_day: string | null }
+interface TimeOffRow { id: string; user_id: string; workspace_id?: string | null; starts_on: string; ends_on: string; half_day: string | null; created_by?: string | null }
 interface NoteRow { time_off_id: string; reason: string }
 interface RateRow { workspace_id: string; project_id: string | null; hourly_rate: number | string }
 
@@ -37,6 +37,7 @@ export const rowToWeek = (r: WeekRow): MemberWeek => ({
 export const rowToTimeOff = (r: TimeOffRow, reason?: string | null): TimeOff => ({
   id: r.id, userId: r.user_id, workspaceId: r.workspace_id ?? null, startsOn: String(r.starts_on).slice(0, 10), endsOn: String(r.ends_on).slice(0, 10),
   halfDay: r.half_day === "am" || r.half_day === "pm" ? r.half_day : null, ...(reason ? { reason } : {}),
+  ...(r.created_by !== undefined ? { createdBy: r.created_by } : {}),
 });
 const rowToRate = (r: RateRow): BillRate => ({ workspaceId: r.workspace_id, projectId: r.project_id, rate: Number(r.hourly_rate) });
 
@@ -175,7 +176,10 @@ export async function saveTimeOff(entry: Omit<TimeOff, "id"> & { id?: string }):
   const temp = entry.id ?? `off-new-${++demoSeq}`;
   const was = entry.id ? before.find((t) => t.id === entry.id) : undefined;
   const workspaceId = was ? was.workspaceId ?? null : entry.workspaceId ?? null;
-  const next: TimeOff = { id: temp, userId: entry.userId, workspaceId, startsOn: entry.startsOn, endsOn: entry.endsOn, halfDay: entry.halfDay, ...(reason ? { reason } : {}) };
+  // (who recorded it: kept on a change; a new one is yours, as the database records it)
+  const createdBy = was ? was.createdBy : getAvailability().me || undefined;
+  const next: TimeOff = { id: temp, userId: entry.userId, workspaceId, startsOn: entry.startsOn, endsOn: entry.endsOn, halfDay: entry.halfDay, ...(reason ? { reason } : {}),
+    ...(createdBy !== undefined ? { createdBy } : {}) };
   updateAvailability({ timeOff: [...before.filter((t) => t.id !== temp), next] });
   if (!supabase) {
     const d = demoDb();

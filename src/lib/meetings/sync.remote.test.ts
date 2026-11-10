@@ -166,3 +166,24 @@ describe("live", () => {
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("Live now, when the first button mounts before anyone has asked whether 0056 is on", () => {
+  it("listens where meetings live once the answer's in (a teammate's meeting shows without leaving the page)", async () => {
+    const { renderHook, act } = await import("@testing-library/react");
+    const { resetMeetingBus, useLiveMeetings } = await import("../../components/meetings/meetingBus");
+    resetMeetingBus();
+    from.mockImplementation(() => query({ data: [], error: null }));
+    expect(meetingsMode()).toBe("unknown");
+    const { unmount } = renderHook(() => useLiveMeetings(["w1"]));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(meetingsMode()).toBe("shared");
+    const inserts = heard.filter((h) => h.filter.table === "meetings" && h.filter.event === "INSERT");
+    expect(inserts).toHaveLength(1);
+    // a meeting started elsewhere: the buttons look again
+    from.mockClear();
+    await act(async () => { inserts[0].cb({ new: { id: "m9", status: "live" } }); await new Promise((r) => setTimeout(r, 0)); });
+    expect(from).toHaveBeenCalledWith("meetings");
+    unmount();
+    resetMeetingBus();
+  });
+});

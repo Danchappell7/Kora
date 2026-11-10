@@ -26,9 +26,9 @@ export function demoWeeks(): MemberWeek[] {
 
 export function demoTimeOff(): TimeOff[] {
   return [
-    { id: "off-demo-theo", userId: "m-2", workspaceId: "ws-foundrise", startsOn: day(0), endsOn: day(0), halfDay: null, reason: "Moving house" },
-    { id: "off-demo-sana", userId: "m-3", workspaceId: "ws-foundrise", startsOn: day(1), endsOn: day(5), halfDay: null, reason: "Family wedding" },
-    { id: "off-demo-maya", userId: "m-1", workspaceId: "ws-foundrise", startsOn: day(9), endsOn: day(9), halfDay: "pm", reason: "Dentist" },
+    { id: "off-demo-theo", userId: "m-2", workspaceId: "ws-foundrise", createdBy: "m-2", startsOn: day(0), endsOn: day(0), halfDay: null, reason: "Moving house" },
+    { id: "off-demo-sana", userId: "m-3", workspaceId: "ws-foundrise", createdBy: "m-3", startsOn: day(1), endsOn: day(5), halfDay: null, reason: "Family wedding" },
+    { id: "off-demo-maya", userId: "m-1", workspaceId: "ws-foundrise", createdBy: "m-1", startsOn: day(9), endsOn: day(9), halfDay: "pm", reason: "Dentist" },
   ];
 }
 

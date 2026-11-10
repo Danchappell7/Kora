@@ -17,7 +17,7 @@ import type { WorkspaceEvent } from "../../data/types";
 import type { NewProject } from "../../data/store";
 import { KANBO_TODAY, getMember, toLocalISO } from "../../data/data";
 import { readCapacities } from "../../lib/radar";
-import { awayNote, awayStretch, getAvailability, seesTimeOff } from "../../lib/availability";
+import { awayNote, awayStretch, forTeamAt, getAvailability, seesTimeOff } from "../../lib/availability";
 import {
   PRESETS, SECTION_LABEL, SECTION_ORDER, agendaFacts, assembleAgenda, goalsWords, meetingDay, meetingPeople, meetingTitle, mayRun, overviewLede, type AgendaFacts,
 } from "../../lib/meetings/agenda";
@@ -81,12 +81,14 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
       preset, workspaces: covered, hostId: host, members, me, tasks: data.tasks, goalTasks: data.goalTasks, projects, goals: data.goals,
       statusUpdates: data.statusUpdates, today, events, previous: prev,
       capacitiesFor: (ws) => readCapacities(ws),
-      // "Off today" (the label only: a reason never goes on an agenda everyone reads)
+      // "Off today" (the label only: a reason never goes on an agenda everyone reads), from the time off that
+      // business's whole team reads (not what a lead at another business recorded, which only that team sees)
       offNote: (user, ws) => {
         if (!seesTimeOff(ws, avail)) return null;
         const day = toLocalISO(today);
-        const n = awayNote(user, day, { ws }, avail);
-        const span = n ? awayStretch(user, day, 7, avail) : null;
+        const team = forTeamAt(ws, avail);
+        const n = awayNote(user, day, { ws }, team);
+        const span = n ? awayStretch(user, day, 7, team) : null;
         return n ? { label: n.label, now: n.now, ...(span ? { from: span.from, to: span.to } : {}) } : null;
       },
     });

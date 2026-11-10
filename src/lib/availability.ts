@@ -53,6 +53,8 @@ export interface TimeOff {
   /** half of a single day: the morning or the afternoon */
   halfDay: "am" | "pm" | null;
   reason?: string | null;
+  /** who recorded it: the person themselves, or a lead at `workspaceId` (absent: not known, as in the demo) */
+  createdBy?: string | null;
 }
 
 /** An hourly rate: a project's own, or the workspace's default (projectId null). */
@@ -373,6 +375,17 @@ export function reasonHere(t: Pick<TimeOff, "userId" | "workspaceId" | "reason">
 /** Does this person see others' time off at this business (not as a guest)? */
 export const seesTimeOff = (ws: string | null | undefined, s: AvailabilityState = state): boolean =>
   availabilityOn(s) && onTeam(roleOf(ws, s.me, s));
+
+/** Can a business's whole team read this time off (0055's rule)? What the person recorded themselves, or what
+ *  was recorded at this business; not what a lead somewhere else recorded for them (only that business's team
+ *  reads it), even when the person reading is on both teams. */
+export function teamAtSees(t: Pick<TimeOff, "userId" | "workspaceId" | "createdBy">, ws: string): boolean {
+  return (t.workspaceId ?? null) === ws || (t.workspaceId ?? null) === null || (!!t.createdBy && t.createdBy === t.userId);
+}
+/** The availability a business's whole team reads: for what's written down for all of them (a meeting's agenda). */
+export function forTeamAt(ws: string, s: AvailabilityState = state): AvailabilityState {
+  return { ...s, timeOff: s.timeOff.filter((t) => teamAtSees(t, ws)) };
+}
 
 /* ---------- bill rates ---------- */
 

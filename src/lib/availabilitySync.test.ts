@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getAvailability, resetAvailability, updateAvailability } from "./availability";
 import {
-  deleteTimeOff, isMissingSchema, loadAvailability, refreshAvailability, resetDemoAvailability, saveErrorText, saveRate, saveTimeOff, saveWeek, uploadLocalCapacities,
+  deleteTimeOff, isMissingSchema, loadAvailability, refreshAvailability, resetDemoAvailability, rowToTimeOff, saveErrorText, saveRate, saveTimeOff, saveWeek, uploadLocalCapacities,
 } from "./availabilitySync";
 
 // (no Supabase in tests: the demo's in-memory copy)
@@ -58,5 +58,13 @@ describe("errors", () => {
     expect(saveErrorText({ message: "invalid availability" })).toMatch(/^That doesn't look right/);
     expect(saveErrorText({ message: "not allowed: only the team's owners, admins and members carry capacity" })).toBe("Guests don't carry team capacity.");
     expect(saveErrorText({ code: "PGRST202" })).toMatch(/aren't switched on yet/);
+  });
+});
+
+describe("a time off row", () => {
+  it("keeps who recorded it (0055's created_by: the agenda carries only what the host's team reads)", () => {
+    const row = { id: "t1", user_id: "maya", workspace_id: "w2", starts_on: "2026-11-10", ends_on: "2026-11-10", half_day: null };
+    expect(rowToTimeOff({ ...row, created_by: "lead" })).toMatchObject({ userId: "maya", workspaceId: "w2", createdBy: "lead" });
+    expect(rowToTimeOff(row).createdBy).toBeUndefined();
   });
 });
