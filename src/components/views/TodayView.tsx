@@ -100,6 +100,9 @@ export interface TodayViewProps {
   /* ---- 0053 (Today works without) ---- */
   /** your project updates due today or asked for: a line under the brief, a "Kanbo noticed" nudge, and the sheet they open */
   updates?: TodayUpdates;
+  /* ---- 0055 (Today works without) ---- */
+  /** work due while someone's away (components/availability useAwayNoticed): Kanbo noticed offers to move it */
+  away?: { noticed: Noticed[]; onMove: (taskIds: string[], to: string, assignTo?: string) => void };
 }
 
 /** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
@@ -295,7 +298,7 @@ function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
-  setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false, goalFor, goalsBehind, onOpenGoal, updates,
+  setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false, goalFor, goalsBehind, onOpenGoal, updates, away,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -521,8 +524,9 @@ function TodayDay({
   const [dismissed, setDismissed] = useState<string[]>(() => readDismissed(me, day));
   useEffect(() => { setDismissed(readDismissed(me, day)); }, [me, day]);
   const updateNudge = updates?.noticed;
-  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, goalsBehind: onOpenGoal ? goalsBehind : undefined, dismissed, updates: updateNudge }),
-    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, goalsBehind, onOpenGoal, dismissed, updateNudge]);
+  const awayNudge = away?.noticed;
+  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, goalsBehind: onOpenGoal ? goalsBehind : undefined, dismissed, updates: updateNudge, away: awayNudge }),
+    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, goalsBehind, onOpenGoal, dismissed, updateNudge, awayNudge]);
   const dismiss = (n: Noticed) => {
     const next = [...dismissed.filter((x) => x !== n.id), n.id];
     setDismissed(next); writeDismissed(me, day, next);
@@ -540,7 +544,12 @@ function TodayDay({
       const next = [...dismissed.filter((x) => x !== n.id), n.id];
       setDismissed(next); writeDismissed(me, day, next);
     } else if (a.kind === "update") updates?.open(a.projectId);
-    else {
+    else if (a.kind === "away") {
+      // moved (the host's toast says so, with Undo): done for today
+      away?.onMove(a.taskIds, a.to, a.assignTo);
+      const next = [...dismissed.filter((x) => x !== n.id), n.id];
+      setDismissed(next); writeDismissed(me, day, next);
+    } else {
       const t = tasks.find((x) => x.id === a.taskId) ?? allTasks.find((x) => x.id === a.taskId);
       if (!t) return;
       const before = { planToday: !!t.planToday, scheduled: t.scheduled ?? null };

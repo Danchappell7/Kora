@@ -101,4 +101,13 @@ describe("Kanbo noticed: a key result of yours behind pace (0052)", () => {
     const theirs = task({ title: "Ship onboarding", assigneeId: "maya", status: "blocked", dependencies: ["tok2"] });
     expect(noticed([mine, theirs], { goalsBehind: [behind()] }).map((n) => n.kind)).toEqual(["waiting", "goal"]);
   });
+
+  it("work due while someone's away (0055) comes after anyone blocked on you, before the risks", () => {
+    const away = { id: "away:sana:2026-10-01", kind: "away" as const, tone: "warn" as const, icon: "calendar" as const, title: "Sana's away when a task is due", body: "…",
+      actions: [{ kind: "away" as const, label: "Move to Mon", userId: "sana", taskIds: ["x"], to: "2026-10-05" }] };
+    const risk: Risk = { id: "r1", kind: "blocked", severity: "signal", title: "Launch is blocked", reason: "Waiting", taskIds: ["mine1"], memberId: "me", fixes: [] };
+    const mine = task({ id: "mine1", title: "Mine" });
+    expect(noticed([mine], { risks: [risk], away: [away] }).map((x) => x.kind)).toEqual(["away", "risk"]);
+    expect(noticed([mine], { risks: [risk], away: [away], dismissed: [away.id] }).map((x) => x.kind)).toEqual(["risk"]);
+  });
 });

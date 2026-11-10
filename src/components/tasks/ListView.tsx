@@ -41,6 +41,7 @@ import { useSwipeRow } from "../../lib/gestures";
 import { useTaskDragSource, isTaskDragActive } from "../../lib/dnd";
 import { RowActionSheet, quickDueChoices, shortDay } from "../phone/RowActionSheet";
 import { WorkspaceChip, useGuestRow } from "../businesses/Businesses";
+import { OffTag } from "../availability/OffChip";
 
 // small chips showing a task's filled custom-field values (max 3)
 export function CustomChips({ task, fields, members = [] }: { task: Task; fields: CustomFieldDef[]; members?: { id: string; name: string }[] }) {
@@ -543,7 +544,9 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
                   {members.map((m) => (
                     <button key={m.id} type="button" role="menuitemradio" aria-checked={task.assigneeId === m.id} className="ktv-mi"
                       onClick={(e) => { setMenu(null); if (m.id === task.assigneeId) return; onRefocus?.(task.id, "assignee", e.detail === 0); edit(task, { assigneeId: m.id }, "Assignee"); }}>
-                      <Avatar id={m.id} size={20} /> <span className="truncate">{m.name}</span>{task.assigneeId === m.id && <CurrentMark />}
+                      <Avatar id={m.id} size={20} /> <span className="truncate">{m.name}</span>
+                      <OffTag userId={m.id} workspaceId={task.workspaceId ?? null} due={task.status === "done" ? null : task.dueDate} />
+                      {task.assigneeId === m.id && <CurrentMark />}
                     </button>
                   ))}
                 </Popover>}

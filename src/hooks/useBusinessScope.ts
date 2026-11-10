@@ -16,6 +16,7 @@ import {
   workspaceSignals, wsKey, type BusinessLead, type WorkspaceSignal,
 } from "../lib/businesses";
 import { computeRisks, readCapacities, type Risk } from "../lib/radar";
+import { useAvailability } from "../components/availability/useAvailability";
 
 export interface BusinessScopeInput {
   /** every task you can see, as stored (team and project views' rows) */
@@ -100,15 +101,17 @@ export function useBusinessScope(input: BusinessScopeInput): BusinessScope {
   const runs = useMemo(() => businessesYouRun(workspaces, members, me), [workspaces, members, me]);
   const guestIn = useMemo(() => new Set(members.filter((m) => m.userId === me && m.status === "active" && m.role === "guest" && m.workspaceId).map((m) => m.workspaceId!)), [members, me]);
   // Radar in each business you run, worked out for that business alone (as its Pulse does)
+  // (0055: each business's own shared capacities, read again when they change)
+  const avail = useAvailability();
   const risks = useMemo(() => {
     if (!all || !runs.length) return NO_RISKS;
-    const caps = readCapacities();
     return runs.flatMap((w) => {
+      const caps = readCapacities(w.id);
       const people = members.filter((m) => m.workspaceId === w.id && m.status === "active" && m.userId)
         .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email, ...(m.role === "guest" ? { guest: true } : {}) }));
       try { return computeRisks({ tasks: liveRows.filter((t) => t.workspaceId === w.id), members: people, capacities: caps, today }); } catch { return []; }
     });
-  }, [all, runs, members, liveRows, today]);
+  }, [all, runs, members, liveRows, today, avail]);
   const nameOf = useMemo(() => {
     const names = new Map(workspaces.map((w) => [wsKey(w.id), w.name]));
     return (id: string | null) => names.get(wsKey(id)) ?? (id ? "Another workspace" : "Personal");

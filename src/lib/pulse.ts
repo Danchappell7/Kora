@@ -120,9 +120,10 @@ export function buildPulse(input: {
     capacity: capacityOf(input.capacities, m.id),
   }));
 
-  // guests last, then the fullest weeks first
+  // guests last, then the fullest weeks first (someone off all week, with no capacity, is fullest)
+  const fill = (p: PulsePerson) => (p.capacity > 0 ? p.loadHours / p.capacity : p.loadHours > 0 ? Infinity : 0);
   people.sort((a, b) => Number(!!a.guest) - Number(!!b.guest)
-    || (b.loadHours / b.capacity) - (a.loadHours / a.capacity)
+    || (fill(b) === fill(a) ? 0 : fill(b) > fill(a) ? 1 : -1)
     || a.name.localeCompare(b.name));
 
   const over = people.filter((p) => !p.guest && p.loadHours > p.capacity);

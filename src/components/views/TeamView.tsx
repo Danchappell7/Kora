@@ -17,6 +17,9 @@ import { inviteEmailNotice, type InviteEmailResult, type InvitedMember } from ".
 import { capacityOf, loadForWeek, loadTone, readCapacities } from "../../lib/radar";
 import { round1, startOfWeekMon } from "./reportingUtils";
 import { usePersonDropTarget } from "../../lib/dropActions";
+import { useAvailability } from "../availability/useAvailability";
+import { OffChip } from "../availability/OffChip";
+import { AvailabilityPanel } from "../availability/AvailabilityPanel";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -246,6 +249,7 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite, on
             <span className="kppl-name">{name}</span>
             {isSelf && <span className="kppl-you">you</span>}
             <RoleBadge m={m} />
+            {!pending && m.role !== "guest" && <OffChip userId={m.userId} workspaceId={m.workspaceId} />}
           </span>
           <span className="kppl-sub">
             {pending
@@ -398,6 +402,9 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
             <div><dt>Completed</dt><dd data-tone="ok">{doneN}</dd></div>
           </dl>
         )}
+
+        {/* 0055: their week here (capacity, days, hours) and their time off */}
+        {m.status === "active" && memberId && <AvailabilityPanel workspaceId={workspace} userId={memberId} name={name} isSelf={isSelf} myRole={role} />}
 
         <div className="kprof-field">
           {/* everyone here can see a teammate's tasks (they're on the projects, Pulse and Workload too),
@@ -643,7 +650,9 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   }, [inviteOptions.join(","), inviteRole]);
 
   // this week's load and what each person is working on (the load model Pulse and Workload share)
-  const [capacities] = useState(readCapacities);
+  // (0055: the team's shared weeks, less time off, once it's on; this device's capacities before)
+  const avail = useAvailability();
+  const capacities = useMemo(() => readCapacities(workspace), [workspace, avail]); // eslint-disable-line react-hooks/exhaustive-deps
   const todayKey = KANBO_TODAY.getTime();   // the live clock moves it at midnight
   const weekLoad = useMemo(() => {
     const today = new Date(todayKey);

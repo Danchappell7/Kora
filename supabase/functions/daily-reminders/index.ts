@@ -312,9 +312,9 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
   }
   const { data: sn } = await supa.from("notification_snoozes").select("task_id").eq("user_id", userId).gt("until", now.toISOString());
   const snoozed = new Set<string>((sn ?? []).map((s: { task_id: string }) => String(s.task_id)));
-  // a kind whose email they switched off stays out (a doc mention counts as a mention)
+  // a kind whose email they switched off stays out (a doc mention counts as a mention; 0056: a meeting's recap, as an update)
   const wants = (kind: string) => {
-    const k = (kind === "doc_mention" ? "mention" : kind) as NotifyKind;
+    const k = (kind === "doc_mention" ? "mention" : kind === "meeting" ? "update" : kind) as NotifyKind;
     return NOTIFY_KINDS.includes(k) ? prefs.channel(k, "email") : true;
   };
   const threads = digestThreads(filterDigestItems(items, visible, snoozed, wants));

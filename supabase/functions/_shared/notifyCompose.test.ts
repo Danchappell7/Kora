@@ -208,3 +208,19 @@ describe("a posted update (0054)", () => {
     ]);
   });
 });
+
+describe("a meeting's recap (0056)", () => {
+  it("the digest: who shared it and what it left, under the meeting's title, opening the Inbox", () => {
+    const recap = (id: string, meta: Record<string, unknown>, who = "Maya Lin"): DigestItem =>
+      ({ id, task_id: null, task_title: "Foundrise team meeting, Tue 10 Nov", kind: "meeting", detail: who, created_at: `2026-11-10T10:0${id}:00Z`, meta });
+    const [t] = digestThreads([recap("1", { meeting_id: "m1", decisions: 2, actions: 1 })]);
+    expect(t).toMatchObject({ taskId: null, title: "Foundrise team meeting, Tue 10 Nov", lines: ["Maya shared the recap: 2 decisions and 1 action"], mention: false });
+    const [bare] = digestThreads([recap("2", { meeting_id: "m2", decisions: 0, actions: 0 }, "Theo Vance")]);
+    expect(bare.lines).toEqual(["Theo shared the recap"]);
+    // two meetings are two threads
+    expect(digestThreads([recap("1", { meeting_id: "m1" }), recap("2", { meeting_id: "m2" })])).toHaveLength(2);
+    const mail = digestEmail([t], [], "2026-11-10", "https://app.example", {});
+    expect(mail?.html).toContain("Maya shared the recap");
+    expect(mail?.html).toContain("https://app.example/inbox");
+  });
+});

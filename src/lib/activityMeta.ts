@@ -6,6 +6,7 @@
      kudos         { kudos_id, emoji, note }          (0048)
      update        { status_update_id, project_id, update_event, update_status, ask, comment_id? }
                    or { portfolio_id, portfolio_update_id, update_event: "portfolio", … }   (0054)
+     meeting       { meeting_id, workspace_id, preset, decisions, actions, doc_id, project_id }   (0056)
    Older rows (and rows a client logs for itself) have none.  [architect]
    ============================================================ */
 import type { ActivityMeta, ApprovalEvent, ApprovalRule, ApprovalStatus, StatusKind } from "../data/types";
@@ -52,5 +53,16 @@ export function parseActivityMeta(raw: unknown): ActivityMeta | undefined {
   if (portfolioId) out.portfolioId = portfolioId;
   const portfolioUpdateId = str(g("portfolio_update_id", "portfolioUpdateId"));
   if (portfolioUpdateId) out.portfolioUpdateId = portfolioUpdateId;
+  // 0056 meeting recaps
+  const meetingId = str(g("meeting_id", "meetingId"));
+  if (meetingId) out.meetingId = meetingId;
+  const workspaceId = str(g("workspace_id", "workspaceId"));
+  if (workspaceId) out.workspaceId = workspaceId;
+  const preset = g("preset", "meetingPreset");
+  if (preset === "team" || preset === "leadership") out.meetingPreset = preset;
+  for (const k of ["decisions", "actions"] as const) {
+    const n = r[k];
+    if (typeof n === "number" && Number.isFinite(n) && n >= 0) out[k] = Math.floor(n);
+  }
   return Object.keys(out).length ? out : undefined;
 }

@@ -31,8 +31,10 @@ import {
   ImportTasksModal, OnboardingModal, WelcomeModal, QuickCapture, ExtractTasksSheet, ShutdownSheet, WeeklyReview,
   FocusMode, PlannerHost, TrialBanner, UpgradeModal, Paywall, likelyNext, everyScreen, prefetchRoute,
   TourHost, SetupChecklist, HelpMenu, QuickAddSheet, prefetchQuickAdd, TemplateLibrary, SaveAsTemplate, TodayStreak, TodayWins,
-  SlackLinkPage, GroupView, GoalPanelHost,
+  SlackLinkPage, GroupView, GoalPanelHost, MeetingsHost,
 } from "./lazyViews";
+// 0056 meetings: "Run meeting" and the Inbox's recaps ask the host (mounted the first time one's wanted)
+import { requestMeetingOpen, useMeetingRequest } from "./components/meetings/meetingBus";
 import type { GroupTarget } from "./components/views/GroupView";
 // 0053 project updates: the update day, Ask for an update, and your own on Today
 import { useTodayUpdates } from "./components/updates/TodayUpdates";
@@ -77,6 +79,8 @@ import {
 import type { SampleHost } from "./tourSampleHost";
 import { useSavedViews, getSavedView, viewRoute, canShareViews } from "./lib/views";
 import type { MoveDeps } from "./lib/dropMoves";
+import { useAvailability, useAvailabilitySync } from "./components/availability/useAvailability";
+import { useAwayNoticed } from "./components/availability/useAwayNoticed";
 import type { AppliedTemplatePlan } from "./lib/templatePlan";
 import type { BoardSettingsChange } from "./components/tasks/otherViewsLogic";
 import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummaries";
@@ -249,6 +253,10 @@ export default function App() {
   // the goal open in the goal panel (from a Goals row, a chip, the brief, Kanbo noticed, ⌘K); `checkin`: composer out
   // (one panel at a time: a goal opened from a task's Serves chip, Search or Kanbo noticed takes the task panel's place)
   const [goalPanel, setGoalPanel] = useState<{ id: string; checkin?: boolean } | null>(null);
+  // 0056: the meeting host (and its code) arrives the first time a meeting is started or opened
+  const meetingReq = useMeetingRequest();
+  const [meetingsOn, setMeetingsOn] = useState(false);
+  if (meetingReq && !meetingsOn) setMeetingsOn(true);
   const openGoal = useCallback((id: string, opts?: { checkin?: boolean }) => { setDetailId(null); setGoalPanel({ id, checkin: !!opts?.checkin }); }, []);
   const closeGoal = useCallback(() => setGoalPanel(null), []);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
@@ -637,7 +645,9 @@ export default function App() {
       || (a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace)
       || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace))
       // 0054: a project update (no task) belongs to its project's workspace (a portfolio's: its portfolio's)
-      || (a.kind === "update" && updateItemWorkspace(a, projects, portfolios) === workspace));
+      || (a.kind === "update" && updateItemWorkspace(a, projects, portfolios) === workspace)
+      // 0056: a meeting's recap, to its business
+      || (a.kind === "meeting" && !!a.meta?.workspaceId && a.meta.workspaceId === workspace));
   }, [tasks, activity, workspace, projects, portfolios]);
   const scopedActivityRef = useRef<Activity[]>([]); scopedActivityRef.current = scopedActivity;
   // unread = not read on the server (any device), and not your own actions
@@ -2653,7 +2663,7 @@ export default function App() {
   // and Retry never re-inserts a row that already made it. Rows nested under
   // another row become its sub-tasks; sections and tags the file names that
   // don't exist yet are created.
-  const importTasks = useCallback((rows: ImportRow[], opts: { verb?: "Imported" | "Added" } = {}) => {
+  const importTasks = useCallback((rows: ImportRow[], opts: { verb?: "Imported" | "Added"; quiet?: boolean } = {}) => {
     if (!rows.length) return;
     const verb = opts.verb ?? "Imported";
     const me = userIdRef.current, base = Date.now();
@@ -2718,8 +2728,11 @@ export default function App() {
       if (saved.length) log("created", { id: saved[0], title: `${verb} ${plural(saved.length, "task")}` }, `${verb} ${plural(saved.length, "task")}`);
     });
     const projs = [...new Set(built.map((t) => t.projectId))];
-    toastSuccess(`${verb} ${plural(built.length, "task")}${projs.length === 1 ? ` ${verb === "Added" ? "to" : "into"} “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
+    // (quiet: the caller says it, with its own Undo: a meeting's one-click Make task)
+    if (!opts.quiet) toastSuccess(`${verb} ${plural(built.length, "task")}${projs.length === 1 ? ` ${verb === "Added" ? "to" : "into"} “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
     noteElsewhere(projs);
+    // (0056: a meeting links its actions to the tasks it made)
+    return built.map((t) => t.id);
   }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
 
   // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
@@ -3603,14 +3616,16 @@ export default function App() {
   const allSeen = useMemo(() => (tasksSeen === tasks ? allTasks : inWorkspace(tasksSeen ?? [])), [tasksSeen, tasks, allTasks, inWorkspace]);
   // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
   // sidebar's Team badge, Today's brief and each project's notice line
+  // (0055: capacities are the team's shared weeks once they load: Radar reads them again then)
+  const availability = useAvailability();
   const risks = useMemo(() => {
     if (tasks === null || workspace === null) return [];
     const members = wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active" && m.userId)
       // (guests' work shows, but they carry no team capacity)
       .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email, ...(m.role === "guest" ? { guest: true } : {}) }));
-    return computeRisks({ tasks: allTasks, members, capacities: readCapacities(), today: dayKey });
+    return computeRisks({ tasks: allTasks, members, capacities: readCapacities(workspace), today: dayKey });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allTasks, wsMembers, workspace, dayKey]);
+  }, [allTasks, wsMembers, workspace, dayKey, availability]);
   const signalRisks = risks.filter((r) => r.severity === "signal").length;
   /* ---- 0048 saved views (lib/views): the Sidebar's Views, My tasks' links, ?view= and /search/list/:id ---- */
   // (off until the real account is known: before bootstrap the id is the "m-self" placeholder)
@@ -3682,6 +3697,13 @@ export default function App() {
   const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview: myApprovals.toReview, workspaces, members: wsMembers,
     workspace, me: currentUserId, today: dayKey, allChosen: !!onboarding.businesses?.all });
   allBizRef.current = biz.all;
+
+  /* ---- 0055 (components/availability): everyone's shared week, time off and rates, and the
+     away cards on Today (work due while someone's off, with "Move to <the day they're back>") ---- */
+  useAvailabilitySync({ me: currentUserId, workspace, members: wsMembers, today: dayKey,
+    enabled: tasks !== null && (!store.configured || currentUserId !== "m-self"),
+    onShared: (n) => toastInfo(`${n === 1 ? "A capacity saved on this device is" : `${n} capacities saved on this device are`} now shared with your team`) });
+  const awayNudge = useAwayNoticed({ tasks: biz.all ? biz.liveSeen : allTasks, today: dayKey, moveDeps: roleIn(workspace) === "guest" ? undefined : moveDeps });
 
   /* ---- 0053 project updates: Ask for an update (owners and admins), and yours on Today ---- */
   // (never of a guest owner: a guest can't post an update)
@@ -4143,7 +4165,7 @@ export default function App() {
         // 0052: one goal line in the brief, and your key results behind pace in Kanbo noticed
         goalFor={goalFlow.briefGoal} goalsBehind={biz.all ? goalFlow.behind() : goalFlow.behind(workspace)} onOpenGoal={openGoal}
         // 0053: your project update is due (or a lead asked for it): a line under the brief, a nudge, Kanbo's draft ready
-        updates={todayUpdates}
+        updates={todayUpdates} away={awayNudge}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
         setupSlot={showSetup ? (fold) => (
@@ -4184,7 +4206,8 @@ export default function App() {
         }}
         onOpenPerson={() => setRoute({ view: "team" })}
         views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
-      case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
+      case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)}
+        workspaceId={workspace} moveDeps={activeReadOnly ? undefined : moveDeps} />;
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
         statusUpdates={statusUpdates} onOpenGoal={openGoal} openGoalId={goalPanel?.id ?? null}
@@ -4192,7 +4215,7 @@ export default function App() {
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
       case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
-        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} asks={updateAsks} />;
+        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} asks={updateAsks} runMeetings />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)
       case "portfolios": {
@@ -4247,6 +4270,8 @@ export default function App() {
           setUpdateFocus(a.meta?.statusUpdateId ?? null);
           setRoute(r);
         }}
+        // 0056: a meeting's recap opens it
+        onOpenMeeting={(a) => { if (a.meta?.meetingId) requestMeetingOpen(a.meta.meetingId); }}
         // 0048: bundles and the quiet-hours line follow your prefs ("Change" opens them); snoozes look after themselves
         notifyPrefs={profile?.notifyPrefs} onOpenNotificationSettings={() => openSettings("notifications")} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
@@ -4272,6 +4297,8 @@ export default function App() {
         personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })}
         // 0048: a task dropped on a person is handed to them (Undo); kudos read live
         onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson}
+        // 0056: Run meeting (never a guest's)
+        meeting={workspace && !personal && !activeReadOnly ? { workspaceId: workspace, preset: "team", canLead: isAdmin } : null}
         goalsSlot={<TeamGoals goals={goalFlow.goals.filter((g) => (g.workspaceId ?? null) === workspace)} reads={goalFlow.reads} today={KANBO_TODAY} onOpenGoal={openGoal} onOpenGoals={() => setRoute({ view: "goals" })} />} />;
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
@@ -4514,6 +4541,17 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       )}
+      {meetingsOn && (
+        <ErrorBoundary inline floating name="meetings">
+          <Suspense fallback={null}>
+            <MeetingsHost me={currentUserId} workspaces={workspaces} members={wsMembers} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
+              statusUpdates={statusUpdates} loadEvents={(ws, since) => store.listWorkspaceEventsSince(ws, since)}
+              createTasks={(rows, o) => importTasks(rows, { verb: "Added", quiet: o?.quiet })} deleteTask={deleteTask} onCreateProject={createProject}
+              aiExtract={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined} onOpenTask={setDetailId}
+              onOpenDoc={(projectId, docId) => { const p = projects.find((x) => x.id === projectId); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId, tab: "docs", docId }); }} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
@@ -4645,7 +4683,7 @@ export default function App() {
       <Deferred when={extract.open}><ExtractTasksSheet open={extract.open} onClose={() => setExtract({ open: false })} initialText={extract.text} context={extract.context}
         projects={wsProjects} members={assignees} defaultProjectId={openProject?.id} currentUserId={currentUserId}
         onExtractAI={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined}
-        onCreate={(rows) => importTasks(rows, { verb: "Added" })} /></Deferred>
+        onCreate={(rows) => { importTasks(rows, { verb: "Added" }); }} /></Deferred>
       <Deferred when={shutdownOpen}><ShutdownSheet open={shutdownOpen} onClose={() => setShutdownOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} userName={currentUser?.name}
         onPatch={guardedPatch} onComment={(taskId, body) => addComment(taskId, body)} focusMinutesToday={focus.focusMinToday} readOnly={activeReadOnly} /></Deferred>
       <Deferred when={weeklyOpen}><WeeklyReview open={weeklyOpen} onClose={() => setWeeklyOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} onPatch={guardedPatch}

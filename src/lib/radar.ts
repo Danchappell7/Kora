@@ -12,6 +12,7 @@ import type { Task, WorkspaceEvent } from "../data/types";
 import { KANBO_TODAY, getMember, getProject, toLocalISO } from "../data/data";
 import { addDays, fmtDayMonth, localDay, round1, startOfWeekMon, taskLoadInWeek } from "./weekMath";
 import { isBlocked } from "./countRules";
+import { availabilityOn, getAvailability, weekCapacities } from "./availability";
 
 /** "blocked" is a task whose status says so; "waiting" is one held up by unfinished work it
  *  depends on (lib/countRules: one vocabulary across the brief, Kanbo noticed, Radar and Ask Kanbo). */
@@ -46,22 +47,32 @@ export interface Risk {
 export const DEFAULT_CAPACITY = 40;
 const CAP_KEY = "kanbo-capacity";
 
-/** Weekly capacity (hours) per person id, as set on this device (Workload). */
-export function readCapacities(): Record<string, number> {
+/** Weekly capacity (hours) per person id, as saved on this device (Workload, before 0055). */
+export function readLocalCapacities(): Record<string, number> {
   try {
     const v = JSON.parse(localStorage.getItem(CAP_KEY) || "{}");
     return v && typeof v === "object" && !Array.isArray(v) ? v : {};
   } catch { return {}; }
 }
 
-/** Save the per-person capacities (private mode quietly keeps them in memory only). */
+/** Weekly capacity (hours) per person id for this week: once 0055 is run, everyone's shared
+ *  values at `workspaceId` (default: the one on screen), less their time off; before it, the
+ *  capacities saved on this device. */
+export function readCapacities(workspaceId?: string | null): Record<string, number> {
+  const s = getAvailability();
+  if (availabilityOn(s)) return weekCapacities(workspaceId === undefined ? s.activeWs : workspaceId, startOfWeekMon(new Date(KANBO_TODAY)), s);
+  return readLocalCapacities();
+}
+
+/** Save the per-person capacities on this device (private mode quietly keeps them in memory only). */
 export function writeCapacities(caps: Record<string, number>): void {
   try { localStorage.setItem(CAP_KEY, JSON.stringify(caps)); } catch { /* private mode */ }
 }
 
+/** A person's capacity: as given (0 when they're off all week), else the 40h default. */
 export function capacityOf(caps: Record<string, number> | undefined, id: string): number {
   const c = caps?.[id];
-  return typeof c === "number" && c > 0 ? c : DEFAULT_CAPACITY;
+  return typeof c === "number" && c >= 0 && Number.isFinite(c) ? c : DEFAULT_CAPACITY;
 }
 
 /* ---------------- load ---------------- */
@@ -351,14 +362,16 @@ export function computeRisks(input: {
     if (!r) continue;
     const cap = capacityOf(caps, m.id);
     const h = round1(r.hours);
-    if (h < cap * 0.9) continue;
+    if (h <= 0 || h < cap * 0.9) continue;
     const hours = `${h}h / ${round1(cap)}h`;
     const inProject = !input.projectId || r.items.some((i) => i.task.projectId === input.projectId);
     if (!inProject) continue;
+    // (no capacity at all: they're off every working day this week, 0055)
+    const away = cap === 0;
     push({
       id: `over_capacity:${m.id}`, kind: "over_capacity", severity: h > cap * 1.1 ? "signal" : "warn",
-      title: h > cap ? `${nameOf(m.id)} is over capacity` : `${nameOf(m.id)} is near capacity`,
-      reason: `${hours} this week · ${plural(r.items.length, "task")}`, mono: hours,
+      title: away ? `${nameOf(m.id)} is off this week` : h > cap ? `${nameOf(m.id)} is over capacity` : `${nameOf(m.id)} is near capacity`,
+      reason: away ? `${h}h due while they're away · ${plural(r.items.length, "task")}` : `${hours} this week · ${plural(r.items.length, "task")}`, mono: away ? `${h}h` : hours,
       taskIds: r.items.map((i) => i.task.id), memberId: m.id,
       fixes: [{ kind: "rebalance", label: "Rebalance" }],
     }, r.items.length, r.items[0]?.task.dueDate);

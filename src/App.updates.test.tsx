@@ -32,12 +32,13 @@ describe("App · project updates in the Inbox (0054)", () => {
     expect(screen.getByText("The hero copy is in the brand doc now.")).toBeInTheDocument();
   });
 
-  it("the Inbox's Updates shows just the project updates", async () => {
+  it("the Inbox's Updates shows just the project updates (and, 0056, last week's meeting recap)", async () => {
     at("/inbox");
     await boot();
     fireEvent.click(await screen.findByRole("button", { name: /^Updates/ }));
     const list = screen.getByRole("region", { name: "Updates" });
-    expect(within(list).getAllByRole("listitem").length).toBe(2);
+    expect(within(list).getAllByRole("listitem").length).toBe(3);
+    expect(within(list).getAllByRole("button", { name: /posted an update|asked you something|replied to your update|shared the recap/ })).toHaveLength(3);
   });
 });
 

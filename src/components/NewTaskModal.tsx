@@ -31,6 +31,7 @@ import { TemplateTile } from "./templates/parts";
 import { useLibraryTemplates } from "./templates/useLibraryTemplates";
 import { newTaskId } from "../lib/taskOps";
 import type { Task, Project, TagDef, WorkspaceMember, Recurrence, Priority, Status, LibraryTemplate } from "../data/types";
+import { OffNote } from "./availability/OffChip";
 
 /* Every task made here has a real UUID from the start (lib/taskOps newTaskId), so
    the host keeps it (App.persistTask only re-ids a non-UUID) and a template's
@@ -547,7 +548,8 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
               </select>
             </span>
           </Prop>
-          <Prop label="Assignee" htmlFor={idOf("assignee")} fromTitle={!!parsed.assigneeId}>
+          <Prop label="Assignee" htmlFor={idOf("assignee")} fromTitle={!!parsed.assigneeId}
+            note={assignee ? <OffNote userId={assignee.id} name={assignee.id === currentUserId ? "You" : assignee.name} workspaceId={wsOf(targetProject)} due={effDue || null} /> : undefined}>
             <span className="knt-ctl">
               {assignee ? <PersonMark id={assignee.id} name={assignee.name} /> : <Icon name="user" size={14} sw={1.75} />}
               <select id={idOf("assignee")} className="knt-select" value={effAssignee} onChange={(e) => pickAssignee(e.target.value)}>

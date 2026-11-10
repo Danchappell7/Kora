@@ -15,6 +15,9 @@
    update on a project you own or work on and replies on yours are FYI;
    an Ask that names you, or a reply that mentions you, needs your reply.
    They open the project's Updates tab. "Updates" shows just them.
+   0056: a meeting's recap (kind "meeting", no task): "Maya shared the
+   recap of Foundrise team meeting · 2 decisions · 5 actions" (FYI, in
+   "Updates" too); it opens the recap (onOpenMeeting).
    ============================================================ */
 import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties, type HTMLAttributes, type PointerEvent, type ReactNode } from "react";
 import { Icon, EmptyArt, EmptyState, Avatar, Button, DateChip, Kbd, ProjectTile, SectionLabel } from "../primitives";
@@ -51,6 +54,7 @@ const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   doc_mention: { icon: "notes", verb: "mentioned you in" },
   kudos:       { icon: "sparkles", verb: "sent you kudos for" },   // 0048: "Theo sent you 👏 for Launch deck — “Great work”"
   update:      { icon: "notes", verb: "posted an update on" },      // 0054: "Sana Rao asked you something in the update on Brand Refresh"
+  meeting:     { icon: "users", verb: "shared the recap of" },      // 0056: "Maya Lin shared the recap of Foundrise team meeting"
 };
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -83,7 +87,7 @@ const REPLY_WORDS = new Set([
    their name quoted as if it were the comment. */
 function actorOf(a: Activity): string | null {
   if (a.kind === "assigned" || a.kind === "mention" || a.kind === "doc_mention") return a.detail?.trim() || "Someone";
-  if (a.kind === "approval" || a.kind === "kudos" || a.kind === "update") return a.detail?.trim() || "Someone";
+  if (a.kind === "approval" || a.kind === "kudos" || a.kind === "update" || a.kind === "meeting") return a.detail?.trim() || "Someone";
   if (a.kind !== "comment") return null;
   const d = (a.detail || "").trim();
   if (!d || d === "Someone" || EMAIL_RE.test(d)) return d || "Someone";
@@ -106,6 +110,7 @@ const ACTOR_VERB: Partial<Record<ActivityKind, string>> = {
   doc_mention: "mentioned you in",
   kudos: "sent you kudos for",
   update: "posted an update on",
+  meeting: "shared the recap of",
 };
 
 /* Work that arrived through a request form reads "New request: {title}",
@@ -119,6 +124,13 @@ const viaRequest = (a: Activity, task: Task | undefined): string | null => {
   if (a.kind === "created" && isRequestTask(task)) return requestSource(task) ?? "a request form";
   return null;
 };
+
+/** "Leadership · 2 decisions · 3 actions" (0056: what a recap left) */
+function meetingCounts(a: Pick<Activity, "meta">): string {
+  const d = a.meta?.decisions ?? 0, n = a.meta?.actions ?? 0;
+  const bits = [d ? `${d} ${d === 1 ? "decision" : "decisions"}` : "", n ? `${n} ${n === 1 ? "action" : "actions"}` : ""].filter(Boolean);
+  return [a.meta?.meetingPreset === "leadership" ? "Leadership" : "Meeting", ...(bits.length ? bits : ["No decisions or actions"])].join(" · ");
+}
 
 /** a teammate's member id from how the feed names them (name or email) */
 function memberIdByName(name: string, members?: { id: string; name: string }[]): string | null {
@@ -317,6 +329,8 @@ export interface InboxViewProps {
   onOpenDoc?: (a: Activity) => void;
   /** 0054: a project update item (no task) opens the project's Updates tab, a portfolio's its page */
   onOpenUpdate?: (a: Activity) => void;
+  /** 0056: a meeting's recap (no task) opens the recap */
+  onOpenMeeting?: (a: Activity) => void;
   /** 0048 thread snoozes (notification_snoozes, your own rows). Absent: the Inbox reads
    *  and writes them itself through lib/notifyPrefs (demo: in memory). Pass App's copy
    *  with onSnooze / onUnsnooze to share it. */
@@ -335,7 +349,7 @@ export interface InboxViewProps {
 export function InboxView({
   activity, tasks, onOpen, onArchive, onClearAll,
   currentUserId, members, onReply, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
-  loading, loadError, onRetry, onNewCount, onOpenIntegration, approvals, onOpenDoc, onOpenUpdate,
+  loading, loadError, onRetry, onNewCount, onOpenIntegration, approvals, onOpenDoc, onOpenUpdate, onOpenMeeting,
   snoozes: snoozesProp, onSnooze, onUnsnooze, notifyPrefs, onOpenNotificationSettings,
 }: InboxViewProps) {
   const entrance = useEntrance();
@@ -530,8 +544,8 @@ export function InboxView({
     return out;
   };
   const sectionRows = sections.map((s) => ({ ...s, rows: toRows(s.items, s.id) }));
-  // 0054 "Updates": just the project and portfolio updates (and their replies), newest first
-  const updateItems = visible.filter((a) => a.kind === "update");
+  // 0054 "Updates": just the project and portfolio updates (and their replies), and (0056) meeting recaps, newest first
+  const updateItems = visible.filter((a) => a.kind === "update" || a.kind === "meeting");
   const rows: Row[] = segment === "inbox" ? sectionRows.flatMap((s) => s.rows)
     : segment === "updates" ? toRows(updateItems, "updates")
     : segment === "snoozed" ? toRows(snoozedItems, "snoozed") : toRows(archivedItems, "archived", false);
@@ -614,6 +628,12 @@ export function InboxView({
       if (!onOpenUpdate || !updateItemRoute(a)) return;
       forget(row.items);
       onOpenUpdate(a);
+      return;
+    }
+    if (a.kind === "meeting") {
+      if (!onOpenMeeting || !a.meta?.meetingId) return;
+      forget(row.items);
+      onOpenMeeting(a);
       return;
     }
     if (!a.taskId || !taskById.has(a.taskId)) return;
@@ -884,7 +904,9 @@ export function InboxView({
     const docRoute = docMentionRoute(a);
     const isDoc = a.kind === "doc_mention";
     const isUpdate = a.kind === "update";
-    const openable = !!task || (integ && !!onOpenIntegration) || (!!docRoute && !!onOpenDoc) || (isUpdate && !!onOpenUpdate && !!updateItemRoute(a));
+    const isMeeting = a.kind === "meeting";
+    const openable = !!task || (integ && !!onOpenIntegration) || (!!docRoute && !!onOpenDoc) || (isUpdate && !!onOpenUpdate && !!updateItemRoute(a))
+      || (isMeeting && !!onOpenMeeting && !!a.meta?.meetingId);
     const apv = a.kind === "approval" ? approvalInboxLine(a) : null;
     const kudosNote = a.kind === "kudos" && !b ? (a.meta?.note?.trim() || null) : null;
     const excerpt = b ? null : kudosNote ? `“${kudosNote}”` : apv?.quote ? `“${apv.quote}”`
@@ -906,6 +928,8 @@ export function InboxView({
           ? <span id={`${subId}-ctx`} className="kinbox-proj"><ProjectTile project={(proj ?? docProj)!} size={16} /><span className="truncate">{(proj ?? docProj)!.name}{isDoc ? " · Docs" : isUpdate ? " · Updates" : ""}</span></span>
           : isUpdate && a.meta?.portfolioId
           ? <span id={`${subId}-ctx`} className="kinbox-proj"><Icon name="briefcase" size={14} sw={1.75} /><span className="truncate">Portfolio</span></span>
+          : isMeeting
+          ? <span id={`${subId}-ctx`} className="kinbox-proj"><Icon name="users" size={14} sw={1.75} /><span className="truncate">{meetingCounts(a)}</span></span>
           : null;
     const describedBy = [
       ctx && `${subId}-ctx`,
@@ -965,6 +989,8 @@ export function InboxView({
         ? <><strong>{actor}</strong> {ACTOR_VERB.doc_mention} <strong>{a.taskTitle || "a doc"}</strong></>
         : isUpdate
         ? <><strong>{actor}</strong> {updateVerb(a)} <strong>{a.taskTitle || "a project"}</strong></>
+        : isMeeting
+        ? <><strong>{actor}</strong> {ACTOR_VERB.meeting} <strong>{a.taskTitle || "a meeting"}</strong></>
         : a.kind === "kudos" && actor
         ? <><strong>{actor}</strong> sent you {emoji ? <span className="kinbox-emoji">{emoji}</span> : "kudos"} for <strong>{title}</strong></>
         : actor
@@ -973,7 +999,7 @@ export function InboxView({
     const style = { "--acts-w": `${Math.max(64, acts.length * 30)}px` } as CSSProperties;
     return (
       <RowFrame key={row.id} role={asItem ? "listitem" : undefined} className="kinbox-row" data-unread={isUnread || undefined} data-cursor={isCursor || undefined}
-        data-open={composing ? true : undefined} data-gone={task || integ || ((isDoc || isUpdate) && openable) ? undefined : true}
+        data-open={composing ? true : undefined} data-gone={task || integ || ((isDoc || isUpdate || isMeeting) && openable) ? undefined : true}
         data-child={row.parent ? true : undefined} data-bundle={b ? true : undefined} style={style}
         rowRef={(el) => { if (el) rowEls.current.set(row.id, el); else rowEls.current.delete(row.id); }}
         dragTaskId={task && task.status !== "done" ? task.id : null} dragOrigin={a.id} dragDisabled={!!readOnly || guestRow(task)} dragLabel={title}
@@ -983,7 +1009,7 @@ export function InboxView({
           <button type="button" className="kinbox-main" aria-describedby={describedBy}
             ref={(el) => { if (el) rowRefs.current.set(row.id, el); else rowRefs.current.delete(row.id); }}
             onClick={() => openRow(row)} aria-disabled={openable ? undefined : true}
-            title={openable || integ ? undefined : isDoc ? "This doc is no longer available" : isUpdate ? "This update is no longer available" : "This task has been archived or is no longer available"}>
+            title={openable || integ ? undefined : isDoc ? "This doc is no longer available" : isUpdate ? "This update is no longer available" : isMeeting ? "This meeting is no longer available" : "This task has been archived or is no longer available"}>
             {isUnread && <span className="sr-only">Unread: </span>}
             {/* two lines before clipping, so "who did what" survives a phone-width row */}
             <span className="kinbox-say">{say}</span>
@@ -1058,6 +1084,7 @@ export function InboxView({
     const items: { key: string; icon: IconName; label: string; kbd?: string; fn: () => void }[] = [];
     if (task) items.push({ key: "open", icon: "arrowUpRight", label: "Open task", kbd: "↵", fn: () => openRow(row) });
     else if (a.kind === "doc_mention" && onOpenDoc && docMentionRoute(a)) items.push({ key: "open", icon: "arrowUpRight", label: "Open doc", kbd: "↵", fn: () => openRow(row) });
+    else if (a.kind === "meeting" && onOpenMeeting && a.meta?.meetingId) items.push({ key: "open", icon: "arrowUpRight", label: "Open recap", kbd: "↵", fn: () => openRow(row) });
     if (row.bundle) {
       const open = expanded.has(row.id);
       items.push({ key: "expand", icon: open ? "chevronDown" : "chevronRight", label: open ? "Hide the updates" : `Show all ${row.bundle.items.length}`, kbd: open ? "←" : "→", fn: () => toggleExpand(row.id) });
@@ -1211,9 +1238,11 @@ export function InboxView({
   } else if (segment === "updates") {
     body = updateItems.length ? (
       <section className="kinbox-group" aria-label="Updates">
-        <SectionLabel count={updateItems.length}>Project updates</SectionLabel>
+        <SectionLabel count={updateItems.length}>{!updateItems.some((a) => a.kind === "meeting") ? "Project updates" : updateItems.some((a) => a.kind !== "meeting") ? "Updates and recaps" : "Meeting recaps"}</SectionLabel>
         <div role="list" className="kinbox-rows">{topRows(rows)}</div>
-        <p className="kinbox-note">Updates on the projects you own or work on, replies on yours, and anything an update asks you.</p>
+        <p className="kinbox-note">{updateItems.some((a) => a.kind === "meeting")
+          ? "Updates on the projects you own or work on, replies on yours, anything an update asks you, and the recaps of meetings you were in."
+          : "Updates on the projects you own or work on, replies on yours, and anything an update asks you."}</p>
       </section>
     ) : (
       <EmptyState art="chart" title="No updates waiting" size="sm"

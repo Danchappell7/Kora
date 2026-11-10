@@ -1,19 +1,38 @@
 /* ============================================================
    KANBO — Team › Workload: each person's load, week by week, against
-   their weekly capacity (hours, set per person on this device).
+   their weekly capacity.
    People are rows and weeks are columns; bars read ink when there's
    room, amber from 90% and red over capacity, with a tick where the
    capacity sits. Pick a week to list its work; open a person to see
    their tasks and set their capacity.
    Hours come from the shared load model (lib/radar): a task's estimate,
    else its planned block, else 1h — the same numbers Pulse shows.
+   0055: capacity is the team's shared week (lib/availability: the
+   person's hours, less any time off that week; "Off" where they're
+   away), set by the person or an owner or admin; before 0055 is run
+   it's saved on this device as before. And it can be acted on: drag a
+   task onto a person (theirs now) or one of their weeks (theirs, due
+   that week), use a task's Move menu, or preview Kanbo's rebalance
+   and apply it, with Undo (components/availability WorkloadParts).
    ============================================================ */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Avatar, Button, Collapse, EmptyState, Icon, IconButton, Meter, StatusGlyph } from "../primitives";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Avatar, Button, Collapse, EmptyState, Icon, IconButton, Meter } from "../primitives";
 import { getMember, KANBO_TODAY } from "../../data/data";
 import type { Task } from "../../data/types";
 import { addDays, fmtDayMonth, fmtHours, round1, startOfWeekMon } from "./reportingUtils";
-import { DEFAULT_CAPACITY, capacityOf, loadForWeek, loadTone, readCapacities, writeCapacities, type PersonLoad } from "../../lib/radar";
+import { DEFAULT_CAPACITY, capacityOf, loadForWeek, loadTone, readCapacities, readLocalCapacities, writeCapacities, type PersonLoad } from "../../lib/radar";
+import type { MoveDeps } from "../../lib/dropMoves";
+import { usePersonDropTarget } from "../../lib/dropActions";
+import { useTaskDropTarget, type TaskDragPayload } from "../../lib/dnd";
+import {
+  availabilityOn, canEditWeek, capacityInWeek, daysOffInWeek, hasOwnWeek, isOffOn, isoOf, roleOf, weekOf, workDaysWords, type AvailabilityState,
+} from "../../lib/availability";
+import { saveWeek } from "../../lib/availabilitySync";
+import { planRebalance, type RebalancePlan } from "../../lib/rebalance";
+import { useAvailability } from "../availability/useAvailability";
+import { OffChip } from "../availability/OffChip";
+import { applyRebalance, RebalancePreview, useWorkloadMoves, weekOfWords, WorkloadTask } from "../availability/WorkloadParts";
+import { useToast } from "../Toast";
 
 export { readCapacities };
 
@@ -86,7 +105,10 @@ function peekWorkloadFocus(): string | null {
 const weekWord = (offset: number) => (offset === 0 ? "This week" : offset === 1 ? "Next week" : `In ${offset} weeks`);
 const fmtDay = fmtDayMonth;
 
-export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace }: {
+function useOptionalToast() { try { return useToast(); } catch { return null; } }
+const carries = (p: TaskDragPayload) => p.taskIds.length > 0;
+
+export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace, workspaceId = null, moveDeps }: {
   tasks: Task[];
   /** `guest: true` for guests (external, view-and-comment): their work shows, but they
    *  carry no team capacity and are never the one suggested to take more on */
@@ -95,22 +117,43 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
   /** the Personal workspace: Workload is for teams, so it explains itself instead */
   personal?: boolean;
   onNewWorkspace?: () => void;
+  /** (0055) the team workspace on show: capacities are its shared weeks once 0055 is run */
+  workspaceId?: string | null;
+  /** (0055) the app's update path and toast: work can be dragged, moved and rebalanced (none: look only) */
+  moveDeps?: () => MoveDeps;
 }) {
+  const toast = useOptionalToast();
   const [weekOffset, setWeekOffset] = useState(0);       // the first week column
   const [pick, setPick] = useState(0);                    // the week (column) whose work is listed
   // read while rendering (an initializer may run twice), cleared once mounted so it's used once
   const [focusId] = useState(peekWorkloadFocus);
   useEffect(() => { try { sessionStorage.removeItem(FOCUS_KEY); } catch { /* private mode */ } }, []);
   const [expanded, setExpanded] = useState<string | null>(focusId);
-  const [caps, setCaps] = useState<Record<string, number>>(readCapacities);
-  const capOf = (id: string) => capacityOf(caps, id);
-  const setCap = (id: string, hours: number) => setCaps((cur) => {
-    const next = { ...cur };
+
+  /* ---- capacity: the team's shared weeks (0055), else this device's ---- */
+  const avail = useAvailability();
+  const shared = !!workspaceId && availabilityOn(avail);
+  const [localCaps, setLocalCaps] = useState<Record<string, number>>(readLocalCapacities);
+  /** the person's usual week, in hours */
+  const weeklyOf = (id: string) => (shared ? round1(weekOf(workspaceId, id, avail).weeklyHours ?? DEFAULT_CAP) : capacityOf(localCaps, id));
+  /** their capacity in one week (less any time off there, when shared) */
+  const capIn = (id: string, weekStart: Date) => (shared ? capacityInWeek(workspaceId, id, weekStart, avail) : capacityOf(localCaps, id));
+  const setCap = (id: string, hours: number) => {
     const h = round1(hours);
-    if (!(h > 0) || h === DEFAULT_CAP) delete next[id]; else next[id] = h;
-    writeCapacities(next);
-    return next;
-  });
+    if (shared) {
+      if (!canEditWeek(workspaceId, id, avail)) return;
+      const w = weekOf(workspaceId, id, avail);
+      void saveWeek({ ...w, workspaceId: workspaceId!, weeklyHours: h === DEFAULT_CAP && !hasOwnWeek(workspaceId, id, avail) ? null : h })
+        .then((r) => { if (!r.ok) toast?.error(r.message); });
+      return;
+    }
+    setLocalCaps((cur) => {
+      const next = { ...cur };
+      if (!(h > 0) || h === DEFAULT_CAP) delete next[id]; else next[id] = h;
+      writeCapacities(next);
+      return next;
+    });
+  };
   // Radar › Rebalance lands here: that person's row is open, in view, and has keyboard focus
   const focusRow = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -132,6 +175,7 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
     });
   }, [tasks, weekOffset, todayKey]);
   const focus = weeks[Math.min(pick, WEEKS - 1)];
+  const capOf = (id: string) => capIn(id, focus.start);
 
   const isMember = (id: string) => members.some((m) => m.id === id);
   const isGuest = (id: string) => members.some((m) => m.id === id && m.guest);
@@ -155,11 +199,12 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
       || (b.focus.hours - a.focus.hours) || (b.focus.items.length - a.focus.items.length) || nameOf(a.id).localeCompare(nameOf(b.id)));
 
   // compare the hours as shown (1 decimal), so "40h / 40h" is never flagged over capacity
-  const isOver = (r: PersonLoad) => round1(r.hours) > capOf(r.id);
-  const overloaded = rows.filter((r) => isTeammate(r.id) && (isOver(r.focus) || r.focus.items.length >= HEAVY));
+  const isOver = (r: PersonLoad, cap: number) => round1(r.hours) > cap;
+  const overloaded = rows.filter((r) => isTeammate(r.id) && (isOver(r.focus, capOf(r.id)) || r.focus.items.length >= HEAVY));
   const orphaned = rows.filter((r) => !isMember(r.id)).reduce((a, r) => a + r.focus.items.length, 0);
-  // rebalance hint: the busiest person + a teammate (never a guest) who clearly has room
-  const freeest = rows.filter((r) => isTeammate(r.id)).sort((a, b) => (a.focus.hours / capOf(a.id) - b.focus.hours / capOf(b.id)) || (a.focus.items.length - b.focus.items.length))[0];
+  // rebalance hint: the busiest person + a teammate (never a guest, never someone away all week) who clearly has room
+  const fill = (r: { id: string; focus: PersonLoad }) => { const c = capOf(r.id); return c > 0 ? r.focus.hours / c : Infinity; };
+  const freeest = rows.filter((r) => isTeammate(r.id) && capOf(r.id) > 0).sort((a, b) => (fill(a) - fill(b)) || (a.focus.items.length - b.focus.items.length))[0];
   const rebalance = overloaded.length && freeest && freeest.id !== overloaded[0].id && freeest.focus.hours < capOf(freeest.id) * 0.6 && freeest.focus.items.length < HEAVY
     ? { from: nameOf(overloaded[0].id), to: nameOf(freeest.id) }
     : null;
@@ -170,7 +215,28 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
   const undatedAll = weeks[0]?.undated ?? 0;
   const someUnestimated = !noEstimates && focus && [...focus.rows.values()].some((r) => r.items.some((i) => !i.estimated));
   const thatWeek = focus.offset === 0 ? "this week" : "that week";
-  const shift = (by: number) => { setWeekOffset((w) => Math.min(MAX_OFFSET, Math.max(0, w + by))); setPick(0); };
+  const shift = (by: number) => { setWeekOffset((w) => Math.min(MAX_OFFSET, Math.max(0, w + by))); setPick(0); setPreview(null); };
+
+  /* ---- acting on it (0055): moves, drops and Kanbo's rebalance ---- */
+  const canMove = !!moveDeps && !personal;
+  const teammates = members.filter((m) => !m.guest);
+  const today = useMemo(() => new Date(todayKey), [todayKey]);
+  const availRef = useRef<AvailabilityState>(avail);
+  availRef.current = avail;
+  const workDaysOf = useCallback((id: string) => (shared ? weekOf(workspaceId, id, availRef.current).workDays : undefined), [shared, workspaceId]);
+  const offOn = useCallback((id: string, iso: string) => shared && isOffOn(id, iso, availRef.current), [shared]);
+  const nameRef = useRef(nameOf);
+  nameRef.current = nameOf;
+  const nameFn = useCallback((id: string) => nameRef.current(id), []);
+  const move = useWorkloadMoves({ moveDeps: canMove ? moveDeps : undefined, workspaceId, today, nameOf: nameFn, workDaysOf, isOff: offOn });
+  const [preview, setPreview] = useState<RebalancePlan | null>(null);
+  const plan = useMemo(() => (canMove && overloaded.length
+    ? planRebalance({ tasks, members, weekStart: focus.start, today, capacityOf: (id) => capIn(id, focus.start), isOff: shared ? (id, iso) => isOffOn(id, iso, avail) : undefined,
+      lastResort: shared ? (id) => roleOf(workspaceId, id, avail) === "owner" : undefined })
+    : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canMove, overloaded.length, tasks, members, focus.start.getTime(), today, avail, localCaps, shared]);
+  const weekChoices = weeks.map((w) => ({ start: w.start, label: w.offset === 0 ? "This week" : w.offset === 1 ? "Next week" : weekOfWords(w.start) }));
 
   if (personal) {
     return (
@@ -194,7 +260,7 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
             <span className="kload-range-title">{weekWord(focus.offset)}</span>
             <span className="kload-range-dates">{fmtDay(focus.start)} – {fmtDay(addDays(focus.start, 6))}</span>
           </div>
-          {weekOffset > 0 && <Button size="sm" variant="ghost" onClick={() => { setWeekOffset(0); setPick(0); }}>Back to this week</Button>}
+          {weekOffset > 0 && <Button size="sm" variant="ghost" onClick={() => { setWeekOffset(0); setPick(0); setPreview(null); }}>Back to this week</Button>}
         </div>
         <div className="kload-legend" aria-hidden="true">
           <span><i data-tone="ink" />Room</span>
@@ -221,14 +287,26 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
         </p>
       )}
       {overloaded.length > 0 && (
-        <p className="kload-notice" data-tone="signal">
+        <div className="kload-notice" data-tone="signal">
           <Icon name="zap" size={16} sw={1.75} />
           <span>
             <strong>{overloaded.length} {overloaded.length === 1 ? "person looks" : "people look"} overloaded.</strong>{" "}
             {overloaded.map((r) => nameOf(r.id)).slice(0, 3).join(", ")}{overloaded.length > 3 ? ` +${overloaded.length - 3} more` : ""} {overloaded.length === 1 ? "is" : "are"} over capacity or carrying a lot of work {thatWeek}.
-            {rebalance && <> Consider moving a task or two from <strong>{rebalance.from}</strong> to <strong>{rebalance.to}</strong>, who has room.</>}
+            {plan && plan.moves.length > 0
+              ? <> Kanbo can move {plan.moves.length === 1 ? "a task" : `${plan.moves.length} tasks`} to people with room.</>
+              // (what's left is under way, so Kanbo won't hand it on: say what you can still do)
+              : plan && rebalance ? <> What's left is already under way: drag a task to a later week, or to <strong>{rebalance.to}</strong>, who has room.</>
+              : rebalance && <> Consider moving a task or two from <strong>{rebalance.from}</strong> to <strong>{rebalance.to}</strong>, who has room.</>}
           </span>
-        </p>
+          {plan && plan.moves.length > 0 && !preview && (
+            <Button size="sm" variant="secondary" icon="kanbo" className="kload-notice-act" onClick={() => setPreview(plan)}>Preview rebalance</Button>
+          )}
+        </div>
+      )}
+      {preview && moveDeps && (
+        <RebalancePreview plan={preview} nameOf={nameOf} capacityOf={capOf} weekLabel={weekWord(focus.offset)} workspaceId={workspaceId}
+          onCancel={() => setPreview(null)}
+          onApply={() => { applyRebalance(preview, moveDeps()); setPreview(null); }} />
       )}
       {orphaned > 0 && (
         <p className="kload-notice" data-tone="quiet">
@@ -245,7 +323,7 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
             <span className="kload-person" role="columnheader">Person</span>
             {weeks.map((w, i) => (
               <span key={w.offset} className="kload-cell" data-col={i} role="columnheader">
-                <button type="button" className="kload-week" aria-pressed={i === pick} onClick={() => setPick(i)}
+                <button type="button" className="kload-week" aria-pressed={i === pick} onClick={() => { setPick(i); setPreview(null); }}
                   title={`List ${weekWord(w.offset).toLowerCase()}'s work`}>
                   <span>{weekWord(w.offset)}</span>
                   <span className="kload-week-dates">{fmtDay(w.start)} – {fmtDay(addDays(w.start, 6))}</span>
@@ -258,48 +336,51 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
             const member = isMember(r.id);
             const guest = member && isGuest(r.id);
             const teammate = member && !guest;   // carries capacity
+            const weekly = weeklyOf(r.id);
             const cap = capOf(r.id);
             const name = nameOf(r.id);
             const open = expanded === r.id;
             const panelId = `workload-${r.id || "unassigned"}`;
             const overdueN = r.items.filter((i) => i.overdue).length;
+            const editable = teammate && (shared ? canEditWeek(workspaceId, r.id, avail) : true);
+            const ownWeek = shared ? weekOf(workspaceId, r.id, avail) : null;
             return (
               <div key={r.id || "unassigned"} className="kload-group" data-open={open || undefined} ref={r.id === focusId ? focusRow : undefined}>
                 <div className="kload-row" role="row">
-                  <span className="kload-person" role="rowheader">
-                    <button type="button" className="kload-who" onClick={() => setExpanded((e) => e === r.id ? null : r.id)} aria-expanded={open} aria-controls={panelId}>
-                      {getMember(r.id) ? <Avatar id={r.id} size={28} /> : <span className="kload-ghost" aria-hidden="true" />}
-                      <span className="kload-name">
-                        <span className="truncate" data-member={member || undefined}>{name}</span>
-                        {teammate && <span className="kload-cap">{fmtHours(cap)} a week</span>}
-                        {guest && <span className="kload-sub">Guest</span>}
-                      </span>
-                      <Icon name="chevronDown" size={16} sw={1.75} className="kload-chev" />
-                    </button>
-                  </span>
+                  <PersonHead id={r.id} name={name} member={member} teammate={teammate} guest={guest} weekly={weekly} open={open} panelId={panelId}
+                    workspaceId={shared ? workspaceId : null} canDrop={canMove && teammate}
+                    onToggle={() => setExpanded((e) => e === r.id ? null : r.id)} onDrop={(ids) => move(ids, r.id, null)} />
                   {weeks.map((w, i) => {
                     const load = w.rows.get(r.id) ?? empty(r.id);
-                    const over = teammate && isOver(load);
+                    const wcap = capIn(r.id, w.start);
+                    const away = teammate && shared ? daysOffInWeek(workspaceId, r.id, w.start, avail) : { off: 0, working: 0 };
+                    const offAll = away.working > 0 && away.off >= away.working;
+                    const over = teammate && !offAll && isOver(load, wcap);
                     const heavy = teammate && !over && load.items.length >= HEAVY;
-                    const tone = !teammate ? "ink" : heavy ? "warn" : loadTone(load.hours, cap);
+                    const tone = !teammate ? "ink" : offAll ? (load.items.length ? "signal" : "ink") : heavy ? "warn" : loadTone(load.hours, wcap);
                     const none = load.items.length === 0;
                     const state = over ? ", over capacity" : heavy ? ", heavy load" : tone === "warn" ? ", near capacity" : "";
+                    const offWords = away.off > 0 ? (offAll ? "Off all week" : `Off ${away.off === 0.5 ? "half a day" : `${away.off} day${away.off === 1 ? "" : "s"}`}`) : "";
                     return (
-                      <span key={w.offset} className="kload-cell" data-col={i} data-picked={i === pick || undefined} role="cell">
+                      <WeekCell key={w.offset} col={i} picked={i === pick} userId={r.id} weekStart={w.start} label={`${name}, ${weekWord(w.offset).toLowerCase()}`}
+                        canDrop={canMove && teammate} onDrop={(ids) => move(ids, r.id, w.start)}>
                         <span className="kload-figures" data-tone={none ? "none" : tone}>
-                          {none ? (teammate ? `0h / ${fmtHours(cap)}` : "—") : `${fmtHours(load.hours)}${teammate ? ` / ${fmtHours(cap)}` : ""} · ${load.items.length} task${load.items.length === 1 ? "" : "s"}`}
+                          {none ? (teammate ? (offAll ? "Off" : `0h / ${fmtHours(wcap)}`) : "—") : `${fmtHours(load.hours)}${teammate ? ` / ${fmtHours(wcap)}` : ""} · ${load.items.length} task${load.items.length === 1 ? "" : "s"}`}
                           {state && <span className="sr-only">{state}</span>}
+                          {offWords && <span className="sr-only">, {offWords.toLowerCase()}</span>}
                         </span>
                         {/* the figures carry it for screen readers: a progressbar's percentage (of 125% of capacity) would only confuse */}
                         {teammate && (
                           <span className="kload-meter" aria-hidden="true">
-                            <Meter value={load.hours} max={cap * 1.25} marker={cap} height={6} tone={tone}
-                              label={`${name}, ${weekWord(w.offset).toLowerCase()}: ${fmtHours(load.hours)} of ${fmtHours(cap)}`} />
+                            <Meter value={load.hours} max={Math.max(wcap, 1) * 1.25} marker={wcap} height={6} tone={tone}
+                              label={`${name}, ${weekWord(w.offset).toLowerCase()}: ${fmtHours(load.hours)} of ${fmtHours(wcap)}`} />
                           </span>
                         )}
-                        {i === pick && over && <span className="kload-flag" data-tone="signal">Over by {fmtHours(round1(load.hours) - cap)}</span>}
+                        {offWords && !offAll && <span className="kload-off" aria-hidden="true">{offWords}</span>}
+                        {i === pick && over && <span className="kload-flag" data-tone="signal">Over by {fmtHours(round1(load.hours) - wcap)}</span>}
                         {i === pick && heavy && <span className="kload-flag" data-tone="warn">Heavy load — {load.items.length} tasks</span>}
-                      </span>
+                        {i === pick && offAll && !none && <span className="kload-flag" data-tone="signal">Due while they're away</span>}
+                      </WeekCell>
                     );
                   })}
                 </div>
@@ -312,21 +393,18 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
                         const effort = t.effortHours ?? 0;
                         const partial = effort > 0 && round1(hours) !== round1(effort);
                         return (
-                          <button key={t.id} type="button" className="kload-task" onClick={() => onOpen(t.id)} aria-label={`Open task ${t.title}`}>
-                            <StatusGlyph status={t.status} size={14} />
-                            <span className="kload-task-title truncate">{t.title}</span>
-                            {t.dueDate && <span className="kload-task-due" data-late={overdue || undefined}>{overdue ? "Overdue · " : "Due "}{fmtDay(new Date(t.dueDate + "T00:00:00"))}</span>}
-                            <span className="kload-task-hours" title={partial ? "This week's share of the estimate" : !estimated ? "No estimate — counted as 1h" : undefined}>
-                              {!estimated ? "~1h" : partial ? `${fmtHours(hours)} of ${fmtHours(effort)}` : fmtHours(hours)}
-                            </span>
-                          </button>
+                          <WorkloadTask key={t.id} task={t} overdue={overdue} estimated={estimated} onOpen={onOpen}
+                            hours={partial ? `${fmtHours(hours)} of ${fmtHours(effort)}` : fmtHours(hours)}
+                            label={partial ? "This week's share of the estimate" : !estimated ? "No estimate — counted as 1h" : undefined}
+                            canMove={canMove && !!t.workspaceId && t.workspaceId === workspaceId}
+                            people={teammates.map((m) => ({ id: m.id, name: m.name }))} weeks={weekChoices} currentWeek={focus.start} onMove={move} />
                         );
                       })}
                       {r.undated > 0 && <p className="kload-muted">+ {r.undated} open task{r.undated === 1 ? "" : "s"} with no dates (not counted).</p>}
-                      {teammate && (
+                      {teammate && (editable ? (
                         <label className="kload-capedit">
                           Weekly capacity
-                          <DraftInput type="number" min={MIN_CAP} max={MAX_CAP} value={cap} label={`Weekly capacity for ${name}, in hours`} title={`Between ${MIN_CAP} and ${MAX_CAP} hours`}
+                          <DraftInput type="number" min={MIN_CAP} max={MAX_CAP} value={weekly} label={`Weekly capacity for ${name}, in hours`} title={`Between ${MIN_CAP} and ${MAX_CAP} hours`}
                             onCommit={(v) => {
                               // out of range (or cleared) → the box shows the capacity actually in use again
                               const h = Number(v);
@@ -334,9 +412,14 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
                               setCap(r.id, h);
                               return String(round1(h));
                             }} className="kload-capinput" />
-                          h <span className="kload-muted-inline">· {MIN_CAP}–{MAX_CAP}h · saved on this device</span>
+                          h <span className="kload-muted-inline">· {MIN_CAP}–{MAX_CAP}h · {shared ? `${workDaysWords(ownWeek!.workDays)}, shared with the team` : "saved on this device"}</span>
                         </label>
-                      )}
+                      ) : (
+                        <p className="kload-capedit">
+                          Weekly capacity <span className="kload-capfixed">{fmtHours(weekly)}</span>
+                          <span className="kload-muted-inline">· {ownWeek ? `${workDaysWords(ownWeek.workDays)} · ` : ""}set by {name.split(/\s+/)[0]} or an owner or admin</span>
+                        </p>
+                      ))}
                       {guest && <p className="kload-muted">Guests don't carry team capacity.</p>}
                     </div>
                   </div>
@@ -347,10 +430,52 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace 
         </div>
       )}
       <p className="kload-foot">
-        Hours due each week against capacity ({DEFAULT_CAP}h unless you set one). Work with a start and due date is spread across the working days between them{focus.offset === 0 ? "; late work counts in full this week" : ""}.{someUnestimated ? " Tasks without an estimate count as 1h." : ""}
+        Hours due each week against capacity ({shared ? `each person's week, ${DEFAULT_CAP}h unless they set one, less any time off` : `${DEFAULT_CAP}h unless you set one`}). Work with a start and due date is spread across the working days between them{focus.offset === 0 ? "; late work counts in full this week" : ""}.{someUnestimated ? " Tasks without an estimate count as 1h." : ""}
         {focus.undated > 0 && <> {focus.undated} open task{focus.undated === 1 ? " has" : "s have"} no start or due date, so {focus.undated === 1 ? "it isn't" : "they aren't"} counted.</>}
+        {canMove && <> Drag a task onto a person or one of their weeks to move it.</>}
       </p>
     </div>
+  );
+}
+
+/** A person's name cell: opens their row, and takes dropped tasks (they're theirs now, dates kept). */
+function PersonHead({ id, name, member, teammate, guest, weekly, open, panelId, workspaceId, canDrop, onToggle, onDrop }: {
+  id: string; name: string; member: boolean; teammate: boolean; guest: boolean; weekly: number; open: boolean; panelId: string;
+  workspaceId: string | null; canDrop: boolean; onToggle: () => void; onDrop: (taskIds: string[]) => void;
+}) {
+  const drop = usePersonDropTarget({ userId: id, name }, { readOnly: !canDrop, onDrop: (ids) => onDrop(ids) });
+  return (
+    <span className="kload-person" role="rowheader" {...drop.bind} data-drop-ready={drop.canDrop && !drop.isOver ? "" : undefined}>
+      <button type="button" className="kload-who" onClick={onToggle} aria-expanded={open} aria-controls={panelId}>
+        {getMember(id) ? <Avatar id={id} size={28} /> : <span className="kload-ghost" aria-hidden="true" />}
+        <span className="kload-name">
+          <span className="truncate" data-member={member || undefined}>{name}</span>
+          {teammate && <span className="kload-cap">{fmtHours(weekly)} a week</span>}
+          {guest && <span className="kload-sub">Guest</span>}
+          {teammate && <span className="kload-away"><OffChip userId={id} workspaceId={workspaceId} size="xs" /></span>}
+        </span>
+        <Icon name="chevronDown" size={16} sw={1.75} className="kload-chev" />
+      </button>
+    </span>
+  );
+}
+
+/** One person's week: takes dropped tasks (theirs now, due that week). */
+function WeekCell({ col, picked, userId, weekStart, label, canDrop, onDrop, children }: {
+  col: number; picked: boolean; userId: string; weekStart: Date; label: string; canDrop: boolean;
+  onDrop: (taskIds: string[]) => void; children: ReactNode;
+}) {
+  const handle = useRef(onDrop);
+  handle.current = onDrop;
+  const target = useMemo(() => ({ kind: "workload-week" as const, id: `${userId}:${isoOf(weekStart)}`, label, data: { userId, weekStart: isoOf(weekStart) } }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [userId, weekStart.getTime(), label]);
+  const onTaskDrop = useCallback((e: { payload: TaskDragPayload }) => handle.current(e.payload.taskIds), []);
+  const drop = useTaskDropTarget({ target, accepts: carries, onDrop: onTaskDrop, disabled: !canDrop });
+  return (
+    <span className="kload-cell" data-col={col} data-picked={picked || undefined} role="cell" {...drop.bind} data-drop-ready={drop.canDrop && !drop.isOver ? "" : undefined}>
+      {children}
+    </span>
   );
 }
 
@@ -431,6 +556,17 @@ const WORKLOAD_CSS = `
 .kload-capinput { width: 72px; height: var(--h-sm, 28px); padding: 0 8px; border-radius: var(--r-sm, 6px); border: 1px solid var(--field-border, var(--hairline-strong));
   background: var(--field-bg, var(--surface)); color: var(--ink); font: 500 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
 .kload-capinput:hover { border-color: var(--field-border-hover, var(--hairline-strong)); }
+.kload-notice:has(.kload-notice-act) { flex-wrap: wrap; }
+.kload-notice:has(.kload-notice-act) > span { flex: 1 1 320px; min-width: 0; }
+.kload-notice .kload-notice-act { margin-left: auto; flex-shrink: 0; align-self: center; }
+.kload-away { display: flex; margin-top: 2px; }
+.kload-away:empty { display: none; }
+.kload-off { font: 500 11px/16px var(--font-ui, var(--font-display)); color: var(--warn, var(--st-review)); }
+.kload-capfixed { font: 500 12px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+/* drops (0055): every target that would take the task shows it; the one under the pointer fills */
+.kload-cell[data-drop-ready], .kload-person[data-drop-ready] { border-radius: var(--r-sm, 6px); box-shadow: inset 0 0 0 1px var(--hairline-strong); }
+.kload-cell[data-kdnd-over], .kload-person[data-kdnd-over] { border-radius: var(--r-sm, 6px); background: var(--accent-tint, var(--fill-1)); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.kload-group .kload-cell { padding: 4px; margin: -4px; }
 .kload-foot { max-width: 720px; margin: 16px 0 0; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 @container (max-width: 1000px) {
   .kload-row { grid-template-columns: minmax(160px, 220px) repeat(3, minmax(0, 1fr)); }

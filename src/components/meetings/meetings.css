@@ -1,0 +1,294 @@
+/* ============================================================
+   KANBO — meetings (0056): the start sheet, the room and the recap.
+   Quiet Precision: Paper & Navy, hairlines, one gradient action
+   (Start / End and send recap). The stage is set large, to read on
+   a screen across a room; a phone gets one column and sheets.
+   ============================================================ */
+
+/* ---------- Run meeting / Join ---------- */
+.kmtg-livedot { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; margin-right: 6px; border-radius: 999px; background: var(--signal, var(--st-blocked));
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--signal, var(--st-blocked)) 18%, transparent); animation: kmtgPulse 2.4s var(--ease, ease) infinite; }
+@keyframes kmtgPulse { 0%, 100% { box-shadow: 0 0 0 3px color-mix(in oklch, var(--signal, var(--st-blocked)) 18%, transparent); } 50% { box-shadow: 0 0 0 5px color-mix(in oklch, var(--signal, var(--st-blocked)) 6%, transparent); } }
+.kmtg-join .kbtn-label { display: inline-flex; align-items: center; }
+
+/* ---------- the start sheet ---------- */
+.kmtg-start { display: grid; gap: 18px; padding-bottom: 4px; }
+.kmtg-start-blurb { margin: -6px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kmtg-field { display: grid; gap: 6px; min-width: 0; }
+.kmtg-fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.kmtg-label { display: flex; align-items: baseline; gap: 8px; padding: 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmtg-count { font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
+.kmtg-input, .kmtg-select { box-sizing: border-box; min-width: 0; height: var(--h-md, 36px); padding: 0 12px; border-radius: var(--r-md, 8px);
+  border: 1px solid var(--field-border, var(--hairline-strong)); background: var(--field-bg, var(--surface)); color: var(--ink);
+  font: 500 14px/20px var(--font-ui, var(--font-display)); }
+.kmtg-input { width: 100%; }
+.kmtg-select { max-width: 100%; padding-right: 28px; }
+.kmtg-input:focus-visible, .kmtg-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kmtg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.kmtg-secs { display: grid; margin: 0; padding: 0; list-style: none; border-radius: var(--r-lg, 12px); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kmtg-secs > li + li { border-top: 1px solid var(--hairline); }
+.kmtg-sec { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 14px; cursor: pointer; }
+.kmtg-sec input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.kmtg-sec[data-off] { cursor: default; opacity: .55; }
+.kmtg-sec-name { flex: 1 1 auto; min-width: 0; font: 500 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kmtg-sec-n { flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; }
+.kmtg-sec-n[data-zero] { color: var(--ink-4); }
+.kmtg-start-lede { display: grid; gap: 4px; margin-top: 4px; padding: 12px 14px; border-radius: var(--r-lg, 12px);
+  background: color-mix(in oklch, var(--accent) 6%, var(--surface, var(--bg))); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 16%, transparent); }
+.kmtg-start-lede-k { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); }
+.kmtg-start-lede p { margin: 0; font: 500 15px/23px var(--font-head); letter-spacing: -0.005em; color: var(--ink); text-wrap: pretty; }
+.kmtg-start-lede b { font-weight: 650; }
+.kmtg-start-skel { display: grid; gap: 8px; padding: 4px 0; }
+.kmtg-start-skel .skel { height: 14px; border-radius: var(--r-xs, 4px); }
+.kmtg-start-skel .skel:last-child { width: 60%; }
+.kmtg-people { display: flex; flex-wrap: wrap; gap: 6px; }
+.kmtg-person { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px 0 5px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); color: var(--ink-3); font: 500 13px/18px var(--font-ui, var(--font-display));
+  transition: background var(--d-1, 90ms) var(--ease), color var(--d-1, 90ms) var(--ease), box-shadow var(--d-1, 90ms) var(--ease); }
+.kmtg-person[aria-pressed="true"] { background: color-mix(in oklch, var(--accent) 10%, var(--surface, var(--bg))); color: var(--ink); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 34%, transparent); }
+.kmtg-person[aria-pressed="false"] > span:first-child, .kmtg-person[aria-pressed="false"] img { opacity: .45; }
+.kmtg-person:disabled { cursor: default; }
+.kmtg-hint { margin: 0; font: 400 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
+.kmtg-note { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 10px 12px; border-radius: var(--r-md, 8px);
+  background: color-mix(in oklch, var(--warn, var(--st-review)) 9%, var(--bg)); color: var(--ink-2); font: 500 13px/19px var(--font-ui, var(--font-display)); }
+.kmtg-note > svg { flex-shrink: 0; margin-top: 2px; color: var(--warn, var(--st-review)); }
+.kmtg-start-err { margin-right: auto; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal, var(--st-blocked)); }
+.kmtg-initial { display: inline-grid; place-items: center; flex-shrink: 0; width: 22px; height: 22px; border-radius: 999px; background: var(--fill-2); color: var(--ink-2);
+  font: 600 10px/1 var(--font-ui, var(--font-display)); }
+
+/* ---------- the room ---------- */
+.kmtg-room { position: fixed; inset: 0; z-index: calc(var(--z-panel, 60) - 2); display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--bg); color: var(--ink); animation: kmtgIn var(--d-3, 240ms) var(--ease-out, ease-out); }
+.kmtg-room[data-ended] { grid-template-rows: auto minmax(0, 1fr); }
+@keyframes kmtgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.kmtg-top { display: flex; align-items: center; gap: 16px; min-height: 64px; padding: 8px 16px 8px 24px; border-bottom: 1px solid var(--hairline); min-width: 0; }
+.kmtg-top-title { flex: 1 1 auto; min-width: 0; }
+.kmtg-title { margin: 0; font: 600 17px/24px var(--font-head); letter-spacing: -0.01em; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kmtg-top-sub { display: flex; align-items: center; margin: 1px 0 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kmtg-top-acts { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.kmtg-clock { display: grid; justify-items: end; flex-shrink: 0; }
+.kmtg-clock-t { font: 600 20px/24px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.kmtg-clock-b { font: 500 11px/14px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
+.kmtg-clock[data-over] .kmtg-clock-t { color: var(--warn, var(--st-review)); }
+.kmtg-inroom { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 0 4px; }
+.kmtg-inroom-n { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
+.kmtg-menu { display: grid; padding: 4px; }
+.kmtg-menu-i { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border: 0; border-radius: var(--r-sm, 6px); background: transparent; cursor: pointer;
+  color: var(--ink); font: 500 13px/18px var(--font-ui, var(--font-display)); text-align: left; }
+.kmtg-menu-i:hover, .kmtg-menu-i:focus-visible { background: var(--fill-1); }
+
+.kmtg-body { display: grid; grid-template-columns: 248px minmax(0, 1fr) 344px; min-height: 0; }
+.kmtg-rail { min-height: 0; overflow-y: auto; padding: 16px 12px 24px; border-right: 1px solid var(--hairline); }
+.kmtg-stage { position: relative; min-height: 0; overflow-y: auto; padding: 40px clamp(24px, 4.5vw, 72px) 56px; outline: none; }
+.kmtg-notes { min-height: 0; overflow-y: auto; border-left: 1px solid var(--hairline); background: color-mix(in oklch, var(--fill-1) 60%, var(--bg)); }
+.kmtg-bottom { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 24px; border-top: 1px solid var(--hairline); background: var(--bg); }
+.kmtg-pos { display: flex; align-items: baseline; justify-content: center; gap: 10px; flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: none; color: inherit; }
+.kmtg-pos-n { font: 600 13px/20px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
+.kmtg-pos-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmtg-keys { margin-left: 4px; padding: 0 8px; height: 22px; border: 0; border-radius: var(--r-xs, 4px); background: var(--fill-1); color: var(--ink-3); cursor: pointer;
+  font: 500 11px/22px var(--font-ui, var(--font-display)); }
+.kmtg-help { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%); display: grid; gap: 4px; max-width: min(640px, calc(100% - 32px)); padding: 12px 16px;
+  border-radius: var(--r-lg, 12px); background: var(--surface-solid, var(--surface)); box-shadow: var(--e2, 0 8px 24px rgb(0 0 0 / .12)); }
+.kmtg-help p { margin: 0; font: 500 12px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kmtg-help kbd { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 4px; background: var(--fill-2); font: 600 11px/18px var(--font-mono); text-align: center; color: var(--ink); }
+.kmtg-loading { display: grid; gap: 14px; align-content: start; max-width: 720px; width: 100%; margin: 0 auto; padding: 56px 24px; }
+.kmtg-loading .skel { height: 20px; border-radius: var(--r-sm, 6px); }
+.kmtg-loading .skel:first-child { height: 32px; width: 60%; }
+.kmtg-gone { display: grid; gap: 10px; place-content: center; justify-items: start; padding: 24px; }
+
+/* the agenda */
+.kmtg-agenda { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.kmtg-agenda-h { display: block; margin: 10px 8px 4px; font: 600 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-4); }
+.kmtg-agenda-i { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 6px 8px; border: 0; border-radius: var(--r-md, 8px); background: transparent;
+  color: var(--ink-2); font: 500 13px/18px var(--font-ui, var(--font-display)); text-align: left; cursor: pointer; transition: background var(--d-1, 90ms) var(--ease); }
+.kmtg-agenda-i:hover { background: var(--fill-1); }
+.kmtg-agenda-i[aria-current="step"] { background: color-mix(in oklch, var(--accent) 11%, var(--bg)); color: var(--ink); font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent); }
+.kmtg-agenda-n { display: inline-grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px; background: var(--fill-2);
+  font: 600 11px/1 var(--font-mono); color: var(--ink-3); }
+.kmtg-agenda-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kmtg-agenda-c { flex-shrink: 0; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--fill-2); font: 600 11px/18px var(--font-mono); color: var(--ink-2); text-align: center; }
+.kmtg-agenda-here { flex-shrink: 0; padding: 0 6px; height: 18px; border-radius: 999px; background: color-mix(in oklch, var(--accent) 14%, transparent);
+  font: 600 10px/18px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); }
+.kmtg-follow { position: sticky; top: 0; z-index: 1; display: inline-flex; align-items: center; gap: 6px; height: 30px; margin: -20px 0 16px; padding: 0 12px; border: 0; border-radius: 999px; cursor: pointer;
+  background: color-mix(in oklch, var(--accent) 12%, var(--bg)); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 28%, transparent);
+  color: var(--accent-text, var(--accent)); font: 600 12px/16px var(--font-ui, var(--font-display)); }
+
+/* the stage: set to read across a room */
+.kmtg-item { max-width: 1000px; margin: 0 auto; }
+.kmtg-eyebrow { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 12px; font: 600 13px/18px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); }
+.kmtg-h { margin: 0; font: 600 32px/40px var(--font-head); letter-spacing: -0.02em; color: var(--ink); text-wrap: balance; }
+.kmtg-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 6px 0 0; font: 500 15px/22px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmtg-lede { max-width: 32em; margin: 0; font: 500 30px/42px var(--font-head); letter-spacing: -0.018em; color: var(--ink); text-wrap: pretty; }
+.kmtg-lede b { font-weight: 650; }
+.kmtg-lede-sm { margin-top: 10px; font-size: 20px; line-height: 30px; color: var(--ink-2); }
+.kmtg-plan { display: grid; gap: 2px; margin: 32px 0 0; padding: 0; list-style: none; max-width: 640px; }
+.kmtg-plan-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: var(--r-md, 8px); background: transparent;
+  color: var(--ink); font: 500 16px/22px var(--font-ui, var(--font-display)); text-align: left; cursor: pointer; }
+.kmtg-plan-row:hover:not(:disabled):not([data-static]) { background: var(--fill-1); }
+.kmtg-plan-row:disabled, .kmtg-plan-row[data-static] { cursor: default; }
+.kmtg-plan-n { flex-shrink: 0; width: 22px; font: 600 13px/22px var(--font-mono); color: var(--ink-4); text-align: right; }
+.kmtg-plan-t { flex: 1 1 auto; min-width: 0; }
+.kmtg-plan-c { flex-shrink: 0; font: 500 13px/20px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.kmtg-plan-quiet { margin-top: 8px; }
+.kmtg-plan-quiet .kmtg-plan-row { font-size: 14px; min-height: 32px; color: var(--ink-2); }
+.kmtg-off { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px; flex-shrink: 0;
+  background: color-mix(in oklch, var(--warn, var(--st-review)) 12%, transparent); color: var(--ink-2); font: 600 12px/22px var(--font-ui, var(--font-display)); }
+.kmtg-off[data-now] { background: color-mix(in oklch, var(--warn, var(--st-review)) 20%, transparent); color: var(--ink); }
+
+.kmtg-person-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.kmtg-person-who { flex: 1 1 240px; min-width: 0; }
+.kmtg-load { display: grid; justify-items: end; gap: 6px; }
+.kmtg-load-n { font: 600 16px/20px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.kmtg-load[data-tone="signal"] .kmtg-load-n { color: var(--signal, var(--st-blocked)); }
+.kmtg-load[data-tone="warn"] .kmtg-load-n { color: var(--warn, var(--st-review)); }
+.kmtg-load-l { font: 500 11px/14px var(--font-ui, var(--font-display)); color: var(--ink-4); }
+.kmtg-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 28px; }
+.kmtg-col { min-width: 0; padding: 16px 16px 12px; border-radius: var(--r-xl, 16px); background: var(--surface, var(--surface-raised)); box-shadow: var(--e1, 0 0 0 1px var(--hairline)); }
+.kmtg-col[data-tone="signal"] { box-shadow: var(--e1, 0 0 0 1px var(--hairline)), inset 0 3px 0 color-mix(in oklch, var(--signal, var(--st-blocked)) 70%, transparent); }
+.kmtg-col-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font: 600 13px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmtg-col-n { font: 600 12px/18px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-4); }
+.kmtg-tasks { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.kmtg-task-btn { display: flex; align-items: flex-start; gap: 10px; width: calc(100% + 12px); margin: 0 -6px; padding: 5px 6px; border: 0; border-radius: var(--r-sm, 6px); background: transparent;
+  color: var(--ink); text-align: left; cursor: pointer; }
+.kmtg-task-btn:hover:not(:disabled) { background: var(--fill-1); }
+.kmtg-task-btn:disabled { cursor: default; }
+.kmtg-task-btn .kglyph { margin-top: 3px; flex-shrink: 0; }
+.kmtg-task-text { display: grid; min-width: 0; }
+.kmtg-task-title { font: 500 16px/24px var(--font-ui, var(--font-display)); overflow-wrap: anywhere; }
+.kmtg-task-title[data-done] { color: var(--ink-2); }
+.kmtg-task-note { font: 500 13px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmtg-task-note[data-tone="signal"] { color: var(--signal, var(--st-blocked)); }
+.kmtg-more { padding-left: 26px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmtg-none { margin: 0; font: 500 15px/22px var(--font-ui, var(--font-display)); color: var(--ink-4); }
+
+.kmtg-rows { display: grid; margin: 24px 0 0; padding: 0; list-style: none; border-radius: var(--r-xl, 16px); background: var(--surface, var(--surface-raised)); box-shadow: var(--e1, 0 0 0 1px var(--hairline)); overflow: hidden; }
+.kmtg-rowi { display: flex; align-items: center; gap: 14px; min-height: 64px; padding: 12px 18px; }
+.kmtg-rowi + .kmtg-rowi { border-top: 1px solid var(--hairline); }
+.kmtg-rowi > svg { flex-shrink: 0; color: var(--ink-3); }
+.kmtg-rowi[data-tone="signal"] > svg, .kmtg-rowi[data-state="overdue"] > svg { color: var(--signal, var(--st-blocked)); }
+.kmtg-rowi[data-tone="warn"] > svg { color: var(--warn, var(--st-review)); }
+.kmtg-rowi-text { display: grid; flex: 1 1 auto; min-width: 0; gap: 2px; }
+.kmtg-rowi-t { font: 600 17px/24px var(--font-ui, var(--font-display)); color: var(--ink); overflow-wrap: anywhere; }
+.kmtg-rowi-t[data-done] { color: var(--ink-2); }
+.kmtg-rowi-s { font: 500 14px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); overflow-wrap: anywhere; }
+.kmtg-rowi-s[data-state="overdue"] { color: var(--signal, var(--st-blocked)); }
+.kmtg-rowi-s[data-state="done"] { color: var(--ok, var(--st-done)); }
+.kmtg-rowi-s[data-state="blocked"] { color: var(--signal, var(--st-blocked)); }
+.kmtg-sev { flex-shrink: 0; width: 10px; height: 10px; border-radius: 999px; background: var(--ink-4); }
+.kmtg-sev[data-tone="signal"] { background: var(--signal, var(--st-blocked)); }
+.kmtg-sev[data-tone="warn"] { background: var(--warn, var(--st-review)); }
+.kmtg-pct { display: grid; justify-items: end; gap: 4px; flex-shrink: 0; font: 600 14px/18px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.kmtg-pill { flex-shrink: 0; height: 24px; padding: 0 10px; border-radius: 999px; font: 600 12px/24px var(--font-ui, var(--font-display)); white-space: nowrap;
+  background: var(--fill-2); color: var(--ink-2); }
+.kmtg-pill[data-tone="signal"] { background: color-mix(in oklch, var(--signal, var(--st-blocked)) 14%, transparent); color: var(--signal-text, var(--signal, var(--st-blocked))); }
+.kmtg-pill[data-tone="warn"] { background: color-mix(in oklch, var(--warn, var(--st-review)) 16%, transparent); color: var(--ink); }
+.kmtg-pill[data-tone="ok"] { background: color-mix(in oklch, var(--ok, var(--st-done)) 14%, transparent); color: var(--ink); }
+.kmtg-pill[data-mismatch] { box-shadow: inset 0 0 0 1.5px var(--signal, var(--st-blocked)); }
+.kmtg-owner { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; font: 500 13px/18px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kmtg-open { flex-shrink: 0; height: 28px; padding: 0 10px; border: 0; border-radius: var(--r-sm, 6px); background: var(--fill-1); color: var(--ink-2); cursor: pointer;
+  font: 600 12px/28px var(--font-ui, var(--font-display)); }
+.kmtg-open:hover { background: var(--fill-2); color: var(--ink); }
+.kmtg-acts { display: inline-flex; gap: 6px; flex-shrink: 0; }
+.kmtg-doc-hint { margin-top: 8px; }
+/* a goal's key results that are behind too, inside its row */
+.kmtg-krs { display: grid; gap: 4px; margin-top: 8px; padding: 8px 0 0 12px; border-left: 2px solid var(--hairline); }
+.kmtg-krs-h { font: 600 11px/16px var(--font-ui, var(--font-display)); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
+.kmtg-kr { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.kmtg-kr-t { font: 500 14px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); overflow-wrap: anywhere; }
+.kmtg-kr-n { font: 500 13px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+/* whose work is waiting on this person's */
+.kmtg-holding { margin: 16px 0 0; font: 500 15px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kmtg-holding-k { margin-right: 8px; font: 600 12px/22px var(--font-ui, var(--font-display)); letter-spacing: 0.04em; text-transform: uppercase; color: var(--signal-text, var(--signal, var(--st-blocked))); }
+.kmtg-holding-t { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: var(--hairline-strong, var(--hairline)); text-underline-offset: 3px; }
+.kmtg-holding-t:hover:not(:disabled) { color: var(--ink); text-decoration-color: currentColor; }
+.kmtg-holding-t:disabled { cursor: default; text-decoration: none; }
+/* a Group meeting's businesses, in the header */
+.kmtg-marks { display: inline-flex; flex-shrink: 0; }
+.kmtg-marks > * + * { margin-left: -4px; box-shadow: 0 0 0 2px var(--paper, var(--surface)); border-radius: 7px; }
+
+/* the wrap-up and the recap */
+.kmtg-wrap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
+.kmtg-wrap-sec { min-width: 0; margin-top: 8px; padding: 16px; border-radius: var(--r-xl, 16px); background: var(--surface, var(--surface-raised)); box-shadow: var(--e1, 0 0 0 1px var(--hairline)); }
+.kmtg-wrap-grid > .kmtg-wrap-sec { margin-top: 0; }
+.kmtg-wrap-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.kmtg-end { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--hairline); }
+.kmtg-end-line { flex: 1 1 320px; margin: 0; font: 500 15px/22px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kmtg-recap-wrap { min-height: 0; overflow-y: auto; padding: 40px clamp(16px, 4vw, 56px) 64px; }
+.kmtg-recap { max-width: 920px; margin: 0 auto; }
+.kmtg-recap .kmtg-h { font-size: 28px; line-height: 36px; }
+
+/* notes */
+.kmtg-notes-in { display: grid; gap: 12px; padding: 18px 16px 24px; }
+.kmtg-notes-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kmtg-notes-h { margin: 0; font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kmtg-scope, .kmtg-kinds { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kmtg-scope button, .kmtg-kinds button { height: 24px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; cursor: pointer;
+  color: var(--ink-3); font: 600 11px/24px var(--font-ui, var(--font-display)); }
+.kmtg-scope button[aria-checked="true"], .kmtg-kinds button[aria-checked="true"] { background: var(--surface-solid, var(--surface)); color: var(--ink); box-shadow: var(--e1, 0 0 0 1px var(--hairline)); }
+.kmtg-lines { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.kmtg-line { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 8px 4px; border-radius: var(--r-sm, 6px); }
+.kmtg-line + .kmtg-line { border-top: 1px solid var(--hairline); }
+.kmtg-line-kind { height: 20px; padding: 0 7px; margin-top: 1px; border-radius: 999px; background: var(--fill-2); color: var(--ink-3); font: 600 10px/20px var(--font-ui, var(--font-display)); white-space: nowrap; }
+.kmtg-line-kind[data-kind="decision"] { background: color-mix(in oklch, var(--accent) 14%, transparent); color: var(--accent-text, var(--accent)); }
+.kmtg-line-kind[data-kind="action"] { background: color-mix(in oklch, var(--ok, var(--st-done)) 15%, transparent); color: var(--ink); }
+.kmtg-line-body { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.kmtg-line-text { flex: 1 1 100%; font: 500 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); overflow-wrap: anywhere; }
+.kmtg-line-meta { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kmtg-line-task, .kmtg-line-make { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 0; border-radius: var(--r-xs, 4px); cursor: pointer;
+  background: var(--fill-1); color: var(--ink-2); font: 600 11px/22px var(--font-ui, var(--font-display)); }
+.kmtg-line-make { color: var(--accent-text, var(--accent)); background: color-mix(in oklch, var(--accent) 8%, transparent); }
+.kmtg-line-task[data-state="overdue"], .kmtg-line-task[data-state="blocked"] { color: var(--signal, var(--st-blocked)); }
+.kmtg-line-task[data-state="done"] { color: var(--ok-text, var(--ink-2)); }
+.kmtg-line-task:hover, .kmtg-line-make:hover { filter: brightness(0.97); }
+.kmtg-line-del { opacity: 0; }
+.kmtg-line:hover .kmtg-line-del, .kmtg-line-del:focus-visible { opacity: 1; }
+@media (hover: none) { .kmtg-line-del { opacity: 1; } }
+.kmtg-notes-empty { margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-4); }
+.kmtg-compose { display: grid; gap: 8px; padding: 12px; border-radius: var(--r-lg, 12px); background: var(--surface-solid, var(--surface)); box-shadow: var(--e1, 0 0 0 1px var(--hairline)); }
+.kmtg-compose-in { box-sizing: border-box; width: 100%; height: 36px; padding: 0 10px; border-radius: var(--r-md, 8px); border: 1px solid var(--field-border, var(--hairline-strong));
+  background: var(--field-bg, var(--bg)); color: var(--ink); font: 500 14px/20px var(--font-ui, var(--font-display)); }
+.kmtg-compose-in:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kmtg-compose-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kmtg-compose-row .kmtg-select { height: 28px; flex: 1 1 140px; font-size: 13px; padding-left: 8px; }
+.kmtg-compose-go { justify-self: start; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 0; border-radius: var(--r-sm, 6px); cursor: pointer;
+  background: var(--accent); color: var(--on-accent, #fff); font: 600 12px/28px var(--font-ui, var(--font-display)); }
+.kmtg-compose-go:disabled { opacity: .45; cursor: default; }
+
+/* narrower screens: the notes column goes first, then the rail */
+@media (max-width: 1180px) {
+  .kmtg-body { grid-template-columns: 220px minmax(0, 1fr) 300px; }
+  .kmtg-lede { font-size: 26px; line-height: 36px; }
+}
+@media (max-width: 980px) and (min-width: 760px) {
+  .kmtg-body { grid-template-columns: minmax(0, 1fr) 300px; }
+  .kmtg-rail { display: none; }
+  .kmtg-cols { grid-template-columns: minmax(0, 1fr); }
+}
+/* a phone: one column, the agenda and notes in sheets */
+.kmtg-room[data-phone] .kmtg-top { gap: 10px; min-height: 56px; padding: 6px 6px 6px 14px; }
+.kmtg-room[data-phone] .kmtg-title { font-size: 15px; line-height: 20px; }
+.kmtg-room[data-phone] .kmtg-clock-b, .kmtg-room[data-phone] .kmtg-inroom-n { display: none; }
+.kmtg-room[data-phone] .kmtg-clock-t { font-size: 15px; line-height: 20px; }
+.kmtg-room[data-phone] .kmtg-body { grid-template-columns: minmax(0, 1fr); }
+.kmtg-room[data-phone] .kmtg-stage { padding: 24px 16px 40px; }
+.kmtg-room[data-phone] .kmtg-h { font-size: 24px; line-height: 30px; }
+.kmtg-room[data-phone] .kmtg-lede { font-size: 21px; line-height: 30px; }
+.kmtg-room[data-phone] .kmtg-lede-sm { font-size: 17px; line-height: 26px; }
+.kmtg-room[data-phone] .kmtg-cols, .kmtg-room[data-phone] .kmtg-wrap-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 20px; }
+.kmtg-room[data-phone] .kmtg-rowi { flex-wrap: wrap; padding: 12px 14px; gap: 10px 12px; }
+.kmtg-room[data-phone] .kmtg-rowi-text { flex-basis: calc(100% - 40px); }
+.kmtg-room[data-phone] .kmtg-rowi-t { font-size: 16px; }
+.kmtg-room[data-phone] .kmtg-bottom { gap: 8px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); }
+.kmtg-room[data-phone] .kmtg-pos { flex-direction: column; align-items: center; gap: 0; height: 44px; cursor: pointer; border-radius: var(--r-md, 8px); }
+.kmtg-room[data-phone] .kmtg-pos > svg { display: none; }
+.kmtg-room[data-phone] .kmtg-pos-t { max-width: 100%; }
+.kmtg-room[data-phone] .kmtg-recap-wrap { padding: 24px 16px 48px; }
+.kmtg-room[data-phone] .kmtg-help { display: none; }
+.kmtg-room[data-phone] .kmtg-load { justify-items: start; }
+/* (presenting on a phone: Hand over lists who's here, so the faces make way for the title) */
+.kmtg-room[data-phone][data-presenting] .kmtg-inroom { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kmtg-room, .kmtg-livedot { animation: none; }
+}

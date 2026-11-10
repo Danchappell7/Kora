@@ -1,8 +1,9 @@
 /* Projects › Group: one section per business you run, the one that needs you most first; clicking
    anything asks the host to switch to that business and open it. */
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
 import { GroupView } from "./GroupView";
+import { clearMeetingRequest, useMeetingRequest } from "../meetings/meetingBus";
 import { workspaceSignals } from "../../lib/businesses";
 import type { ApprovalWithTask, Goal, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../../data/types";
 
@@ -148,3 +149,28 @@ describe("GroupView with an update day (0053)", () => {
     expect(ask).toHaveBeenCalledWith(expect.objectContaining({ id: "pa" }));
   });
 });
+
+describe("GroupView › meetings (0056)", () => {
+  it("Run meeting on each business you run, and one over them all; nothing unless the host asks for it", () => {
+    renderGroup({ runMeetings: true });
+    expect(within(section("Alpha Studio")).getByRole("button", { name: "Run meeting" })).toBeInTheDocument();
+    expect(within(section("Beta Padel")).getByRole("button", { name: "Run meeting" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run group meeting" })).toBeInTheDocument();
+    cleanup();
+    renderGroup();
+    expect(screen.queryByRole("button", { name: /Run (group )?meeting/ })).toBeNull();
+  });
+  it("the Group meeting is hosted by the first business in the switcher, not whichever needs you most this week", () => {
+    function Request() { const r = useMeetingRequest(); return <output data-testid="req">{r ? JSON.stringify(r) : ""}</output>; }
+    // Alpha needs you most (three overdue), but Beta comes first in the switcher
+    renderGroup({ runMeetings: true, workspaces: [WS[0], WS[2], WS[1], WS[3]] });
+    render(<Request />);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Alpha Studio", "Beta Padel"]);
+    fireEvent.click(screen.getByRole("button", { name: "Run group meeting" }));
+    const req = JSON.parse(screen.getByTestId("req").textContent!);
+    expect(req.scope.workspaceId).toBe("w-b");
+    expect([...req.scope.workspaceIds].sort()).toEqual(["w-a", "w-b"]);
+    clearMeetingRequest();
+  });
+});
+

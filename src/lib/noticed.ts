@@ -10,13 +10,16 @@
    · your project update is due, or a lead asked for one (0053: the
      caller passes it in, lib/updateDue updateNoticed);
    · a key result (or goal) of yours behind pace, with a one-tap
-     check-in (lib/goalFlow says which).
+     check-in (lib/goalFlow says which);
+   · work due while someone's away (0055: the caller passes it in,
+     components/availability awayNoticed), with "Move to <the day
+     they're back>".
    "Not now" waves one away for the day (the view keeps that per
    person). Pure: no React, no storage, no clock of its own.
    ============================================================ */
 import type { CalEvent, IconName, Task } from "../data/types";
 import type { Risk } from "./radar";
-import { clearestStretch, slippingTasks, waitingOnYou } from "./brief";
+import { clearestStretch, slippingTasks, waitingOnYou, WORK_END } from "./brief";
 import { isBlocked } from "./countRules";
 import { dayMonth, daysBetween, durOf, fmtDuration, fmtTime, fmtTimeRange, isMine, isPlaced, parseDay } from "../components/views/planCanvas";
 
@@ -28,12 +31,14 @@ export type NoticedAction =
   | { kind: "checkin"; label: string; goalId: string }
   | { kind: "goal"; label: string; goalId: string }
   /** open the project's update, Kanbo's draft ready (0053) */
-  | { kind: "update"; label: string; projectId: string };
+  | { kind: "update"; label: string; projectId: string }
+  /** move the work due while someone's away to the day they're back, or (assignTo) give it to someone with room (0055) */
+  | { kind: "away"; label: string; userId: string; taskIds: string[]; to: string; assignTo?: string };
 
 export interface Noticed {
   /** stable for the thing noticed, so "Not now" keeps it away for the day */
   id: string;
-  kind: "waiting" | "risk" | "slipped" | "slot" | "goal" | "update";
+  kind: "waiting" | "risk" | "slipped" | "slot" | "goal" | "update" | "away";
   tone: "signal" | "warn" | "accent";
   icon: IconName;
   title: string;
@@ -62,6 +67,8 @@ export interface NoticedInput {
   dismissed?: Iterable<string>;
   /** your project updates due or asked for (lib/updateDue updateNoticed): after a teammate blocked on you */
   updates?: Noticed[];
+  /** work due while someone's away (0055, lib/awayNoticed): after your update, before the risks */
+  away?: Noticed[];
   /** default 3 */
   max?: number;
 }
@@ -83,7 +90,7 @@ function when(iso: string, today: string): string {
 }
 
 /** What Kanbo noticed today, most pressing first (see the file note). */
-export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], goalsBehind = [], dismissed, max = 3, updates = [] }: NoticedInput): Noticed[] {
+export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], goalsBehind = [], dismissed, max = 3, updates = [], away = [] }: NoticedInput): Noticed[] {
   const skip = new Set(dismissed ?? []);
   const first = (id?: string) => (members.find((m) => m.id === id)?.name ?? "").trim().split(/\s+/)[0] || "A teammate";
   const mine = new Set(allTasks.filter((t) => isMine(t, me)).map((t) => t.id));
@@ -123,6 +130,8 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
 
   // (your update's due, or a lead asked for one: after anyone blocked on you)
   for (const u of updates) push(u, 0.5);
+  // (work due while someone's away: it's soon and one tap fixes it, so before the risks)
+  for (const a of away) push(a, 0.8);
 
   // 3. a date that's slipped (the most moved first)
   const slipped = slippingTasks(tasks, me)
@@ -131,7 +140,7 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
     .sort((a, b) => b.by - a.by);
   if (slipped[0]) {
     const { t, by } = slipped[0];
-    const s = !isPlaced(t) && nowMin < 18 * 60 ? clearestStretch(tasks, events, nowMin, durOf(t)) : null;
+    const s = !isPlaced(t) && nowMin < WORK_END ? clearestStretch(tasks, events, nowMin, durOf(t)) : null;
     push({
       id: `slipped:${t.id}:${day10(t.dueDate)}`, kind: "slipped", tone: "warn", icon: "hourglass",
       title: `${short(t.title)} has slipped ${plural(by, "day")}`,
@@ -142,7 +151,7 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
   }
 
   // 4. a free stretch today before tomorrow's (or the next day's) deadline
-  if (nowMin < 18 * 60) {
+  if (nowMin < WORK_END) {
     const soon = tasks.filter((t) => isOpen(t) && !t.parentId && isMine(t, me) && !onToday(t) && !!t.dueDate
       && daysBetween(today, day10(t.dueDate)) >= 1 && daysBetween(today, day10(t.dueDate)) <= 2)
       .sort((a, b) => day10(a.dueDate).localeCompare(day10(b.dueDate)) || (b.aiScore ?? 0) - (a.aiScore ?? 0));

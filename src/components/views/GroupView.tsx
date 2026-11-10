@@ -12,6 +12,8 @@
    is rosier than the work; those come first), and one whose update is
    missing can be asked for it there and then.
    `pace` is wave 2's hook: a goal's pace line, under its meter.
+   0056: Run meeting on each business (its leadership meeting) and, at
+   the top, one over every business you run (components/meetings).
    ============================================================ */
 import { useMemo, type ReactNode } from "react";
 import { Button, EmptyState, Icon, Meter, Pill, ProjectTile, StatusGlyph } from "../primitives";
@@ -20,10 +22,12 @@ import type { ApprovalWithTask, Goal, Project, StatusUpdate, Task, Workspace, Wo
 import { digestLine, groupDigest, offTrackPills, type BusinessDigest, type GoalPace, type GoalWhy } from "../../lib/group";
 import type { WorkspaceSignal } from "../../lib/businesses";
 import { readCapacities } from "../../lib/radar";
+import { useAvailability } from "../availability/useAvailability";
 import { BUSINESS_CSS, WorkspaceMark } from "../businesses/Businesses";
 import type { AskForUpdate } from "../../lib/updateAsks";
 import { MergedStatusPill } from "../updates/MergedStatusPill";
 import { AskForUpdateButton } from "../updates/AskForUpdate";
+import { RunMeetingButton } from "../meetings/RunMeetingButton";
 import "../project/projects.css";
 
 /** Where a click on the Group page goes, in the business it belongs to. */
@@ -56,6 +60,8 @@ export interface GroupViewProps {
   signals?: ReadonlyMap<string, WorkspaceSignal>;
   /** 0053: ask a project's owner for its missing update */
   asks?: AskForUpdate;
+  /** 0056: Run meeting on each business, and over them all */
+  runMeetings?: boolean;
 }
 
 const GROUP_CSS = `
@@ -97,7 +103,7 @@ const GROUP_CSS = `
 .kgrp-calm > svg { color: var(--ok, var(--st-done)); flex-shrink: 0; }
 .kgrp-wins-n { display: block; margin: 0 0 4px; font: 600 24px/30px var(--font-head); letter-spacing: -0.01em; color: var(--ink); }
 .kgrp-wins-n small { margin-left: 6px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); letter-spacing: 0; }
-.kgrp-go { flex-shrink: 0; }
+.kgrp-go, .kgrp-meet { flex-shrink: 0; }
 /* what's calm, in one line (a phone's: the calm blocks fold into it) */
 .kgrp-calmline { display: none; flex-wrap: wrap; gap: 2px 14px; margin: 12px 0 0; padding: 0; list-style: none; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kgrp-calmline li { display: inline-flex; align-items: center; gap: 6px; }
@@ -108,6 +114,7 @@ const GROUP_CSS = `
   .kgrp-title { flex: 1 1 0; }
   .kgrp-go { order: 2; align-self: flex-start; margin: 2px -8px 0 0; }
   .kgrp-side { order: 3; width: 100%; }
+  .kgrp-meet { order: 4; margin: -4px 0 0 -8px; }
 }
 @media (max-width: 859px) {
   .kgrp-biz { padding: 16px 14px 14px; border-radius: var(--r-lg, 12px); }
@@ -141,7 +148,7 @@ function Block({ title, n, of, tone, calm, children }: { title: string; n?: numb
 
 const Calm = ({ children }: { children: ReactNode }) => <p className="kgrp-calm"><Icon name="check" size={14} sw={2} />{children}</p>;
 
-function BusinessSection({ d, onOpen, asks }: { d: BusinessDigest; onOpen: GroupViewProps["onOpen"]; asks?: AskForUpdate }) {
+function BusinessSection({ d, onOpen, asks, runMeetings }: { d: BusinessDigest; onOpen: GroupViewProps["onOpen"]; asks?: AskForUpdate; runMeetings?: boolean }) {
   const ws = d.workspace;
   const wsId = ws.id!;
   const go = (to: GroupTarget) => onOpen(wsId, to);
@@ -174,6 +181,8 @@ function BusinessSection({ d, onOpen, asks }: { d: BusinessDigest; onOpen: Group
             )}
           </div>
         ) : null}
+        {/* 0056: this business's leadership meeting (you run it: an owner or admin) */}
+        {runMeetings && <span className="kgrp-meet"><RunMeetingButton scope={{ workspaceId: wsId, preset: "leadership", canLead: true }} variant="ghost" /></span>}
         <span className="kgrp-go">
           <Button variant="ghost" size="sm" iconRight="arrowRight" onClick={() => go({ kind: "business" })} aria-label={`Open ${ws.name}`}>Open</Button>
         </span>
@@ -268,12 +277,16 @@ function BusinessSection({ d, onOpen, asks }: { d: BusinessDigest; onOpen: Group
   );
 }
 
-export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, onOpen, pace, signals, asks }: GroupViewProps) {
+export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, onOpen, pace, signals, asks, runMeetings }: GroupViewProps) {
   // worked out once per change of what it reads (App re-renders every second while the focus timer runs)
+  // (0055: each business's own shared capacities, read again when they change)
+  const avail = useAvailability();
   const digests = useMemo(
-    () => groupDigest({ workspaces, members, me: currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, capacities: readCapacities(), pace, signals }),
-    [workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, pace, signals],
+    () => groupDigest({ workspaces, members, me: currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, capacities: readCapacities(), capacitiesFor: (ws) => readCapacities(ws), pace, signals }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, pace, signals, avail],
   );
+  const groupHost = workspaces.find((w) => !!w.id && digests.some((d) => d.workspace.id === w.id))?.id;
   return (
     <div className="kpj-page">
       <style>{BUSINESS_CSS}</style>
@@ -286,9 +299,13 @@ export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks
           <>
             <div className="kgrp-intro">
               <p>Every business you run, side by side: what's behind, what's waiting for you and what got done. Tap or click anything to open it in its business.</p>
+              {/* 0056: one leadership meeting over them all (hosted by the first of them in the switcher's order, so
+                  the host stays the same week to week; it's found by its businesses, whichever hosts it) */}
+              {runMeetings && groupHost && <RunMeetingButton label="Run group meeting"
+                scope={{ workspaceId: groupHost, workspaceIds: digests.map((d) => d.workspace.id!).filter(Boolean), preset: "leadership", canLead: true }} />}
             </div>
             <div className="kgrp-list">
-              {digests.map((d) => <BusinessSection key={d.workspace.id} d={d} onOpen={onOpen} asks={asks} />)}
+              {digests.map((d) => <BusinessSection key={d.workspace.id} d={d} onOpen={onOpen} asks={asks} runMeetings={runMeetings} />)}
             </div>
           </>
         )}

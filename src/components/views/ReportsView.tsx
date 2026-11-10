@@ -20,6 +20,7 @@ import {
   weeklyFacts, weeklySummaryText, weeklyThroughput,
 } from "./reportingUtils";
 import { InsightsBar, InsightsCard, InsightsStyles, InsightsSummary, useInsightsScope, type InsightsNavProps, type WrittenSummary } from "./InsightsSummary";
+import { RateField, useBillRates } from "../availability/useBillRates";
 
 const AGE_BUCKETS = [
   { label: "Under 1 week", lo: 0, hi: 7, tone: "ink" as const },
@@ -61,8 +62,9 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
   const [assigneeSel, setAssignee] = useState<string>("all");
   const [summary, setSummary] = useState<WrittenSummary | null>(null);
   const [includeSummary, setIncludeSummary] = useState(true);
-  const [billRate, setBillRate] = useState<number>(() => { try { return Number(localStorage.getItem("kanbo-bill-rate")) || 0; } catch { return 0; } });
-  const setRate = (n: number) => { setBillRate(n); try { localStorage.setItem("kanbo-bill-rate", String(n)); } catch { /* private mode */ } };
+  // the hourly rates (0055: the team's, owners and admins only; before it, this device's one rate)
+  const rates = useBillRates();
+  const billRate = rates.fallback;
   // a filter from another workspace (the lists change on a workspace switch)
   // would show "All projects" in the select but zero everywhere — ignore it
   // straight away, and clear it so it doesn't come back later.
@@ -160,8 +162,11 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
   const billByProject = (() => {
     const map = new Map<string, { hours: number; n: number }>();
     billable.forEach((t) => { const cur = map.get(t.projectId) || { hours: 0, n: 0 }; cur.hours += t.loggedHours || 0; cur.n += 1; map.set(t.projectId, cur); });
-    return [...map.entries()].map(([pid, v]) => ({ pid, name: getProject(pid)?.name ?? "—", color: getProject(pid)?.color ?? "", hours: v.hours, n: v.n })).sort((a, b) => b.hours - a.hours);
+    return [...map.entries()].map(([pid, v]) => ({ pid, name: getProject(pid)?.name ?? "—", color: getProject(pid)?.color ?? "", hours: v.hours, n: v.n, rate: rates.rateFor(pid) })).sort((a, b) => b.hours - a.hours);
   })();
+  // what the time comes to, at each project's rate (none for those who don't see rates)
+  const billAmount = billByProject.reduce((a, r) => a + r.hours * r.rate, 0);
+  const priced = billAmount > 0;
   const personName = (id: string): string => (!id ? "Unassigned" : members.find((m) => m.id === id)?.name ?? getMember(id)?.name ?? "(former member)");
 
   const scopeLabel = [
@@ -179,11 +184,11 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
     // csvCell (via downloadCsv) neutralises formula-like titles such as =HYPERLINK(...).
     // Hours keep 2 decimals: enough for quarter-hours on an invoice, no float noise.
     const hrs = (n: number) => String(Math.round(n * 100) / 100);
-    const head = ["Project", "Task", "Assignee", "Hours"].concat(billRate > 0 ? ["Amount (GBP)"] : []);
+    const head = ["Project", "Task", "Assignee", "Hours"].concat(priced ? ["Amount (GBP)"] : []);
     const body = [...billable]
       .sort((a, b) => (getProject(a.projectId)?.name ?? "").localeCompare(getProject(b.projectId)?.name ?? "") || a.title.localeCompare(b.title))
-      .map((t) => [getProject(t.projectId)?.name ?? "—", t.title, personName(t.assigneeId), hrs(t.loggedHours || 0)].concat(billRate > 0 ? [((t.loggedHours || 0) * billRate).toFixed(2)] : []));
-    const totalRow = ["", "", "TOTAL", hrs(billableHours)].concat(billRate > 0 ? [(billableHours * billRate).toFixed(2)] : []);
+      .map((t) => [getProject(t.projectId)?.name ?? "—", t.title, personName(t.assigneeId), hrs(t.loggedHours || 0)].concat(priced ? [((t.loggedHours || 0) * rates.rateFor(t.projectId)).toFixed(2)] : []));
+    const totalRow = ["", "", "TOTAL", hrs(billableHours)].concat(priced ? [billAmount.toFixed(2)] : []);
     downloadCsv([head, ...body, totalRow], `kanbo-billable-${toLocalISO(KANBO_TODAY)}.csv`);
   };
   const exportPdf = () => {
@@ -198,9 +203,9 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
     const wk = (i: number) => i === report.weekStarts.length - 1 ? "This week (so far)" : `${fmtDayMonth(report.weekStarts[i])} ${report.weekStarts[i].getFullYear()}`;
     const trendRow = report.weekStarts.map((_, i) => `<tr><td>${esc(wk(i))}</td><td>${report.created[i]}</td><td>${report.completed[i]}</td></tr>`).join("");
     const projRows = projComparison.map((p) => `<tr><td>${esc(p.name)}</td><td>${p.total}</td><td>${p.done}</td><td>${p.open}</td><td>${p.overdue}</td><td>${p.completion}%</td><td>${p.avgCycle == null ? "—" : p.avgCycle + "d"}</td></tr>`).join("");
-    const billRows = billByProject.map((r) => `<tr><td>${esc(r.name)}</td><td>${r.n}</td><td>${esc(fmtHours(r.hours))}</td>${billRate > 0 ? `<td>${esc(money(r.hours * billRate))}</td>` : ""}</tr>`).join("");
+    const billRows = billByProject.map((r) => `<tr><td>${esc(r.name)}</td><td>${r.n}</td><td>${esc(fmtHours(r.hours))}</td>${priced ? `<td>${esc(money(r.hours * r.rate))}</td>` : ""}</tr>`).join("");
     const billBlock = billable.length
-      ? `<h2>Time &amp; billing</h2><p class="note">${esc(fmtHours(billableHours))} logged across ${billable.length} task${billable.length === 1 ? "" : "s"}${billRate > 0 ? ` · ${esc(money(billableHours * billRate))} at £${billRate}/hr` : ""}</p><table><thead><tr><th>Project</th><th>Tasks</th><th>Hours</th>${billRate > 0 ? "<th>Amount</th>" : ""}</tr></thead><tbody>${billRows}</tbody></table>`
+      ? `<h2>Time &amp; billing</h2><p class="note">${esc(fmtHours(billableHours))} logged across ${billable.length} task${billable.length === 1 ? "" : "s"}${priced ? ` · ${esc(money(billAmount))}${rates.mixed ? " at each project's rate" : ` at £${billRate}/hr`}` : ""}</p><table><thead><tr><th>Project</th><th>Tasks</th><th>Hours</th>${priced ? "<th>Amount</th>" : ""}</tr></thead><tbody>${billRows}</tbody></table>`
       : "";
     w.document.write(`<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><title>Kanbo report</title><style>body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;color:#1b1d26;padding:40px;max-width:880px;margin:0 auto;font-size:13px;line-height:1.5}h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}h2{font-size:15px;margin:28px 0 4px}.sub,.note{color:#5d6070;font-size:12px;margin:0 0 12px}ul{margin:4px 0 0;padding-left:20px}li{margin:3px 0}.kpis{display:flex;gap:28px;flex-wrap:wrap;margin:20px 0 4px}.kpi span{display:block;color:#5d6070;font-size:12px}.kpi b{display:block;font-size:18px;font-variant-numeric:tabular-nums}table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #e6e7ec}th{color:#5d6070;font-weight:600}@media print{.noprint{display:none}body{padding:0}}</style></head><body>
       <h1>Kanbo report</h1><p class="sub">${esc(scopeLabel)} · generated ${esc(new Date().toLocaleDateString("en-GB"))}</p>
@@ -392,14 +397,22 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
           <InsightsCard wide title="Time & billing" meta="All logged time"
             actions={(
               <>
-                <span className="kin-rate">
-                  <label htmlFor={rateId}>Hourly rate</label>
-                  <span className="kin-rate-field">
-                    <span aria-hidden="true">£</span>
-                    <input id={rateId} type="number" min={0} inputMode="decimal" value={billRate || ""} placeholder="0"
-                      onChange={(e) => setRate(Number(e.target.value) || 0)} />
+                {rates.mode === "local" && (
+                  <span className="kin-rate">
+                    <label htmlFor={rateId}>Hourly rate</label>
+                    <span className="kin-rate-field">
+                      <span aria-hidden="true">£</span>
+                      <input id={rateId} type="number" min={0} inputMode="decimal" value={billRate || ""} placeholder="0"
+                        onChange={(e) => rates.setFallback(Number(e.target.value) || 0)} />
+                    </span>
                   </span>
-                </span>
+                )}
+                {rates.mode === "shared" && (
+                  <span className="kav-rate" title="The team's rate, for projects without their own. Owners and admins see and set rates.">
+                    Default rate
+                    <RateField value={billRate || null} label="Default hourly rate, in pounds" onCommit={(n) => rates.setFallback(n)} />
+                  </span>
+                )}
                 <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={exportBillable} disabled={billable.length === 0} aria-label="Export time as CSV">CSV</Button>
               </>
             )}
@@ -407,24 +420,29 @@ export function ReportsView({ tasks, projects, members = [], onOpen, ...nav }: {
               <>
                 <b>{fmtHours(billableHours)}</b> logged across <b>{billable.length}</b> task{billable.length === 1 ? "" : "s"}
                 {billByProject.length === 1 ? ` in ${billByProject[0].name}` : ""}
-                {billRate > 0 ? <>. At £{billRate} an hour, that's <b>{money(billableHours * billRate)}</b>.</> : "."}
+                {priced ? (rates.mixed ? <>. At each project's rate, that's <b>{money(billAmount)}</b>.</> : <>. At £{billRate} an hour, that's <b>{money(billAmount)}</b>.</>) : "."}
               </>
             ) : undefined}>
             {billable.length === 0 ? (
               <p className="kin-empty">No time logged yet. Log time on a task and it lands here, ready to invoice.</p>
-            ) : billByProject.length > 1 && (
+            ) : (billByProject.length > 1 || rates.mode === "shared") && (
               <ul style={{ listStyle: "none", margin: 0, padding: 0 }} aria-label="Logged time by project">
                 {billByProject.map((r) => (
                   <li key={r.pid} className="kin-row">
                     <ProjectDot color={r.color} />
                     <span className="kin-row-title">{r.name}</span>
                     <span className="kin-mono" style={{ color: "var(--ink-4)" }}>{r.n} task{r.n === 1 ? "" : "s"}</span>
+                    {rates.mode === "shared" && (
+                      <RateField size="sm" value={rates.ownRate(r.pid)} placeholder={billRate ? String(billRate) : "0"}
+                        label={`Hourly rate for ${r.name}, in pounds (blank: the default rate)`} onCommit={(n) => rates.setProjectRate(r.pid, n)} />
+                    )}
                     <span className="kin-mono" style={{ width: 56, textAlign: "right", color: "var(--ink)" }}>{fmtHours(r.hours)}</span>
-                    {billRate > 0 && <span className="kin-mono" style={{ width: 88, textAlign: "right", color: "var(--ink-2)" }}>{money(r.hours * billRate)}</span>}
+                    {priced && <span className="kin-mono" style={{ width: 88, textAlign: "right", color: "var(--ink-2)" }}>{money(r.hours * r.rate)}</span>}
                   </li>
                 ))}
               </ul>
             )}
+            {rates.mode === "hidden" && billable.length > 0 && <p className="kav-rate-note">Rates are set by your workspace's owners and admins, so amounts aren't shown here.</p>}
           </InsightsCard>
         </div>
       </div>

@@ -27,6 +27,7 @@ import {
 import { supabase } from "./supabase";
 import { SPECTRUM, spectrumColor, stableHash, type SpectrumKey } from "./projectIdentity";
 import { capacityOf, loadForWeek, loadTone, readCapacities } from "./radar";
+import { availabilityOn, capacityInWeek, getAvailability } from "./availability";
 import { KANBO_TODAY } from "../data/data";
 import { addDays, localDay, startOfWeekMon } from "../components/views/reportingUtils";
 
@@ -1064,7 +1065,7 @@ function asTasks(draft: PlanDraft): Task[] {
 }
 
 /** Overloaded people (the Workload model, existing work included), dates past the deadline, unassigned work, a task due before what it depends on.
- *  Optional: `guestIds` (guests carry no team capacity), `capacities` (weekly hours per person; default Workload's on this device),
+ *  Optional: `guestIds` (guests carry no team capacity), `capacities` (weekly hours per person; default the team's shared weeks, 0055, else Workload's on this device),
  *  `today` (YYYY-MM-DD; default the app's today). */
 export function planWarnings(draft: PlanDraft, ctx: { tasks: Task[]; members: Member[]; deadline?: string | null; guestIds?: readonly string[]; capacities?: Record<string, number>; today?: string }): PlanWarning[] {
   const out: PlanWarning[] = [];
@@ -1077,7 +1078,10 @@ export function planWarnings(draft: PlanDraft, ctx: { tasks: Task[]; members: Me
   };
 
   // 1. overload: each person's weekly hours (their existing open work plus this plan) against their capacity
+  // (0055: once shared, each week's own capacity, less the person's time off that week)
   const caps = ctx.capacities ?? readCapacities();
+  const avail = getAvailability();
+  const capFor = (id: string, week: Date) => (!ctx.capacities && availabilityOn(avail) ? capacityInWeek(avail.activeWs, id, week, avail) : capacityOf(caps, id));
   const today = ctx.today && isPlanDay(ctx.today) ? localDay(ctx.today)! : new Date(KANBO_TODAY);
   const planned = asTasks(draft);
   const people = [...new Set(draft.tasks.map((t) => t.assigneeId).filter((id): id is string => !!id && !guests.has(id) && members.some((m) => m.id === id)))];
@@ -1091,7 +1095,7 @@ export function planWarnings(draft: PlanDraft, ctx: { tasks: Task[]; members: Me
       for (const id of people) {
         const r = rows.get(id);
         if (!r) continue;
-        const cap = capacityOf(caps, id);
+        const cap = capFor(id, w);
         if (loadTone(r.hours, cap) !== "signal") continue;
         const keys = r.items.map((x) => x.task.id).filter((x) => x.startsWith("plan:")).map((x) => x.slice(5));
         if (!keys.length) continue; // over already, without this plan: Workload says so, not the planner

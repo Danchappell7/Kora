@@ -69,6 +69,8 @@ export function activityWorkspace(a: Activity, wsOfTask: ReadonlyMap<string, str
   if (a.taskId != null) return wsOfTask.has(a.taskId) ? wsOfTask.get(a.taskId) ?? null : undefined;
   // 0054: a project update belongs to its project's workspace
   if (a.kind === "update") return updateItemWorkspace(a, projects);
+  // 0056: a meeting's recap, to its business
+  if (a.kind === "meeting") return a.meta?.workspaceId ?? undefined;
   const r = docMentionRoute(a);
   if (!r) return undefined;
   const p = projects.find((x) => x.id === r.projectId);

@@ -398,7 +398,7 @@ export interface Attachment {
  *  "kudos": someone thanked you for a finished task (0048; detail = their name; meta.kudosId / emoji / note)
  *  "update": a project update was posted, edited to ask you something, or replied to; or a portfolio update was posted
  *    (0054; no task — meta.statusUpdateId / projectId, or meta.portfolioId; detail = who) */
-export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration" | "approval" | "doc_mention" | "kudos" | "update";
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration" | "approval" | "doc_mention" | "kudos" | "update" | "meeting";
 
 /** activity.meta (0047): what an Inbox item points at beyond its task. Parsed by lib/activityMeta. */
 export interface ActivityMeta {
@@ -427,6 +427,12 @@ export interface ActivityMeta {
   /** portfolio updates (0054) */
   portfolioId?: string;
   portfolioUpdateId?: string;
+  /** meeting recaps (0056): which meeting, its business and kind, and what it left (docId / projectId: its notes doc) */
+  meetingId?: string;
+  workspaceId?: string;
+  meetingPreset?: "team" | "leadership";
+  decisions?: number;
+  actions?: number;
 }
 
 export interface Activity {
