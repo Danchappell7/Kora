@@ -48,7 +48,7 @@ import {
   SearchBox, SearchChips, FiltersPanel, HitRow, SearchStart, Highlighted, HighlightTitle, withCurrent,
   type Opt, type PanelField,
 } from "../search/SearchParts";
-import type { Task, Project, SavedSearch, Status, Priority, CustomFieldDef, Comment, SavedView, SavedViewQuery, SearchHit, SearchHitKind, Member } from "../../data/types";
+import type { Task, Project, SavedSearch, Status, Priority, CustomFieldDef, Comment, SavedView, SavedViewQuery, SearchHit, SearchHitKind, Member, Goal } from "../../data/types";
 import type { Route } from "../../app-types";
 import "../tasks/taskViews.css";
 import "../search/search.css";
@@ -56,10 +56,10 @@ import "../search/search.css";
 /** task rows rendered at once; the count, "Select all" and exports say so */
 const DISPLAY_CAP = 200;
 /** with several kinds on screen, each group shows a few and offers the rest */
-const PREVIEW: Record<SearchHitKind, number> = { task: 8, comment: 4, doc: 4, project: 4, person: 4 };
+const PREVIEW: Record<SearchHitKind, number> = { task: 8, comment: 4, doc: 4, project: 4, person: 4, goal: 4 };
 const FILTERS_OPEN_KEY = "kanbo-search-filters-open";
 /** the device's Tasks are listed here in full (localTaskMatches); localSearch answers for the rest */
-const NOT_TASKS: SearchHitKind[] = ["comment", "doc", "project", "person"];
+const NOT_TASKS: SearchHitKind[] = ["comment", "doc", "project", "person", "goal"];
 
 /** primary pointer is a mouse/trackpad (not a touchscreen) */
 const finePointer = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: fine)").matches;
@@ -67,7 +67,7 @@ const isMac = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(n
 const unknownLabel = (v: string) => `${v.charAt(0).toUpperCase()}${v.slice(1)} (unknown)`;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const KIND_WORDS: Record<SearchHitKind, [string, string]> = {
-  task: ["task", "tasks"], comment: ["comment", "comments"], doc: ["doc", "docs"], project: ["project", "projects"], person: ["person", "people"],
+  task: ["task", "tasks"], comment: ["comment", "comments"], doc: ["doc", "docs"], project: ["project", "projects"], person: ["person", "people"], goal: ["goal", "goals"],
 };
 const readFiltersPref = (): boolean | null => {
   try { const v = window.localStorage.getItem(FILTERS_OPEN_KEY); return v === "1" ? true : v === "0" ? false : null; } catch { return null; }
@@ -120,13 +120,16 @@ export interface SearchViewProps {
   serverSearch?: boolean;
   /** read-only here (guests): task rows aren't drag sources (the bulk bar and task panel stay the non-drag way) */
   readOnly?: boolean;
+  /** 0052: the goals you can see, and opening one (the goal panel); no handler, no Goals */
+  goals?: Goal[];
+  onOpenGoal?: (goalId: string) => void;
 }
 
 export function SearchView(props: SearchViewProps) {
   const {
     tasks, projects, members, currentUserId, onOpen, savedSearches, onSaveSearch, onDeleteSavedSearch, preset, presetKey, onBulkPatch,
     onBulkDelete, sections, customFields, onToggle, activeId, presetView, workspaces, onOpenDoc, onOpenProject, onOpenPerson,
-    onOpenComment, onGo, views, timezone,
+    onOpenComment, onGo, views, timezone, goals, onOpenGoal,
   } = props;
   const uid = currentUserId ?? "";
   const entrance = useEntrance(presetKey);
@@ -212,12 +215,13 @@ export function SearchView(props: SearchViewProps) {
   const allDocs = useMemo(() => dedupe([...(docs ?? []), ...(corpus?.docs ?? [])]), [docs, corpus]);
   // (booleans, so handlers passed as fresh arrows each render don't redo the merge below)
   const canOpenDoc = !!(onOpenDoc || onGo), canOpenProject = !!(onOpenProject || onGo), canOpenPerson = !!(onOpenPerson || onGo);
-  const openable = (k: SearchHitKind) => k === "task" || k === "comment" || (k === "doc" ? canOpenDoc : k === "project" ? canOpenProject : canOpenPerson);
+  const canOpenGoal = !!onOpenGoal;
+  const openable = (k: SearchHitKind) => k === "task" || k === "comment" || (k === "doc" ? canOpenDoc : k === "project" ? canOpenProject : k === "goal" ? canOpenGoal : canOpenPerson);
   const singleKind = resolved.kinds.length === 1 ? resolved.kinds[0] : null;
   const limit = singleKind && singleKind !== "task" ? SEARCH_LIMIT_MAX : SEARCH_VIEW_LIMIT;
   const search = useUniversalSearch({
     active, text, filters: resolved.filters, limit, debounceMs: 200, server: props.serverSearch, localKinds: NOT_TASKS,
-    local: { tasks, projects, members: everyone, comments: allComments, docs: allDocs, currentUserId: uid },
+    local: { tasks, projects, members: everyone, comments: allComments, docs: allDocs, currentUserId: uid, goals },
   });
 
   // server-only task matches (found by stem: "prices" → "pricing") join the device's, if they still pass here
@@ -245,10 +249,10 @@ export function SearchView(props: SearchViewProps) {
     const server = (search.server ?? []).filter((h) => h.kind !== "task");
     return mergeSearchHits(local, server, { text, limitPerKind: limit }).filter((h) => resolved.kinds.includes(h.kind) && openable(h.kind));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, search.local, search.server, text, limit, resolved.kinds, canOpenDoc, canOpenProject, canOpenPerson]);
+  }, [active, search.local, search.server, text, limit, resolved.kinds, canOpenDoc, canOpenProject, canOpenPerson, canOpenGoal]);
 
   const counts = useMemo(() => {
-    const c: Record<SearchHitKind, number> = { task: matchedTasks.length, comment: 0, doc: 0, project: 0, person: 0 };
+    const c: Record<SearchHitKind, number> = { task: matchedTasks.length, comment: 0, doc: 0, project: 0, person: 0, goal: 0 };
     for (const h of others) c[h.kind] += 1;
     return c;
   }, [matchedTasks, others]);
@@ -347,6 +351,7 @@ export function SearchView(props: SearchViewProps) {
     else if (h.kind === "doc" && h.projectId) (onOpenDoc ? onOpenDoc(h.id, h.projectId) : onGo?.({ view: "project", projectId: h.projectId, tab: "docs", docId: h.id }));
     else if (h.kind === "project") (onOpenProject ? onOpenProject(h.id) : onGo?.({ view: "project", projectId: h.id }));
     else if (h.kind === "person") (onOpenPerson ? onOpenPerson(h.id) : onGo?.({ view: "team" }));
+    else if (h.kind === "goal") onOpenGoal?.(h.id);
   };
   const openTask = (id: string) => { remember(); onOpen(id); };
   const hitByRowId = (rowId: string) => others.find((h) => `${h.kind}:${h.id}` === rowId);

@@ -846,6 +846,8 @@ export interface TaskDetailProps {
   /** 0048: ⋯ › Save as template… opens the template library's Save as template (the host's sheet). Without it,
    *  the task is kept as a template on this device (the old way). */
   onSaveAsTemplate?: (taskId: string) => void;
+  /** 0052: the goals this task serves ("Serves", a property row of chips that open the goal) */
+  goalRow?: (task: Task) => ReactNode;
 }
 
 /** A task opened from inside the panel (a sub-task, a blocker, the parent)
@@ -915,7 +917,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai, onApprovalsChange, onSaveAsTemplate }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -1977,6 +1979,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
               )}
             </dd>
           </div>
+
+          {goalRow?.(task)}
 
           {/* optional: filled ones always show; empty ones fold into "+ n more fields" */}
           {(showStart || showAll) && startRow}

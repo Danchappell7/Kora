@@ -6,7 +6,9 @@
    · someone's work is waiting on yours (they're blocked on it);
    · a risk from Radar that touches your work (owners and admins);
    · one of your dates has slipped;
-   · a free stretch today before a deadline tomorrow.
+   · a free stretch today before a deadline tomorrow;
+   · a key result (or goal) of yours behind pace, with a one-tap
+     check-in (lib/goalFlow says which).
    "Not now" waves one away for the day (the view keeps that per
    person). Pure: no React, no storage, no clock of its own.
    ============================================================ */
@@ -20,12 +22,14 @@ export type NoticedAction =
   | { kind: "open"; label: string; taskId: string }
   | { kind: "today"; label: string; taskId: string }
   | { kind: "place"; label: string; taskId: string; start: number }
-  | { kind: "risks"; label: string };
+  | { kind: "risks"; label: string }
+  | { kind: "checkin"; label: string; goalId: string }
+  | { kind: "goal"; label: string; goalId: string };
 
 export interface Noticed {
   /** stable for the thing noticed, so "Not now" keeps it away for the day */
   id: string;
-  kind: "waiting" | "risk" | "slipped" | "slot";
+  kind: "waiting" | "risk" | "slipped" | "slot" | "goal";
   tone: "signal" | "warn" | "accent";
   icon: IconName;
   title: string;
@@ -48,6 +52,8 @@ export interface NoticedInput {
   members?: { id: string; name: string }[];
   /** Radar's risks (owners and admins); only those touching your work are shown */
   risks?: Risk[];
+  /** your goals and key results behind pace, furthest behind first (lib/goalFlow goalsBehindForMe) */
+  goalsBehind?: { goalId: string; name: string; noun: string; gap: number; line: string; sinceCheckin: number | null }[];
   /** ids waved away today */
   dismissed?: Iterable<string>;
   /** default 3 */
@@ -71,7 +77,7 @@ function when(iso: string, today: string): string {
 }
 
 /** What Kanbo noticed today, most pressing first (see the file note). */
-export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], dismissed, max = 3 }: NoticedInput): Noticed[] {
+export function noticedToday({ tasks, allTasks, events, nowMin, today, me, members = [], risks = [], goalsBehind = [], dismissed, max = 3 }: NoticedInput): Noticed[] {
   const skip = new Set(dismissed ?? []);
   const first = (id?: string) => (members.find((m) => m.id === id)?.name ?? "").trim().split(/\s+/)[0] || "A teammate";
   const mine = new Set(allTasks.filter((t) => isMine(t, me)).map((t) => t.id));
@@ -142,6 +148,19 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
       }, 4);
       break;
     }
+  }
+
+  // 5. a key result of yours behind pace (one: the furthest behind), with a one-tap check-in
+  const g = goalsBehind.find((x) => !skip.has(`goal:${x.goalId}`));
+  if (g) {
+    const where = /^Behind pace/.test(g.line) ? `is ${g.gap}% behind pace` : `is ${g.line.charAt(0).toLowerCase()}${g.line.slice(1)}`;
+    const last = g.sinceCheckin == null ? "It has no check-ins yet." : g.sinceCheckin === 0 ? "You checked in today." : `The last check-in was ${plural(g.sinceCheckin, "day")} ago.`;
+    push({
+      id: `goal:${g.goalId}`, kind: "goal", tone: "warn", icon: "target",
+      title: `Your ${g.noun} is behind pace`,
+      body: `${short(g.name)} ${where}. ${last}`,
+      actions: [{ kind: "checkin", label: "Check in", goalId: g.goalId }, { kind: "goal", label: "Open it", goalId: g.goalId }],
+    }, 2.5);
   }
 
   return out.sort((a, b) => a.rank - b.rank).slice(0, max).map(({ rank: _r, ...n }) => n);

@@ -365,7 +365,8 @@ export type BriefEntity =
   | { kind: "person"; text: string; memberId: string }
   | { kind: "project"; text: string; projectId: string }
   | { kind: "time"; text: string }
-  | { kind: "risks"; text: string };
+  | { kind: "risks"; text: string }
+  | { kind: "goal"; text: string; goalId: string; icon?: string | null; color?: string | null };
 export type BriefSpan = string | BriefEntity;
 
 export type BriefFactKind = "meetings" | "free" | "due" | "overdue" | "slipping" | "team";
@@ -400,6 +401,9 @@ export interface TodayBriefInput extends BriefInput {
   projects?: { id: string; name: string }[];
   /** you've shut down today: the evening says the day's closed and what's lined up next */
   dayClosed?: boolean;
+  /** the goal of yours (you own it or help on it) a task moves, if any (lib/goalFlow): the brief
+   *  says so in at most one line ("Finishing it moves Grow weekly actives.") */
+  goalFor?: (task: Task) => { goalId: string; name: string; behind: boolean; icon?: string | null; color?: string | null } | null;
 }
 
 const FOCUS_MAX = 44;
@@ -470,7 +474,7 @@ export function clearestStretch(tasks: Task[], events: CalEvent[], nowMin: numbe
 }
 
 /** Today's brief card (see the section note above). */
-export function composeTodayBrief({ tasks: given, events, nowMin, today, userName, riskCount = 0, allTasks, me, members = [], projects = [], dayClosed = false }: TodayBriefInput): TodayBrief {
+export function composeTodayBrief({ tasks: given, events, nowMin, today, userName, riskCount = 0, allTasks, me, members = [], projects = [], dayClosed = false, goalFor }: TodayBriefInput): TodayBrief {
   const all = allTasks ?? given;
   const name = firstName(userName);
   const nameOf = (id: string) => firstName(members.find((m) => m.id === id)?.name) || "a teammate";
@@ -535,6 +539,21 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
       prose.push(`, but there's no free stretch of ${fmtDuration(durOf(t))} left today.`);
     }
   };
+  // at most one goal line: the one big thing's goal ("Finishing it moves …"), else the first of
+  // today's work (by Kanbo's score) that moves a goal you own or help on
+  const goalLine = () => {
+    if (!goalFor) return;
+    const own = top ? goalFor(top) : null;
+    const other = own ? null : todaysWork.filter((t) => !t.parentId).sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0))
+      .map((t) => ({ t, g: goalFor(t) })).find((x) => !!x.g);
+    const g = own ?? other?.g;
+    if (!g) return;
+    // (wearing the goal's own icon and colour, as a project chip wears its project's)
+    const goal: BriefEntity = { kind: "goal", text: g.name.length > TITLE_MAX ? shorten(g.name) : g.name, goalId: g.goalId, ...(g.icon ? { icon: g.icon } : {}), ...(g.color ? { color: g.color } : {}) };
+    if (own) prose.push(" Finishing it moves ", goal);
+    else prose.push(" Finishing ", { kind: "task", text: shorten(other!.t.title), taskId: other!.t.id, status: other!.t.status }, " moves ", goal);
+    prose.push(g.behind ? ", which is behind pace." : ".");
+  };
   // "Define design tokens v2 is waiting on your review: 20m there unblocks Maya."
   const whoWaits = (skipId?: string) => {
     const w = waits.find((x) => x.task.id !== skipId);
@@ -578,6 +597,7 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
   } else if (variant === "overloaded") {
     headline.push("Something has to give. Start with ", focus!, ".");
     whyTop(top!);
+    goalLine();
     // what to move: the lowest-ranked unplaced work until the rest fits
     const movable = todaysWork.filter((t) => !isPlaced(t) && t.id !== top!.id && !t.dueTime)
       .sort((a, b) => rank(a) - rank(b) || (a.aiScore ?? 0) - (b.aiScore ?? 0) || (day10(b.dueDate) || "9999").localeCompare(day10(a.dueDate) || "9999"));
@@ -593,6 +613,7 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
     // morning, afternoon, Monday: the one big thing
     headline.push(variant === "monday" ? "New week. One big thing today: " : variant === "afternoon" ? "One big thing this afternoon: " : "One big thing today: ", focus!, ".");
     whyTop(top!);
+    goalLine();
     whoWaits(top!.id);
     if (variant === "monday") {
       const weekEnd = dayAfter(today, 6);

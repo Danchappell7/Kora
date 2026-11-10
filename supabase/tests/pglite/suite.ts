@@ -4,9 +4,10 @@
 // Drives handleMcpFunction end to end, through the real pipeline and handlers and
 // the real database driver (driver.ts), on a database built from the repo's own
 // migration files, twice over:
-//   0001..0047 + 0050   what production will have if 0048/0049 aren't applied yet
-//   0001..0050          everything
-// Each run applies 0050 twice. Legit flows first, then the attacks.
+//   0001..0047 + 0050..0052   what production will have if 0048/0049 aren't applied yet
+//   0001..0052                everything
+// Each run applies 0050 twice. Legit flows first, then the attacks; then 0051's guest
+// lock and 0052's goal rules.
 // ============================================================
 import { sqlVerifier } from "../../functions/_shared/api/auth.ts";
 import { handleMcpFunction, type McpDeps } from "../../functions/_shared/mcp/handler.ts";
@@ -1584,14 +1585,423 @@ async function guestLockSuite(w: World) {
   });
 }
 
+/* ============================================================ 0052: Goals 2.0 */
+
+/** Owners, quarters, check-ins and links, and who may do what with them: only owners,
+ *  admins, a goal's owner and its contributors edit it; company goals are for owners and
+ *  admins; leadership-only goals are for them and the goal's people; guests and outsiders
+ *  read nothing; check-ins and links follow their goal and never leave its workspace.
+ *  Runs after 0051's suite (it deletes accounts and re-runs 0041 and 0052). */
+async function goalsSuite(w: World) {
+  const has0052 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0052') as "on"`)).rows[0].on;
+  if (!has0052) return;
+  const one = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []) => (await w.pg.query<T>(sql, params)).rows[0];
+  const count = async (user: string, table: string, where = "true", params: unknown[] = []) =>
+    (await asPerson<{ n: number }>(w.pg, user, `select count(*)::int as n from public.${table} where ${where}`, params))[0].n;
+  const person = async (email: string, role: string) => {
+    const id = await makeUser(w.pg, email, email.split("@")[0]);
+    await w.pg.query(`update public.profiles set approved = true where id = $1::uuid`, [id]);
+    await w.pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, $3, $4, $5, 'active')`, [w.w1, id, email, email.split("@")[0], role]);
+    return id;
+  };
+  const erin = await person("erin@example.org", "admin");
+  const dan = await person("dan@example.org", "member");
+  const RLS = /row-level security|policy/i;
+  // a goal made by someone in the app (as them), returning its id
+  const mkGoal = async (user: string, cols: Record<string, unknown>) => {
+    const keys = Object.keys(cols);
+    const vals = keys.map((k, i) => `$${i + 1}${k === "contributors" ? "::uuid[]" : k.endsWith("_id") ? "::uuid" : ""}`);
+    return (await asPerson<{ id: string }>(w.pg, user,
+      `insert into public.goals (${keys.join(", ")}) values (${vals.join(", ")}) returning id::text as id`, keys.map((k) => cols[k])))[0].id;
+  };
+  const goal = (id: string) => one<Record<string, unknown>>(`select name, owner_id::text as owner, contributors::text[] as contributors, current::float8 as current,
+    confidence, parent_id::text as parent, period, period_start::text as ps, period_end::text as pe, visibility from public.goals where id = $1::uuid`, [id]);
+
+  // alice (owner) sets the company goal; Dan helps on it
+  const g1 = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Revenue to £3m", target: 3000000, current: 1000000, start_value: 1000000, contributors: `{${dan}}` });
+  // Bob owns a goal (alice gave it to him) and adds a key result under it
+  const g2 = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Ship the app", owner_id: w.bob });
+  // leadership only: alice's, with Dan helping
+  const gl = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Sell the company", visibility: "leadership", contributors: `{${dan}}` });
+
+  await test("0052: an owner sets a company goal and owns it by default; a personal goal stays its creator's alone", async () => {
+    eq((await goal(g1)).owner, w.alice, "owner from the creator");
+    eq((await goal(g1)).contributors, [dan], "contributors");
+    eq((await goal(g2)).owner, w.bob, "named owner");
+    const mine = await mkGoal(w.bob, { user_id: w.bob, workspace_id: null, name: "Bob's reading", owner_id: w.alice, contributors: `{${w.alice}}`, visibility: "leadership" });
+    eq(await goal(mine), { ...(await goal(mine)), owner: w.bob, contributors: [], visibility: "everyone" }, "personal: owner is the creator, no helpers, no leadership");
+    eq(await count(w.alice, "goals", "id = $1::uuid", [mine]), 0, "alice can't read bob's personal goal");
+  });
+
+  await test("0052 attack: a member can't set a company goal (a team goal with no parent): that's for owners and admins", async () => {
+    await raises(asPerson(w.pg, w.bob, `insert into public.goals (user_id, workspace_id, name) values ($1::uuid, $2::uuid, 'My own company goal')`, [w.bob, w.w1]), RLS);
+    ok(await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Admin's company goal" }), "an admin can");
+  });
+
+  await test("0052: a member adds a key result under a goal they own or help with, never under someone else's", async () => {
+    const kr = await mkGoal(w.bob, { user_id: w.bob, workspace_id: w.w1, name: "Beta to 100 testers", parent_id: g2, kind: "key_result" });
+    eq((await goal(kr)).parent, g2, "under bob's goal");
+    eq((await goal(kr)).owner, w.bob, "his");
+    await raises(asPerson(w.pg, w.bob, `insert into public.goals (user_id, workspace_id, name, parent_id) values ($1::uuid, $2::uuid, 'Sneak in', $3::uuid)`, [w.bob, w.w1, g1]), RLS);
+    ok(await mkGoal(dan, { user_id: dan, workspace_id: w.w1, name: "Upsell 20 accounts", parent_id: g1, kind: "key_result" }), "dan helps on g1, so he can");
+    // and can't lift his key result to the top, where it would be a company goal
+    await raises(asPerson(w.pg, w.bob, `update public.goals set parent_id = null where id = $1::uuid`, [kr]), /owners and admins set/);
+    // nor move it under a goal he can't edit
+    await raises(asPerson(w.pg, w.bob, `update public.goals set parent_id = $1::uuid where id = $2::uuid`, [g1, kr]), /one you can edit/);
+  });
+
+  await test("0052 attack: a member who isn't the goal's owner or a contributor can't edit or delete it", async () => {
+    eq((await asPerson(w.pg, w.bob, `update public.goals set name = 'hijacked', current = 0, status = 'done' where id = $1::uuid returning id`, [g1])).length, 0, "update");
+    eq((await asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid returning id`, [g1])).length, 0, "delete");
+    eq((await goal(g1)).current, 1000000, "untouched");
+    eq(await count(w.bob, "goals", "id = $1::uuid", [g1]), 1, "though bob still reads it");
+  });
+
+  await test("0052: the goal's owner, its contributors and owners/admins edit it; only owners, admins and its owner hand it over", async () => {
+    eq((await asPerson(w.pg, dan, `update public.goals set current = 1200000, status = 'at_risk' where id = $1::uuid returning id`, [g1])).length, 1, "a contributor edits");
+    eq((await asPerson(w.pg, erin, `update public.goals set description = 'Net of refunds' where id = $1::uuid returning id`, [g1])).length, 1, "an admin edits");
+    await raises(asPerson(w.pg, dan, `update public.goals set owner_id = $1::uuid where id = $2::uuid`, [dan, g1]), /only the goal's owner/);
+    await raises(asPerson(w.pg, dan, `update public.goals set contributors = '{}' where id = $1::uuid`, [g1]), /only the goal's owner/);
+    await raises(asPerson(w.pg, dan, `update public.goals set visibility = 'leadership' where id = $1::uuid`, [g1]), /only the goal's owner/);
+    eq((await asPerson(w.pg, w.bob, `update public.goals set owner_id = $1::uuid, contributors = $2::uuid[] where id = $3::uuid returning id`, [dan, `{${w.bob}}`, g2])).length, 1, "bob hands his goal to dan");
+    eq(await goal(g2).then((g) => [g.owner, g.contributors]), [dan, [w.bob]], "dan owns it, bob helps");
+    eq((await asPerson(w.pg, erin, `update public.goals set owner_id = $1::uuid where id = $2::uuid returning id`, [w.bob, g2])).length, 1, "an admin reassigns");
+  });
+
+  await test("0052 attack: a goal's owner and contributors are its workspace's members, never a guest or an outsider", async () => {
+    await raises(asPerson(w.pg, w.alice, `update public.goals set owner_id = $1::uuid where id = $2::uuid`, [w.gus, g1]), /owner has to be a member/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set owner_id = $1::uuid where id = $2::uuid`, [w.carol, g1]), /owner has to be a member/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set contributors = $1::uuid[] where id = $2::uuid`, [`{${dan},${w.carol}}`, g1]), /helping on a goal has to be a member/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set contributors = $1::uuid[] where id = $2::uuid`, [`{${w.gus}}`, g1]), /helping on a goal has to be a member/);
+    eq((await goal(g1)).contributors, [dan], "unchanged");
+  });
+
+  await test("0052 attack: a leadership-only goal is for owners, admins, its owner and contributors: a member can't read it, or its check-ins and links", async () => {
+    await asPerson(w.pg, w.alice, `insert into public.goal_checkins (goal_id, value, note) values ($1::uuid, 2, 'Two bidders')`, [gl]);
+    await asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [gl, w.launch]);
+    for (const [who, n] of [[w.alice, 1], [erin, 1], [dan, 1], [w.bob, 0], [w.gus, 0], [w.carol, 0]] as const) {
+      eq(await count(who, "goals", "id = $1::uuid", [gl]), n, `goal, ${who === w.bob ? "bob" : who}`);
+      eq(await count(who, "goal_checkins", "goal_id = $1::uuid", [gl]), n, "check-ins");
+      eq(await count(who, "goal_links", "goal_id = $1::uuid", [gl]), n, "links");
+    }
+    eq((await asPerson(w.pg, w.bob, `select g.name from public.goals g join public.workspaces ws on ws.id = g.workspace_id where g.visibility = 'leadership'`)).length, 0, "through a join");
+    eq((await asPerson(w.pg, w.bob, `select c.note from public.goal_checkins c where true or c.goal_id = $1::uuid`, [gl])).filter((r) => (r as { note: string }).note === "Two bidders").length, 0, "\"or true\"");
+    eq((await asPerson(w.pg, w.bob, `update public.goals set visibility = 'everyone' where id = $1::uuid returning id`, [gl])).length, 0, "nor open it up");
+    // promoted to admin, bob reads it; back to member, he doesn't
+    await w.pg.query(`update public.workspace_members set role = 'admin' where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, w.bob]);
+    eq(await count(w.bob, "goals", "id = $1::uuid", [gl]), 1, "as an admin");
+    await w.pg.query(`update public.workspace_members set role = 'member' where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, w.bob]);
+    eq(await count(w.bob, "goals", "id = $1::uuid", [gl]), 0, "a member again");
+  });
+
+  await test("0052: a check-in's author is the person posting, whatever the request says; the newest sets the goal's value, and taking it back restores the one before", async () => {
+    const row = (await asPerson<{ id: string; author_id: string; workspace_id: string }>(w.pg, dan,
+      `insert into public.goal_checkins (goal_id, value, confidence, note, author_id, workspace_id, created_at) values ($1::uuid, 1500000, 4, '  Two big renewals  ', $2::uuid, $3::uuid, '2020-01-01')
+       returning id::text as id, author_id::text as author_id, workspace_id::text as workspace_id`, [g1, w.alice, w.w2]))[0];
+    eq([row.author_id, row.workspace_id], [dan, w.w1], "the author and workspace are the server's");
+    eq((await one<{ old: boolean }>(`select created_at < now() - interval '1 day' as old from public.goal_checkins where id = $1::uuid`, [row.id])).old, false, "and so is the time");
+    eq([(await goal(g1)).current, (await goal(g1)).confidence], [1500000, 4], "the goal's value and confidence follow");
+    eq((await one<{ note: string }>(`select note from public.goal_checkins where id = $1::uuid`, [row.id])).note, "Two big renewals", "note trimmed");
+    await asPerson(w.pg, dan, `update public.goal_checkins set author_id = $1::uuid, note = 'Three renewals' where id = $2::uuid`, [w.alice, row.id]);
+    eq(await one(`select author_id::text as a, note from public.goal_checkins where id = $1::uuid`, [row.id]), { a: dan, note: "Three renewals" }, "the author fixes the note, can't re-point the author");
+    const later = (await asPerson<{ id: string }>(w.pg, dan, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 1700000) returning id::text as id`, [g1]))[0].id;
+    eq((await goal(g1)).current, 1700000, "newest wins");
+    eq((await asPerson(w.pg, dan, `delete from public.goal_checkins where id = $1::uuid returning id`, [later])).length, 1, "taken back");
+    eq((await goal(g1)).current, 1500000, "the one before is the value again");
+  });
+
+  await test("0052 attack: someone who can't edit the goal can't check in on it, or change or remove anyone's check-in", async () => {
+    await raises(asPerson(w.pg, w.bob, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 9999999)`, [g1]), RLS);
+    await raises(asPerson(w.pg, w.gus, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 9999999)`, [g1]), RLS);
+    await raises(asPerson(w.pg, w.carol, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 9999999)`, [g1]), RLS);
+    const theirs = (await one<{ id: string }>(`select id::text as id from public.goal_checkins where goal_id = $1::uuid order by created_at desc limit 1`, [g1])).id;
+    eq((await asPerson(w.pg, w.bob, `update public.goal_checkins set value = 1 where id = $1::uuid returning id`, [theirs])).length, 0, "bob can't change it");
+    eq((await asPerson(w.pg, erin, `update public.goal_checkins set value = 1 where id = $1::uuid returning id`, [theirs])).length, 0, "nor can an admin: it's dan's word");
+    eq((await asPerson(w.pg, w.bob, `delete from public.goal_checkins where id = $1::uuid returning id`, [theirs])).length, 0, "bob can't remove it");
+    eq((await goal(g1)).current, 1500000, "the value stands");
+    const n = await count(w.alice, "goal_checkins", "goal_id = $1::uuid", [g1]);
+    eq((await asPerson(w.pg, erin, `delete from public.goal_checkins where id = $1::uuid returning id`, [theirs])).length, 1, "an admin takes it back");
+    eq(await count(w.alice, "goal_checkins", "goal_id = $1::uuid", [g1]), n - 1, "gone");
+  });
+
+  await test("0052 attack: a personal goal's check-ins and links are its creator's alone", async () => {
+    const mine = await mkGoal(w.bob, { user_id: w.bob, workspace_id: null, name: "Bob's 10k", target: 10, current: 0 });
+    const c = (await asPerson<{ id: string; author_id: string }>(w.pg, w.bob, `insert into public.goal_checkins (goal_id, value, note) values ($1::uuid, 4, 'First run') returning id::text as id, author_id::text as author_id`, [mine]))[0];
+    eq(c.author_id, w.bob, "his");
+    eq((await goal(mine)).current, 4, "his number moved");
+    for (const who of [w.alice, w.gus, w.carol]) {
+      eq(await count(who, "goal_checkins", "goal_id = $1::uuid", [mine]), 0, "nobody else reads it");
+      await raises(asPerson(w.pg, who, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 99)`, [mine]), RLS);
+      eq((await asPerson(w.pg, who, `delete from public.goal_checkins where id = $1::uuid returning id`, [c.id])).length, 0, "nor takes it back");
+    }
+    // his goal links his own work only (alice's personal task isn't his; the team's project isn't personal)
+    await raises(asPerson(w.pg, w.bob, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'task', $2)`, [mine, w.aliceSecret]), /its own workspace/);
+    await raises(asPerson(w.pg, w.bob, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [mine, w.launch]), /its own workspace/);
+  });
+
+  await test("0052 attack: guests and outsiders read no team goals, check-ins or links, by any query", async () => {
+    await asPerson(w.pg, w.alice, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 1600000)`, [g1]);
+    await asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'task', $2)`, [g1, w.aliceTask]);
+    for (const who of [w.gus, w.carol]) {
+      eq(await count(who, "goals", "workspace_id = $1::uuid", [w.w1]), 0, "goals");
+      eq(await count(who, "goal_checkins", "true"), 0, "check-ins");
+      eq(await count(who, "goal_links", "true"), 0, "links");
+      eq(await count(who, "goal_checkins", "workspace_id = $1::uuid or true", [w.w1]), 0, "\"or true\"");
+    }
+    eq(await count(w.bob, "goal_checkins", "goal_id = $1::uuid", [g1]), 1, "a member still reads an everyone goal's check-ins");
+    eq(await count(w.bob, "goal_links", "goal_id = $1::uuid", [g1]), 1, "and links");
+    await w.pg.query(`delete from public.goal_links where goal_id = $1::uuid`, [g1]);
+  });
+
+  await test("0052 attack: a link stays in its goal's workspace (another workspace's project or task is refused, server-side too)", async () => {
+    await raises(asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [g1, w.w2Project]), /its own workspace/);
+    await raises(asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'task', $2)`, [g1, w.carolTask]), /its own workspace/);
+    await raises(asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'task', $2)`, [g1, w.aliceSecret]), /its own workspace/);
+    await raises(w.pg.query(`insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [g1, w.w2Project]), /its own workspace/);
+    await raises(asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', 'not-a-project')`, [g1]), /its own workspace/);
+    // carol can't link her own project to w1's goal (she can't see it, let alone edit it)
+    await raises(asPerson(w.pg, w.carol, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [g1, w.w2Project]), RLS);
+    const link = (await asPerson<{ id: string; workspace_id: string; created_by: string }>(w.pg, dan,
+      `insert into public.goal_links (goal_id, kind, target_id, workspace_id, created_by) values ($1::uuid, 'task', $2, $3::uuid, $4::uuid) returning id::text as id, workspace_id::text as workspace_id, created_by::text as created_by`,
+      [g1, w.aliceTask, w.w2, w.alice]))[0];
+    eq([link.workspace_id, link.created_by], [w.w1, dan], "the workspace and maker are the server's");
+    // a link isn't re-pointed: no one may update one, and server-side it's refused
+    await raises(asPerson(w.pg, w.alice, `update public.goal_links set target_id = $1 where id = $2::uuid returning id`, [w.w2Project, link.id]), /permission denied/);
+    await raises(w.pg.query(`update public.goal_links set target_id = $1 where id = $2::uuid`, [w.w2Project, link.id]), /can't be changed/);
+    if (await one<{ on: boolean }>(`select to_regclass('public.saved_views') is not null as "on"`).then((r) => r.on)) {
+      const mine = (await one<{ id: string }>(`insert into public.saved_views (workspace_id, user_id, name, shared) values ($1::uuid, $2::uuid, 'Mine only', false) returning id::text as id`, [w.w1, w.alice])).id;
+      const shared = (await one<{ id: string }>(`insert into public.saved_views (workspace_id, user_id, name, shared) values ($1::uuid, $2::uuid, 'Launch board', true) returning id::text as id`, [w.w1, w.alice])).id;
+      await raises(asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'view', $2)`, [g1, mine]), /its own workspace/);
+      eq((await asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'view', $2) returning id`, [g1, shared])).length, 1, "a shared view links");
+    }
+  });
+
+  await test("0052 attack: only the goal's editors add or remove its links", async () => {
+    await raises(asPerson(w.pg, w.bob, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [g1, w.launch]), RLS);
+    await raises(asPerson(w.pg, w.gus, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [g1, w.launch]), RLS);
+    const id = (await asPerson<{ id: string }>(w.pg, dan, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2) returning id::text as id`, [g1, w.launch]))[0].id;
+    eq((await asPerson(w.pg, w.bob, `delete from public.goal_links where id = $1::uuid returning id`, [id])).length, 0, "bob can't remove it");
+    eq((await asPerson(w.pg, w.alice, `delete from public.goal_links where id = $1::uuid returning id`, [id])).length, 1, "alice can");
+  });
+
+  await test("0052: a period fills its dates; a custom one needs both, in order; a made-up one is refused", async () => {
+    await asPerson(w.pg, w.alice, `update public.goals set period = '2027-Q1' where id = $1::uuid`, [g1]);
+    eq(await goal(g1).then((g) => [g.period, g.ps, g.pe]), ["2027-Q1", "2027-01-01", "2027-03-31"], "Q1");
+    await asPerson(w.pg, w.alice, `update public.goals set period = '2027-H2', period_start = '2001-01-01' where id = $1::uuid`, [g1]);
+    eq(await goal(g1).then((g) => [g.ps, g.pe]), ["2027-07-01", "2027-12-31"], "H2 (the request's dates ignored)");
+    await asPerson(w.pg, w.alice, `update public.goals set period = '2028-FY' where id = $1::uuid`, [g1]);
+    eq(await goal(g1).then((g) => [g.ps, g.pe]), ["2028-01-01", "2028-12-31"], "a year");
+    await raises(asPerson(w.pg, w.alice, `update public.goals set period = 'custom', period_start = '2027-03-01', period_end = null where id = $1::uuid`, [g1]), /custom period needs/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set period = 'custom', period_start = '2027-03-01', period_end = '2027-02-01' where id = $1::uuid`, [g1]), /custom period needs/);
+    await asPerson(w.pg, w.alice, `update public.goals set period = 'custom', period_start = '2027-02-01', period_end = '2027-05-15' where id = $1::uuid`, [g1]);
+    eq(await goal(g1).then((g) => [g.period, g.ps, g.pe]), ["custom", "2027-02-01", "2027-05-15"], "custom");
+    await raises(asPerson(w.pg, w.alice, `update public.goals set period = '2027-Q5' where id = $1::uuid`, [g1]), /goals_period_check|unknown period/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set direction = 'sideways' where id = $1::uuid`, [g1]), /goals_direction_check/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set confidence = 9 where id = $1::uuid`, [g1]), /goals_confidence_check/);
+    await asPerson(w.pg, w.alice, `update public.goals set period = null where id = $1::uuid`, [g1]);
+    eq(await goal(g1).then((g) => [g.period, g.ps, g.pe]), [null, null, null], "cleared");
+  });
+
+  await test("0052 attack: a goal never sits under itself, its own sub-goal, or another workspace's goal", async () => {
+    const kr = (await one<{ id: string }>(`select id::text as id from public.goals where parent_id = $1::uuid limit 1`, [g1])).id;
+    await raises(asPerson(w.pg, w.alice, `update public.goals set parent_id = $1::uuid where id = $1::uuid`, [g1]), /under itself/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set parent_id = $1::uuid where id = $2::uuid`, [kr, g1]), /its own sub-goals/);
+    const elsewhere = (await one<{ id: string }>(`insert into public.goals (user_id, workspace_id, name) values ($1::uuid, $2::uuid, 'Carol''s') returning id::text as id`, [w.carol, w.w2])).id;
+    await raises(w.pg.query(`update public.goals set parent_id = $1::uuid where id = $2::uuid`, [elsewhere, g1]), /same workspace/);
+    await raises(asPerson(w.pg, w.carol, `insert into public.goals (user_id, workspace_id, name, parent_id) values ($1::uuid, $2::uuid, 'Under w1', $3::uuid)`, [w.carol, w.w2, g1]), /row-level security|policy|same workspace/);
+  });
+
+  await test("0052 attack: a member can't delete a goal with key results under it (they'd go up as company goals); an owner or admin can, and they go up", async () => {
+    const parent = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Old objective", owner_id: w.bob });
+    // bob's key result under it, handed to alice: deleting the parent would make it a company goal he can't set
+    const kr = await mkGoal(w.bob, { user_id: w.bob, workspace_id: w.w1, name: "Its key result", parent_id: parent, owner_id: w.alice });
+    await raises(asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid`, [parent]), /only owners and admins delete a goal with key results/);
+    eq((await goal(kr)).parent, parent, "still a key result");
+    eq(await count(w.alice, "goals", "id = $1::uuid", [parent]), 1, "the goal stays");
+    // a leadership-only key result he can't even see still counts
+    const hidden = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Bob's other goal", owner_id: w.bob });
+    await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Quiet key result", parent_id: hidden, visibility: "leadership" });
+    await raises(asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid`, [hidden]), /only owners and admins delete a goal with key results/);
+    // a goal with nothing under it is his to delete
+    const leaf = await mkGoal(w.bob, { user_id: w.bob, workspace_id: w.w1, name: "A leaf of his", parent_id: parent });
+    eq((await asPerson(w.pg, w.bob, `delete from public.goals where id = $1::uuid returning id`, [leaf])).length, 1, "bob deletes a goal with nothing under it");
+    eq((await asPerson(w.pg, w.alice, `delete from public.goals where id = $1::uuid returning id`, [parent])).length, 1, "an owner deletes it");
+    eq((await goal(kr)).parent, null, "its key result is top-level now");
+    eq((await asPerson(w.pg, erin, `delete from public.goals where id = $1::uuid returning id`, [hidden])).length, 1, "an admin too");
+  });
+
+  await test("0052 attack: a check-in is a record: its author can't change its value (the goal never drifts from its newest), and taking back the only one puts back the value from before", async () => {
+    const g = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Drift", target: 100, current: 10, owner_id: dan });
+    const c = (await asPerson<{ id: string; prev: number }>(w.pg, dan,
+      `insert into public.goal_checkins (goal_id, value, prev_value) values ($1::uuid, 20, 999) returning id::text as id, prev_value::float8 as prev`, [g]))[0];
+    eq([c.prev, (await goal(g)).current], [10, 20], "the value before it is the server's; the goal moves");
+    eq((await asPerson(w.pg, dan, `update public.goal_checkins set value = 55, note = 'Typo fixed', prev_value = 0 where id = $1::uuid returning id`, [c.id])).length, 1, "the author fixes the note");
+    eq(await one(`select value::float8 as v, prev_value::float8 as p, note from public.goal_checkins where id = $1::uuid`, [c.id]), { v: 20, p: 10, note: "Typo fixed" }, "but not the value, nor what came before");
+    eq((await goal(g)).current, 20, "the goal still matches its newest check-in");
+    // a server-side fix to the value moves the goal with it
+    await w.pg.query(`update public.goal_checkins set value = 30 where id = $1::uuid`, [c.id]);
+    eq((await goal(g)).current, 30, "server-side fix applied");
+    eq((await asPerson(w.pg, dan, `delete from public.goal_checkins where id = $1::uuid returning id`, [c.id])).length, 1, "taken back");
+    eq((await goal(g)).current, 10, "the only one taken back: the value from before it");
+    eq(await one(`select pg_get_functiondef('public.goal_checkins_apply()'::regprocedure) ~* 'for update' as locks`), { locks: true }, "one check-in at a time per goal");
+  });
+
+  await test("0052 attack: the project a goal reads its % from is its own workspace's (another business's is refused, as for links)", async () => {
+    await raises(asPerson(w.pg, w.alice, `update public.goals set project_id = $1 where id = $2::uuid`, [w.w2Project, g1]), /project in its own workspace/);
+    await raises(asPerson(w.pg, w.alice, `insert into public.goals (user_id, workspace_id, name, project_id) values ($1::uuid, $2::uuid, 'Borrowed', $3)`, [w.alice, w.w1, w.w2Project]), /project in its own workspace/);
+    await raises(asPerson(w.pg, w.alice, `update public.goals set project_id = 'not-a-project' where id = $1::uuid`, [g1]), /project in its own workspace/);
+    eq((await asPerson(w.pg, w.alice, `update public.goals set project_id = $1 where id = $2::uuid returning id`, [w.launch, g1])).length, 1, "its own workspace's project");
+    await asPerson(w.pg, w.alice, `update public.goals set project_id = null where id = $1::uuid`, [g1]);
+    const mine = await mkGoal(w.bob, { user_id: w.bob, workspace_id: null, name: "Bob's own", target: 1 });
+    await raises(asPerson(w.pg, w.bob, `update public.goals set project_id = $1 where id = $2::uuid`, [w.launch, mine]), /project in its own workspace/);
+  });
+
+  await test("0052: when an account is deleted its goals stay (no owner), and its check-ins stay (no author: \"Former member\")", async () => {
+    const fay = await person("fay@example.org", "member");
+    const g = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Fay's goal", owner_id: fay });
+    const c = (await asPerson<{ id: string }>(w.pg, fay, `insert into public.goal_checkins (goal_id, value, note) values ($1::uuid, 3, 'Last one from me') returning id::text as id`, [g]))[0].id;
+    const l = (await asPerson<{ id: string }>(w.pg, fay, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2) returning id::text as id`, [g, w.launch]))[0].id;
+    await w.pg.query(`delete from auth.users where id = $1::uuid`, [fay]);
+    eq((await goal(g)).owner, null, "no owner");
+    eq(await one(`select author_id from public.goal_checkins where id = $1::uuid`, [c]), { author_id: null }, "the check-in stays, authorless");
+    eq(await one(`select created_by from public.goal_links where id = $1::uuid`, [l]), { created_by: null }, "the link stays");
+    eq(await count(w.bob, "goal_checkins", "id = $1::uuid", [c]), 1, "the team still reads it");
+    eq((await asPerson(w.pg, erin, `update public.goals set owner_id = $1::uuid where id = $2::uuid returning id`, [dan, g])).length, 1, "an admin gives it a new owner");
+  });
+
+  await test("0052: a platform admin deleting an account from the app (signed in) is never stopped by a goal it owned, helped on or checked in on", async () => {
+    const gil = await person("gil@example.org", "member");
+    const g = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Gil's goal", owner_id: gil, contributors: `{${dan}}` });
+    const k = await mkGoal(gil, { user_id: gil, workspace_id: w.w1, name: "Gil's key result", parent_id: g });
+    await asPerson(w.pg, gil, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 1)`, [g]);
+    await w.pg.query(`update public.profiles set is_admin = true where id = $1::uuid`, [erin]);
+    await asPerson(w.pg, erin, `select public.admin_delete_user($1::uuid)`, [gil]);
+    await w.pg.query(`update public.profiles set is_admin = false where id = $1::uuid`, [erin]);
+    eq((await goal(g)).owner, null, "the goal stays, with no owner");
+    eq((await goal(k)).owner, null, "his key result too (kept by the workspace's owner)");
+    eq(await count(w.alice, "goal_checkins", "goal_id = $1::uuid and author_id is null", [g]), 1, "his check-in stays");
+  });
+
+  if (await one<{ on: boolean }>(`select to_regprocedure('public.api_scope_ok(uuid)') is not null as "on"`).then((r) => r.on)) {
+    await test("0052: a team API key's scope covers check-ins and links (another workspace's key reads none)", async () => {
+      const asKey = async (user: string, ws: string, sql: string) => w.pg.transaction(async (t) => {
+        await t.query(`select set_config('role', 'authenticated', true), set_config('request.jwt.claims', $1, true), set_config('kanbo.api_workspace', $2, true)`,
+          [JSON.stringify({ sub: user, role: "authenticated" }), ws]);
+        return (await t.query<{ n: number }>(sql)).rows[0].n;
+      });
+      ok(await asKey(w.alice, w.w1, `select count(*)::int as n from public.goal_checkins`) > 0, "w1's key reads w1's");
+      eq(await asKey(w.alice, w.w2, `select count(*)::int as n from public.goal_checkins`), 0, "a w2 key reads none of w1's check-ins");
+      eq(await asKey(w.alice, w.w2, `select count(*)::int as n from public.goal_links`), 0, "or links");
+    });
+  }
+
+  await test("0052 attack: no function a signed-in person can call hands goals, check-ins or links back past the rules", async () => {
+    const rows = await w.pg.query<{ name: string }>(`
+      select p.proname as name from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.prosecdef and p.prosrc ~* '\\m(goals|goal_checkins|goal_links)\\M'
+         and has_function_privilege('authenticated', p.oid, 'execute') order by 1`);
+    eq(rows.rows.map((r) => r.name), [], "security-definer functions open to authenticated");
+    eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from pg_publication_tables where pubname = 'supabase_realtime' and tablename in ('goal_checkins', 'goal_links')`)).rows[0].n, 2, "both stream live");
+  });
+
+  await test("0052: the goals made before it get their owner, a quarter when their whole life sits in one, and their project as a link (once)", async () => {
+    const q = (await one<{ due: string; made: string }>(`select (date_trunc('quarter', now()) + interval '2 months')::date::text as due, (date_trunc('quarter', now()) + interval '3 days')::text as made`));
+    const old = (await one<{ id: string }>(`insert into public.goals (user_id, workspace_id, name, project_id, due, created_at) values ($1::uuid, $2::uuid, 'Before 0052', $3, $4::date, $5::timestamptz) returning id::text as id`,
+      [w.bob, w.w1, w.launch, q.due, q.made])).id;
+    const left = (await one<{ id: string }>(`insert into public.goals (user_id, workspace_id, name) values ($1::uuid, $2::uuid, 'By someone who left') returning id::text as id`, [w.gus, w.w1])).id;
+    await w.pg.query(`update public.goals set owner_id = null where id = any($1::uuid[])`, [[old, left]]);
+    await w.pg.query(`delete from public.goal_links where goal_id = $1::uuid`, [old]);
+    await w.pg.query(`delete from public.schema_migrations where version = '0052'`);
+    await applyFile(w.pg, "0052_goals_v2.sql");
+    const g = await goal(old);
+    eq(g.owner, w.bob, "owner from the creator");
+    ok(/^\d{4}-Q[1-4]$/.test(String(g.period)), `a quarter (${g.period})`);
+    eq((await goal(left)).owner, null, "a creator who's only a guest doesn't own it");
+    eq(await one(`select kind, target_id from public.goal_links where goal_id = $1::uuid`, [old]), { kind: "project", target_id: w.launch }, "the project is a link");
+  });
+
+  await test("0052: migrating twice keeps every owner (an emptied one too), check-in, link and rule", async () => {
+    const before = await one(`select (select count(*)::int from public.goal_checkins) as c, (select count(*)::int from public.goal_links) as l,
+      (select count(*)::int from public.goals where owner_id is null) as unowned`);
+    await applyFile(w.pg, "0052_goals_v2.sql");
+    eq(await one(`select (select count(*)::int from public.goal_checkins) as c, (select count(*)::int from public.goal_links) as l,
+      (select count(*)::int from public.goals where owner_id is null) as unowned`), before, "counts");
+    eq((await one<{ ok: boolean }>(`select public.goal_rules_intact() as ok`)).ok, true, "intact");
+    eq((await one<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version = '0052'`)).n, 1, "recorded once");
+  });
+
+  await test("0052: re-running 0041 (which drops every policy on goals) puts the rules back", async () => {
+    await applyFile(w.pg, "0041_security_hardening_2.sql");
+    eq((await one<{ ok: boolean }>(`select public.goal_rules_intact() as ok`)).ok, true, "intact");
+    eq((await one<{ ok: boolean }>(`select public.guest_lock_intact() as ok`)).ok, true, "0051's lock too");
+    eq((await asPerson(w.pg, w.bob, `update public.goals set name = 'hijacked' where id = $1::uuid returning id`, [g1])).length, 0, "bob still can't edit alice's goal");
+    eq(await count(w.bob, "goals", "id = $1::uuid", [gl]), 0, "nor read the leadership one");
+    await raises(asPerson(w.pg, w.bob, `insert into public.goals (user_id, workspace_id, name) values ($1::uuid, $2::uuid, 'Company goal')`, [w.bob, w.w1]), RLS);
+  });
+
+  // ---- goals in Search and ⌘K (search_all, where 0048 is in); after 0052 and 0041 ran again above ----
+  if (await one<{ on: boolean }>(`select to_regprocedure('public.kanbo_fts(text, text)') is not null as "on"`).then((r) => r.on)) {
+    const find = async (user: string, q: string, filters: Record<string, unknown> = {}) =>
+      (await asPerson<{ title: string }>(w.pg, user, `select title from public.search_all($1, $2::jsonb, 20) where kind = 'goal'`, [q, JSON.stringify(filters)])).map((r) => r.title).sort();
+
+    await test("0052: search_all finds goals by name and description for the people who can read them", async () => {
+      eq(await find(w.bob, "revenue"), ["Revenue to £2m", "Revenue to £3m"], "a member, by name (0051's goal and this suite's)");
+      eq(await find(w.bob, "reven"), ["Revenue to £2m", "Revenue to £3m"], "as a prefix");
+      await w.pg.query(`update public.goals set description = 'The native apps on both stores' where id = $1::uuid`, [g2]);
+      eq(await find(w.bob, "native stores"), ["Ship the app"], "by description");
+      const row = (await asPerson<{ kind: string; meta: Record<string, unknown>; workspace_id: string }>(w.pg, w.bob,
+        `select kind, meta, workspace_id::text as workspace_id from public.search_all('ship app', '{}'::jsonb, 5) where kind = 'goal'`))[0];
+      eq([row.kind, row.workspace_id, row.meta.owner_id, row.meta.archived], ["goal", w.w1, w.bob, false], "the row says whose and where");
+      eq(await find(w.gus, "reading list"), ["Gus's own reading list"], "a guest finds his own personal goal");
+    });
+
+    await test("0052 attack: search never hands a goal to a guest, an outsider, or a member kept out of a leadership-only one", async () => {
+      eq(await find(w.gus, "revenue"), [], "a guest in w1");
+      eq(await find(w.gus, "revenue", { workspace_id: w.w1 }), [], "a guest naming w1");
+      eq(await find(w.carol, "revenue"), [], "an outsider");
+      eq(await find(w.carol, "revenue", { workspace_id: w.w1 }), [], "an outsider naming w1");
+      eq(await find(w.carol, "elsewhere"), ["Elsewhere's goal"], "her own team's");
+      eq(await find(w.bob, "sell company"), [], "a member, leadership only");
+      eq(await find(dan, "sell company"), ["Sell the company"], "its contributor");
+      eq(await find(w.alice, "sell company"), ["Sell the company"], "the owner");
+      eq(await find(w.bob, "reading list"), [], "someone else's personal goal");
+      const def = await one<{ invoker: boolean; anon: boolean }>(`select not p.prosecdef as invoker, has_function_privilege('anon', p.oid, 'execute') as anon
+        from pg_proc p where p.oid = 'public.search_all(text, jsonb, integer)'::regprocedure`);
+      eq(def, { invoker: true, anon: false }, "still runs as the caller, never for anon");
+    });
+
+    await test("0052: search's filters hold for goals (kinds, a workspace, a project, archived) and the other kinds still come back", async () => {
+      eq(await find(w.bob, "revenue", { kinds: ["task", "project"] }), [], "kinds without goal");
+      eq(await find(w.bob, "revenue", { kinds: ["goal"] }), ["Revenue to £2m", "Revenue to £3m"], "kinds: goal");
+      eq(await find(w.bob, "revenue", { project_id: w.launch }), [], "a project narrows the other kinds");
+      eq(await find(w.bob, "revenue", { workspace_id: "personal" }), [], "Personal only");
+      await w.pg.query(`update public.goals set archived_at = now() where id = $1::uuid`, [g1]);
+      eq(await find(w.bob, "revenue"), ["Revenue to £2m"], "archived: out of the way");
+      eq(await find(w.bob, "revenue", { include_archived: true }), ["Revenue to £2m", "Revenue to £3m"], "unless asked for");
+      await w.pg.query(`update public.goals set archived_at = null where id = $1::uuid`, [g1]);
+      const kinds = (await asPerson<{ kind: string }>(w.pg, w.alice, `select distinct kind from public.search_all('launch', '{}'::jsonb, 5)`)).map((r) => r.kind);
+      ok(kinds.includes("project") || kinds.includes("task"), `tasks and projects still found (${kinds.join(", ")})`);
+      ok((await one<{ ok: boolean }>(`select to_regclass('public.goals_fts_idx') is not null as ok`)).ok, "the goals' search index");
+    });
+
+    await test("0052: re-running 0048 (which puts its own search_all back) keeps goals in search", async () => {
+      await applyFile(w.pg, "0048_ux_wave.sql");
+      eq(await find(w.bob, "revenue"), ["Revenue to £2m", "Revenue to £3m"], "still found");
+      eq(await find(w.gus, "revenue"), [], "and still not for a guest");
+      eq((await one<{ ok: boolean }>(`select public.goal_rules_intact() and public.guest_lock_intact() as ok`)).ok, true, "the rules stand");
+      eq((await one<{ priv: boolean }>(`select has_function_privilege('authenticated', 'public.goal_search_restore()', 'execute') as priv`)).priv, false, "the hook isn't callable from the app");
+    });
+  }
+}
+
 /* ============================================================ run */
 
 export async function main(argv: string[]): Promise<number> {
   const all = migrationFiles();
-  // 0051 needs only 0041/0042: it runs in the set without 0048/0049 too
-  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || f.startsWith("0050") || f.startsWith("0051"));
+  // 0051 and 0052 need only 0041/0042 (0052 also 0051): they run in the set without 0048/0049 too
+  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || f.startsWith("0050") || f.startsWith("0051") || f.startsWith("0052"));
   const setAll = all;
-  const sets: [string, string[]][] = [["0001..0047+0050+0051", set47], ["0001..0051", setAll]];
+  const sets: [string, string[]][] = [["0001..0047+0050..0052", set47], ["0001..0052", setAll]];
   const only = argv[0];
   for (const [name, files] of sets) {
     if (only === "0047" && name !== sets[0][0]) continue;
@@ -1616,6 +2026,7 @@ export async function main(argv: string[]): Promise<number> {
     await clearRates(w);
     await strangerSuite(w);
     await guestLockSuite(w);
+    await goalsSuite(w);
     console.log(`${name}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     await w.closeDriver();
     await w.pg.close();

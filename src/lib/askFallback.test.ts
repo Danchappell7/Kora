@@ -229,3 +229,58 @@ describe("parseWhenLocal (the on-device rules)", () => {
     expect(parseWhenLocal("31/02", TODAY)).toBeNull();
   });
 });
+
+describe("Ask about goals (0052): which are slipping, which have no work behind them", () => {
+  const g = (id: string, name: string, o: Partial<NonNullable<AskContext["goals"]>[number]> = {}) =>
+    ({ id, name, period: "Q4", status: "on_track" as const, pct: 50, expected: 44, pace: "On pace", slipping: false, owner: "Daniel Okai", kind: "goal", noWork: false, ...o });
+  const goals = [
+    g("g1", "Launch Q3 on 18 Nov", { pct: 20, expected: 83, pace: "Behind pace by 63%", slipping: true, owner: "Daniel Okai" }),
+    g("g2", "Lift activation to 45%", { pct: 31, pace: "Behind pace by 13%", slipping: true, owner: "Maya Lin", kind: "key result", noWork: true }),
+    g("g3", "Grow weekly actives to 5,000"),
+    g("g4", "Close the seed round", { noWork: true, pace: "Ahead of pace" }),
+  ];
+  const askG = (q: string, gs = goals) => localAsk(q, tasks, { ...ctx, goals: gs });
+
+  it("names the slipping goals, how far behind and whose, and how many are on pace", () => {
+    const r = askG("Which goals are slipping?");
+    expect(r.answer).toBe("Two goals are slipping: “Launch Q3 on 18 Nov” (behind pace by 63%, yours) and “Lift activation to 45%” (behind pace by 13%, Maya). The other two are on pace.");
+    expect(r.actions).toEqual([{ op: "open", route: { view: "goals" } }]);
+    expect(r.cites).toBeUndefined();   // drawn from the goals: no claim about tasks
+    expect(validateActions(r.actions, tasks, ctx, false)).toEqual({ valid: r.actions, rejected: [] });   // a way there, never a change (guests too)
+    expect(askG("which key results are behind?").answer).toMatch(/^Two goals are slipping/);
+    expect(askG("are any goals off track?").answer).toMatch(/^Two goals are slipping/);
+  });
+
+  it("says when nothing is slipping, and when there are no goals at all", () => {
+    expect(askG("which goals are slipping?", [goals[2], goals[3]]).answer).toBe("None of the two open goals are slipping: they're on pace or not started yet.");
+    expect(askG("which goals are slipping?", []).answer).toBe("There are no goals here yet. Owners and admins set them in Projects › Goals.");
+  });
+
+  it("lists the goals with no work behind them", () => {
+    expect(askG("which goals have no work behind them?").answer)
+      .toBe("Two goals have no work behind them: “Lift activation to 45%”, “Close the seed round”. Link the projects or tasks that move them from the goal panel.");
+    expect(askG("which goals have no work behind them?", [goals[0]]).answer).toMatch(/^Every goal here has work behind it/);
+  });
+
+  it("how the goals are doing, in one line", () => {
+    expect(askG("how are our goals on track?").answer).toBe("Two of four open goals are on pace; “Launch Q3 on 18 Nov” (behind pace by 63%, yours) and “Lift activation to 45%” (behind pace by 13%, Maya) are behind.");
+  });
+
+  it("names a fourth slipping goal rather than \"and one more\", and says one open goal plainly", () => {
+    const four = goals.map((x) => ({ ...x, slipping: true }));
+    expect(askG("which goals are slipping?", four).answer).toBe("Four goals are slipping: “Launch Q3 on 18 Nov” (behind pace by 63%, yours), “Lift activation to 45%” (behind pace by 13%, Maya), “Grow weekly actives to 5,000” (on pace, yours) and “Close the seed round” (ahead of pace, yours).");
+    expect(askG("which goals are slipping?", [...four, g("g5", "Hire a head of sales", { slipping: true })]).answer).toMatch(/“Grow weekly actives to 5,000” \(on pace, yours\) and two more\.$/);
+    expect(askG("which goals are slipping?", [goals[2]]).answer).toBe("The one open goal isn't slipping: it's on pace or not started yet.");
+  });
+
+  it("leaves a task question that mentions a goal to the task answers", () => {
+    expect(askG("what's overdue in the goal review?").answer).not.toMatch(/slipping|on pace/);
+    expect(askG("which tasks move the retention goal?").answer).not.toMatch(/slipping|on pace/);
+    expect(askG("which goals have no tasks?").answer).toMatch(/no work behind them/);
+  });
+
+  it("leaves task questions to the task answers (\"behind\" there means overdue), and goals unknown to the host alone", () => {
+    expect(askG("what's behind?").answer).toMatch(/overdue/);
+    expect(localAsk("which goals are slipping?", tasks, ctx).answer).toBe(LOCAL_HELP);
+  });
+});

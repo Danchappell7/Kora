@@ -5,7 +5,7 @@
 import type { SearchFilters, SearchHitKind, Status } from "../data/types";
 import { bool, isObj, str } from "./rowUtils";
 
-export const HIT_KINDS: readonly SearchHitKind[] = ["task", "comment", "doc", "project", "person"];
+export const HIT_KINDS: readonly SearchHitKind[] = ["task", "comment", "doc", "project", "person", "goal"];
 export const STATUSES: readonly Status[] = ["todo", "progress", "review", "blocked", "done"];
 
 /** stored / camelCase filters → SearchFilters (unknown fields dropped) */

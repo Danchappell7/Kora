@@ -397,8 +397,8 @@ describe("chips", () => {
 
 describe("which kinds a search shows", () => {
   it("task filters alone mean tasks; an author means comments; kinds win", () => {
-    expect(effectiveKinds({})).toEqual(["task", "comment", "doc", "project", "person"]);
-    expect(effectiveKinds({ projectId: "p" })).toEqual(["task", "comment", "doc", "project", "person"]);
+    expect(effectiveKinds({})).toEqual(["task", "comment", "doc", "project", "person", "goal"]);
+    expect(effectiveKinds({ projectId: "p" })).toEqual(["task", "comment", "doc", "project", "person", "goal"]);
     expect(effectiveKinds({ statuses: ["blocked"] })).toEqual(["task"]);
     expect(effectiveKinds({ authorId: "m-2" })).toEqual(["comment"]);
     expect(effectiveKinds({ kinds: ["doc"], statuses: ["blocked"] })).toEqual(["doc"]);

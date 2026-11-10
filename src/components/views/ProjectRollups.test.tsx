@@ -8,25 +8,30 @@ const proj = (id: string, name: string): Project => ({ id, name, emoji: "", colo
 
 describe("GoalsView", () => {
   const base = { projects: [] as Project[], tasks: [] as Task[], onCreate: () => {}, onDelete: () => {} };
-  it("renders grandchildren and offers a parent select on nested goals", () => {
+  // a goal's row opens its panel (the page's own, with no host panel): editing lives there
+  const openGoal = (name: string) => fireEvent.click([...document.querySelectorAll<HTMLButtonElement>(".kgp-open")].find((b) => b.textContent === name)!);
+  it("lists grandchildren too, and offers a parent select in each goal's panel", () => {
     const goals: Goal[] = [
       { id: "C", name: "Company", status: "on_track" },
       { id: "A", name: "Alpha", status: "on_track", parentId: "C" },
       { id: "B", name: "Beta", status: "on_track", parentId: "A" },
     ];
     render(<GoalsView {...base} goals={goals} onUpdate={() => {}} />);
-    expect(screen.getByDisplayValue("Beta")).toBeInTheDocument();
+    expect([...document.querySelectorAll(".kgp-open")].map((b) => b.textContent)).toEqual(["Company", "Alpha", "Beta"]);
+    openGoal("Alpha");
     const parentOfA = screen.getByLabelText("Parent goal of Alpha") as HTMLSelectElement;
     const opts = [...parentOfA.options].map((o) => o.value);
-    expect(opts).toContain("");       // "No parent goal"
+    expect(opts).toContain("");       // a top-level goal
     expect(opts).toContain("C");
     expect(opts).not.toContain("A");  // itself
     expect(opts).not.toContain("B");  // its own sub-goal
+    openGoal("Beta");
     expect(screen.getByLabelText("Parent goal of Beta")).toBeInTheDocument();
   });
   it("saves a renamed goal once, on blur", () => {
     const onUpdate = vi.fn();
     render(<GoalsView {...base} goals={[{ id: "G", name: "Grow", status: "on_track" }]} onUpdate={onUpdate} />);
+    openGoal("Grow");
     const input = screen.getByLabelText("Goal name: Grow");
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: "Grow r" } });
@@ -40,6 +45,7 @@ describe("GoalsView", () => {
     const onUpdate = vi.fn();
     const goal = (o: Partial<Goal>): Goal => ({ id: "G", name: "Grow", status: "on_track", current: 10, target: 100, ...o });
     const { rerender } = render(<GoalsView {...base} goals={[goal({})]} onUpdate={onUpdate} />);
+    openGoal("Grow");
     const nameBox = screen.getByLabelText("Goal name: Grow") as HTMLInputElement;
     const current = screen.getByLabelText("Current value for Grow") as HTMLInputElement;
     fireEvent.focus(nameBox);
@@ -58,6 +64,7 @@ describe("GoalsView", () => {
     const onUpdate = vi.fn();
     const goal = (name: string): Goal => ({ id: "G", name, status: "on_track" });
     const { rerender } = render(<GoalsView {...base} goals={[goal("Grow")]} onUpdate={onUpdate} />);
+    openGoal("Grow");
     const nameBox = screen.getByLabelText("Goal name: Grow") as HTMLInputElement;
     fireEvent.focus(nameBox);
     fireEvent.change(nameBox, { target: { value: "Grow ARR" } });
@@ -68,15 +75,17 @@ describe("GoalsView", () => {
     expect(onUpdate).not.toHaveBeenCalled();
     expect(nameBox.value).toBe("Grow revenue");
   });
-  it("keeps a parent's own current / target visible and in charge once it has sub-goals", () => {
+  it("keeps a parent's own current / target visible and in charge once it has key results", () => {
     const goals: Goal[] = [
       { id: "P", name: "Company revenue", status: "on_track", current: 40, target: 100 },
       { id: "S", name: "EMEA", status: "on_track", current: 0, target: 100, parentId: "P" },
     ];
     render(<GoalsView {...base} goals={goals} onUpdate={() => {}} />);
-    expect((screen.getByLabelText("Current value for Company revenue") as HTMLInputElement).value).toBe("40");
     expect(screen.getByRole("progressbar", { name: "Company revenue progress" })).toHaveAttribute("aria-valuenow", "40");
-    expect(screen.getByText(/Own value · 1 sub-goal average 0%/)).toBeInTheDocument();
+    openGoal("Company revenue");
+    expect((screen.getByLabelText("Current value for Company revenue") as HTMLInputElement).value).toBe("40");
+    expect(screen.getAllByRole("progressbar", { name: "Company revenue progress" }).map((m) => m.getAttribute("aria-valuenow"))).toEqual(["40", "40"]);
+    expect(screen.getByText(/Own value · 1 key result average 0%/)).toBeInTheDocument();
   });
 });
 

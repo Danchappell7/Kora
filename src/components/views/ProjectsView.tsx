@@ -87,7 +87,7 @@ interface Row {
   atRisk: boolean;
 }
 
-export function ProjectsView({ projects, tasks, statusUpdates, members: _members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject }: {
+export function ProjectsView({ projects, tasks, statusUpdates, members: _members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject, goalChip }: {
   projects: Project[];
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -101,6 +101,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   onPostUpdate?: (projectId: string, summary: string, status: StatusKind) => Promise<boolean> | void;
   aiStatus?: (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
   risksByProject?: Record<string, number>;
+  /** 0052: the goal a project serves ("Serves: Q4 · Grow weekly actives"), on its card and its row */
+  goalChip?: (projectId: string) => ReactNode;
 }) {
   // the built-in Personal project is where loose tasks live, not a project anyone runs
   const real = useMemo(() => projects.filter((p) => p.id !== "p-personal"), [projects]);
@@ -249,6 +251,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
           <ProjectTile project={r.p} size={20} />
           <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-proj-name" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}</a>
           <span className="kpj-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</span>
+          {goalChip && <span style={{ gridColumn: 2, display: "flex", minWidth: 0, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>{goalChip(r.p.id)}</span>}
         </div>
       );
       case "status": return <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>;
@@ -328,6 +331,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
                   <div className="kpj-gcard-body">
                     <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-gcard-link" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}</a>
                     <p className="kpj-gcard-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</p>
+                    {goalChip && <div style={{ display: "flex", minWidth: 0, marginTop: 6 }}>{goalChip(r.p.id)}</div>}
                     <div className="kpj-gcard-foot">
                       <span className="kpj-gcard-progress" title={`${r.facts.pct}% of ${r.facts.total} ${r.facts.total === 1 ? "task" : "tasks"} done`}>
                         <ProgressRing value={r.facts.pct} size={16} label={`${r.p.name} progress`} />

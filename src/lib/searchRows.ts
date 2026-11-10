@@ -2,7 +2,7 @@
    KANBO — search_all rows → SearchHit; snippets → text runs; errors.
    lib/rows0048 re-exports these.                   [architect: final]
    ============================================================ */
-import type { Priority, Role, SearchFailure, SearchHit, SearchHitKind, Status } from "../data/types";
+import type { GoalKind, GoalStatus, Priority, Role, SearchFailure, SearchHit, SearchHitKind, Status } from "../data/types";
 import { bool, errText, isMissing, isNetwork, isObj, num, str, strOr } from "./rowUtils";
 import { HIT_KINDS, STATUSES } from "./searchFilters";
 
@@ -16,6 +16,8 @@ const PRIORITIES: readonly Priority[] = ["low", "medium", "high", "urgent"];
 export const SEARCH_MARK_START = String.fromCharCode(0xe000);
 export const SEARCH_MARK_END = String.fromCharCode(0xe001);
 const MEMBER_ROLES: readonly Role[] = ["owner", "admin", "member", "guest"];
+const GOAL_STATUSES: readonly GoalStatus[] = ["on_track", "at_risk", "off_track", "done"];
+const GOAL_KINDS: readonly GoalKind[] = ["objective", "key_result", "metric"];
 
 /** One search_all row → SearchHit (source "server"), or null. */
 export function parseSearchHit(raw: unknown): SearchHit | null {
@@ -48,6 +50,14 @@ export function parseSearchHit(raw: unknown): SearchHit | null {
     hit.doc = { icon: str(meta.icon), projectName: str(meta.project_name), updatedBy: str(meta.updated_by), archived: bool(meta.archived) };
   } else if (kind === "project") {
     hit.project = { emoji: str(meta.emoji), color: str(meta.color), status: str(meta.status), ownerId: str(meta.owner_id), archived: bool(meta.archived) };
+  } else if (kind === "goal") {
+    hit.goal = {
+      period: str(meta.period),
+      status: (GOAL_STATUSES as readonly unknown[]).includes(meta.status) ? (meta.status as GoalStatus) : null,
+      ownerId: str(meta.owner_id),
+      kind: (GOAL_KINDS as readonly unknown[]).includes(meta.kind) ? (meta.kind as GoalKind) : null,
+      icon: str(meta.icon), color: str(meta.color), archived: bool(meta.archived),
+    };
   } else {
     hit.person = {
       email: strOr(meta.email, hit.snippet ?? ""),

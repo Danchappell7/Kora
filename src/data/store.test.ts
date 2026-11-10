@@ -615,7 +615,31 @@ describe("store (supabase) — realtime resync and sign-out", () => {
     expect(info).toHaveBeenCalledTimes(1);
     fake.channels[0].status?.("CHANNEL_ERROR");
     fake.channels[0].status?.("SUBSCRIBED");
-    expect(fake.channels).toHaveLength(2); // not re-requested this session
+    // not re-requested this session (the third is goal check-ins' own channel, opened once)
+    expect(fake.channels.map((c) => c.topic.replace(/-\d+$/, ""))).toEqual(["realtime:kanbo-changes", "realtime:kanbo-changes-extra", "realtime:kanbo-goals"]);
+    info.mockRestore();
+  });
+
+  it("goal check-ins and links (0052) stream on a channel of their own: refused, they stop quietly and the team tables carry on", async () => {
+    const fake = makeFake();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const { store: s } = await loadStore(fake);
+    const onChange = vi.fn();
+    s.subscribeToChanges(onChange);
+    fake.channels[0].status?.("SUBSCRIBED");
+    const goals = fake.channels.find((c) => c.topic.startsWith("realtime:kanbo-goals"))!;
+    expect(goals.bindings.filter((b) => b.type === "postgres_changes").map((b) => b.filter.table)).toEqual(["goal_checkins", "goal_links"]);
+    goals.bindings[0].cb({ table: "goal_checkins", eventType: "INSERT", new: { id: "c1" }, old: {} });
+    expect(onChange).toHaveBeenLastCalledWith({ kind: "row", table: "goal_checkins", event: "INSERT", row: { id: "c1" }, old: null });
+    goals.bindings.find((b) => b.type === "system")?.cb({ extension: "postgres_changes", status: "error", message: "table not in publication" });
+    expect(fake.reportError).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 3; i++) await Promise.resolve();   // the channel's removal settles
+    expect(fake.live.some((c) => c.topic.startsWith("realtime:kanbo-goals"))).toBe(false);
+    expect(fake.live.some((c) => c.topic.startsWith("realtime:kanbo-changes-extra"))).toBe(true);
+    fake.channels[0].status?.("CHANNEL_ERROR");
+    fake.channels[0].status?.("SUBSCRIBED");
+    expect(fake.channels.filter((c) => c.topic.startsWith("realtime:kanbo-goals"))).toHaveLength(1);   // not asked again
     info.mockRestore();
   });
 
@@ -1015,6 +1039,87 @@ describe("store (supabase) — integration wiring", () => {
     expect(orders("goals")).toEqual(["id"]);
     expect(orders("automation_rules")).toEqual(["created_at"]);
     expect(orders("forms")).toEqual(["created_at"]);
+  });
+
+  it("reads 0052's goal fields, check-ins (newest first) and links; before 0052 the goals read as they always did and the extras are off", async () => {
+    const before = makeFake();
+    const plain = { id: "g-old", workspace_id: "ws", name: "Old", description: null, target: 100, current: 40, unit: null, due: null, status: "on_track", position: 0, created_at: "2026-01-01T00:00:00Z" };
+    before.setHandler((c) => {
+      if (c.op !== "select") return undefined;
+      if (c.table === "goals") return { data: [plain] };
+      if (c.table === "goal_checkins") return { error: { message: 'relation "public.goal_checkins" does not exist' } };
+      return undefined;
+    });
+    const { store: s0 } = await loadStore(before);
+    const b0 = await s0.bootstrap({ id: "user-a" });
+    expect(b0.goals[0]).toEqual({ id: "g-old", workspaceId: "ws", name: "Old", description: undefined, target: 100, current: 40, unit: undefined, due: undefined, status: "on_track", position: 0, parentId: undefined, projectId: undefined, createdAt: "2026-01-01T00:00:00Z" });
+    expect(b0.goalExtras).toBeNull();
+    vi.resetModules();
+
+    const fake = makeFake();
+    const v2 = { ...plain, id: "g-new", target: "5", current: "6.5", owner_id: "user-b", contributors: ["user-a"], period: "2027-Q1", period_start: "2027-01-01", period_end: "2027-03-31",
+      start_value: "8", direction: "lower", confidence: 4, kind: "key_result", visibility: "leadership", archived_at: null, icon: null, color: null, pace: "backloaded", weight: "2" };
+    fake.setHandler((c) => {
+      if (c.op !== "select") return undefined;
+      if (c.table === "goals") return { data: [v2] };
+      if (c.table === "goal_checkins") return { data: [
+        { id: "c1", goal_id: "g-new", workspace_id: "ws", author_id: "user-b", value: "7.2", confidence: 3, note: null, created_at: "2027-01-10T10:00:00Z" },
+        { id: "c2", goal_id: "g-new", workspace_id: "ws", author_id: null, value: 6.5, confidence: 4, note: "Win-backs", created_at: "2027-01-24T10:00:00Z" },
+      ] };
+      if (c.table === "goal_links") return { data: [{ id: "l1", goal_id: "g-new", workspace_id: "ws", kind: "project", target_id: "p1", created_at: "2027-01-02T00:00:00Z" }] };
+      return undefined;
+    });
+    const { store: s } = await loadStore(fake);
+    const b = await s.bootstrap({ id: "user-a" });
+    expect(b.goals[0]).toMatchObject({ target: 5, current: 6.5, ownerId: "user-b", contributors: ["user-a"], period: "2027-Q1", periodStart: "2027-01-01", periodEnd: "2027-03-31",
+      startValue: 8, direction: "lower", confidence: 4, kind: "key_result", visibility: "leadership", archivedAt: null, pace: "backloaded", weight: 2 });
+    expect(b.goalExtras?.checkins.map((c) => [c.id, c.value, c.authorId, c.note])).toEqual([["c2", 6.5, null, "Win-backs"], ["c1", 7.2, "user-b", undefined]]);
+    expect(b.goalExtras?.links).toEqual([{ id: "l1", goalId: "g-new", workspaceId: "ws", kind: "project", targetId: "p1", createdAt: "2027-01-02T00:00:00Z" }]);
+  });
+
+  it("a check-in carries the value from before it; a blip reading them leaves the extras unknown (kept on screen), not switched off", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => {
+      if (c.op !== "select") return undefined;
+      if (c.table === "goal_checkins") return { data: [{ id: "c1", goal_id: "g", workspace_id: "ws", author_id: "user-a", value: "7", confidence: null, note: null, created_at: "2027-01-10T10:00:00Z", prev_value: "8" }] };
+      if (c.table === "goal_links") return { data: [] };
+      return undefined;
+    });
+    const { store: s } = await loadStore(fake);
+    expect((await s.bootstrap({ id: "user-a" })).goalExtras?.checkins[0]).toMatchObject({ value: 7, prevValue: 8 });
+    vi.resetModules();
+
+    const blip = makeFake();
+    blip.setHandler((c) => (c.op === "select" && c.table === "goal_checkins" ? { error: { code: "500", message: "upstream timeout" } } : undefined));
+    const { store: s2 } = await loadStore(blip);
+    const b2 = await s2.bootstrap({ id: "user-a" });
+    expect(b2.goalExtras).toBeUndefined();
+    expect("goalExtras" in b2).toBe(true);
+  });
+
+  it("writes 0052's goal fields only when they're asked for; a check-in and a link send only what the server doesn't set itself", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => {
+      if (c.table === "goal_checkins" && c.op === "insert") return { data: { id: "c9", goal_id: "g1", workspace_id: "ws", author_id: "user-a", value: 7, confidence: 3, note: "Half way", created_at: "2027-01-24T10:00:00Z" } };
+      if (c.table === "goal_links" && c.op === "insert") return { data: { id: "l9", goal_id: "g1", workspace_id: "ws", kind: "task", target_id: "t1" } };
+      return undefined;
+    });
+    const { store: s } = await loadStore(fake);
+    await s.updateGoal("g1", { name: "Renamed" });
+    await s.updateGoal("g1", { ownerId: "user-b", period: "custom", periodStart: "2027-02-01", periodEnd: "2027-05-15", direction: "lower", startValue: 8, pace: "off", visibility: "leadership", contributors: ["user-c"] });
+    const updates = fake.calls.filter((c) => c.table === "goals" && c.op === "update").map((c) => c.payload);
+    expect(updates).toEqual([{ name: "Renamed" }, {
+      owner_id: "user-b", period: "custom", period_start: "2027-02-01", period_end: "2027-05-15", direction: "lower", start_value: 8, pace: "off", visibility: "leadership", contributors: ["user-c"],
+    }]);
+    const c = await s.addGoalCheckin({ goalId: "g1", workspaceId: "ws", value: 7, confidence: 3, note: "  Half way " }, "user-a");
+    expect(fake.calls.find((x) => x.table === "goal_checkins" && x.op === "insert")?.payload).toEqual({ goal_id: "g1", value: 7, confidence: 3, note: "Half way" });
+    expect(c).toMatchObject({ id: "c9", authorId: "user-a", value: 7, note: "Half way" });
+    const l = await s.addGoalLink({ goalId: "g1", workspaceId: "ws", kind: "task", targetId: "t1" });
+    expect(fake.calls.find((x) => x.table === "goal_links" && x.op === "insert")?.payload).toEqual({ goal_id: "g1", kind: "task", target_id: "t1" });
+    expect(l).toMatchObject({ id: "l9", kind: "task", targetId: "t1" });
+    await s.removeGoalLink("l9");
+    await s.deleteGoalCheckin("c9");
+    expect(fake.calls.filter((x) => x.op === "delete").map((x) => [x.table, x.filters])).toEqual([["goal_links", [["eq", "id", "l9"]]], ["goal_checkins", [["eq", "id", "c9"]]]]);
   });
 
   it("reads every status update, goal and portfolio a page at a time, past 1,000 rows", async () => {

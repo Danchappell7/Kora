@@ -2,7 +2,7 @@
    KANBO — universal search: server + local, merged (0048).  [0048 contract → u2]
    • searchAll: rpc search_all(q, filters, lim) — SECURITY INVOKER, so it
      only ever returns rows the caller can read. Typed ranked hits per kind
-     (task, comment, doc, project, person) with highlighted snippets
+     (task, comment, doc, project, person, and goal once 0052 is in) with highlighted snippets
      (U+E000…U+E001 → splitHighlights). Abortable (a newer keystroke wins).
    • localSearch: the same kinds from what the app already holds (tasks,
      comments loaded for open tasks, projects, people; docs by title, and
@@ -20,7 +20,7 @@
    • recent searches: the last 8, per person, in localStorage.
    ⌘K uses all of it debounced (~120 ms); SearchView the full version.
    ============================================================ */
-import type { Comment, Member, Project, SearchFilters, SearchHit, SearchHitKind, Task } from "../data/types";
+import type { Comment, Goal, Member, Project, SearchFilters, SearchHit, SearchHitKind, Task } from "../data/types";
 import { supabase } from "./supabase";
 import { parseSearchHit, searchFiltersToRpc, SEARCH_LIMIT_MAX, SEARCH_QUERY_MAX } from "./searchRows";
 import { foldText, searchTerms } from "./searchQuery";
@@ -44,9 +44,10 @@ export const SEARCH_GROUPS: readonly { kind: SearchHitKind; label: string }[] = 
   { kind: "comment", label: "Comments" },
   { kind: "doc", label: "Docs" },
   { kind: "project", label: "Projects" },
+  { kind: "goal", label: "Goals" },
   { kind: "person", label: "People" },
 ];
-const KIND_ORDER: Record<SearchHitKind, number> = { task: 0, comment: 1, doc: 2, project: 3, person: 4 };
+const KIND_ORDER: Record<SearchHitKind, number> = { task: 0, comment: 1, doc: 2, project: 3, goal: 4, person: 5 };
 
 /** Do these filters narrow tasks on their own (so "no words" still lists something)? — search_all's task_filtered */
 export function filtersNarrowTasks(f: SearchFilters): boolean {
@@ -89,6 +90,8 @@ export interface LocalSearchInput {
   currentUserId: string;
   /** per kind (default SEARCH_LIMIT_MAX) */
   limit?: number;
+  /** 0052: the goals you can see (by name and description) */
+  goals?: Goal[];
 }
 
 const inScope = (ws: string | null | undefined, f: SearchFilters) =>
@@ -127,7 +130,7 @@ export function localSearch(input: LocalSearchInput): SearchHit[] {
   // "comments by Theo" with no words: Theo's comments on hand, newest first (search_all needs words for comments)
   const authorOnly = !terms.length && !!f.authorId;
   if (!terms.length && !narrows && !authorOnly) return [];
-  const kinds = new Set<SearchHitKind>(f.kinds ?? ["task", "comment", "doc", "project", "person"]);
+  const kinds = new Set<SearchHitKind>(f.kinds ?? ["task", "comment", "doc", "project", "person", "goal"]);
   const cap = Math.max(1, input.limit ?? SEARCH_LIMIT_MAX);
   const projects = new Map(input.projects.map((p) => [p.id, p]));
   const projectById = (id: string) => projects.get(id);
@@ -197,6 +200,15 @@ export function localSearch(input: LocalSearchInput): SearchHit[] {
     }
     out.push(...hits);
   }
+  // goals (0052): by name and description, in the scope asked; a project narrows to the goals linked to it
+  if (kinds.has("goal") && input.goals?.length && !f.projectId) {
+    const matched = input.goals.filter((g) => inScope(g.workspaceId, f) && (f.includeArchived || !g.archivedAt) && allTermsIn(terms, [g.name, g.description]));
+    out.push(...rankByTitle(matched, (g) => g.name, (g) => (g.archivedAt || g.status === "done" ? 1 : 0), () => null, text).slice(0, cap).map((g): SearchHit => ({
+      kind: "goal", id: g.id, title: g.name, snippet: makeSnippet(g.description, terms), rank: 0, taskId: null, projectId: g.projectId ?? null,
+      workspaceId: g.workspaceId ?? null, updatedAt: null, source: "local",
+      goal: { period: g.period ?? null, status: g.status ?? null, ownerId: g.ownerId ?? null, kind: g.kind ?? null, icon: g.icon ?? null, color: g.color ?? null, archived: !!g.archivedAt },
+    })));
+  }
   // people: the whole text in a name, or the start of an email — never in Personal (as the server has it)
   if (kinds.has("person") && f.workspaceId !== null) {
     const q = foldText(text.replace(/["“”]/g, "").trim());
@@ -265,7 +277,7 @@ export function mergeSearchHits(local: SearchHit[], server: SearchHit[], opts?: 
       snippet: h.snippet ?? prev.hit.snippet,
       updatedAt: h.updatedAt ?? prev.hit.updatedAt,
       task: h.task ?? prev.hit.task, comment: h.comment ?? prev.hit.comment, doc: h.doc ?? prev.hit.doc,
-      project: h.project ?? prev.hit.project, person: h.person ?? prev.hit.person,
+      project: h.project ?? prev.hit.project, person: h.person ?? prev.hit.person, goal: h.goal ?? prev.hit.goal,
     };
   }
   const rows = [...byKey.values()].map((r) => ({ ...r, tier: titleTier(r.hit.title, text), done: r.hit.task?.status === "done" ? 1 : 0 }));

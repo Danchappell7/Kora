@@ -9,6 +9,7 @@
 import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { Avatar, Icon, IconButton, Pill, ProjectTile } from "../primitives";
 import { getMember, timeAgo } from "../../data/data";
+import { periodLabel } from "../../lib/goalPeriods";
 import { splitHighlights } from "../../lib/searchRows";
 import { CHIP_ICON, chipSpoken } from "../../lib/search/chips";
 import type { SearchChipKind, SearchHit } from "../../data/types";
@@ -167,7 +168,9 @@ export interface HitRowProps {
   workspaceName?: (id: string | null) => string | undefined;
 }
 
-/** One comment, doc, project or person: avatar or icon, a title line, the excerpt, when. */
+const GOAL_STATUS_WORDS = { on_track: "On track", at_risk: "At risk", off_track: "Off track", done: "Achieved" } as const;
+
+/** One comment, doc, project, goal or person: avatar or icon, a title line, the excerpt, when. */
 export function HitRow({ hit, rowId, cursor, onOpen, projectOf, workspaceName }: HitRowProps) {
   const snippetRuns: Runs = splitHighlights(hit.snippet);
   const snippetText = plainRuns(snippetRuns);
@@ -201,6 +204,16 @@ export function HitRow({ hit, rowId, cursor, onOpen, projectOf, workspaceName }:
     sub = snippetText ? <Highlighted className="ksr-snip" runs={snippetRuns} /> : <span className="ksr-sub-meta">{ws ? `Project in ${ws}` : "Project"}</span>;
     aria = `Project ${hit.title}${ws ? ` in ${ws}` : ""}${hit.project?.archived ? ", archived" : ""}${snippetText ? `: ${snippetText}` : ""}`;
     if (hit.project?.archived) side = <Pill tone="neutral" icon="archive">Archived</Pill>;
+  } else if (hit.kind === "goal") {
+    // 0052: a goal wears its own identity, as it does on the Goals page
+    const g = hit.goal;
+    av = <span className="ksr-av" style={{ background: "none" }} aria-hidden="true"><ProjectTile project={{ id: hit.id, name: hit.title, emoji: g?.icon ?? undefined, color: g?.color ?? "" }} size={28} /></span>;
+    say = <HighlightTitle className="ksr-t" text={hit.title} />;
+    const ws = workspaceName?.(hit.workspaceId);
+    const bits = [g?.kind === "key_result" ? "Key result" : "Goal", periodLabel(g?.period ?? null), g?.status ? GOAL_STATUS_WORDS[g.status] : null, ws ? `in ${ws}` : null].filter(Boolean) as string[];
+    sub = snippetText ? <Highlighted className="ksr-snip" runs={snippetRuns} /> : <span className="ksr-sub-meta">{bits.join(" · ")}</span>;
+    aria = `${bits[0]} ${hit.title}${bits.length > 1 ? `, ${bits.slice(1).join(", ")}` : ""}${g?.archived ? ", archived" : ""}${snippetText ? `: ${snippetText}` : ""}`;
+    if (g?.archived) side = <Pill tone="neutral" icon="archive">Archived</Pill>;
   } else {
     const known = getMember(hit.id);
     av = known ? <span className="ksr-av"><Avatar id={hit.id} size={28} /></span> : <span className="ksr-av">{initials(hit.title)}</span>;

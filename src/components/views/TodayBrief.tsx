@@ -67,6 +67,7 @@ export const BRIEF_CSS = `
 button.kbrief-ent { cursor: pointer; transition: background var(--d-1, 90ms) var(--ease); }
 button.kbrief-ent:hover { background: var(--fill-2); }
 .kbrief-ent[data-kind="person"] { padding-left: 3px; border-radius: 999px; }
+.kbrief-ent[data-kind="goal"] > svg { flex: none; color: var(--accent-text, var(--accent)); }
 .kbrief-ent > span[aria-hidden="true"] { display: inline-flex; }
 /* the project the day's big thing belongs to: its chip (tile + name), set into the sentence */
 .kbrief-prose .kbrief-proj { height: 26px; margin: 0 1px; padding: 0 8px 0 5px; border-radius: 8px; vertical-align: 1px;
@@ -155,7 +156,7 @@ const FACT_ICON: Record<BriefFactKind, IconName> = {
   meetings: "calendar", free: "clock", due: "flag", overdue: "alert", slipping: "hourglass", team: "users",
 };
 
-function Entity({ e, onOpen, onOpenRisks, glue }: { e: BriefEntity; onOpen: (id: string) => void; onOpenRisks?: () => void; glue?: string }) {
+function Entity({ e, onOpen, onOpenRisks, onOpenGoal, glue }: { e: BriefEntity; onOpen: (id: string) => void; onOpenRisks?: () => void; onOpenGoal?: (id: string) => void; glue?: string }) {
   switch (e.kind) {
     case "focus":
       return (
@@ -179,12 +180,19 @@ function Entity({ e, onOpen, onOpenRisks, glue }: { e: BriefEntity; onOpen: (id:
       return <span className="kbrief-time">{e.text}</span>;
     case "risks":
       return onOpenRisks ? <button type="button" className="kbrief-risks" onClick={onOpenRisks}>{e.text}</button> : <>{e.text}</>;
+    case "goal": {
+      // the goal's own tile (its icon on its colour, else its initial on the hue its id picks), as on Goals
+      const tile = <ProjectTile project={{ id: e.goalId, name: e.text, emoji: e.icon ?? undefined, color: e.color ?? "" }} size={16} />;
+      return onOpenGoal
+        ? <button type="button" className="kbrief-ent" data-kind="goal" onClick={() => onOpenGoal(e.goalId)} title="Open this goal">{tile}<span className="kbrief-ent-text">{e.text}</span></button>
+        : <span className="kbrief-ent" data-kind="goal">{tile}<span className="kbrief-ent-text">{e.text}</span></span>;
+    }
   }
 }
 
 /** The spans as text and chips. A full stop (or comma) right after the focus phrase joins
  *  it, inside its gradient, so a wrapped headline never ends on a lone "." line. */
-const spans = (list: BriefSpan[], onOpen: (id: string) => void, onOpenRisks?: () => void) => {
+const spans = (list: BriefSpan[], onOpen: (id: string) => void, onOpenRisks?: () => void, onOpenGoal?: (id: string) => void) => {
   const out: ReactNode[] = [];
   for (let i = 0; i < list.length; i++) {
     const s = list[i];
@@ -192,23 +200,25 @@ const spans = (list: BriefSpan[], onOpen: (id: string) => void, onOpenRisks?: ()
     const next = list[i + 1];
     const glue = s.kind === "focus" && typeof next === "string" ? /^[.,;:!?…]+/.exec(next)?.[0] ?? "" : "";
     if (glue) {
-      out.push(<Entity key={i} e={s} onOpen={onOpen} onOpenRisks={onOpenRisks} glue={glue} />);
+      out.push(<Entity key={i} e={s} onOpen={onOpen} onOpenRisks={onOpenRisks} onOpenGoal={onOpenGoal} glue={glue} />);
       const rest = (next as string).slice(glue.length);
       if (rest) out.push(<span key={i + "r"}>{rest}</span>);
       i++;
-    } else out.push(<Entity key={i} e={s} onOpen={onOpen} onOpenRisks={onOpenRisks} />);
+    } else out.push(<Entity key={i} e={s} onOpen={onOpen} onOpenRisks={onOpenRisks} onOpenGoal={onOpenGoal} />);
   }
   return out;
 };
 
 /** The brief card. `hero` is the one action ("Plan my day for me", or "Shut down my day" after hours). */
-export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisks, hero, onShowList, onAsk, lead }: {
+export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisks, onOpenGoal, hero, onShowList, onAsk, lead }: {
   brief: TodayBrief;
   nowMin: number;
   railFocus: RailFocus | null;
   onFact: (f: BriefFact) => void;
   onOpen: (id: string) => void;
   onOpenRisks?: () => void;
+  /** a goal in the brief opens the goal panel */
+  onOpenGoal?: (id: string) => void;
   hero?: ReactNode;
   onShowList?: () => void;
   onAsk?: () => void;
@@ -231,9 +241,9 @@ export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisk
         </button>
       </div>
       <h2 className="kbrief-head" id={`${uid}-h`}>
-        <span>{brief.greeting} </span>{spans(brief.headline, onOpen, onOpenRisks)}
+        <span>{brief.greeting} </span>{spans(brief.headline, onOpen, onOpenRisks, onOpenGoal)}
       </h2>
-      {brief.prose.length > 0 && <p className="kbrief-prose">{spans(brief.prose, onOpen, onOpenRisks)}</p>}
+      {brief.prose.length > 0 && <p className="kbrief-prose">{spans(brief.prose, onOpen, onOpenRisks, onOpenGoal)}</p>}
       {lead}
       {brief.facts.length > 0 && (
         <div className="kbrief-facts" role="group" aria-label="Today at a glance">

@@ -4,7 +4,7 @@ import {
   projectProgress, blockingTasks, memberInitials, dayOffset, EVENTS,
   DAY_START, DAY_END, nextDueDate, nextOccurrence, nextOccurrenceChildren,
   refreshClock, KANBO_TODAY, NOW_MIN, presetDate, todayISO, parseTaskTokens,
-  seriesAnchorDay, TASKS, PROJECTS, DEMO_ACTIVITY, DEMO_TASK_EVENTS, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES,
+  seriesAnchorDay, TASKS, PROJECTS, DEMO_ACTIVITY, DEMO_TASK_EVENTS, DEMO_GOALS, DEMO_GOAL_CHECKINS, DEMO_GOAL_LINKS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES,
   DEMO_RULES, DEMO_FORMS,
 } from "./data";
 import type { Task } from "./types";
@@ -667,6 +667,45 @@ describe("demo seed", () => {
     expect(DEMO_TASK_EVENTS.every((e) => TASKS.some((t) => t.id === e.taskId))).toBe(true);
   });
 
+  it("gives Goals 2.0 owners, quarters, check-ins and links that hang together (0052)", () => {
+    // everyone named is in the goal's workspace (never a guest), and a personal goal is Daniel's alone
+    const inWs: Record<string, string[]> = {
+      "ws-foundrise": ["m-self", "m-1", "m-2", "m-3"], "ws-reco": ["m-self", "m-1", "m-2"], "ws-courtside": ["m-2", "m-self"], "ws-harbour": ["m-3", "m-self"],
+    };
+    for (const g of DEMO_GOALS) {
+      if (g.workspaceId === null) { expect([g.ownerId, g.contributors]).toEqual(["m-self", []]); continue; }
+      const people = inWs[g.workspaceId!];
+      expect(people).toContain(g.ownerId);
+      for (const c of g.contributors ?? []) expect(people).toContain(c);
+      // a key result sits under a goal in the same business
+      if (g.parentId) expect(DEMO_GOALS.find((p) => p.id === g.parentId)?.workspaceId).toBe(g.workspaceId);
+    }
+    // a lower-is-better number, a leadership-only goal, weights, and a member's own goal (and one he only reads)
+    expect(DEMO_GOALS.find((g) => g.id === "g-churn")).toMatchObject({ direction: "lower", startValue: 8, target: 5, parentId: "g-actives", weight: 2 });
+    expect(DEMO_GOALS.filter((g) => g.visibility === "leadership").map((g) => g.id)).toEqual(["g-raise"]);
+    expect(DEMO_GOALS.filter((g) => g.workspaceId === "ws-harbour").map((g) => g.ownerId)).toEqual(["m-3", "m-self"]);
+    // check-ins: newest first, by people in the goal's business, and each goal's value is its newest
+    const times = DEMO_GOAL_CHECKINS.map((c) => c.createdAt);
+    expect(times).toEqual([...times].sort().reverse());
+    for (const g of DEMO_GOALS) {
+      const mine = DEMO_GOAL_CHECKINS.filter((c) => c.goalId === g.id);
+      if (!mine.length) continue;
+      expect(mine[0].value).toBe(g.current);
+      expect(mine.every((c) => c.workspaceId === (g.workspaceId ?? null))).toBe(true);
+    }
+    expect(new Set(DEMO_GOAL_CHECKINS.map((c) => c.id)).size).toBe(DEMO_GOAL_CHECKINS.length);
+    // links: to work in the goal's own business, and the project a goal reads its % from is one of them
+    for (const l of DEMO_GOAL_LINKS) {
+      const g = DEMO_GOALS.find((x) => x.id === l.goalId)!;
+      expect(l.workspaceId).toBe(g.workspaceId);
+      const pid = l.kind === "project" ? l.targetId : byId(l.targetId).projectId;
+      expect(PROJECTS.find((p) => p.id === pid)?.workspaceId).toBe(g.workspaceId);
+    }
+    for (const g of DEMO_GOALS.filter((x) => x.projectId)) {
+      expect(DEMO_GOAL_LINKS.some((l) => l.goalId === g.id && l.kind === "project" && l.targetId === g.projectId)).toBe(true);
+    }
+  });
+
   it("fills the Inbox, Goals, Portfolios, updates, Rules and Requests", () => {
     expect(DEMO_ACTIVITY).toHaveLength(6);
     expect(DEMO_ACTIVITY.filter((a) => !a.readAt).map((a) => a.kind).sort()).toEqual(["assigned", "mention"]);
@@ -677,10 +716,13 @@ describe("demo seed", () => {
     expect(DEMO_ACTIVITY.filter((a) => !a.detail.startsWith("Request via")).every((a) => members.includes(a.detail))).toBe(true);
     // the request's task carries the line a form submission writes
     expect(byId("t-25").description).toMatch(/^Request via Launch requests\./);
-    expect(DEMO_GOALS.filter((g) => g.workspaceId === "ws-foundrise").map((g) => g.status)).toEqual(["on_track", "at_risk"]);
+    expect(DEMO_GOALS.slice(0, 5).filter((g) => g.workspaceId === "ws-foundrise").map((g) => g.status)).toEqual(["on_track", "at_risk"]);
     // the other businesses: Reco HQ on track, Courtside Padel behind on both
-    expect(DEMO_GOALS.filter((g) => g.workspaceId !== "ws-foundrise").map((g) => [g.workspaceId, g.status]))
+    expect(DEMO_GOALS.slice(0, 5).filter((g) => g.workspaceId !== "ws-foundrise").map((g) => [g.workspaceId, g.status]))
       .toEqual([["ws-reco", "on_track"], ["ws-courtside", "at_risk"], ["ws-courtside", "off_track"]]);
+    // 0052's appended after them
+    expect(DEMO_GOALS.map((g) => g.id)).toEqual(["g-launch", "g-actives", "g-reco-paying", "g-court-hours", "g-court-open",
+      "g-churn", "g-activation", "g-raise", "g-reco-onboard", "g-reco-ttv", "g-reco-ship", "g-harbour-clients", "g-harbour-review", "g-books", "g-winback"]);
     expect(DEMO_PORTFOLIOS[0]).toEqual(expect.objectContaining({ name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"] }));
     // a Personal portfolio across businesses, one of whose projects has gone from view
     expect(DEMO_PORTFOLIOS[1]).toMatchObject({ workspaceId: null, projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"] });

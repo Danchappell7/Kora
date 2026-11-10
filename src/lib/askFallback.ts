@@ -19,6 +19,7 @@ import type { AskAction, AskContext, AskPatch, AskResult } from "./askTypes";
 import { parseDateText } from "./nlp";
 import { fmtDay, isIsoDay } from "./askActions";
 import { blockedAndWaiting, openBlockers } from "./countRules";
+import type { AskGoal } from "./goalFlow";
 
 export const LOCAL_HELP = "I can find, move, assign and mark tasks on-device. Try “what's overdue?” or “move my unstarted tasks this week to Monday”.";
 
@@ -541,6 +542,59 @@ function listIntent(q: string, tasks: Task[], ctx: AskContext): AskResult | null
   return list.length ? say(list, label) : result(none(label));
 }
 
+/* ---------------- goals (0052) ---------------- */
+
+const GOAL_WORDS = /\b(goals?|key results?|krs?|okrs?|objectives?)\b/;
+const SLIPPING_WORDS = /\b(slipping|slipped|behind|off[- ]track|at risk|late|lagging|falling|struggling|in trouble|worried|worst)\b/;
+const NO_WORK_WORDS = /\b(no work|nothing (?:behind|linked|moving)|without (?:any )?work|not linked|unlinked|no projects?|no tasks?)\b/;
+// a question about tasks that only mentions a goal ("what's overdue in the goal review?") is a task question
+const TASK_WORDS = /\b(tasks?|sub-?tasks?|to-?dos?|overdue|due|assigned|deadlines?)\b/;
+
+/** "Which goals are slipping?", "which goals have no work behind them?", "how are our goals doing?":
+ *  answered from the goals the app reads (lib/goalFlow askGoals), with a way to the Goals page. */
+function goalIntent(q: string, ctx: Ctx): AskResult | null {
+  if (!GOAL_WORDS.test(q) || (TASK_WORDS.test(q) && !NO_WORK_WORDS.test(q))) return null;
+  const goals = ctx.goals;
+  if (!goals) return null;
+  const go: AskAction[] = [{ op: "open", route: { view: "goals" } }];
+  // drawn from the goals, not the tasks: no `cites`, so the card makes no "How I got here" claim about tasks
+  const result = (answer: string, actions: AskAction[]): AskResult => ({ answer, actions, source: "local" });
+  if (!goals.length) return result("There are no goals here yet. Owners and admins set them in Projects › Goals.", go);
+  const noun = (n: number) => plural(n, "goal", "goals");
+  // the person asking is "you", everyone else their first name
+  const myName = ctx.members.find((m) => m.id === ctx.me)?.name;
+  const one = (g: AskGoal) => {
+    const why = g.pace || (g.status === "at_risk" ? "marked at risk" : g.status === "off_track" ? "marked off track" : `${g.pct}% done`);
+    const who = !g.owner ? "" : g.owner === myName ? ", yours" : `, ${g.owner.split(/\s+/)[0]}`;
+    return `“${g.name}” (${why.charAt(0).toLowerCase()}${why.slice(1)}${who})`;
+  };
+  // (one left over is named too: "and one more" only hides two or more)
+  const list = (xs: AskGoal[], max = 3) => {
+    const shown = xs.slice(0, xs.length === max + 1 ? max + 1 : max).map(one);
+    const more = xs.length - shown.length;
+    if (more > 0) return `${shown.join(", ")} and ${num(more)} more`;
+    return shown.length <= 1 ? shown.join("") : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+  };
+  if (NO_WORK_WORDS.test(q)) {
+    const bare = goals.filter((g) => g.noWork && g.status !== "done");
+    if (!bare.length) return result(`Every goal here has work behind it: a project or task linked to it or to one of its key results.`, go);
+    return result(`${num(bare.length, true)} ${plural(bare.length, "goal has", "goals have")} no work behind ${plural(bare.length, "it", "them")}: ${bare.slice(0, 4).map((g) => `“${g.name}”`).join(", ")}${bare.length > 4 ? ` and ${num(bare.length - 4)} more` : ""}. Link the projects or tasks that move them from the goal panel.`, go);
+  }
+  const live = goals.filter((g) => g.status !== "done");
+  const slipping = live.filter((g) => g.slipping);
+  if (SLIPPING_WORDS.test(q) || !/\b(on track|on pace|ahead|achieved|done)\b/.test(q)) {
+    if (!slipping.length) {
+      return result(live.length === 1 ? "The one open goal isn't slipping: it's on pace or not started yet."
+        : `None of the ${num(live.length)} open goals are slipping: they're on pace or not started yet.`, go);
+    }
+    const rest = live.length - slipping.length;
+    return result(`${num(slipping.length, true)} ${noun(slipping.length)} ${plural(slipping.length, "is", "are")} slipping: ${list(slipping)}.${rest > 0 ? ` The other ${num(rest)} ${plural(rest, "is", "are")} on pace.` : ""}`, go);
+  }
+  const fine = live.filter((g) => !g.slipping);
+  if (!fine.length) return result(`None of the open goals is on pace. ${cap(list(slipping))} ${plural(slipping.length, "is", "are")} behind.`, go);
+  return result(`${num(fine.length, true)} of ${num(live.length)} open ${noun(live.length)} ${plural(fine.length, "is", "are")} on pace${slipping.length ? `; ${list(slipping, 2)} ${plural(slipping.length, "is", "are")} behind` : ""}.`, go);
+}
+
 /* ---------------- entry ---------------- */
 
 const normalise = (s: string) => s
@@ -564,6 +618,12 @@ export function localAsk(question: string, tasks: Task[], context: AskContext, o
   let m: RegExpExecArray | null;
 
   if ((m = /^(?:help me )?plan (?:my |the |this )?(day|morning|afternoon|evening|today)\b/.exec(q))) return planIntent(m[1] === "today" ? "day" : m[1], tasks, ctx);
+
+  // "which goals are slipping?" (before the task lists: "behind" there means overdue)
+  if (/^(which|what|how|are|is|show|list|any|tell|give|where)\b/.test(q) || /\?$/.test(question.trim())) {
+    const goals = goalIntent(q, ctx);
+    if (goals) return goals;
+  }
 
   if ((m = /^(?:move|reschedule|push|shift|postpone|bump|defer|delay|bring|set the due date (?:of|for)|change the due date (?:of|for))\s+(.+)$/.exec(q))) {
     const moved = moveIntent(m[1], tasks, ctx);

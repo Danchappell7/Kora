@@ -17,11 +17,11 @@ import type { BoardSettingsChange } from "../components/tasks/otherViewsLogic";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
-  DEMO_ACTIVITY, DEMO_ACTIVITY_ELSEWHERE, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
+  DEMO_ACTIVITY, DEMO_ACTIVITY_ELSEWHERE, DEMO_GOALS, DEMO_GOAL_CHECKINS, DEMO_GOAL_LINKS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
   EVENTS, KANBO_TODAY,
 } from "./data";
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -43,6 +43,8 @@ export interface Bootstrap {
   customFields: CustomFieldDef[];
   savedSearches: SavedSearch[];
   goals: Goal[];
+  /** 0052's check-ins (newest first) and links; null until 0052 is run; undefined when they couldn't be read this time (keep what's on screen) */
+  goalExtras?: GoalExtras | null;
   portfolios: Portfolio[];
   statusUpdates: StatusUpdate[];
   automationRules: AutomationRule[];
@@ -531,8 +533,60 @@ const rowToSection = (r: SectionRow): Section => ({ id: r.id, projectId: r.proje
 interface CustomFieldRow { id: string; project_id: string; workspace_id: string | null; name: string; type: string; options: string[] | null; position: number | null }
 const rowToCustomField = (r: CustomFieldRow): CustomFieldDef => ({ id: r.id, projectId: r.project_id, workspaceId: r.workspace_id, name: r.name, type: r.type as CustomFieldDef["type"], options: r.options ?? [], position: r.position ?? undefined });
 interface SavedSearchRow { id: string; name: string; query: unknown }
-interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null; parent_id?: string | null; project_id?: string | null; created_at?: string }
-const rowToGoal = (r: GoalRow): Goal => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, description: r.description ?? undefined, target: r.target ?? undefined, current: r.current ?? undefined, unit: r.unit ?? undefined, due: r.due ?? undefined, status: (r.status as GoalStatus) ?? "on_track", position: r.position ?? undefined, parentId: r.parent_id ?? undefined, projectId: r.project_id ?? undefined });
+interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null; parent_id?: string | null; project_id?: string | null; created_at?: string;
+  // 0052 (absent before it's run: the goal reads as it always did)
+  owner_id?: string | null; contributors?: string[] | null; period?: string | null; period_start?: string | null; period_end?: string | null; start_value?: number | string | null;
+  direction?: string | null; confidence?: number | null; kind?: string | null; visibility?: string | null; archived_at?: string | null; icon?: string | null; color?: string | null; pace?: string | null; weight?: number | string | null }
+// numeric columns can arrive as strings (PostgREST keeps big numerics exact)
+const numOrNull = (v: number | string | null | undefined): number | null => (v == null || v === "" || !isFinite(Number(v)) ? null : Number(v));
+const rowToGoal = (r: GoalRow): Goal => ({
+  id: r.id, workspaceId: r.workspace_id, name: r.name, description: r.description ?? undefined, target: numOrNull(r.target) ?? undefined, current: numOrNull(r.current) ?? undefined, unit: r.unit ?? undefined, due: r.due ?? undefined, status: (r.status as GoalStatus) ?? "on_track", position: r.position ?? undefined, parentId: r.parent_id ?? undefined, projectId: r.project_id ?? undefined,
+  ...(r.created_at ? { createdAt: r.created_at } : {}),
+  ...("owner_id" in r ? {
+    ownerId: r.owner_id ?? null, contributors: r.contributors ?? [], period: r.period ?? null, periodStart: r.period_start ?? null, periodEnd: r.period_end ?? null,
+    startValue: numOrNull(r.start_value), direction: r.direction === "lower" ? "lower" as const : "higher" as const, confidence: r.confidence ?? null,
+    kind: (r.kind === "key_result" || r.kind === "metric" ? r.kind : "objective") as Goal["kind"], visibility: r.visibility === "leadership" ? "leadership" as const : "everyone" as const,
+    archivedAt: r.archived_at ?? null, icon: r.icon ?? null, color: r.color ?? null,
+    pace: (r.pace === "backloaded" || r.pace === "off" ? r.pace : "linear") as Goal["pace"], weight: numOrNull(r.weight),
+  } : {}),
+});
+interface GoalCheckinRow { id: string; goal_id: string; workspace_id: string | null; author_id: string | null; value: number | string; confidence: number | null; note: string | null; created_at: string; prev_value?: number | string | null }
+const rowToCheckin = (r: GoalCheckinRow): GoalCheckin => ({
+  id: r.id, goalId: r.goal_id, workspaceId: r.workspace_id, authorId: r.author_id ?? null, value: numOrNull(r.value) ?? 0,
+  confidence: r.confidence ?? null, ...(r.note ? { note: r.note } : {}), createdAt: r.created_at,
+  ...(r.prev_value != null ? { prevValue: numOrNull(r.prev_value) } : {}),
+});
+interface GoalLinkRow { id: string; goal_id: string; workspace_id: string | null; kind: string; target_id: string; created_at?: string }
+const rowToGoalLink = (r: GoalLinkRow): GoalLink => ({ id: r.id, goalId: r.goal_id, workspaceId: r.workspace_id, kind: r.kind as GoalLinkKind, targetId: r.target_id, ...(r.created_at ? { createdAt: r.created_at } : {}) });
+/** A goal patch as goals columns (0052's only when they're in the patch). */
+function goalPatchRow(patch: GoalPatch): Record<string, unknown> {
+  const row: Record<string, unknown> = {};
+  if ("name" in patch) row.name = patch.name;
+  if ("description" in patch) row.description = patch.description?.trim() || null;
+  if ("target" in patch) row.target = patch.target ?? null;
+  if ("current" in patch) row.current = patch.current ?? null;
+  if ("unit" in patch) row.unit = patch.unit ?? null;
+  if ("due" in patch) row.due = patch.due ?? null;
+  if ("status" in patch) row.status = patch.status;
+  if ("parentId" in patch) row.parent_id = patch.parentId ?? null;
+  if ("projectId" in patch) row.project_id = patch.projectId ?? null;
+  if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;
+  if ("contributors" in patch) row.contributors = patch.contributors ?? [];
+  if ("period" in patch) row.period = patch.period ?? null;
+  if ("periodStart" in patch) row.period_start = patch.periodStart ?? null;
+  if ("periodEnd" in patch) row.period_end = patch.periodEnd ?? null;
+  if ("startValue" in patch) row.start_value = patch.startValue ?? null;
+  if ("direction" in patch) row.direction = patch.direction ?? "higher";
+  if ("confidence" in patch) row.confidence = patch.confidence ?? null;
+  if ("kind" in patch) row.kind = patch.kind ?? "objective";
+  if ("visibility" in patch) row.visibility = patch.visibility ?? "everyone";
+  if ("archivedAt" in patch) row.archived_at = patch.archivedAt ?? null;
+  if ("icon" in patch) row.icon = patch.icon ?? null;
+  if ("color" in patch) row.color = patch.color ?? null;
+  if ("pace" in patch) row.pace = patch.pace ?? "linear";
+  if ("weight" in patch) row.weight = patch.weight ?? null;
+  return row;
+}
 interface PortfolioRow { id: string; workspace_id: string | null; name: string; project_ids: string[] | null; created_at?: string }
 const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, projectIds: r.project_ids ?? [] });
 // author_id arrives with 0051 (null once the author's account is deleted); before
@@ -1388,6 +1442,9 @@ const CORE_TABLES = ["tasks", "projects", "tags", "subtasks", "workspaces", "wor
 // it's live the server rejects every binding on a channel that names them, so
 // they get their own channel and can never take live task sync down with them.
 const EXTRA_TABLES = ["sections", "custom_field_defs", "goals", "portfolios", "status_updates", "automation_rules", "forms", "task_dependencies"];
+// goal check-ins and links (0052): a channel of their own, so a database without
+// them can never take the other team tables' live sync down with it
+const GOAL_TABLES = ["goal_checkins", "goal_links"];
 const RESYNC_AFTER_HIDDEN_MS = 60_000;
 let channelSeq = 0;
 
@@ -1478,7 +1535,8 @@ export const store = {
         workspaces: demoWorkspaces, members: demoMembers,
         currentUserId: "m-self", defaultWorkspace: "ws-foundrise", profile: demoProfile,
         sections: [], customFields: [], savedSearches: [],
-        goals: seedCopy(DEMO_GOALS), portfolios: seedCopy(DEMO_PORTFOLIOS), statusUpdates: seedCopy(DEMO_STATUS_UPDATES),
+        goals: seedCopy(DEMO_GOALS), goalExtras: { checkins: seedCopy(DEMO_GOAL_CHECKINS), links: seedCopy(DEMO_GOAL_LINKS) },
+        portfolios: seedCopy(DEMO_PORTFOLIOS), statusUpdates: seedCopy(DEMO_STATUS_UPDATES),
         automationRules: seedCopy(DEMO_RULES), forms: seedCopy(DEMO_FORMS),
       };
     }
@@ -1631,6 +1689,17 @@ export const store = {
     try {
       goals = (await loadAllRows<GoalRow>(supabase, "goals")).sort(goalOrder).map(rowToGoal);
     } catch { /* table not present yet */ }
+    // 0052's check-ins (newest first) and links: null while the tables aren't there; undefined when
+    // they couldn't be read this time (a blip): the app keeps what it has rather than switch goals off
+    let goalExtras: GoalExtras | null | undefined = null;
+    try {
+      const checkins = (await loadAllRows<GoalCheckinRow>(supabase, "goal_checkins")).sort((a, b) => byText(b.created_at, a.created_at) || byText(b.id, a.id)).map(rowToCheckin);
+      const links = (await loadAllRows<GoalLinkRow>(supabase, "goal_links")).sort(createdOrder).map(rowToGoalLink);
+      goalExtras = { checkins, links };
+    } catch (e) {
+      // (0052 not run yet: either table missing)
+      goalExtras = isMissingTable(e, "goal_checkins") || isMissingTable(e, "goal_links") ? null : undefined;
+    }
     try {
       portfolios = (await loadAllRows<PortfolioRow>(supabase, "portfolios")).sort(createdOrder).map(rowToPortfolio);
     } catch { /* table not present yet */ }
@@ -1673,6 +1742,7 @@ export const store = {
       customFields,
       savedSearches,
       goals,
+      goalExtras,
       portfolios,
       statusUpdates,
       automationRules,
@@ -2168,27 +2238,44 @@ export const store = {
   },
 
   /* ---------- goals / OKRs ---------- */
-  async createGoal(input: { workspaceId: string | null; name: string; target?: number; current?: number; unit?: string; due?: string; status?: GoalStatus }, userId: string): Promise<Goal> {
-    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, name: input.name, target: input.target, current: input.current, unit: input.unit, due: input.due, status: input.status ?? "on_track" };
+  /** `extra` (0052's owner, parent, kind, period…) only once 0052 is run: the page offers them then. */
+  async createGoal(input: { workspaceId: string | null; name: string; target?: number; current?: number; unit?: string; due?: string; status?: GoalStatus; extra?: GoalPatch }, userId: string): Promise<Goal> {
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, name: input.name, target: input.target, current: input.current, unit: input.unit, due: input.due, status: input.status ?? "on_track", createdAt: new Date().toISOString(), ...input.extra };
     const uid = await authUid(userId);
-    const { data, error } = await supabase.from("goals").insert({ user_id: uid, workspace_id: input.workspaceId, name: input.name, target: input.target ?? null, current: input.current ?? null, unit: input.unit ?? null, due: input.due ?? null, status: input.status ?? "on_track" }).select("*").single();
+    const { data, error } = await supabase.from("goals").insert({ user_id: uid, workspace_id: input.workspaceId, name: input.name, target: input.target ?? null, current: input.current ?? null, unit: input.unit ?? null, due: input.due ?? null, status: input.status ?? "on_track", ...(input.extra ? goalPatchRow(input.extra) : {}) }).select("*").single();
     if (error) throw error;
     return rowToGoal(data as GoalRow);
   },
-  async updateGoal(id: string, patch: Partial<Pick<Goal, "name" | "description" | "target" | "current" | "unit" | "due" | "status" | "parentId" | "projectId">>): Promise<void> {
+  async updateGoal(id: string, patch: GoalPatch): Promise<void> {
     if (!supabase) return;
-    const row: Record<string, unknown> = {};
-    if ("name" in patch) row.name = patch.name;
-    if ("description" in patch) row.description = patch.description?.trim() || null;
-    if ("target" in patch) row.target = patch.target ?? null;
-    if ("current" in patch) row.current = patch.current ?? null;
-    if ("unit" in patch) row.unit = patch.unit ?? null;
-    if ("due" in patch) row.due = patch.due ?? null;
-    if ("status" in patch) row.status = patch.status;
-    if ("parentId" in patch) row.parent_id = patch.parentId ?? null;
-    if ("projectId" in patch) row.project_id = patch.projectId ?? null;
+    const row = goalPatchRow(patch);
     if (Object.keys(row).length === 0) return;
     const { error } = await supabase.from("goals").update(row).eq("id", id);
+    if (error) throw error;
+  },
+  /* 0052: a check-in (the server names its author and sets the goal's current value) */
+  async addGoalCheckin(input: { goalId: string; workspaceId: string | null; value: number; confidence?: number | null; note?: string }, userId: string): Promise<GoalCheckin> {
+    const note = input.note?.trim() || undefined;
+    if (!supabase) return { id: newId(), goalId: input.goalId, workspaceId: input.workspaceId, authorId: userId, value: input.value, confidence: input.confidence ?? null, ...(note ? { note } : {}), createdAt: new Date().toISOString() };
+    const { data, error } = await supabase.from("goal_checkins").insert({ goal_id: input.goalId, value: input.value, confidence: input.confidence ?? null, note: note ?? null }).select("*").single();
+    if (error) throw error;
+    return rowToCheckin(data as GoalCheckinRow);
+  },
+  async deleteGoalCheckin(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("goal_checkins").delete().eq("id", id);
+    if (error) throw error;
+  },
+  /* 0052: link a goal to a project, task or shared view in its own workspace */
+  async addGoalLink(input: { goalId: string; workspaceId: string | null; kind: GoalLinkKind; targetId: string }): Promise<GoalLink> {
+    if (!supabase) return { id: newId(), goalId: input.goalId, workspaceId: input.workspaceId, kind: input.kind, targetId: input.targetId, createdAt: new Date().toISOString() };
+    const { data, error } = await supabase.from("goal_links").insert({ goal_id: input.goalId, kind: input.kind, target_id: input.targetId }).select("*").single();
+    if (error) throw error;
+    return rowToGoalLink(data as GoalLinkRow);
+  },
+  async removeGoalLink(id: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.from("goal_links").delete().eq("id", id);
     if (error) throw error;
   },
   async deleteGoal(id: string): Promise<void> {
@@ -2890,7 +2977,9 @@ export const store = {
     const sent = new Set(payload.map((t) => t.id));
     const me = ctx.members.find((m) => m.id === ctx.me)?.name ?? getMember(ctx.me)?.name ?? "";
     const out = await callAiMode<AskResult>(
-      { mode: "command", question: q.slice(0, 4000), today: ctx.today, me, meId: ctx.me, members: ctx.members, projects: ctx.projects, tasks: payload },
+      { mode: "command", question: q.slice(0, 4000), today: ctx.today, me, meId: ctx.me, members: ctx.members, projects: ctx.projects, tasks: payload,
+        // 0052: the workspace's goals ("which goals are slipping?"); read only, never changed by Ask
+        ...(ctx.goals?.length ? { goals: ctx.goals.slice(0, 60) } : {}) },
       (d) => {
         const answer = typeof d.answer === "string" ? d.answer.trim() : "";
         if (!answer) return null;
@@ -3238,6 +3327,8 @@ export const store = {
     let extrasOff = false;   // the server refused the extra tables (not in the publication)
     let plans: RealtimeChannel | null = null;
     let plansOff = false;    // the server refused task_user_state (0043 not run, or not in the publication)
+    let goalsLive: RealtimeChannel | null = null;
+    let goalsOff = false;    // the server refused goal_checkins / goal_links (0052 not run)
     let coreUp = false;
     let dropped = false;     // the core channel lost its connection: resync once it's back
     let reopenTimer: ReturnType<typeof setTimeout> | undefined;
@@ -3310,6 +3401,23 @@ export const store = {
       ch.subscribe((status) => { if (status === "CLOSED" && plans === ch) plans = null; });
     };
     planChannelOpeners.add(openPlans);
+    const closeGoals = () => { if (goalsLive) { void client.removeChannel(goalsLive); goalsLive = null; } };
+    const openGoals = () => {
+      if (disposed || goalsLive || goalsOff) return;
+      let ch = client.channel(topic("kanbo-goals"));
+      for (const table of GOAL_TABLES) ch = ch.on("postgres_changes", { event: "*", schema: "public", table }, forward);
+      ch = ch.on("system", {}, (msg: { extension?: string; status?: string; message?: string }) => {
+        if (msg?.extension !== "postgres_changes" || msg?.status !== "error" || disposed) return;
+        goalsOff = true;
+        closeGoals();
+        if (!reportedOnce.has("realtime-goals")) {
+          reportedOnce.add("realtime-goals");
+          console.info("[kanbo] Live updates for goal check-ins are off — the realtime publication doesn't include them yet:", msg.message || "subscription refused");
+        }
+      });
+      goalsLive = ch;
+      ch.subscribe((status) => { if (status === "CLOSED" && goalsLive === ch) goalsLive = null; });
+    };
     const scheduleReopen = () => {
       if (disposed || reopenTimer !== undefined) return;
       reopenTimer = setTimeout(() => {
@@ -3318,6 +3426,7 @@ export const store = {
         core = null; // already closed and detached by the client
         closeExtras();
         closePlans();
+        closeGoals();
         openCore();
       }, reopenDelay);
       reopenDelay = Math.min(reopenDelay * 2, 60_000);
@@ -3334,6 +3443,7 @@ export const store = {
           if (dropped) { dropped = false; resync("reconnected"); }
           openExtras();
           openPlans();
+          openGoals();
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           dropped = true; // the client rejoins by itself; catch up when it does
         } else if (status === "CLOSED") {
@@ -3363,6 +3473,7 @@ export const store = {
       core = null;
       closeExtras();
       closePlans();
+      closeGoals();
       planChannelOpeners.delete(openPlans);
     };
   },

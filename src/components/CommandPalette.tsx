@@ -36,7 +36,7 @@ import { localAsk } from "../lib/askFallback";
 import { fmtDay } from "../lib/askActions";
 import type { AiOutcome, AskAction, AskContext, AskResult } from "../lib/askTypes";
 import type { Route } from "../app-types";
-import type { IconName, Task, Status, Project, Workspace, Comment, Member, SearchHit } from "../data/types";
+import type { IconName, Task, Status, Project, Workspace, Comment, Member, SearchHit, Goal } from "../data/types";
 import { mergeSearchHits, titleTier, SEARCH_DEBOUNCE_MS, SEARCH_PALETTE_LIMIT, type LocalSearchInput } from "../lib/searchApi";
 import { hasSearchText } from "../lib/searchQuery";
 import { removeChipFromInput } from "../lib/searchNL";
@@ -119,6 +119,8 @@ type Item =
   | { kind: "ask"; text: string; example?: boolean }
   | { kind: "task"; id: string; label: string; status: Status; where?: string; due?: string; overdue?: boolean }
   | { kind: "project"; id: string; label: string; color: string; emoji?: string; where?: string }
+  /* 0052: a goal, by its name (on the device) or its description (search_all) */
+  | { kind: "goal"; id: string; label: string; color: string; emoji?: string; where?: string }
   | { kind: "search"; label: string }
   /* universal search (0048): a comment, a doc or a person found by the words */
   | { kind: "comment" | "doc" | "person"; hit: SearchHit; label: string; where?: string }
@@ -130,7 +132,7 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 /** a row's identity across renders (so the highlight can follow it when rows are added above) */
 const itemKey = (it: Item): string => {
   switch (it.kind) {
-    case "task": case "project": return `${it.kind}:${it.id}`;
+    case "task": case "project": case "goal": return `${it.kind}:${it.id}`;
     case "comment": case "doc": case "person": return `${it.kind}:${it.hit.id}`;
     case "ask": return `ask:${it.example ? "x" : ""}${it.text}`;
     case "search": return "search";
@@ -238,7 +240,7 @@ const PALETTE_CSS = `
 export function CommandPalette({
   open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll, canCreateProject = true, canSeeGroup = false,
   ai, askContext, onApplyAsk, canAct, onGo, recent, recentTaskIds, initialQuery, personal, askFirst = false,
-  comments, docs, onOpenDoc, onOpenPerson, onOpenComment, serverSearch, demoCorpus,
+  comments, docs, onOpenDoc, onOpenPerson, onOpenComment, serverSearch, demoCorpus, goals, onOpenGoal,
 }: {
   open: boolean;
   onClose: () => void;
@@ -294,6 +296,9 @@ export function CommandPalette({
   serverSearch?: boolean;
   /** also search the demo docs' text and comments (default: when there's no server) */
   demoCorpus?: boolean;
+  /** 0052: the goals you can see, and opening one (the goal panel); without the handler, no Goals group */
+  goals?: Goal[];
+  onOpenGoal?: (id: string) => void;
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -347,7 +352,7 @@ export function CommandPalette({
   const searchDocs = useMemo(() => [...(docs ?? []), ...(corpus?.docs ?? []).filter((d) => !docs?.some((x) => x.id === d.id))], [docs, corpus]);
   const found = useUniversalSearch({
     active: open && !ask && resolved.active, text: resolved.text, filters: resolved.filters, limit: SEARCH_PALETTE_LIMIT, debounceMs: SEARCH_DEBOUNCE_MS,
-    server: serverSearch, local: { tasks, projects: projects ?? [], members: people, comments: searchComments, docs: searchDocs, currentUserId: ctx.me },
+    server: serverSearch, local: { tasks, projects: projects ?? [], members: people, comments: searchComments, docs: searchDocs, currentUserId: ctx.me, goals: onOpenGoal ? goals : undefined },
   });
   // one ranked list per kind, capped after ranking: the device's rows keep their order when the server's answer
   // arrives (nothing jumps under the cursor), its own rows slot in by how well their titles match, and its
@@ -484,6 +489,20 @@ export function CommandPalette({
       }
     }
 
+    // goals: named so first, then the ones whose description has the words (the device's or the server's)
+    const goalItems: Item[] = [];
+    if (onOpenGoal) {
+      const live = (goals ?? []).filter((g) => !g.archivedAt);
+      const goalItem = (g: Goal): Item => ({ kind: "goal", id: g.id, label: g.name, color: g.color ?? "", emoji: g.icon ?? undefined, where: wsName(g.workspaceId) });
+      live.map((g) => ({ g, score: nameScore(g.name, query) })).filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score || a.g.name.localeCompare(b.g.name)).slice(0, 3).forEach(({ g }) => goalItems.push(goalItem(g)));
+      for (const h of hits) {
+        if (h.kind !== "goal" || goalItems.length >= 3 || goalItems.some((it) => it.kind === "goal" && it.id === h.id)) continue;
+        const g = live.find((x) => x.id === h.id);
+        if (g) goalItems.push(goalItem(g));
+      }
+    }
+
     // places and actions keep their curated order on ties; the best-named match rises
     const ranked = <T,>(list: T[], score: (x: T) => number, max: number): T[] => list
       .map((x, i) => ({ x, i, s: score(x) }))
@@ -504,6 +523,7 @@ export function CommandPalette({
       // "See all results" follows the tasks; with none, it stands alone where they'd be
       { key: "tasks", heading: taskItems.length ? "Tasks" : undefined, items: [...taskItems, ...searchItems] },
       { key: "projects", heading: "Projects", items: projectItems },
+      { key: "goals", heading: "Goals", items: goalItems },
       { key: "docs", heading: "Docs", items: docItems },
       { key: "comments", heading: "Comments", items: commentItems },
       { key: "people", heading: "People", items: personItems },
@@ -511,7 +531,7 @@ export function CommandPalette({
       { key: "actions", heading: "Actions", items: actionItems },
     ];
   }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, canSeeGroup, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today,
-    hits, literal, onOpenDoc, onOpenPerson, onOpenComment, onOpenTask, onGo]);
+    hits, literal, onOpenDoc, onOpenPerson, onOpenComment, onOpenTask, onGo, goals, onOpenGoal]);
 
   const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   // real matches: tasks, projects, places and actions (not the Ask row, and not "See all results")
@@ -616,6 +636,7 @@ export function CommandPalette({
     }
     else if (it.kind === "person") { if (onOpenPerson) onOpenPerson(it.hit.id); else go({ view: "team" }); }
     else if (it.kind === "project") onOpenProject?.(it.id);
+    else if (it.kind === "goal") onOpenGoal?.(it.id);
     else if (it.kind === "search") onSearchAll?.(q.trim());
     else if (it.kind === "action") onAction(it.s);
     else if (it.kind === "go") go(it.target.route);
@@ -696,6 +717,11 @@ export function CommandPalette({
       case "project":
         return row(it, <>
           <span className="kcmd-label">{it.label}{it.where && <span className="sr-only">, project in {it.where}</span>}{!it.where && <span className="sr-only">, project</span>}</span>
+          {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
+        </>, { icon: <ProjectTile project={{ id: it.id, color: it.color, name: it.label, emoji: it.emoji }} size={16} /> });
+      case "goal":
+        return row(it, <>
+          <span className="kcmd-label">{it.label}<span className="sr-only">, goal{it.where ? ` in ${it.where}` : ""}</span></span>
           {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
         </>, { icon: <ProjectTile project={{ id: it.id, color: it.color, name: it.label, emoji: it.emoji }} size={16} /> });
       case "search":

@@ -45,6 +45,8 @@ const HITS = [
   { "kind": "doc", "id": "7c0f5d8e-1f2a-4b3c-9d4e-5f6a7b8c9d0e", "title": "Launch brief", "snippet": "Pricing: three tiers, annual discount", "rank": 0.12158542, "task_id": null, "project_id": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0", "meta": { "icon": null, "archived": false, "updated_by": "a89a2412-b64a-49e4-bb75-10dc9466bba2", "project_name": "Launch" }, "updated_at": "2026-10-09T17:41:31.693Z" },
   { "kind": "project", "id": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20", "title": "Launch", "snippet": "Pricing page and the launch plan", "rank": 0.12158542, "task_id": null, "project_id": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0", "meta": { "color": "oklch(0.7 0.15 30)", "emoji": "🚀", "status": null, "archived": false, "owner_id": "62cfb118-74ee-4ed0-9703-3fa5ce9f5ded" }, "updated_at": "2026-10-09T17:41:31.683Z" },
   { "kind": "person", "id": "56709045-a8fa-42c1-8c2b-80f424fe596e", "title": "Theo Hart", "snippet": "theo@demo.test", "rank": 1, "task_id": null, "project_id": null, "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0", "meta": { "role": "member", "email": "theo@demo.test", "title": null, "avatar_url": null }, "updated_at": null },
+  // 0052 extends search_all with goals (the same shape: kind, its quarter, status, owner, kind of goal, identity)
+  { "kind": "goal", "id": "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d", "title": "Pricing that pays", "snippet": null, "rank": 0.2, "task_id": null, "project_id": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20", "workspace_id": "32bcfe00-b584-4a9b-a861-d331bceb69b0", "meta": { "status": "at_risk", "owner_id": "a89a2412-b64a-49e4-bb75-10dc9466bba2", "period": "2026-Q4", "kind": "key_result", "icon": "💰", "color": null, "archived": false }, "updated_at": "2026-10-09T17:41:31.683Z" },
 ];
 
 describe("0048 rows → app types", () => {
@@ -104,12 +106,14 @@ describe("0048 rows → app types", () => {
   it("search hits: every kind, with its extras", () => {
     const hits = HITS.map(parseSearchHit);
     expect(hits.every(Boolean)).toBe(true);
-    const [task, comment, doc, project, person] = hits as SearchHit[];
+    const [task, comment, doc, project, person, goal] = hits as SearchHit[];
     expect(task).toMatchObject({ kind: "task", title: "Launch deck", taskId: task.id, source: "server", task: { status: "done", priority: "high", dueDate: "2026-10-09", parentId: null, archived: false } });
     expect(comment).toMatchObject({ kind: "comment", taskId: HITS[0].id, comment: { authorName: "Theo Hart", taskStatus: "done" } });
     expect(doc).toMatchObject({ kind: "doc", taskId: null, doc: { projectName: "Launch", icon: null } });
     expect(project).toMatchObject({ kind: "project", project: { emoji: "🚀", archived: false } });
     expect(person).toMatchObject({ kind: "person", title: "Theo Hart", person: { email: "theo@demo.test", role: "member" } });
+    expect(goal).toMatchObject({ kind: "goal", title: "Pricing that pays", goal: { period: "2026-Q4", status: "at_risk", kind: "key_result", icon: "💰", color: null, archived: false } });
+    expect(parseSearchHit({ ...HITS[5], meta: { status: "nonsense", kind: "dream" } })?.goal).toMatchObject({ status: null, kind: null });
     expect(parseSearchHit({ kind: "secret", id: "x" })).toBeNull();
     expect(groupSearchHits(hits as SearchHit[]).map((g) => g.label)).toEqual(SEARCH_GROUPS.map((g) => g.label));
   });
