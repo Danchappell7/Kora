@@ -82,6 +82,7 @@ begin
   -- (0058's own tables keep their policies: they still hold its data, read the way 0058 had it)
   for r in select * from (values
     ('workspaces', 'trg_workspaces_pa_guard'),
+    ('workspaces', 'trg_workspaces_pa_after'),
     ('projects', 'trg_projects_pa_guard'),
     ('projects', 'trg_projects_pa_after'),
     ('project_members', 'trg_project_members_guard'),

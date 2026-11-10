@@ -670,12 +670,13 @@ begin
 end; $$;
 
 -- 2n. held notices and pending webhooks when access narrows (a project, or a whole workspace when
--- p_project is null): what's waiting for someone who can't see it any more never goes
+-- p_project is null): what's waiting for someone who can't see it any more never goes. Only behind
+-- the switch: while it's off everything goes as it did before this file.
 create or replace function public.pa_flush_held(p_ws uuid, p_project uuid)
 returns void language plpgsql security definer set search_path = public as $$
 declare r record; np jsonb;
 begin
-  if p_ws is null then return; end if;
+  if p_ws is null or not public.pa_on(p_ws) then return; end if;
   if to_regclass('public.notify_queue') is not null then
     delete from public.notify_queue q
      where q.sent_at is null and q.task_id is not null
@@ -847,7 +848,7 @@ begin
     returning * into w;
     perform set_config('kanbo.pa_write', prev, true);
     perform public.pa_touch(p_ws);
-    if not was_on and w.project_access then perform public.pa_flush_held(p_ws, null); end if;
+    -- (switching on drops what's waiting for people who won't see it: trg_workspaces_pa_after)
     perform public.audit_log(p_ws,
       case when not was_on and w.project_access then 'project_access.on'
            when was_on and not w.project_access then 'project_access.off'
@@ -1030,6 +1031,16 @@ begin
     perform public.pa_detach_strays(new.id, null);
   end if;
   return new;
+end; $$;
+-- workspaces, after: switching on (set_project_access, or the SQL editor) drops held notices and
+-- pending webhooks for people who won't see their work
+create or replace function public.pa_trg_workspaces_after() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.project_access and not coalesce(old.project_access, false) then
+    perform public.pa_flush_held(new.id, null);
+  end if;
+  return null;
 end; $$;
 
 -- projects, before: a new project's visibility; visibility only through set_project_visibility();
@@ -1261,14 +1272,17 @@ create or replace function public.pa_trg_ws_members() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare g record; own uuid;
 begin
+  -- (and what's waiting for them goes: leaving, or becoming a guest, loses Whole workspace projects too)
   if tg_op = 'DELETE' then
     if old.user_id is not null then
       delete from public.project_members where workspace_id = old.workspace_id and user_id = old.user_id;
+      perform public.pa_flush_held(old.workspace_id, null);
     end if;
     return null;
   end if;
   if old.status = 'active' and new.status is distinct from 'active' and old.user_id is not null then
     delete from public.project_members where workspace_id = old.workspace_id and user_id = old.user_id;
+    perform public.pa_flush_held(old.workspace_id, null);
   end if;
   if old.user_id is not null and new.user_id is distinct from old.user_id then
     delete from public.project_members where workspace_id = old.workspace_id and user_id = old.user_id;
@@ -1276,6 +1290,7 @@ begin
   if new.status = 'active' and new.user_id is not null and new.role = 'guest' and old.role is distinct from 'guest' then
     update public.project_members set role = 'commenter'
      where workspace_id = new.workspace_id and user_id = new.user_id and role = 'editor';
+    perform public.pa_flush_held(new.workspace_id, null);
   end if;
   if old.status = 'invited' and new.status = 'active' and new.user_id is not null then
     select w.owner_id into own from public.workspaces w where w.id = new.workspace_id;
@@ -1484,11 +1499,23 @@ begin
   return new;
 end; $$;
 
--- webhooks: re-pointing an endpoint makes whoever did it its viewer (D19)
+-- webhooks: re-pointing an endpoint makes whoever did it its viewer (D19), and what's still queued for
+-- it (retries, the backlog) goes to the new address only if the new viewer can see it
 create or replace function public.pa_trg_webhooks_url() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  if new.url is distinct from old.url then new.url_set_by := coalesce(public.kanbo_actor(), old.url_set_by); end if;
+  if new.url is distinct from old.url then
+    new.url_set_by := coalesce(public.kanbo_actor(), old.url_set_by);
+    if new.workspace_id is not null and public.pa_on(new.workspace_id) then
+      update public.webhook_deliveries d
+         set state = 'failed', error = 'not sent: no longer visible', lease_until = null, next_attempt_at = null, updated_at = now()
+        from public.webhook_outbox o
+       where d.webhook_id = new.id and d.state = 'pending' and d.event <> 'ping' and o.id = d.outbox_id
+         and public.pa_webhook_project(o.event, o.payload) is not null
+         and public.pa_rank_or_binned(coalesce(new.url_set_by, new.created_by), new.workspace_id,
+                                      public.pa_webhook_project(o.event, o.payload)) < 1;
+    end if;
+  end if;
   return new;
 end; $$;
 
@@ -1792,7 +1819,7 @@ end; $$;
 do $trgfns$
 declare f text;
 begin
-  foreach f in array array['pa_trg_workspaces_guard', 'pa_trg_projects_guard', 'pa_trg_projects_after', 'pa_trg_project_members_guard',
+  foreach f in array array['pa_trg_workspaces_guard', 'pa_trg_workspaces_after', 'pa_trg_projects_guard', 'pa_trg_projects_after', 'pa_trg_project_members_guard',
                            'pa_trg_project_members_after', 'pa_trg_ws_members', 'pa_trg_tasks', 'pa_trg_tasks_after',
                            'pa_trg_status_update', 'pa_trg_status_update_comment', 'pa_trg_activity_gate', 'pa_trg_notify_queue_gate',
                            'pa_trg_webhook_deliveries_gate', 'pa_trg_webhooks_url', 'pa_trg_approval_reviewers', 'pa_trg_kudos',
@@ -1875,6 +1902,7 @@ returns table (tbl text, name text, timing text, fn text, needs_column text)
 language sql immutable set search_path = pg_catalog as $$
   values
     ('workspaces', 'trg_workspaces_pa_guard', 'before insert or update', 'pa_trg_workspaces_guard', null::text),
+    ('workspaces', 'trg_workspaces_pa_after', 'after update of project_access', 'pa_trg_workspaces_after', null),
     ('projects', 'trg_projects_pa_guard', 'before insert or update', 'pa_trg_projects_guard', null),
     ('projects', 'trg_projects_pa_after', 'after insert or update of visibility, owner_id, workspace_id', 'pa_trg_projects_after', null),
     ('project_members', 'trg_project_members_guard', 'before insert or update', 'pa_trg_project_members_guard', null),

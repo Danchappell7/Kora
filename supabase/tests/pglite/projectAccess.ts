@@ -1324,6 +1324,53 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [[hO, hME, hM2, hRe]]);
   });
 
+  await test("0058, switch on: what's queued for a webhook follows its viewer (re-pointed by someone who can't see it, its owner made a guest, or the switch turned on in the SQL editor: it's never sent)", async () => {
+    const got = await scenario(async (run) => {
+      const secret = "whsec_" + "b".repeat(43);
+      const mkHook = async (by: Who) => (await run(null, `insert into public.webhooks (workspace_id, created_by, url, events, secret) values ($1::uuid, $2::uuid, 'https://hooks.example.com/' || gen_random_uuid(), array['task.created'], $3) returning id::text as id`,
+        [w.ws, w.id[by], secret]))[0].id as string;
+      // (nothing else waiting, so the claim's per-workspace limits are all this test's)
+      await run(null, `update public.webhook_deliveries set state = 'failed' where state = 'pending'`);
+      await run(null, `update public.webhook_outbox set processed_at = now() where processed_at is null`);
+      const hME = await mkHook("ME"), hMC = await mkHook("MC");
+      const queue = async (title: string, project: string) => {
+        await run(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid)`, [w.id.O, title, project, w.ws]);
+        await run(null, `select public.webhook_claim_outbox(500)`);
+      };
+      const pending = async (hook: string) => (await run(null, `select o.payload #>> '{task,title}' as t from public.webhook_deliveries d join public.webhook_outbox o on o.id = d.outbox_id
+                                                                where d.webhook_id = $1::uuid and d.state = 'pending' order by 1`, [hook])).map((r) => r.t as string);
+      await queue("Zebra hooked PP", w.proj.PP);
+      await queue("Zebra hooked PW", w.proj.PW);
+      // ME's endpoint is down: the first try fails, and both wait for the next
+      const first = await run(null, `select delivery_id::text as id from public.webhook_claim_deliveries(50, 90) where webhook_id = $1::uuid`, [hME]);
+      for (const d of first) await run(null, `select public.webhook_record_result($1::uuid, 503)`, [d.id]);
+      const before = await pending(hME);
+      // Ari (an admin, not on PP) fixes the address
+      await run(w.id.A, `select public.update_webhook($1::uuid, 'https://hooks.example.com/fixed')`, [hME]);
+      const afterRepoint = await pending(hME);
+      await run(null, `update public.webhook_deliveries set next_attempt_at = now() - interval '1 minute' where webhook_id = $1::uuid and state = 'pending'`, [hME]);
+      const sent = (await run(null, `select payload #>> '{task,title}' as t from public.webhook_claim_deliveries(50, 90) where webhook_id = $1::uuid`, [hME])).map((r) => r.t as string);
+      // Mac's endpoint has a PW event waiting; Mac is made a guest (not on PW)
+      const macBefore = await pending(hMC);
+      await run(null, `update public.workspace_members set role = 'guest' where workspace_id = $1::uuid and user_id = $2::uuid`, [w.ws, w.id.MC]);
+      const macAfter = await pending(hMC);
+      // the switch off, M2's endpoint gets a PP event; then the SQL editor switches it on
+      await run(w.id.O, `select public.set_project_access($1::uuid, false)`, [w.ws]);
+      const hM2 = await mkHook("M2");
+      await queue("Zebra hooked PP off", w.proj.PP);
+      const offPending = await pending(hM2);
+      await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [w.ws]);
+      return { first: first.length, before, afterRepoint, sent, macBefore, macAfter, offPending, onPending: await pending(hM2) };
+    });
+    eq(got.first, 2, "both went out once");
+    eq(got.before, ["Zebra hooked PP", "Zebra hooked PW"], "and wait to be tried again");
+    eq(got.afterRepoint, ["Zebra hooked PW"], "re-pointed by Ari, only what Ari can see still waits");
+    eq(got.sent, ["Zebra hooked PW"], "so the new address never gets PP's");
+    eq([got.macBefore.includes("Zebra hooked PW"), got.macAfter.includes("Zebra hooked PW")], [true, false], "Mac's PW event goes when Mac becomes a guest");
+    eq(got.offPending, ["Zebra hooked PP off"], "with the switch off, Moe's endpoint gets PP's");
+    eq(got.onPending, [], "switched on in the SQL editor, it's never sent");
+  });
+
   // ---------------------------------------------------------------- 15. leaving, demotion, invites
   await test("0058: removing someone from the workspace deletes their project rows (contributor_ids follows); demoting to guest caps editor at commenter", async () => {
     const tx = await attempt(null, `select (select count(*)::int from public.project_members where user_id = $2::uuid and workspace_id = $1::uuid) as rows,
