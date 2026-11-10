@@ -5,7 +5,8 @@
      tasks done, lib/countRules), as on the project's own header;
    · a goal that tracks its own number reads how far it has come from
      its start towards its target, whichever way is better: "cut churn
-     from 8% to 5%" is 0% at 8% and 100% at 5%, not 100% on day one;
+     from 8% to 5%" is 0% at 8% and 100% at 5%, not 100% on day one
+     (and 0%, never 100%, until where it started is known);
    · a goal with key results under it, and no number of its own yet,
      rolls up as their weighted average (each counts its weight, 1 when
      unset; archived ones don't count).
@@ -23,25 +24,36 @@ export interface GoalProgress {
 
 const clamp = (n: number) => Math.max(0, Math.min(100, n));
 
-/** Where a goal's number started: its start value; else 0 when higher is better, and
- *  for lower is better wherever it stands now (so it reads 0% until it moves). */
-export function goalStartValue(g: Pick<Goal, "startValue" | "direction" | "current">): number {
+/** Where a goal's number started: its start value; else 0 when higher is better. Lower is
+ *  better has no start to assume ("cut churn from 8% to 5%" starts at 8, not 0): null until
+ *  it's set. */
+export function goalStartValue(g: Pick<Goal, "startValue" | "direction">): number | null {
   if (g.startValue != null && isFinite(g.startValue)) return g.startValue;
-  return g.direction === "lower" ? (g.current ?? 0) : 0;
+  return g.direction === "lower" ? null : 0;
 }
 
-/** A goal's own number as a % of the way from its start to its target (0–100). */
-export function goalValuePct(g: Pick<Goal, "startValue" | "direction" | "current" | "target">): number {
-  if (g.target == null || !isFinite(g.target)) return 0;
+/** What a goal's own number still needs before its % means anything: a target, or where it
+ *  started (lower is better with no start, or a start that's already at or past the target
+ *  the wrong way); null once it's measurable. */
+export function goalNumbersGap(g: Pick<Goal, "startValue" | "direction" | "target">): "target" | "start" | null {
   const start = goalStartValue(g);
-  const span = g.target - start;
-  if (span === 0) return 0;
-  return clamp((((g.current ?? start) - start) / span) * 100);
+  if (g.target == null || !isFinite(g.target)) return "target";
+  if (start == null) return "start";
+  if (g.direction === "lower" ? start > g.target : g.target > start) return null;
+  return g.startValue == null ? "target" : "start";
+}
+
+/** A goal's own number as a % of the way from its start to its target (0–100); 0 until its
+ *  numbers are set (never 100% because a start is missing or on the wrong side). */
+export function goalValuePct(g: Pick<Goal, "startValue" | "direction" | "current" | "target">): number {
+  if (goalNumbersGap(g)) return 0;
+  const start = goalStartValue(g)!, target = g.target!;
+  return clamp((((g.current ?? start) - start) / (target - start)) * 100);
 }
 
 /** Does the goal track a number of its own (has it moved off its start)? */
 export const tracksOwnNumber = (g: Pick<Goal, "startValue" | "direction" | "current">): boolean =>
-  g.current != null && g.current !== goalStartValue(g);
+  g.current != null && g.current !== (goalStartValue(g) ?? g.current);
 
 /** A sub-goal's say in its parent's roll-up. */
 export const goalWeight = (g: Pick<Goal, "weight">): number => (g.weight != null && g.weight > 0 ? g.weight : 1);

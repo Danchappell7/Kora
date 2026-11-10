@@ -4,8 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Goal, GoalCheckin, GoalLink, Project, StatusUpdate, Task } from "../data/types";
 import {
-  askGoals, briefGoalLookup, checkinAge, goalGroup, goalInRange, goalsBehindForMe, goalsForProject, goalsForTask, goalsSummary, goalSpan,
-  hasWorkBehind, periodShort, projectDot, quarterOptions, readGoals, seeableGoals, servesLabel,
+  askGoals, briefGoalLookup, checkinAge, goalCarriedOver, goalGroup, goalInRange, goalsBehindForMe, goalsForProject, goalsForTask, goalsInQuarter, goalsSummary, goalSpan,
+  hasWorkBehind, paceWords, periodShort, projectDot, quarterOptions, readGoals, seeableGoals, servesLabel,
 } from "./goalFlow";
 
 const TODAY = new Date(2026, 10, 10);   // 10 Nov 2026: day 40 of Q4's 91 (44% of the way)
@@ -35,6 +35,29 @@ describe("a goal's read", () => {
     expect(reads.get("proj")).toMatchObject({ pct: 0, standing: "behind" });
     expect(reads.get("later")!.standing).toBe("early");
     expect(reads.get("flat")).toMatchObject({ pace: null, standing: "behind" });   // no pace line: its status speaks
+  });
+  it("a goal whose own number isn't set up yet has no pace, no suggestion and isn't counted: it asks for what's missing", () => {
+    const reads = readGoals([goal({ id: "cut", direction: "lower", startValue: null, target: 5, current: 8 }), goal({ id: "zero", target: 0, current: 0 })], TASKS, TODAY);
+    expect(reads.get("cut")).toMatchObject({ pct: 0, pace: null, standing: "early", needs: "start" });
+    expect(paceWords(reads.get("cut")!)).toBe("Set where it started");
+    expect(reads.get("zero")).toMatchObject({ needs: "target", standing: "early" });
+    expect(goalsSummary([...reads.values()]).plain).toBe("2 goals, none started yet.");
+  });
+});
+
+describe("a quarter's goals", () => {
+  it("the quarter you're in carries over open goals whose time ran out before it; other quarters don't", () => {
+    const late = goal({ id: "late", period: null, periodStart: null, periodEnd: null, createdAt: "2026-07-01T09:00:00Z", due: "2026-09-15", target: 100, current: 10, startValue: 0 });
+    const doneLate = { ...late, id: "doneLate", status: "done" as const };
+    const reads = readGoals([late, doneLate, onPace], TASKS, TODAY);
+    const [q3, q4, q1] = quarterOptions(TODAY).map((q) => q.range!);
+    expect(goalInRange(late, q4)).toBe(false);
+    expect(goalCarriedOver(reads.get("late")!, q4)).toBe(true);
+    expect(goalsInQuarter([late, doneLate, onPace], reads, q4, TODAY).map((g) => g.id)).toEqual(["late", "on"]);
+    expect(goalsInQuarter([late, doneLate, onPace], reads, q3, TODAY).map((g) => g.id)).toEqual(["late", "doneLate"]);
+    expect(goalsInQuarter([late, doneLate, onPace], reads, q1, TODAY).map((g) => g.id)).toEqual([]);
+    expect(goalsInQuarter([late, onPace], reads, null, TODAY)).toHaveLength(2);
+    expect(reads.get("late")!.pace!.line).toBe("Past due at 10%");
   });
 });
 
@@ -100,7 +123,9 @@ describe("quarters and groups", () => {
     expect(goalGroup(top, GOALS, "me")).toBe("company");
     expect(goalGroup(behind, GOALS, "me")).toBe("mine");
     expect(goalGroup(behind, GOALS, "maya")).toBe("team");
-    expect(goalGroup(goal({ id: "orphan", parentId: "gone" }), GOALS, "maya")).toBe("company");   // its parent is out of sight
+    // a key result under a leadership-only goal you can't see is still a key result, never a company goal
+    expect(goalGroup(goal({ id: "orphan", parentId: "hidden", ownerId: "sana", contributors: [] }), GOALS, "maya")).toBe("team");
+    expect(goalGroup(goal({ id: "orphan", parentId: "hidden", ownerId: "maya", contributors: [] }), GOALS, "maya")).toBe("mine");
     expect(goalGroup(goal({ id: "p", workspaceId: null }), GOALS, "me")).toBe("mine");
   });
 });
@@ -138,11 +163,11 @@ describe("the brief's goal line, Kanbo noticed and Ask", () => {
   it("finds the goal of yours a task moves (the furthest behind first); none of yours, nothing", () => {
     const forMe = briefGoalLookup("me", GOALS, links, reads);
     // t1 moves my key result and Launch (I help on it, through its project): Launch is further behind
-    expect(forMe(TASKS[0])).toEqual({ goalId: "proj", name: "Launch", behind: true });
-    expect(briefGoalLookup("me", GOALS.filter((g) => g.id !== "proj"), links, reads)(TASKS[0])).toEqual({ goalId: "behind", name: "Win back 120 accounts", behind: true });
+    expect(forMe(TASKS[0])).toEqual({ goalId: "proj", name: "Launch", behind: true, icon: null, color: null });
+    expect(briefGoalLookup("me", GOALS.filter((g) => g.id !== "proj"), links, reads)(TASKS[0])).toEqual({ goalId: "behind", name: "Win back 120 accounts", behind: true, icon: null, color: null });
     expect(forMe(TASKS[1])).toBeNull();
     // Maya owns Launch (p1): t1 moves it for her
-    expect(briefGoalLookup("maya", GOALS, links, reads)(TASKS[0])).toEqual({ goalId: "proj", name: "Launch", behind: true });
+    expect(briefGoalLookup("maya", GOALS, links, reads)(TASKS[0])).toEqual({ goalId: "proj", name: "Launch", behind: true, icon: null, color: null });
     expect(briefGoalLookup("sam", GOALS, links, reads)(TASKS[0])).toBeNull();
   });
   it("lists the goals you own that are behind and take a check-in, key results first", () => {

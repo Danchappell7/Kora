@@ -3,9 +3,9 @@
 import { describe, expect, it } from "vitest";
 import type { Goal } from "../data/types";
 import { isPeriod, periodChoices, periodLabel, periodRange, quarterOf } from "./goalPeriods";
-import { goalProgressMap, goalStartValue, goalValuePct, tracksOwnNumber } from "./goalProgress";
+import { goalNumbersGap, goalProgressMap, goalStartValue, goalValuePct, tracksOwnNumber } from "./goalProgress";
 import { goalPace, groupGoalPace, paceCurve, paceDisagrees, paceWindow } from "./goalPace";
-import { canEditGoal, canHandOverGoal, canMakeCompanyGoal, canPlaceGoal, canSeeGoal, isGoalPerson } from "./goalRules";
+import { canDeleteGoal, canEditGoal, canHandOverGoal, canMakeCompanyGoal, canPlaceGoal, canSeeGoal, isGoalPerson } from "./goalRules";
 import { goalsBehind } from "./group";
 
 const g = (o: Partial<Goal> & { id: string }): Goal => ({ name: o.id, status: "on_track", workspaceId: "ws", ...o });
@@ -60,12 +60,26 @@ describe("progress: direction-aware, weighted", () => {
     expect(goalValuePct({ target: 0, current: 3 })).toBe(0);
     expect(goalValuePct({ current: 3 })).toBe(0);
   });
-  it("lower is better with no start value starts where it stands (0% until it moves)", () => {
-    expect(goalStartValue({ direction: "lower", current: 12 })).toBe(12);
+  it("lower is better with no start value has nothing to measure from: 0% (never 100%) until it's set", () => {
+    expect(goalStartValue({ direction: "lower" })).toBeNull();
+    expect(goalNumbersGap({ direction: "lower", target: 5 })).toBe("start");
     expect(goalValuePct({ direction: "lower", target: 5, current: 12 })).toBe(0);
+    expect(goalValuePct({ direction: "lower", target: 5, current: 5 })).toBe(0);
     expect(tracksOwnNumber({ direction: "lower", current: 12 })).toBe(false);
     expect(tracksOwnNumber({ current: 4 })).toBe(true);
     expect(tracksOwnNumber({ current: 0 })).toBe(false);
+  });
+  it("Lower picked before the numbers (a start of 0 under a target of 5) reads 0%, not 'Target reached'", () => {
+    const toggledFirst = { direction: "lower" as const, startValue: 0, target: 5, current: 8 };
+    expect(goalNumbersGap(toggledFirst)).toBe("start");
+    expect(goalValuePct(toggledFirst)).toBe(0);
+    expect(goalValuePct({ ...toggledFirst, startValue: 8 })).toBe(0);
+    expect(goalValuePct({ ...toggledFirst, startValue: 8, current: 5 })).toBe(100);
+    // higher is better: a target at or under its start needs one or the other
+    expect(goalNumbersGap({ target: 0 })).toBe("target");
+    expect(goalNumbersGap({ startValue: 10, target: 5 })).toBe("start");
+    expect(goalNumbersGap({ target: 100 })).toBeNull();
+    expect(goalNumbersGap({ startValue: 3 })).toBe("target");
   });
   it("rolls key results up by weight, archived ones not counted", () => {
     const goals = [
@@ -91,6 +105,9 @@ describe("pace and the suggested status", () => {
   const q4 = { periodStart: "2026-10-01", periodEnd: "2026-12-31" };
   it("runs from the period's start (else the day it was made) to the due date (else the period's end)", () => {
     expect(paceWindow(q4)).toEqual({ start: "2026-10-01", end: "2026-12-31" });
+    // made before its quarter: from the quarter's first day; made part-way through: from that day
+    expect(paceWindow({ ...q4, createdAt: "2026-09-20T09:00:00Z" })).toEqual({ start: "2026-10-01", end: "2026-12-31" });
+    expect(paceWindow({ ...q4, createdAt: "2026-11-10T09:00:00Z" })).toEqual({ start: "2026-11-10", end: "2026-12-31" });
     expect(paceWindow({ ...q4, due: "2026-11-30" })).toEqual({ start: "2026-10-01", end: "2026-11-30" });
     expect(paceWindow({ createdAt: "2026-09-15T09:00:00Z", due: "2026-12-15" })).toEqual({ start: "2026-09-15", end: "2026-12-15" });
     expect(paceWindow({ due: "2026-12-15" })).toBeNull();
@@ -101,6 +118,10 @@ describe("pace and the suggested status", () => {
     expect(goalPace(q4, 52, TODAY)).toMatchObject({ state: "ahead", line: "Ahead of pace", suggest: "on_track" });
     expect(goalPace(q4, 32, TODAY)).toMatchObject({ gap: -12, state: "behind", line: "Behind pace by 12%", suggest: "at_risk" });
     expect(goalPace(q4, 20, TODAY)).toMatchObject({ line: "Behind pace by 24%", suggest: "off_track" });
+  });
+  it("a goal made today, mid-quarter, is on pace (not 44% behind with Off track suggested)", () => {
+    expect(goalPace({ ...q4, createdAt: new Date(2026, 10, 10, 9).toISOString() }, 0, TODAY)).toMatchObject({ expected: 0, state: "on", line: "On pace" });
+    expect(goalPace({ ...q4, createdAt: new Date(2026, 9, 1, 9).toISOString() }, 0, TODAY)).toMatchObject({ state: "behind", suggest: "off_track" });
   });
   it("past its date unfinished is off track; reaching the target suggests Achieved; before it starts, nothing", () => {
     expect(goalPace({ ...q4, due: "2026-11-01" }, 60, TODAY)).toMatchObject({ state: "late", line: "Past due at 60%", suggest: "off_track" });
@@ -142,6 +163,13 @@ describe("who may do what (as 0052)", () => {
     expect(canEditGoal(team({ ownerId: me }), { me, role: "guest" })).toBe(false);
     expect(canEditGoal(g({ id: "p", workspaceId: null }), { me, role: null })).toBe(true);
     expect(isGoalPerson(team({ contributors: [me] }), me)).toBe(true);
+  });
+  it("a team goal with key results under it is deleted by owners and admins only (its key results would become company goals)", () => {
+    expect(canDeleteGoal(team({ ownerId: me }), 0, { me, role: "member" })).toBe(true);
+    expect(canDeleteGoal(team({ ownerId: me }), 2, { me, role: "member" })).toBe(false);
+    expect(canDeleteGoal(team(), 2, { me, role: "admin" })).toBe(true);
+    expect(canDeleteGoal(team(), 0, { me, role: "member" })).toBe(false);
+    expect(canDeleteGoal(g({ id: "p", workspaceId: null }), 3, { me, role: null })).toBe(true);
   });
   it("only owners, admins and the goal's owner hand it over (not its contributors)", () => {
     expect(canHandOverGoal(team({ contributors: [me] }), { me, role: "member" })).toBe(false);

@@ -4,8 +4,10 @@
    risk or Off track (or Achieved), the goal's owner accepts it in
    one tap or keeps their own call, and nothing here ever changes a
    status by itself.
-   · the pace runs from the goal's start (its period's first day, else
-     the day it was made) to its due date (else its period's last day);
+   · the pace runs from the goal's start (its period's first day, or the
+     day it was made when that's later: a goal set mid-quarter starts
+     from where it stood then, not 44% behind) to its due date (else its
+     period's last day);
    · linear: evenly along the way; back-loaded: slow, then fast (most of
      it lands late, like presales); off: no pace line;
    · within 5% of where it should be is on pace; behind by up to 20% is
@@ -43,11 +45,12 @@ const localIso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad
 const dayNo = (iso: string) => { const [y, m, d] = iso.slice(0, 10).split("-").map(Number); return Date.UTC(y, m - 1, d) / 86_400_000; };
 const shortDay = (iso: string) => { const [, m, d] = iso.slice(0, 10).split("-").map(Number); return `${d} ${MONTHS[m - 1]}`; };
 
-/** The goal's pace window: from its period's start (else the day it was made, in local
- *  time) to its due date (else its period's end). Null when either end is missing. */
+/** The goal's pace window: from its period's start, or the day it was made (in local time)
+ *  when that's later or there's no period, to its due date (else its period's end). Null
+ *  when either end is missing. */
 export function paceWindow(g: Pick<Goal, "periodStart" | "periodEnd" | "due" | "createdAt">): { start: string; end: string } | null {
   const made = g.createdAt ? localIso(new Date(g.createdAt)) : undefined;
-  const start = g.periodStart || made;
+  const start = g.periodStart && made ? (made > g.periodStart ? made : g.periodStart) : g.periodStart || made;
   const end = g.due || g.periodEnd || undefined;
   if (!start || !end || dayNo(end) <= dayNo(start)) return null;
   return { start, end };

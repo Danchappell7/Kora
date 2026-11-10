@@ -18,7 +18,7 @@
    Pure: no React, no I/O, no clock of its own.
    ============================================================ */
 import type { Goal, GoalCheckin, GoalLink, Project, Role, StatusUpdate, Task } from "../data/types";
-import { goalProgressMap, type GoalProgress } from "./goalProgress";
+import { goalNumbersGap, goalProgressMap, type GoalProgress } from "./goalProgress";
 import { goalPace, type PaceRead } from "./goalPace";
 import { periodLabel, periodRange, quarterOf } from "./goalPeriods";
 import { canSeeGoal, isGoalPerson } from "./goalRules";
@@ -30,9 +30,15 @@ export interface GoalRead {
   progress: GoalProgress;
   pct: number;
   pace: PaceRead | null;
-  /** "on" (on, ahead, reached, or no pace line and not marked behind), "behind" (behind or past due), "early" (not started) */
+  /** "on" (on, ahead, reached, or no pace line and not marked behind), "behind" (behind or past due),
+   *  "early" (not started, or its own number isn't set up yet) */
   standing: "on" | "behind" | "early";
+  /** a goal that tracks its own number but can't be measured yet: it needs a target, or where it started */
+  needs?: "target" | "start";
 }
+
+/** What a goal that isn't set up yet says in place of its pace. */
+export const NEEDS_LINE: Record<NonNullable<GoalRead["needs"]>, string> = { target: "Set a target", start: "Set where it started" };
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const localIso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -45,11 +51,13 @@ export function readGoals(goals: Goal[], tasks: Task[], today: Date): Map<string
   const out = new Map<string, GoalRead>();
   for (const g of goals) {
     const p = progress.get(g.id) ?? { pct: 0, source: "manual" as const, children: 0 };
-    const pace = goalPace(g, p.pct, today);
+    // its own number with nothing to measure against yet: no pace, no suggestion, not counted
+    const needs = p.source === "manual" && g.status !== "done" ? goalNumbersGap(g) ?? undefined : undefined;
+    const pace = needs ? null : goalPace(g, p.pct, today);
     const standing: GoalRead["standing"] = pace
       ? pace.state === "behind" || pace.state === "late" ? "behind" : pace.state === "early" ? "early" : "on"
-      : g.status === "at_risk" || g.status === "off_track" ? "behind" : "on";
-    out.set(g.id, { goal: g, progress: p, pct: p.pct, pace, standing });
+      : g.status === "at_risk" || g.status === "off_track" ? "behind" : needs ? "early" : "on";
+    out.set(g.id, { goal: g, progress: p, pct: p.pct, pace, standing, ...(needs ? { needs } : {}) });
   }
   return out;
 }
@@ -110,8 +118,8 @@ export function servesLabel(goal: Goal, today: Date): string {
   return p ? `${p} · ${goal.name}` : goal.name;
 }
 
-/** "Behind pace by 12%", "On pace", … for a row; "" when there's no pace line. */
-export const paceWords = (r: GoalRead): string => (r.pace ? r.pace.line : "");
+/** "Behind pace by 12%", "On pace", "Set a target", … for a row; "" when there's no pace line. */
+export const paceWords = (r: GoalRead): string => (r.pace ? r.pace.line : r.needs ? NEEDS_LINE[r.needs] : "");
 
 /* ---------------- the quarter a goal belongs to ---------------- */
 
@@ -127,6 +135,23 @@ export function goalSpan(g: Pick<Goal, "period" | "periodStart" | "periodEnd" | 
 export function goalInRange(g: Goal, range: { start: string; end: string }): boolean {
   const s = goalSpan(g);
   return (!s.start || s.start <= range.end) && (!s.end || s.end >= range.start);
+}
+
+/** Is it still open from before this range (its time ran out first, and it's neither achieved
+ *  nor archived)? The quarter you're in carries these over, so a goal past its date never
+ *  drops out of sight. */
+export function goalCarriedOver(r: Pick<GoalRead, "goal" | "pct">, range: { start: string; end: string }): boolean {
+  const g = r.goal, end = goalSpan(g).end;
+  return !g.archivedAt && g.status !== "done" && r.pct < 100 && !!end && end < range.start;
+}
+
+/** The goals a quarter shows: the ones that run in it, and, in the quarter you're in, the open
+ *  ones carried over from before it. */
+export function goalsInQuarter(goals: Goal[], reads: Map<string, GoalRead>, range: { start: string; end: string } | null, today: Date): Goal[] {
+  if (!range) return goals;
+  const now = localIso(today);
+  const current = range.start <= now && now <= range.end;
+  return goals.filter((g) => goalInRange(g, range) || (current && !!reads.get(g.id) && goalCarriedOver(reads.get(g.id)!, range)));
 }
 
 export interface QuarterOption { value: string; label: string; range: { start: string; end: string } | null }
@@ -152,11 +177,11 @@ export type GoalGroup = "company" | "team" | "mine";
 export const GROUP_LABEL: Record<GoalGroup, string> = { company: "Company", team: "Team", mine: "Mine" };
 
 /** Which group a goal sits in: a top-level goal is the company's; a key result is yours when
- *  you own it or help on it, else the team's. (Personal goals are all yours.) */
+ *  you own it or help on it, else the team's (under a goal you can't see, too: it's never a
+ *  company goal). (Personal goals are all yours.) */
 export function goalGroup(g: Goal, all: Goal[], me: string): GoalGroup {
   if ((g.workspaceId ?? null) === null) return "mine";
-  const parent = g.parentId && g.parentId !== g.id ? all.find((x) => x.id === g.parentId) : undefined;
-  if (!parent) return "company";
+  if (!g.parentId || g.parentId === g.id) return "company";
   return isGoalPerson(g, me) ? "mine" : "team";
 }
 
@@ -228,7 +253,7 @@ export const takesCheckins = (r: GoalRead | undefined): boolean => !!r && r.prog
 
 /* ---------------- the Today brief's goal line ---------------- */
 
-export interface BriefGoal { goalId: string; name: string; behind: boolean }
+export interface BriefGoal { goalId: string; name: string; behind: boolean; icon?: string | null; color?: string | null }
 
 /** For the brief: the goal a task moves, among the goals you own or help on (the one furthest
  *  behind first); null when it moves none of yours. */
@@ -239,7 +264,7 @@ export function briefGoalLookup(me: string, goals: Goal[], links: GoalLink[], re
     const served = goalsForTask(task, mine, links);
     if (!served.length) return null;
     const best = [...served].sort((a, b) => (reads.get(a.id)?.pace?.gap ?? 0) - (reads.get(b.id)?.pace?.gap ?? 0))[0];
-    return { goalId: best.id, name: best.name, behind: reads.get(best.id)?.standing === "behind" };
+    return { goalId: best.id, name: best.name, behind: reads.get(best.id)?.standing === "behind", icon: best.icon ?? null, color: best.color ?? null };
   };
 }
 

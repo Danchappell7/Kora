@@ -6,7 +6,8 @@
      (never guests); a leadership-only one for owners and admins, its
      owner and its contributors;
    · edit, delete, check in, link work: owners and admins, the goal's
-     owner and its contributors;
+     owner and its contributors (deleting a team goal with key results
+     under it, which would make them company goals: owners and admins);
    · hand over (owner, contributors, who can see it): owners and admins
      and the goal's owner;
    · create: a company goal (a team goal with no parent) is for owners and
@@ -38,6 +39,13 @@ export function canSeeGoal(g: Rules, { me, role }: Who): boolean {
 export function canEditGoal(g: Rules, { me, role }: Who): boolean {
   if (isPersonal(g)) return true;
   return writes(role) && (runs(role) || isGoalPerson(g, me));
+}
+
+/** May they delete it? Its key results stay, as goals of their own (top-level: company goals,
+ *  which are for owners and admins), so a team goal with any under it is theirs to delete. */
+export function canDeleteGoal(g: Rules, childCount: number, who: Who): boolean {
+  if (!canEditGoal(g, who)) return false;
+  return isPersonal(g) || childCount === 0 || runs(who.role);
 }
 
 /** May they change its owner, its contributors and who can see it? */
