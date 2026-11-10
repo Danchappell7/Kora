@@ -26,11 +26,16 @@ export function useAwayNoticed({ tasks, today, moveDeps, names }: {
   const s = useAvailability();
   const nameRef = useRef(names);
   nameRef.current = names;
-  const noticed = useMemo(() => (moveDeps ? awayNoticed({ tasks, today, s, nameOf: (id) => getMember(id)?.name || nameRef.current?.(id) || "" }) : []),
-    [tasks, today, s, moveDeps]);
-  const onMove = useCallback((taskIds: string[], to: string, assignTo?: string) => {
+  // (0058: only work you can change: a card never offers to move what you can only view)
+  const noticed = useMemo(() => {
+    if (!moveDeps) return [];
+    const canEdit = moveDeps().canEdit;
+    return awayNoticed({ tasks: canEdit ? tasks.filter(canEdit) : tasks, today, s, nameOf: (id) => getMember(id)?.name || nameRef.current?.(id) || "" });
+  }, [tasks, today, s, moveDeps]);
+  const onMove = useCallback((ids: string[], to: string, assignTo?: string) => {
     if (!moveDeps) return;
     const deps = moveDeps();
+    const taskIds = deps.canEdit ? ids.filter((id) => { const t = deps.tasks.find((x) => x.id === id); return !t || deps.canEdit!(t); }) : ids;
     if (assignTo) {
       const give = awayGivePatches([...deps.tasks], taskIds, assignTo);
       if (!give.apply.length) return;

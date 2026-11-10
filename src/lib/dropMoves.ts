@@ -22,6 +22,8 @@ export interface MoveDeps {
   members?: readonly Pick<WorkspaceMember, "userId" | "workspaceId" | "status">[];
   /** 0058: can this person see the task's project (as it'd be: project access on)? None given: everyone can */
   canSee?: (userId: string, task: Pick<Task, "workspaceId" | "projectId">) => boolean;
+  /** 0058: can you change this task (edit rights on its project)? None given: you can */
+  canEdit?: (task: Pick<Task, "workspaceId" | "projectId">) => boolean;
   /** a project's name, for what's said about it */
   projectName?: (projectId: string) => string | undefined;
 }
@@ -100,19 +102,23 @@ export function reassignTasks(taskIds: string[], person: Pick<Member, "id" | "na
   const already: Task[] = [];
   const outside: Task[] = [];
   const blind: Task[] = [];
+  const viewOnly: Task[] = [];
   for (const t of picked) {
     if (t.assigneeId === person.id) { already.push(t); continue; }
     const ws = t.workspaceId ?? null;
     // a personal task has no team to hand it to
     if (ws === null || t.archivedAt || !isMember(ws)) { outside.push(t); continue; }
-    // (0058: nor can it go to someone who can't see its project)
+    // (0058: nor is it yours to hand on when you can only view its project, nor can it go to someone who can't see it)
+    if (deps.canEdit && !deps.canEdit(t)) { viewOnly.push(t); continue; }
     if (deps.canSee && !deps.canSee(person.id, t)) { blind.push(t); continue; }
     moved.push(t);
   }
-  const skipped = [...already, ...outside, ...blind].map((t) => t.id);
+  const skipped = [...already, ...outside, ...viewOnly, ...blind].map((t) => t.id);
   const blindWhere = blind.length ? deps.projectName?.(blind[0].projectId) ?? "that project" : "";
   if (!moved.length) {
-    const message = blind.length && !outside.length
+    const message = viewOnly.length && !outside.length && !blind.length
+      ? viewOnlyWords(viewOnly, deps)
+      : blind.length && !outside.length
       ? `${person.name || "They"} can't see ${[...new Set(blind.map((t) => deps.projectName?.(t.projectId) ?? "that project"))].join(" or ")}, so ${blind.length === 1 ? `${quote(blind[0].title)} stays` : "these tasks stay"} with ${blind.length === 1 ? "its assignee" : "their assignees"}`
       : already.length && !outside.length
       ? (already.length === 1 ? `${quote(already[0].title)} is already with ${first}` : `Already with ${first}`)
@@ -127,6 +133,13 @@ export function reassignTasks(taskIds: string[], person: Pick<Member, "id" | "na
   if (already.length) message += ` · ${already.length} ${already.length === 1 ? "was" : "were"} already theirs`;
   if (outside.length) message += ` · ${outside.length} stayed put`;
   if (blind.length) message += ` · ${blind.length} stayed put: ${first} can't see ${blind.length === 1 ? blindWhere : "their projects"}`;
+  if (viewOnly.length) message += ` · ${viewOnly.length} you can only view stayed put`;
   deps.toast(message, () => { void deps.updateTasks(before); });
   return { moved: moved.map((t) => t.id), skipped, message };
+}
+
+/** What's said when every task picked is one you can only view (0058): "You can view Fee review, but not change it". */
+function viewOnlyWords(tasks: readonly Pick<Task, "projectId">[], deps: Pick<MoveDeps, "projectName">): string {
+  const names = [...new Set(tasks.map((t) => deps.projectName?.(t.projectId) ?? ""))];
+  return names.length === 1 && names[0] ? `You can view ${names[0]}, but not change it` : tasks.length === 1 ? "You can view that task, but not change it" : "You can view these tasks, but not change them";
 }

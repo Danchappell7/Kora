@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type { Task } from "../../data/types";
 import { refreshClock } from "../../data/data";
 import { EMPTY_AVAILABILITY, getAvailability, resetAvailability, updateAvailability } from "../../lib/availability";
 import { resetDemoAvailability } from "../../lib/availabilitySync";
 import type { MoveDeps } from "../../lib/dropMoves";
 import { WorkloadView } from "./WorkloadView";
+import { useWorkloadMoves } from "../availability/WorkloadParts";
 
 // Tuesday 10 November 2026: the week runs Mon 9 – Sun 15 Nov
 const NOW = new Date(2026, 10, 10, 10);
@@ -124,6 +125,35 @@ describe("Workload with the team's shared weeks (0055)", () => {
     render(<WorkloadView workspaceId="ws" members={members} onOpen={() => {}} tasks={[busy]} moveDeps={d.moveDeps} />);
     expect(document.querySelector(".kload-notice[data-tone='signal']")).toHaveTextContent(/What's left is already under way: drag a task to a later week, or to (Theo|Sana)\b/);
     expect(screen.queryByRole("button", { name: "Preview rebalance" })).toBeNull();
+  });
+  it("(0058) a task you can only view offers no Move, isn't rebalanced, and a drop of it is refused with a word", () => {
+    share();
+    const fees = task({ id: "fees", title: "Compare partner fee bands", projectId: "p-fees", dueDate: "2026-11-12", effortHours: 20 });
+    const mine = task({ id: "faq", title: "FAQ copy", dueDate: "2026-11-12", effortHours: 2 });
+    const rest = task({ id: "rest", status: "progress", dueDate: "2026-11-12", effortHours: 20 });
+    const updateTasks = vi.fn();
+    const toast = vi.fn();
+    const moveDeps = (): MoveDeps => ({ tasks: [fees, mine, rest], updateTasks, toast, canEdit: (t) => t.projectId !== "p-fees", projectName: (id) => (id === "p-fees" ? "Fee review" : undefined) });
+    render(<WorkloadView workspaceId="ws" members={members} onOpen={() => {}} tasks={[fees, mine, rest]} moveDeps={moveDeps} />);
+    fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
+    expect(screen.queryByRole("button", { name: "Move Compare partner fee bands" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Move FAQ copy" })).toBeInTheDocument();
+    // Kanbo's rebalance hands on the 2h FAQ copy, never the 20h fee bands (without the rule, those went first)
+    fireEvent.click(screen.getByRole("button", { name: "Preview rebalance" }));
+    const preview = screen.getByRole("region", { name: "Rebalance preview" });
+    expect(preview).toHaveTextContent("FAQ copy");
+    expect(preview).not.toHaveTextContent("fee bands");
+    fireEvent.click(within(preview).getByRole("button", { name: "Apply rebalance" }));
+    expect(updateTasks).toHaveBeenCalledWith([{ id: "faq", patch: { assigneeId: expect.any(String) } }]);
+    // a drop (or the Move menu) of it: refused, said once; with others, they go and it stays
+    const { result } = renderHook(() => useWorkloadMoves({ moveDeps, workspaceId: "ws", today: NOW, nameOf: () => "Sana Rao" }));
+    toast.mockClear(); updateTasks.mockClear();
+    result.current(["fees"], "sana", null);
+    expect(updateTasks).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenLastCalledWith("You can view Fee review, but not change it");
+    result.current(["fees", "faq"], "sana", null);
+    expect(updateTasks).toHaveBeenLastCalledWith([{ id: "faq", patch: { assigneeId: "sana" } }]);
+    expect(toast.mock.calls[toast.mock.calls.length - 1][0]).toBe("Gave “FAQ copy” to Sana · 1 you can only view stayed put");
   });
   it("without the app's update path (a guest, or no host), nothing can be moved", () => {
     share();

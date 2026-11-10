@@ -55,6 +55,8 @@ export function planRebalance(input: {
   isOff?: (id: string, iso: string) => boolean;
   /** asked last (a business's owner, who usually carries other businesses' work too) */
   lastResort?: (id: string) => boolean;
+  /** (0058) may this task be handed on: you can change it (none given: every one) */
+  canMove?: (task: Task) => boolean;
 }): RebalancePlan {
   const { tasks, weekStart, today } = input;
   const team = input.members.filter((m) => !m.guest).map((m) => m.id);
@@ -77,7 +79,8 @@ export function planRebalance(input: {
   for (const from of over) {
     // work not yet started, that someone else could pick up: a top-level task (sub-tasks go with their parent)
     const candidates = (rows.get(from)?.items ?? [])
-      .filter((i) => i.task.status === "todo" && !i.task.parentId && !i.task.isMilestone && !!i.task.workspaceId && i.hours > 0)
+      .filter((i) => i.task.status === "todo" && !i.task.parentId && !i.task.isMilestone && !!i.task.workspaceId && i.hours > 0
+        && (!input.canMove || input.canMove(i.task)))
       .sort((a, b) => b.hours - a.hours || (a.task.dueDate ?? "9999").localeCompare(b.task.dueDate ?? "9999") || a.task.id.localeCompare(b.task.id));
     for (const item of candidates) {
       if (moves.length >= MAX_MOVES || load[from] <= capOf[from]) break;

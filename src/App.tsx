@@ -3618,19 +3618,22 @@ export default function App() {
     const patches = new Map<string, Partial<Task>>();
     const notes = new Set<string>();
     const wsIds: (string | null | undefined)[] = [];
+    const rows: Task[] = [];
     for (const { id, patch: given } of list) {
       const prev = all.find((t) => t.id === id); if (!prev) continue;
       const p: Partial<Task> = { ...given };
       const note = retarget(prev, p); if (note) notes.add(note);
       Object.assign(p, releasedPlan(prev, p));
       wsIds.push(prev.workspaceId, "workspaceId" in p ? p.workspaceId : undefined);
+      rows.push(prev);
       if (Object.keys(p).length) { patches.set(id, p); cascadeToDescendants(prev, p, all, patches); }
     }
     if (!patches.size) { if (notes.size) toastInfo([...notes][0]); return; }
-    if (denyGuest(wsIds)) return;
+    // (0058: the moves leave out work you can only view; this is the backstop)
+    if (denyGuest(wsIds) || denyEdit(rows)) return;
     updateTasks(patches);
     if (notes.size === 1) toastInfo([...notes][0]);
-  }, [retarget, cascadeToDescendants, denyGuest, updateTasks, toastInfo]);
+  }, [retarget, cascadeToDescendants, denyGuest, denyEdit, updateTasks, toastInfo]);
   const moveDeps = useCallback((): MoveDeps => ({
     tasks: tasksRef.current ?? [], updateTasks: applyMovePatches,
     toast: (m, undo) => { if (undo) toastAction(m, "Undo", undo, {}); else toastInfo(m); },
@@ -3642,6 +3645,8 @@ export default function App() {
       const ctx = accessNow();
       return !accessRoleOf(ctx, ws, userId) || rankFor(ctx, userId, ws, t.projectId) >= 1;
     },
+    // …and whether it's yours to change (a viewer or commenter hands nothing on)
+    canEdit: (t) => taskRank(t, accessNow()) >= 3,
     projectName: (id) => projectsRef.current.find((p) => p.id === id)?.name,
   }), [applyMovePatches, toastAction, toastInfo, accessNow]);
   // (the moves' code comes with the first drop, or while the browser is idle: never in the first download)

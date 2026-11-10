@@ -55,6 +55,12 @@ describe("planRebalance", () => {
       task({ workspaceId: null, dueDate: "2026-11-12", effortHours: 50 })];
     expect(planRebalance({ tasks, members, weekStart: MON, today: TODAY, capacityOf: () => 40 }).moves).toEqual([]);
   });
+  it("(0058) never puts in work you can only view: the next biggest goes instead", () => {
+    const tasks = [task({ id: "fees", projectId: "p-fees", dueDate: "2026-11-13", effortHours: 10 }), task({ id: "mid", dueDate: "2026-11-12", effortHours: 8 }),
+      task({ id: "busy", status: "progress", dueDate: "2026-11-12", effortHours: 22 })];
+    const plan = planRebalance({ tasks, members, weekStart: MON, today: TODAY, capacityOf: (id) => (id === "maya" ? 32 : 40), canMove: (t) => t.projectId !== "p-fees" });
+    expect(plan.moves.map((m) => m.taskId)).toEqual(["mid"]);
+  });
 });
 
 describe("moveIntoWeek", () => {

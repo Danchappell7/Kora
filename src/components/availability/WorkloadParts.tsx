@@ -26,6 +26,11 @@ import "./availability.css";
 const quote = (s: string) => `“${s.length > 50 ? s.slice(0, 49) + "…" : s}”`;
 const firstName = (n: string) => n.trim().split(/\s+/)[0] || n;
 const fmtH = (h: number) => `${round1(h)}h`;
+/** (0058) every task picked is one you can only view: "You can view Fee review, but not change it" */
+const viewOnlyWords = (tasks: readonly Task[], deps: MoveDeps) => {
+  const names = [...new Set(tasks.map((t) => deps.projectName?.(t.projectId) ?? ""))];
+  return names.length === 1 && names[0] ? `You can view ${names[0]}, but not change it` : tasks.length === 1 ? "You can view that task, but not change it" : "You can view these tasks, but not change them";
+};
 
 export interface WorkloadWeek { start: Date; label: string }
 
@@ -46,11 +51,14 @@ export function useWorkloadMoves({ moveDeps, workspaceId, today, nameOf, workDay
     const apply: { id: string; patch: Partial<Task> }[] = [];
     const undo: { id: string; patch: Partial<Task> }[] = [];
     const titles: string[] = [];
+    const viewOnly: Task[] = [];
     let reassigned = 0, dated: string | undefined;
     for (const id of taskIds) {
       const t = deps.tasks.find((x) => x.id === id);
       // only this business's open work moves (a personal or another team's task never lands here)
       if (!t || t.archivedAt || t.status === "done" || !workspaceId || (t.workspaceId ?? null) !== workspaceId) continue;
+      // (0058: nor work you can only view)
+      if (deps.canEdit && !deps.canEdit(t)) { viewOnly.push(t); continue; }
       const patch: Partial<Task> = {};
       const was: Partial<Task> = {};
       if (t.assigneeId !== userId) { patch.assigneeId = userId; was.assigneeId = t.assigneeId; reassigned++; }
@@ -69,18 +77,22 @@ export function useWorkloadMoves({ moveDeps, workspaceId, today, nameOf, workDay
       titles.push(t.title);
     }
     const who = firstName(nameOf(userId));
-    if (!apply.length) { deps.toast(taskIds.length === 1 ? "It's already there" : "They're already there"); return; }
+    if (!apply.length) {
+      deps.toast(viewOnly.length ? viewOnlyWords(viewOnly, deps) : taskIds.length === 1 ? "It's already there" : "They're already there");
+      return;
+    }
     const what = apply.length === 1 ? quote(titles[0]) : `${apply.length} tasks`;
     const when = dated ? new Date(`${dated}T00:00:00`) : null;
     const due = when ? `due ${when.toLocaleDateString("en-GB", { weekday: "short" })} ${fmtDayMonth(when)}` : "";
-    const message = reassigned && due ? `Gave ${what} to ${who}, ${due}` : reassigned ? `Gave ${what} to ${who}` : `Moved ${what}, now ${due}`;
+    const message = (reassigned && due ? `Gave ${what} to ${who}, ${due}` : reassigned ? `Gave ${what} to ${who}` : `Moved ${what}, now ${due}`)
+      + (viewOnly.length ? ` · ${viewOnly.length} you can only view stayed put` : "");
     void deps.updateTasks(apply);
     deps.toast(message, () => { void deps.updateTasks(undo); });
   }, [moveDeps, workspaceId, today, nameOf, workDaysOf, isOff]);
 }
 
 /** A task in someone's week: open it, drag it to a person or a week, or move it from the menu. */
-export function WorkloadTask({ task, hours, overdue, estimated, label, onOpen, canMove, people, weeks, currentWeek, onMove }: {
+export function WorkloadTask({ task, hours, overdue, estimated, label, onOpen, canMove, keepRoom, people, weeks, currentWeek, onMove }: {
   task: Task;
   hours: string;
   overdue: boolean;
@@ -89,6 +101,8 @@ export function WorkloadTask({ task, hours, overdue, estimated, label, onOpen, c
   label?: string;
   onOpen: (id: string) => void;
   canMove: boolean;
+  /** the list's other tasks can move: keep the Move button's room, so the dates and hours line up */
+  keepRoom?: boolean;
   /** teammates it can go to */
   people: { id: string; name: string }[];
   /** the weeks on show */
@@ -112,6 +126,7 @@ export function WorkloadTask({ task, hours, overdue, estimated, label, onOpen, c
         {due && <span className="kload-task-due" data-late={overdue || undefined}>{overdue ? "Overdue · " : "Due "}{fmtDayMonth(due)}</span>}
         <span className="kload-task-hours" title={label}>{!estimated ? "~1h" : hours}</span>
       </button>
+      {!(canMove && (toPeople.length > 0 || toWeeks.length > 0)) && keepRoom && <span className="kav-wtask-room" aria-hidden="true" />}
       {canMove && (toPeople.length > 0 || toWeeks.length > 0) && (
         <>
           <IconButton ref={btn} icon="arrowRight" size="sm" label={`Move ${task.title}`} onClick={() => setMenu((m) => !m)} aria-haspopup="menu" aria-expanded={menu} />

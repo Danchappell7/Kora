@@ -128,6 +128,19 @@ describe("0058: who can see the project", () => {
     expect(reassignTasks(["a"], { id: "maya", name: "Maya Lin" }, alone.deps).message).toBe("Maya Lin can't see Seed round, so “Task a” stays with its assignee");
     expect(alone.updates).toEqual([]);
   });
+  it("a task you can only view isn't yours to hand on: it stays put, and when they all are nothing is written", () => {
+    const canEdit = (t: Pick<Task, "projectId">) => t.projectId !== "p-fees";
+    const names = (id: string) => ({ "p-fees": "Fee review" } as Record<string, string>)[id] ?? projectName(id);
+    const d = deps([task("a", { projectId: "p-fees" }), task("b")], { canSee, canEdit, projectName: names });
+    const out = reassignTasks(["a", "b"], { id: "dan", name: "Daniel Okai" }, d.deps);
+    expect(out.moved).toEqual(["b"]);
+    expect(d.updates[0]).toEqual([{ id: "b", patch: { assigneeId: "dan" } }]);
+    expect(d.toasts[0].message).toBe("Assigned “Task b” to Daniel · 1 you can only view stayed put");
+    const alone = deps([task("a", { projectId: "p-fees" })], { canSee, canEdit, projectName: names });
+    expect(reassignTasks(["a"], { id: "dan", name: "Daniel Okai" }, alone.deps).message).toBe("You can view Fee review, but not change it");
+    expect(alone.updates).toEqual([]);
+    expect(alone.toasts[0].undo).toBeUndefined();
+  });
   it("moving a task into a project its assignee can't see says it's now yours, and Undo gives it back", () => {
     const d = deps([task("a", { assigneeId: "maya" })], { canSee, projectName });
     const out = moveTasksToProject(["a"], { id: "p-seed", name: "Seed round", workspaceId: "ws" }, d.deps);
