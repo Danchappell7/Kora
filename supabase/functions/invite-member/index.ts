@@ -33,13 +33,16 @@
 //
 // Deploy:  supabase functions deploy invite-member        (Verify JWT: ON)
 // Secrets: RESEND_API_KEY, REMINDER_FROM, APP_URL           (shared)
-// Uses:    rate_limits from migration 0042 (works without it — fails open)
+// Uses:    rate_limits from migration 0042 (works without it — fails open);
+//          workspaces.project_access from 0058 for a guest's wording (before
+//          0058, or unreadable: the "every project" wording, as before)
 // ============================================================
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { appUrlFrom, esc, isEmail, isUuid, oneLine, renderEmail, sendEmail, tokenLink, whereEmail } from "../_shared/email.ts";
 import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 import { findUserByEmail } from "../_shared/users.ts";
 import { guestNote, roleLine } from "../_shared/inviteCopy.ts";
+import { workspaceAccessOn } from "../_shared/projectAccess.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -154,13 +157,13 @@ Deno.serve(async (req) => {
 
     // ---- the email ----
     const host = appUrl.replace(/^https?:\/\//, "");
-    const roleNote = guestNote(m.role, wsName);
+    const roleNote = guestNote(m.role, wsName, m.role === "guest" && await workspaceAccessOn(admin, m.workspace_id));
     const { html, text } = renderEmail({
       heading: `Join ${wsName} on Kanbo`,
       paragraphs: [
         inviteeFirst ? `Hi ${esc(inviteeFirst)},` : "Hi,",
         `<strong>${esc(inviter)}</strong> has invited you to join <strong>${esc(wsName)}</strong> on Kanbo as ${esc(roleLine(m.role))}. Kanbo is where the team plans, assigns and tracks its work.`,
-        // a guest is told what they'll see: every project, for now (private projects aren't here yet)
+        // a guest is told what they'll see: every project, or (Project access on) only the ones they're added to
         ...(roleNote ? [esc(roleNote)] : []),
         mode === "setup"
           ? "Accept the invite, choose a password and you'll go straight into the workspace."

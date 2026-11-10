@@ -12,9 +12,16 @@ describe("invite email: the role", () => {
     expect(roleLine("")).toBe("a member");
   });
 
-  it("tells a guest plainly that they'll see every project (until private projects land)", () => {
+  it("tells a guest plainly that they'll see every project (while Project access is off, or before 0058)", () => {
     expect(guestNote("guest", "Foundrise")).toBe("As a guest you can see every project in Foundrise and comment on its tasks, but you can't change anything.");
+    expect(guestNote("guest", "Foundrise", false)).toBe(guestNote("guest", "Foundrise"));
     expect(guestNote("member", "Foundrise")).toBeNull();
     expect(guestNote("admin", "Foundrise")).toBeNull();
+  });
+
+  it("with Project access on, a guest is told they'll see only the projects they're added to", () => {
+    expect(guestNote("guest", "Foundrise", true)).toBe("As a guest you'll see only the projects you're added to, and you can comment on their tasks.");
+    expect(guestNote("member", "Foundrise", true)).toBeNull();
+    expect(guestNote("admin", "Foundrise", true)).toBeNull();
   });
 });
