@@ -7,6 +7,7 @@ import type {
   Member, Workspace, Project, TagDef, Task, CalEvent,
   Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta, Recurrence,
   Activity, Goal, GoalCheckin, GoalLink, Portfolio, PortfolioUpdate, StatusUpdate, UpdateComment, WorkspaceEvent, AutomationRule, FormDef,
+  ProjectMember, ProjectRole,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
@@ -141,6 +142,9 @@ export let MEMBERS: Member[] = [
   { id: "m-2", name: "Theo Vance", email: "theo@kanbo.app", type: "team", color: "oklch(0.78 0.15 70)" },
   { id: "m-3", name: "Sana Rao", email: "sana@kanbo.app", type: "team", color: "oklch(0.74 0.16 305)" },
   { id: "m-4", name: "Idris Bell", email: "idris@partner.io", type: "external", color: "oklch(0.7 0.13 20)" },
+  // 0058: two guests, each on one project: a freelance designer at Foundrise, an accountant at Reco HQ
+  { id: "m-5", name: "Ana Ruiz", email: "ana@studioruiz.co", type: "external", color: "oklch(0.74 0.13 175)" },
+  { id: "m-6", name: "Leah Price", email: "leah@pricebooks.co.uk", type: "external", color: "oklch(0.76 0.12 120)" },
 ];
 
 /* A demo business's logo: its letter on a rounded tile in its own colour (a data:
@@ -174,16 +178,23 @@ export let WORKSPACES: Workspace[] = [
   { id: "ws-foundrise", name: "Foundrise", kind: "team", ownerId: "m-self", logoUrl: demoLogo("F", "#3b6fe0", "#1d3f9a"),
     updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(0) },
     // 0057: Foundrise's rollout is under way: Maya champions it, and the pilot group and go-live date are still to pick
-    rollout: { champion: "m-1" } },
-  { id: "ws-reco", name: "Reco HQ", kind: "team", ownerId: "m-self", logoUrl: demoLogo("R", "#f08a3c", "#c4532a") },
+    rollout: { champion: "m-1" },
+    // 0058: project access is on: payroll is private, the seed round members only, and Ana (a guest) sees only Brand Refresh
+    projectAccess: { on: true, defaultVisibility: "workspace", membersMayMakePrivate: false } },
+  // (0058: off here, so Settings shows what turning it on would do: Leah would see only Customer Onboarding)
+  { id: "ws-reco", name: "Reco HQ", kind: "team", ownerId: "m-self", logoUrl: demoLogo("R", "#f08a3c", "#c4532a"),
+    projectAccess: { on: false, defaultVisibility: "workspace", membersMayMakePrivate: false } },
   { id: "ws-courtside", name: "Courtside Padel", kind: "team", ownerId: "m-2",
     logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`),
     updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) },
     // 0057: Courtside goes live in ten days, so its leads get Kanbo noticed's one next fix (only a rollout under way does)
     rollout: { goLive: demoDayIn(10) } },
-  { id: "ws-harbour", name: "Harbour Advisory", kind: "team", ownerId: "m-3", logoUrl: demoLogo("H", "#4a4f8f", "#262a5c") },
-  // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't)
-  { id: "ws-northlight", name: "Northlight Studio", kind: "team", ownerId: "m-4", logoUrl: demoLogo("N", "#d4677a", "#9c3550") },
+  // (0058: on, and Sana's fee review is members only with Daniel a viewer: a project he reads but can't change)
+  { id: "ws-harbour", name: "Harbour Advisory", kind: "team", ownerId: "m-3", logoUrl: demoLogo("H", "#4a4f8f", "#262a5c"),
+    projectAccess: { on: true, defaultVisibility: "workspace", membersMayMakePrivate: false } },
+  // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't). 0058: on, so he sees only Website rebuild
+  { id: "ws-northlight", name: "Northlight Studio", kind: "team", ownerId: "m-4", logoUrl: demoLogo("N", "#d4677a", "#9c3550"),
+    projectAccess: { on: true, defaultVisibility: "workspace", membersMayMakePrivate: false } },
 ];
 
 /* Each demo project wears its own emoji and spectrum hue (lib/projectIdentity.ts),
@@ -192,19 +203,42 @@ export let WORKSPACES: Workspace[] = [
 export let PROJECTS: Project[] = [
   { id: "p-personal", name: "Personal", emoji: "📌", color: spectrumColor("iris"), workspaceId: null },
   { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: spectrumColor("sky"), workspaceId: "ws-foundrise", ownerId: "m-self", contributorIds: ["m-1", "m-2", "m-3"] },
-  { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1"] },
+  { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1", "m-5"] },
   // (infra reports on its own day, 0053: five days ago, so with nothing ever posted its update reads "Update missing")
   { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"],
     updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) } },
   { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-1"] },
-  { id: "p-onboard", name: "Customer Onboarding", emoji: "🤝", color: spectrumColor("lagoon"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-2"] },
+  { id: "p-onboard", name: "Customer Onboarding", emoji: "🤝", color: spectrumColor("lagoon"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-2", "m-6"] },
   { id: "p-clubhouse", name: "Clubhouse Fit-out", emoji: "🏗️", color: spectrumColor("amber"), workspaceId: "ws-courtside", ownerId: "m-2", contributorIds: ["m-self"] },
   { id: "p-league", name: "Winter League", emoji: "🎾", color: spectrumColor("citron"), workspaceId: "ws-courtside", ownerId: "m-self", contributorIds: ["m-2"] },
   // (a review on its own monthly rhythm, 0053; it's on hold just now)
   { id: "p-northwind", name: "Northwind Review", emoji: "🧭", color: spectrumColor("cobalt"), workspaceId: "ws-harbour", ownerId: "m-3", contributorIds: ["m-self"],
     updateRhythm: { cadence: "monthly", weekday: 4 } },
   { id: "p-northlight", name: "Website rebuild", emoji: "🌐", color: spectrumColor("coral"), workspaceId: "ws-northlight", ownerId: "m-4", contributorIds: ["m-self"] },
+  // 0058: project access. Foundrise's payroll is private (Daniel and Maya), its seed round members only
+  // (Daniel and Sana, plus the owners and admins); Harbour's fee review is members only, Daniel a viewer
+  { id: "p-payroll", name: "Payroll & contracts", emoji: "🧾", color: spectrumColor("rose"), workspaceId: "ws-foundrise", ownerId: "m-self", contributorIds: ["m-1"], visibility: "private" },
+  { id: "p-seed", name: "Seed round", emoji: "📊", color: spectrumColor("violet"), workspaceId: "ws-foundrise", ownerId: "m-self", contributorIds: ["m-3"], visibility: "members" },
+  { id: "p-hb-fees", name: "Fee review", emoji: "💷", color: spectrumColor("lagoon"), workspaceId: "ws-harbour", ownerId: "m-3", contributorIds: ["m-self"], visibility: "members" },
 ];
+
+/* 0058: who's on which project (project_members). Each project's contributors (editors; a guest is a
+   commenter), with Daniel a viewer on Harbour's fee review. The roles below are the demo's workspace
+   roles (store.ts seeds the same people). */
+const DEMO_WS_ROLES: Record<string, Record<string, "owner" | "admin" | "member" | "guest">> = {
+  "ws-foundrise": { "m-self": "owner", "m-1": "member", "m-2": "member", "m-3": "member", "m-5": "guest" },
+  "ws-reco": { "m-self": "owner", "m-1": "member", "m-2": "member", "m-6": "guest" },
+  "ws-courtside": { "m-2": "owner", "m-self": "admin" },
+  "ws-harbour": { "m-3": "owner", "m-self": "member" },
+  "ws-northlight": { "m-4": "owner", "m-self": "guest" },
+};
+const DEMO_ROLE_OVERRIDES: Record<string, ProjectRole> = { "p-hb-fees:m-self": "viewer" };
+export const DEMO_PROJECT_MEMBERS: ProjectMember[] = PROJECTS.filter((p) => p.workspaceId).flatMap((p) => (p.contributorIds ?? [])
+  .filter((uid) => uid !== p.ownerId && DEMO_WS_ROLES[p.workspaceId!]?.[uid])
+  .map((uid, i) => ({
+    id: `pm-${p.id.slice(2)}-${i}`, projectId: p.id, workspaceId: p.workspaceId!, userId: uid,
+    role: DEMO_ROLE_OVERRIDES[`${p.id}:${uid}`] ?? (DEMO_WS_ROLES[p.workspaceId!][uid] === "guest" ? "commenter" as const : "editor" as const),
+  })));
 
 /* Minimal reference data a brand-new (real) account starts with — one personal
    workspace + project, no teammates, no demo projects. */
@@ -426,6 +460,17 @@ export const TASKS: Task[] = [
       assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(1), tags: ["design"], focusMin: 30, createdAt: daysAgoAt(6, 15, 0) }),
   t({ id: "t-nl-4", title: "Booking widget on the class pages", status: "todo", priority: "medium", projectId: "p-northlight",
       assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(9), dependencies: ["t-nl-2"], tags: ["eng"], focusMin: 120, createdAt: daysAgoAt(5, 11, 0) }),
+  // 0058: the private and members-only projects' work (none of it Daniel's, none due today)
+  t({ id: "t-pa-1", title: "Renew Theo's contract", status: "todo", priority: "high", projectId: "p-payroll",
+      assigneeId: "m-1", createdBy: "m-self", dueDate: dayOffset(9), tags: ["ops"], focusMin: 45, createdAt: daysAgoAt(3, 10, 0) }),
+  t({ id: "t-pa-2", title: "Check the October payroll", status: "todo", priority: "medium", projectId: "p-payroll",
+      assigneeId: "m-1", createdBy: "m-self", dueDate: dayOffset(14), tags: ["ops"], focusMin: 30, createdAt: daysAgoAt(2, 9, 15) }),
+  t({ id: "t-pa-3", title: "Update the cap table", status: "progress", priority: "high", projectId: "p-seed",
+      assigneeId: "m-3", createdBy: "m-self", dueDate: dayOffset(6), tags: ["research"], focusMin: 60, createdAt: daysAgoAt(5, 14, 0) }),
+  t({ id: "t-pa-4", title: "Draft the investor update", status: "todo", priority: "medium", projectId: "p-seed",
+      assigneeId: "m-3", createdBy: "m-self", dueDate: dayOffset(12), tags: ["writing"], focusMin: 90, createdAt: daysAgoAt(4, 11, 30) }),
+  t({ id: "t-pa-5", title: "Compare partner fee bands", status: "todo", priority: "medium", projectId: "p-hb-fees",
+      assigneeId: "m-3", createdBy: "m-3", dueDate: dayOffset(8), tags: ["research"], focusMin: 60, createdAt: daysAgoAt(3, 15, 0) }),
 ];
 
 /* ---- meta ---- */

@@ -597,10 +597,15 @@ describe("parseTaskTokens shares the fixes", () => {
 describe("demo seed", () => {
   const byId = (id: string) => TASKS.find((t) => t.id === id)!;
 
-  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30, the other businesses' t-31…t-43, then Northlight Studio's four", () => {
-    expect(TASKS.map((t) => t.id)).toEqual([...Array.from({ length: 43 }, (_, i) => `t-${i + 1}`), "t-nl-1", "t-nl-2", "t-nl-3", "t-nl-4"]);
+  it("keeps t-1…t-16 where tests expect them, and adds t-17…t-30, the other businesses' t-31…t-43, Northlight Studio's four, then 0058's five", () => {
+    expect(TASKS.map((t) => t.id)).toEqual([...Array.from({ length: 43 }, (_, i) => `t-${i + 1}`), "t-nl-1", "t-nl-2", "t-nl-3", "t-nl-4",
+      "t-pa-1", "t-pa-2", "t-pa-3", "t-pa-4", "t-pa-5"]);
     // t-1…t-30 are all Foundrise's or Personal's but Growth Experiments' (Reco HQ); the rest live in the other businesses
-    expect(TASKS.slice(30).every((t) => ["p-onboard", "p-growth", "p-clubhouse", "p-league", "p-northwind", "p-northlight"].includes(t.projectId))).toBe(true);
+    expect(TASKS.slice(30, 47).every((t) => ["p-onboard", "p-growth", "p-clubhouse", "p-league", "p-northwind", "p-northlight"].includes(t.projectId))).toBe(true);
+    // 0058: the private and members-only projects' work is nobody's today, and none of it is Daniel's
+    const access = TASKS.slice(47);
+    expect(access.map((t) => t.projectId)).toEqual(["p-payroll", "p-payroll", "p-seed", "p-seed", "p-hb-fees"]);
+    expect(access.every((t) => t.assigneeId !== "m-self" && !!t.dueDate && t.dueDate > dayOffset(0))).toBe(true);
     // Daniel is a guest in Northlight Studio: none of its work is his
     expect(TASKS.filter((t) => t.projectId === "p-northlight").every((t) => t.assigneeId === "m-4" && t.createdBy === "m-4")).toBe(true);
     expect(byId("t-1")).toMatchObject({ title: "Finalise Q3 launch narrative deck", status: "progress", projectId: "p-launch", assigneeId: "m-self" });
