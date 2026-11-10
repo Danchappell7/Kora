@@ -135,9 +135,14 @@ describe("projectGlyph", () => {
 });
 
 describe("demo seed", () => {
-  it("gives every demo project its own emoji and its own spectrum hue, stored as a spectrum colour", () => {
+  it("gives every demo project its own emoji and its own spectrum hue in its business, stored as a spectrum colour", () => {
     expect(new Set(PROJECTS.map((p) => p.emoji)).size).toBe(PROJECTS.length);
-    expect(new Set(PROJECTS.map((p) => projectHue(p))).size).toBe(PROJECTS.length);
+    // (0058 brought the demo to 13 projects: more than the twelve hues, so a hue repeats only across businesses)
+    for (const ws of new Set(PROJECTS.map((p) => p.workspaceId ?? "personal"))) {
+      const here = PROJECTS.filter((p) => (p.workspaceId ?? "personal") === ws);
+      expect(new Set(here.map((p) => projectHue(p))).size, ws).toBe(here.length);
+    }
+    expect(new Set(PROJECTS.map((p) => projectHue(p))).size).toBe(12);
     for (const p of PROJECTS) expect(p.color, p.name).toBe(spectrumColor(projectHue(p)));
     expect(projectSpectrum(PROJECTS.find((p) => p.id === "p-personal")).name).toBe("Iris");
     expect(projectSpectrum(PROJECTS.find((p) => p.id === "p-launch")).name).toBe("Sky");

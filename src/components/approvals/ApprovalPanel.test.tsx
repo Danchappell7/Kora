@@ -4,13 +4,15 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { ApprovalPanel } from "./ApprovalPanel";
 import { listTaskApprovals, resetApprovalsDemo } from "../../lib/approvals";
 import { MEMBERS, TASKS } from "../../data/data";
+// (the demo's first five people: 0058 appended two guests elsewhere, Ana and Leah)
+const TEAM = MEMBERS.filter((m) => m.id !== "m-5" && m.id !== "m-6");
 import type { Attachment, Task } from "../../data/types";
 
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 const task = (id: string): Task => TASKS.find((t) => t.id === id)!;
 const ME = "m-self";
 const panel = (t: Task, extra: Partial<Parameters<typeof ApprovalPanel>[0]> = {}) =>
-  <ApprovalPanel task={t} members={MEMBERS} guestIds={["m-4"]} currentUserId={ME} {...extra} />;
+  <ApprovalPanel task={t} members={TEAM} guestIds={["m-4"]} currentUserId={ME} {...extra} />;
 
 beforeEach(() => resetApprovalsDemo({ demoDelayMs: 0 }));
 

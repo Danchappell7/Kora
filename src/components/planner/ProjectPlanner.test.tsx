@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ProjectPlanner, type ProjectPlannerProps } from "./ProjectPlanner";
 import { MEMBERS, PROJECTS, TASKS } from "../../data/data";
+// (the demo's first five people: 0058 appended two guests elsewhere, Ana and Leah)
+const TEAM = MEMBERS.filter((m) => m.id !== "m-5" && m.id !== "m-6");
 import type { AppliedProjectPlan, PlanApplyDeps, Section, Task } from "../../data/types";
 import { PLANNER_EXAMPLES } from "../../lib/projectPlanner";
 
@@ -22,7 +24,7 @@ function deps(over: Partial<PlanApplyDeps> = {}): PlanApplyDeps {
 }
 function setup(over: Partial<ProjectPlannerProps> = {}) {
   const props: ProjectPlannerProps = {
-    open: true, mode: "new", workspaceId: "ws-foundrise", workspaceName: "Foundrise", members: MEMBERS, guestIds: ["m-4"], tasks: TASKS,
+    open: true, mode: "new", workspaceId: "ws-foundrise", workspaceName: "Foundrise", members: TEAM, guestIds: ["m-4"], tasks: TASKS,
     currentUserId: "m-self", aiEnabled: false, deps: deps(), onClose: vi.fn(), onCreated: vi.fn(), ...over,
   };
   const r = render(<ProjectPlanner {...props} />);
