@@ -4,10 +4,11 @@
 // Drives handleMcpFunction end to end, through the real pipeline and handlers and
 // the real database driver (driver.ts), on a database built from the repo's own
 // migration files, twice over:
-//   0001..0047 + 0050..0052   what production will have if 0048/0049 aren't applied yet
-//   0001..0052                everything
+//   0001..0047 + 0050..0058   what production will have if 0048/0049 aren't applied yet
+//   0001..0058                everything
 // Each run applies 0050 twice. Legit flows first, then the attacks; then 0051's guest
-// lock and 0052's goal rules.
+// lock, 0052's goal rules, waves 2 and 3, and 0058's project access (projectAccess.ts),
+// which also runs on its own on 0001..0050 + 0058 (the live database plus wave 4 alone).
 // ============================================================
 import { sqlVerifier } from "../../functions/_shared/api/auth.ts";
 import { handleMcpFunction, type McpDeps } from "../../functions/_shared/mcp/handler.ts";
@@ -16,6 +17,7 @@ import { dateInZone } from "../../functions/_shared/mcp/myDay.ts";
 import { isAllowedRedirectUri } from "../../functions/_shared/mcp/oauthCore.ts";
 import { driverDb } from "./driver.ts";
 import { applyFile, asPerson, freshDatabase, makeUser, migrationFiles, type Pg } from "./harness.ts";
+import { projectAccessSuite } from "./projectAccess.ts";
 
 const CHALLENGE_VERIFIER = "v".repeat(60);
 async function s256(v: string): Promise<string> {
@@ -3489,11 +3491,11 @@ async function waveThreeRerunSuite(w: World, files: string[]) {
     }
   };
   const wave = ["0055_shared_availability.sql", "0056_meetings.sql", "0057_adoption_health.sql"].filter((f) => files.includes(f));
-  await test("wave 3: 0055, 0056 and 0057 are all in, numbered with no gap", async () => {
+  await test("wave 3: 0055, 0056 and 0057 are all in, and 0055..0058 are numbered with no gap", async () => {
     eq(wave.length, 3, "wave 3's files in this set");
-    ok(!files.some((f) => f.startsWith("0058")), "nothing numbered 0058 (0057 used to be)");
+    eq(files.map((f) => f.slice(0, 4)).filter((v) => v >= "0055"), ["0055", "0056", "0057", "0058"], "0055..0058, nothing after");
     const v = (await w.pg.query<{ v: string }>(`select version as v from public.schema_migrations where version in ('0055', '0056', '0057', '0058') order by version`)).rows.map((r) => r.v);
-    eq(v, ["0055", "0056", "0057"], "recorded");
+    eq(v, ["0055", "0056", "0057", "0058"], "recorded");
   });
   const before = await snapshot();
   await test("wave 3: 0055, 0056 and 0057 each run twice more keep every policy, trigger and grant", async () => {
@@ -3519,14 +3521,104 @@ async function waveThreeRerunSuite(w: World, files: string[]) {
   }
 }
 
+/* ============================================================ 0058: project access through MCP and the REST API */
+
+/** The MCP server and the REST API run as the person (withUser), so project access reaches them through
+ *  the same rules: a private project and its tasks aren't listed, found, fetched or written; a viewer
+ *  reads but doesn't write or comment; a guest's people are their projects'. Switch off: as before. */
+async function projectAccessApiSuite(w: World) {
+  if (!(await w.pg.query<{ ok: boolean }>(`select to_regprocedure('public.set_project_access(uuid,boolean,text,boolean)') is not null as ok`)).rows[0].ok) return;
+  const pg = w.pg;
+  await clearRates(w);
+  const one = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []) => (await pg.query<T>(sql, params)).rows[0];
+  const dora = await makeUser(pg, "pa.dora@example.org", "Dora");
+  await pg.query(`update public.profiles set approved = true where id = $1::uuid`, [dora]);
+  await pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'pa.dora@example.org', 'dora', 'member', 'active')`, [w.w1, dora]);
+  const mk = async (name: string, visibility: string) => (await one<{ id: string }>(
+    `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, $2, $3::uuid, $4) returning id::text as id`, [w.alice, name, w.w1, visibility])).id;
+  const pay = await mk("Board pay", "private");
+  const leads = await mk("Hiring leads", "members");
+  const task = async (title: string, project: string) => (await one<{ id: string }>(
+    `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2, $3, $1, $4::uuid) returning id::text as id`, [w.alice, title, project, w.w1])).id;
+  const salary = await task("Salary bands review", pay);
+  const hiring = await task("Hiring plan for leads", leads);
+  await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'viewer')`, [leads, w.bob]);
+  await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'commenter')`, [w.launch, w.gus]);
+  const bob = (await connect(w, w.bob)).access;
+  const gus = (await connect(w, w.gus)).access;
+  const alice = (await connect(w, w.alice)).access;
+  const bobKey = (await asPerson<{ r: { key: string } }>(pg, w.bob, `select public.create_api_key('pa rest', null, 'write', null) as r`))[0].r.key;
+  const names = async (bearer: string) => ((await toolOk(w, bearer, "list_projects", { workspaceId: w.w1 })).projects as { name: string }[]).map((p) => p.name);
+
+  await test("0058 via MCP and REST, switch off: everyone in the workspace reads every project, as before", async () => {
+    ok((await names(bob)).includes("Board pay"), "bob lists Board pay");
+    ok((await toolOk(w, bob, "get_task", { taskId: salary })).task.id === salary, "and reads its task");
+    ok((await names(gus)).includes("Board pay"), "so does the guest");
+  });
+  await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, true)`, [w.w1]);
+  await test("0058 via MCP and REST, switch on: a private project isn't listed, found, fetched or written by a member who isn't on it", async () => {
+    eq((await names(bob)).includes("Board pay"), false, "list_projects");
+    ok((await names(bob)).includes("Hiring leads"), "a members-only project bob is on");
+    eq(((await toolOk(w, bob, "list_tasks", { query: "salary" })).tasks as unknown[]).length, 0, "list_tasks");
+    eq(((await toolOk(w, bob, "search", { query: "salary" })).results as unknown[]).length, 0, "search");
+    ok((await tool(w, bob, "get_task", { taskId: salary })).isError, "get_task");
+    ok((await tool(w, bob, "fetch", { id: `task:${salary}` })).isError, "fetch");
+    ok((await tool(w, bob, "add_task", { title: "Planted", projectId: pay })).isError, "add_task into it");
+    ok((await tool(w, bob, "update_task", { taskId: salary, title: "Hacked" })).isError, "update_task");
+    ok((await tool(w, bob, "add_comment", { taskId: salary, body: "Hi" })).isError, "add_comment");
+    eq((await pg.query<{ t: string }>(`select title as t from public.tasks where id = $1::uuid`, [salary])).rows[0].t, "Salary bands review", "nothing changed");
+    // the REST API (an API key) is the same handler
+    eq((await names(bobKey)).includes("Board pay"), false, "through an API key");
+    ok((await tool(w, bobKey, "get_task", { taskId: salary })).isError, "get_task through an API key");
+  });
+  await test("0058 via MCP, switch on: a viewer reads a members-only project's task but can't change it or comment", async () => {
+    eq((await toolOk(w, bob, "get_task", { taskId: hiring })).task.id, hiring, "reads it");
+    ok((await tool(w, bob, "update_task", { taskId: hiring, title: "Changed" })).isError, "update_task");
+    ok((await tool(w, bob, "complete_task", { taskId: hiring })).isError, "complete_task");
+    ok((await tool(w, bob, "add_comment", { taskId: hiring, body: "Hi" })).isError, "add_comment");
+    ok((await tool(w, bob, "add_task", { title: "Planted", projectId: leads })).isError, "add_task into it");
+  });
+  await test("0058 via MCP, switch on: a guest lists only the projects they're on, and only those projects' people", async () => {
+    eq(await names(gus), ["Launch"], "list_projects");
+    const ms = ((await toolOk(w, gus, "list_members", { workspaceId: w.w1 })).members as { userId: string }[]).map((m) => m.userId);
+    ok(ms.includes(w.alice), "the owner");
+    ok(ms.includes(w.gus), "themselves");
+    ok(!ms.includes(dora), "not a member on nothing of theirs");
+    ok((await tool(w, gus, "get_task", { taskId: hiring })).isError, "nor another project's task");
+  });
+  await test("0058 via MCP, switch on: the workspace's owner still reads and writes everything", async () => {
+    const all = await names(alice);
+    ok(all.includes("Board pay") && all.includes("Hiring leads"), "both");
+    await toolOk(w, alice, "add_comment", { taskId: salary, body: "Noted" });
+  });
+  await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
+  await test("0058 via MCP, switch off again: as before (bob reads Board pay)", async () => {
+    ok((await names(bob)).includes("Board pay"), "list_projects");
+    eq((await toolOk(w, bob, "get_task", { taskId: salary })).task.id, salary, "get_task");
+  });
+}
+
 export async function main(argv: string[]): Promise<number> {
   const all = migrationFiles();
   // 0051..0056 need only 0041/0042/0046/0047 (0052 also 0051), and 0057 0016/0032/0038/0041/0042: they run in the set without 0048/0049 too
-  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || (f.slice(0, 4) >= "0050" && f.slice(0, 4) <= "0057"));
+  // (0058 needs only 0041..0047: it runs in the set without 0048/0049 too)
+  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || (f.slice(0, 4) >= "0050" && f.slice(0, 4) <= "0058"));
   const setAll = all;
-  const sets: [string, string[]][] = [["0001..0047+0050..0057", set47], ["0001..0057", setAll]];
+  // the live database (0001..0050) plus wave 4 alone: projectAccessSuite applies 0058, then 0051..0057 after it
+  const set50 = all.filter((f) => f.slice(0, 4) <= "0050");
+  const sets: [string, string[]][] = [["0001..0047+0050..0058", set47], ["0001..0058", setAll]];
   const only = argv[0];
+  const checks = { test, eq, ok, raises };
+  if (!only || only === "0058") {
+    current = "0001..0050 + 0058, then 0051..0057";
+    const t0 = Date.now();
+    const pg = await freshDatabase(set50);
+    await projectAccessSuite(pg, set50, checks);
+    console.log(`${current}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    await pg.close();
+  }
   for (const [name, files] of sets) {
+    if (only === "0058") continue;
     if (only === "0047" && name !== sets[0][0]) continue;
     if (only === "0049" && name !== sets[1][0]) continue;
     current = name;
@@ -3556,6 +3648,8 @@ export async function main(argv: string[]): Promise<number> {
     await meetingsSuite(w);
     await adoptionSuite(w);
     await waveThreeRerunSuite(w, files);
+    await projectAccessApiSuite(w);
+    await projectAccessSuite(w.pg, files, checks);
     console.log(`${name}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     await w.closeDriver();
     await w.pg.close();

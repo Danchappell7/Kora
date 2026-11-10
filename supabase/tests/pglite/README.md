@@ -13,12 +13,13 @@ were all broken. Test data is still set up with PGlite directly.
 ```bash
 export PATH="$HOME/.kora-tools/node-v20.18.1-darwin-arm64/bin:$PATH"
 cd ~/Downloads/kora-app
-node supabase/tests/pglite/run.mjs         # both migration sets
-node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0057 (no 0048, no 0049)
+node supabase/tests/pglite/run.mjs         # every migration set
+node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0058 (no 0048, no 0049)
 node supabase/tests/pglite/run.mjs 0049    # every migration
+node supabase/tests/pglite/run.mjs 0058    # 0001..0050 + 0058, then 0051..0057 after it
 ```
 
-It takes a few seconds and exits non-zero if anything fails. Each set applies 0050 twice.
+It takes a minute or two and exits non-zero if anything fails. Each full set applies 0050 twice.
 
 PGlite comes from `PGLITE_PATH` if that's set, otherwise from
 `~/Downloads/standing-portal/node_modules/@electric-sql/pglite`. postgres@3.4.5 comes from
@@ -96,3 +97,18 @@ is_admin flag and a suspended admin all try): it never approves a public mail do
 junk, and nothing is half made. workspace_handovers has no client access. When the invited owner joins,
 the business is theirs (owner, project owners, open tasks, goals); someone else joining doesn't take it, and
 an owner chosen by hand stays. Then 0057 twice, and 0041 and 0042 again (a handover still works).
+
+0058 (project access, `projectAccess.ts`): one world of a workspace's owner, an admin, four members (an
+editor, a commenter, a viewer and one on nothing), three guests, a removed member and a suspended one (each
+with a stale editor row) and an outsider, four projects (Whole workspace, Members only, Private, and a
+Private one a member owns) and two loose tasks, each with everything that hangs off a project. One battery
+reads and writes every path as every person (every table, the helpers, live channels, search, the people a
+guest sees, the calendar feed); the model is `src/lib/projectAccessMatrix.json`, the same rank table the
+app's tests use. On the live database (0001..0050) the battery runs first; with 0058 in and the switch off it
+must give exactly the same answers, with it on exactly the model's, and off again exactly the first run's.
+Then the switch (owner only), new projects and visibility, project people and invites, the contributor_ids
+mirror, owner changes, assignees, sub-tasks, docs, approvals, kudos, update replies and Asks, goal links,
+Notion, rates, asks, form links, meeting agendas, the bin and the history, the Inbox, held notices and
+webhooks, a published-table and a security-definer audit, VERIFY, 5 000 tasks behind the switch, 0058
+twice, the undo file, every older file run again, and 0051..0057 applied after 0058. MCP and the REST API
+(an API key) get their own checks on the shared world.
