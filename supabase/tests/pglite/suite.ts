@@ -1584,14 +1584,164 @@ async function guestLockSuite(w: World) {
   });
 }
 
+/* ============================================================ 0053: update days, honest status, Ask for an update */
+
+/** The team's update day (owners and admins), a project's own (its writers), a plan to recover on an update
+ *  (guests still read it), and Ask for an update: only a workspace's owners and admins, about a live project
+ *  someone else in the workspace owns, once per project in 20 hours and 30 a day per asker; read by the two
+ *  people in it and written by nobody but the function. Then migrating twice, and re-running 0041 and 0048. */
+async function updateRhythmSuite(w: World) {
+  const has0053 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0053') as "on"`)).rows[0].on;
+  if (!has0053) return;
+  const has0048 = (await w.pg.query<{ on: boolean }>(`select to_regclass('public.notify_queue') is not null as "on"`)).rows[0].on;
+  const ada = await makeUser(w.pg, "ada@example.org", "Ada");
+  await w.pg.query(`update public.profiles set approved = true where id = $1::uuid`, [ada]);
+  await w.pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'ada@example.org', 'ada', 'admin', 'active')`, [w.w1, ada]);
+  const bobs = (await w.pg.query<{ id: string }>(
+    `insert into public.projects (user_id, owner_id, name, workspace_id, emoji, color) values ($1::uuid, $1::uuid, 'Bob''s rollout', $2::uuid, '📁', '#336699') returning id::text as id`, [w.bob, w.w1])).rows[0].id;
+  const rhythm = (u: string, ws: string, r: unknown) => asPerson<{ r: unknown }>(w.pg, u, `select public.set_update_rhythm($1::uuid, $2::jsonb) as r`, [ws, r === null ? null : JSON.stringify(r)]);
+  const wsRhythm = async (ws: string) => (await w.pg.query<{ r: unknown }>(`select update_rhythm as r from public.workspaces where id = $1::uuid`, [ws])).rows[0].r;
+  const ask = (u: string, project: string) => asPerson<{ id: string; owner_id: string; asked_by: string }>(w.pg, u,
+    `select (a).id::text as id, (a).owner_id::text as owner_id, (a).asked_by::text as asked_by from (select public.ask_for_update($1::uuid) as a) x`, [project]);
+
+  await test("0053: the team's update day is its owners' and admins' to set, in its one shape", async () => {
+    // (jsonb keeps its keys shortest first)
+    eq((await rhythm(w.alice, w.w1, { cadence: "fortnightly", weekday: 4, anchor: "2026-11-12" }))[0].r, { anchor: "2026-11-12", cadence: "fortnightly", weekday: 4 }, "owner");
+    await rhythm(ada, w.w1, { cadence: "monthly", weekday: 5 });
+    eq(await wsRhythm(w.w1), { cadence: "monthly", weekday: 5 }, "admin");
+    await rhythm(w.alice, w.w1, null);
+    eq(await wsRhythm(w.w1), null, "null: back to weekly on Friday");
+  });
+  await test("0053 attack: a member, a guest and an outsider can't set a team's update day", async () => {
+    await raises(rhythm(w.bob, w.w1, { cadence: "never", weekday: 5 }), /not authorized/);
+    await raises(rhythm(w.gus, w.w1, { cadence: "never", weekday: 5 }), /not authorized/);
+    await raises(rhythm(w.carol, w.w1, { cadence: "never", weekday: 5 }), /not authorized/);
+    eq(await wsRhythm(w.w1), null, "unchanged");
+    await rhythm(w.carol, w.w2, { cadence: "weekly", weekday: 1 });   // her own team's is hers
+    eq(await wsRhythm(w.w2), { cadence: "weekly", weekday: 1 }, "carol's own");
+    // (an outsider can't even see it, let alone a guest change it by hand)
+    eq((await asPerson(w.pg, w.gus, `update public.workspaces set update_rhythm = '{"cadence":"never","weekday":5}' where id = $1::uuid returning id`, [w.w1])).length, 0, "guest's direct write");
+  });
+  await test("0053 attack: an update day in any other shape is refused, by the function and by the column", async () => {
+    for (const bad of [{ cadence: "daily", weekday: 1 }, { cadence: "weekly", weekday: 9 }, { cadence: "weekly", weekday: "5" }, { cadence: "weekly", weekday: 5, note: "x" },
+      { cadence: "fortnightly", weekday: 5, anchor: "next week" }, ["weekly"], "weekly"]) {
+      await raises(rhythm(w.alice, w.w1, bad), /invalid update day/);
+    }
+    // the workspace's owner writes the row directly: the column's check holds it to the same shape
+    await raises(asPerson(w.pg, w.alice, `update public.workspaces set update_rhythm = '{"cadence":"hourly","weekday":1}' where id = $1::uuid`, [w.w1]), /update_rhythm_ok/);
+  });
+  await test("0053: a project's own update day is its writers' (a member's too), never a guest's or an outsider's", async () => {
+    const set = (u: string, r: string) => asPerson(w.pg, u, `update public.projects set update_rhythm = $2::jsonb where id = $1::uuid returning id`, [w.launch, r]);
+    eq((await set(w.bob, '{"cadence":"never","weekday":5}')).length, 1, "member");
+    eq((await set(w.gus, '{"cadence":"weekly","weekday":2}')).length, 0, "guest");
+    eq((await set(w.carol, '{"cadence":"weekly","weekday":2}')).length, 0, "outsider");
+    eq((await w.pg.query<{ r: unknown }>(`select update_rhythm as r from public.projects where id = $1::uuid`, [w.launch])).rows[0].r, { cadence: "never", weekday: 5 });
+    await raises(set(w.alice, '{"cadence":"weekly","weekday":0}'), /update_rhythm_ok/);
+  });
+  await test("0053: an At risk update carries its plan to recover and a new date; On hold is an update of its own; a guest reads them", async () => {
+    const row = (await asPerson<{ id: string }>(w.pg, w.bob,
+      `insert into public.status_updates (user_id, workspace_id, project_id, summary, status, recovery_plan, target_date)
+       values ($1::uuid, $2::uuid, $3, 'Two weeks behind', 'at_risk', 'Ada takes the deck; we cut the extra market.', '2026-12-04') returning id::text as id`,
+      [w.bob, w.w1, w.launch]))[0];
+    await asPerson(w.pg, w.bob, `insert into public.status_updates (user_id, workspace_id, project_id, summary, status) values ($1::uuid, $2::uuid, $3, 'Paused for the board', 'on_hold')`, [w.bob, w.w1, bobs]);
+    const seen = await asPerson<{ recovery_plan: string; target_date: string }>(w.pg, w.gus, `select recovery_plan, target_date::text as target_date from public.status_updates where id = $1::uuid`, [row.id]);
+    eq(seen[0], { recovery_plan: "Ada takes the deck; we cut the extra market.", target_date: "2026-12-04" }, "the guest reads the plan");
+    eq((await asPerson(w.pg, w.gus, `select status from public.status_updates where project_id = $1`, [bobs])).map((r) => (r as { status: string }).status), ["on_hold"]);
+    await raises(asPerson(w.pg, w.bob, `insert into public.status_updates (user_id, workspace_id, project_id, summary, status, recovery_plan) values ($1::uuid, $2::uuid, $3, 'x', 'at_risk', $4)`,
+      [w.bob, w.w1, w.launch, "a".repeat(2001)]), /status_updates_recovery_shape/);
+    await raises(asPerson(w.pg, w.gus, `insert into public.status_updates (user_id, workspace_id, project_id, summary, status, recovery_plan) values ($1::uuid, $2::uuid, $3, 'x', 'at_risk', 'planted')`,
+      [w.gus, w.w1, w.launch]), /row-level security|policy/i);
+    eq(await w.pg.query<{ n: number }>(`select count(*)::int as n from public.status_updates where recovery_plan = 'planted'`).then((r) => r.rows[0].n), 0, "nothing planted");
+  });
+
+  await test("0053: a lead asks a project's owner for an update, once in 20 hours (any lead)", async () => {
+    const a = (await ask(w.alice, bobs))[0];
+    eq([a.asked_by, a.owner_id], [w.alice, w.bob], "the ask");
+    await raises(ask(ada, bobs), /already asked recently/);
+    const b = (await ask(ada, w.launch))[0];   // the admin asks the workspace's owner about hers
+    eq([b.asked_by, b.owner_id], [ada, w.alice], "an admin asks the owner");
+  });
+  await test("0053 attack: a member, a guest and an outsider can't ask; nor can anyone about their own project, a gone owner's or a personal one", async () => {
+    await w.pg.query(`delete from public.update_asks`);
+    await raises(ask(w.bob, w.launch), /not authorized/);
+    await raises(ask(w.gus, w.launch), /not authorized/);
+    await raises(ask(w.carol, w.launch), /not authorized/);
+    await raises(ask(w.carol, bobs), /not authorized/);
+    await raises(ask(w.alice, w.launch), /your own project/);
+    await raises(ask(w.alice, "00000000-0000-0000-0000-000000000000"), /project not found/);
+    const personal = (await w.pg.query<{ id: string }>(`insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, 'Bob''s own', null) returning id::text as id`, [w.bob])).rows[0].id;
+    await raises(ask(w.alice, personal), /project not found/);
+    // archived, or its owner has left the workspace
+    await w.pg.query(`update public.projects set archived_at = now() where id = $1::uuid`, [bobs]);
+    await raises(ask(w.alice, bobs), /archived/);
+    await w.pg.query(`update public.projects set archived_at = null where id = $1::uuid`, [bobs]);
+    await w.pg.query(`update public.workspace_members set status = 'invited' where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, w.bob]);
+    await raises(ask(w.alice, bobs), /owner has left/);
+    await w.pg.query(`update public.workspace_members set status = 'active' where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, w.bob]);
+    // a suspended lead can't either
+    await w.pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [ada]);
+    await raises(ask(ada, bobs), /not authorized/);
+    await w.pg.query(`update public.profiles set suspended = false where id = $1::uuid`, [ada]);
+    eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.update_asks`)).rows[0].n, 0, "no ask was made");
+  });
+  await test("0053 attack: 30 asks a day per lead, then no more", async () => {
+    await w.pg.query(`insert into public.update_asks (project_id, workspace_id, asked_by, owner_id, created_at)
+      select $1::uuid, $2::uuid, $3::uuid, $4::uuid, now() - interval '21 hours' from generate_series(1, 30)`, [w.launch, w.w1, ada, w.alice]);
+    await raises(ask(ada, bobs), /too many asks today/);
+    await w.pg.query(`delete from public.update_asks`);
+  });
+  await test("0053: only the asker and the owner read an ask; nobody writes the table but the function", async () => {
+    const a = (await ask(w.alice, bobs))[0];
+    const reads = async (u: string) => (await asPerson<{ id: string }>(w.pg, u, `select id::text as id from public.update_asks`)).map((r) => r.id);
+    eq(await reads(w.alice), [a.id], "the asker");
+    eq(await reads(w.bob), [a.id], "the owner");
+    eq(await reads(ada), [], "another lead");
+    eq(await reads(w.gus), [], "a guest");
+    eq(await reads(w.carol), [], "an outsider");
+    await raises(asPerson(w.pg, w.alice, `insert into public.update_asks (project_id, workspace_id, asked_by, owner_id) values ($1::uuid, $2::uuid, $3::uuid, $4::uuid)`, [bobs, w.w1, w.alice, w.bob]), /permission denied/);
+    await raises(asPerson(w.pg, w.bob, `delete from public.update_asks where id = $1::uuid`, [a.id]), /permission denied/);
+    await raises(asPerson(w.pg, w.alice, `update public.update_asks set created_at = now() - interval '2 days' where id = $1::uuid`, [a.id]), /permission denied/);
+    // and no other function a signed-in person can call reads or writes it
+    const fns = await w.pg.query<{ name: string }>(`
+      select p.proname as name from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.prosecdef and p.prosrc ~* '\\mupdate_asks\\M'
+         and has_function_privilege('authenticated', p.oid, 'execute') order by 1`);
+    eq(fns.rows.map((r) => r.name), ["ask_for_update"], "security-definer functions on update_asks open to authenticated");
+  });
+  if (has0048) {
+    await test("0053: the notify queue takes the update reminders and asks ('update'), and nothing made up", async () => {
+      await w.pg.query(`insert into public.notify_queue (user_id, channel, kind, event_key, bundle_key, payload) values ($1::uuid, 'email', 'update', 'update_due:2026-11-13', 'update_due:2026-11-13', '{"v":1}')`, [w.bob]);
+      await raises(w.pg.query(`insert into public.notify_queue (user_id, channel, kind, event_key, bundle_key, payload) values ($1::uuid, 'email', 'gossip', 'x', 'x', '{}')`, [w.bob]), /notify_queue_shape/);
+    });
+  }
+  await test("0053: migrating twice keeps every update day, plan and ask; re-running 0041 and 0048 keeps them too", async () => {
+    await rhythm(w.alice, w.w1, { cadence: "weekly", weekday: 3 });
+    const before = (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.update_asks`)).rows[0].n;
+    await applyFile(w.pg, "0053_update_rhythm.sql");
+    await applyFile(w.pg, "0041_security_hardening_2.sql");
+    if (has0048) {
+      await applyFile(w.pg, "0048_ux_wave.sql");
+      eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.notify_queue where kind = 'update'`)).rows[0].n, 1, "the queued reminder survives a 0048 re-run");
+    }
+    eq(await wsRhythm(w.w1), { cadence: "weekly", weekday: 3 }, "update day");
+    eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.update_asks`)).rows[0].n, before, "asks");
+    eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.status_updates where recovery_plan is not null`)).rows[0].n, 1, "plans");
+    eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version = '0053'`)).rows[0].n, 1, "recorded once");
+    // the asks' policy (its own table: 0041 never touches it) still holds, and so does the column check
+    eq((await asPerson(w.pg, w.gus, `select id from public.update_asks`)).length, 0, "guest still reads no asks");
+    await raises(asPerson(w.pg, w.alice, `update public.workspaces set update_rhythm = '{"cadence":"hourly","weekday":1}' where id = $1::uuid`, [w.w1]), /update_rhythm_ok/);
+    if (has0048) await applyFile(w.pg, "0053_update_rhythm.sql");   // (0048 re-run: run this file again, as its header says)
+  });
+}
+
 /* ============================================================ run */
 
 export async function main(argv: string[]): Promise<number> {
   const all = migrationFiles();
-  // 0051 needs only 0041/0042: it runs in the set without 0048/0049 too
-  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || f.startsWith("0050") || f.startsWith("0051"));
+  // 0051 and 0053 need only 0041/0042: they run in the set without 0048/0049 too
+  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || f.startsWith("0050") || f.startsWith("0051") || f.startsWith("0053"));
   const setAll = all;
-  const sets: [string, string[]][] = [["0001..0047+0050+0051", set47], ["0001..0051", setAll]];
+  const sets: [string, string[]][] = [["0001..0047+0050+0051+0053", set47], ["0001..0053", setAll]];
   const only = argv[0];
   for (const [name, files] of sets) {
     if (only === "0047" && name !== sets[0][0]) continue;
@@ -1616,6 +1766,7 @@ export async function main(argv: string[]): Promise<number> {
     await clearRates(w);
     await strangerSuite(w);
     await guestLockSuite(w);
+    await updateRhythmSuite(w);
     console.log(`${name}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     await w.closeDriver();
     await w.pg.close();

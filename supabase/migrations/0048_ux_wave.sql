@@ -714,9 +714,11 @@ create index if not exists notify_queue_due_idx on public.notify_queue (deliver_
 create index if not exists notify_queue_bundle_idx on public.notify_queue (user_id, bundle_key, created_at desc);
 create index if not exists notify_queue_sent_idx on public.notify_queue (sent_at) where sent_at is not null;
 alter table public.notify_queue drop constraint if exists notify_queue_shape;
+-- ('update' arrives with 0053, the update reminders and asks: it's listed here too, so running
+--  this file again after 0053 keeps their queued notices valid)
 alter table public.notify_queue add constraint notify_queue_shape check (
   channel in ('push', 'email')
-  and kind in ('assigned', 'mention', 'comment', 'approval', 'kudos', 'due', 'digest')
+  and kind in ('assigned', 'mention', 'comment', 'approval', 'kudos', 'due', 'digest', 'update')
   and char_length(event_key) between 1 and 200 and char_length(bundle_key) between 1 and 200
   and char_length(actor_name) <= 200 and char_length(title) <= 500
   and jsonb_typeof(payload) = 'object' and pg_column_size(payload) <= 8192
