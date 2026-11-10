@@ -22,6 +22,8 @@ const ACROSS_CSS = `
 .kpj-pf-biz { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 1; min-width: 0; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); white-space: nowrap; }
 .kpj-pf-biz > span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .kpj-pf-gone { min-width: 0; font: 500 14px/20px var(--kpj-font); color: var(--ink-3); font-style: italic; }
+/* stacked (a narrow table): the remove button stays beside the name */
+@container (max-width: 599px) { .kpj-exec .kpj-tr[data-gone] .kpj-td:nth-child(5) { grid-column: 2; grid-row: 1; text-align: right; } }
 .kpj-pf-only { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); white-space: nowrap; }
 .kpj-pf-only > svg { color: var(--icon-quiet, var(--ink-4)); }
 .kpj-pick-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; }
@@ -244,16 +246,26 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                 const inPf = pf.projectIds.map(findProject).filter((p): p is Project => !!p);
                 // (Personal, across businesses: a project you can no longer see keeps its place, to be taken out)
                 const gone = across ? pf.projectIds.filter((id) => !findProject(id)) : [];
-                const goneRows = (table: boolean) => gone.map((id) => (
-                  <div key={id} className={table ? "kpj-tr kpj-exec-tr" : "kpj-pf-row"} role={table ? "row" : undefined} data-gone="">
-                    {table ? null : <ProjectDot color="oklch(0.62 0 0)" size={10} />}
-                    <span className="kpj-pf-gone" role={table ? "cell" : undefined}>No longer visible to you</span>
-                    <div className="kpj-pf-side" role={table ? "cell" : undefined}>
-                      <span className="kpj-card-meta">You've lost access to it, or it was deleted</span>
-                      <IconButton icon="x" size="sm" label={`Remove the project you can no longer see from ${pf.name}`} onClick={() => onUpdate(pf.id, { projectIds: pf.projectIds.filter((x) => x !== id) })} />
+                const goneRows = (table: boolean) => gone.map((id) => {
+                  const remove = <IconButton icon="x" size="sm" label={`Remove the project you can no longer see from ${pf.name}`} onClick={() => onUpdate(pf.id, { projectIds: pf.projectIds.filter((x) => x !== id) })} />;
+                  const why = <span className="kpj-card-meta">You've lost access to it, or it was deleted</span>;
+                  // in the table: a cell under each column (why under Latest update, remove under Updated)
+                  return table ? (
+                    <div key={id} className="kpj-tr kpj-exec-tr" role="row" data-gone="">
+                      <div role="cell" className="kpj-td"><span className="kpj-proj" style={{ padding: 0 }}><ProjectDot color="oklch(0.62 0 0)" size={10} /><span className="kpj-pf-gone">No longer visible to you</span></span></div>
+                      <div role="cell" className="kpj-td">{why}</div>
+                      <div role="cell" className="kpj-td" data-empty="true" />
+                      <div role="cell" className="kpj-td kpj-exec-ms" />
+                      <div role="cell" className="kpj-td kpj-num">{remove}</div>
                     </div>
-                  </div>
-                ));
+                  ) : (
+                    <div key={id} className="kpj-pf-row" data-gone="">
+                      <ProjectDot color="oklch(0.62 0 0)" size={10} />
+                      <span className="kpj-pf-gone">No longer visible to you</span>
+                      <div className="kpj-pf-side">{why}{remove}</div>
+                    </div>
+                  );
+                });
                 const rows = inPf.map((p) => {
                   const ptasks = idx.byProject.get(p.id) ?? [];
                   return { p, ptasks, health: projectHealth(ptasks, KANBO_TODAY), latest: projectUpdates(statusUpdates, p.id)[0] };

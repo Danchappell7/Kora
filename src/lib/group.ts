@@ -11,8 +11,12 @@
    · requests waiting for your approval there;
    · the week's wins: top-level tasks finished this week (on a Monday,
      last week's);
-   · Radar's signals, worked out for that business alone.
-   A business's score (what needs you most first) orders the page.
+   · Radar's signals, worked out for that business alone;
+   · your own work there that's overdue or due today (as the switcher's
+     dot and Today count it).
+   "Needs you most" is the switcher's and Today's meaning (lib/businesses
+   attentionScore: requests, your overdue and due-today work): that
+   business comes first, the rest by how much is behind.
    ============================================================ */
 import type { ApprovalWithTask, Goal, Project, Role, StatusUpdate, Task, Workspace, WorkspaceMember } from "../data/types";
 import { PRIORITY_META, getMember } from "../data/data";
@@ -20,7 +24,7 @@ import { goalProgressMap, projectHealth, type GoalProgress, type HealthKind } fr
 import { indexTasks, isStale, oldestTaskAge, statusFacts, STALE_DAYS } from "./statusDraft";
 import { computeRisks, type Risk } from "./radar";
 import { localDay, startOfWeekMon, addDays } from "./weekMath";
-import { approvalsEverywhere, businessesYouRun, roleInWorkspace, wsKey } from "./businesses";
+import { approvalsEverywhere, businessesYouRun, businessLead, roleInWorkspace, wsKey, type WorkspaceSignal } from "./businesses";
 
 /** Wave 2's pace read for a goal (the hook): behind or not, and the line to show under it. */
 export interface GoalPaceRead { behind: boolean; line: string }
@@ -34,7 +38,9 @@ export interface GroupProject {
   why: ProjectWhy;
   /** "Off track", "At risk", "No update in 14 days" */
   label: string;
-  /** "3 overdue · 2 blocked", "Update: at risk", "Last update 16 days ago" */
+  /** whose call the label is: Kanbo's read of the work, or the latest update's (stale: neither) */
+  source?: "work" | "update";
+  /** "3 overdue · 2 blocked · Update: at risk", "Update: at risk", "Last update 16 days ago" */
   detail: string;
 }
 export interface GroupApproval { id: string; taskId: string; title: string; requestedByName: string | null; createdAt: string }
@@ -47,8 +53,12 @@ export interface BusinessDigest {
   wins: { count: number; top: Task[]; label: string };
   /** Radar's signals for this business (blockers, slips, over capacity) */
   risks: number;
-  /** what needs you: the page puts the highest first */
+  /** your own work there: overdue, and due today */
+  mine: { overdue: number; dueToday: number };
+  /** how much is behind there (the page's order after the business that needs you most) */
   score: number;
+  /** the business that needs you most (the switcher's and Today's meaning) */
+  needsMost?: boolean;
 }
 
 export interface GroupInput {
@@ -66,6 +76,8 @@ export interface GroupInput {
   capacities?: Record<string, number>;
   /** wave 2: the pace line */
   pace?: GoalPace;
+  /** each workspace's signals (lib/businesses workspaceSignals): your own work there, and who needs you most */
+  signals?: ReadonlyMap<string, WorkspaceSignal>;
 }
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -126,8 +138,11 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
     const worst = health?.kind === "off_track" || call === "off_track" ? "off_track"
       : bad(health?.kind) || call === "at_risk" ? "at_risk" : null;
     if (worst) {
-      const fromWork = health && health.kind === worst;
-      needs.push({ project: p, why: worst, label: KIND_LABEL[worst], detail: fromWork ? health!.detail : `Update: ${KIND_LABEL[worst].toLowerCase()}` });
+      const fromWork = !!health && health.kind === worst;
+      // (the project's own page shows its latest update: when that says otherwise, so does this)
+      const callSays = bad(call) && call !== worst ? ` · Update: ${KIND_LABEL[call].toLowerCase()}` : "";
+      needs.push({ project: p, why: worst, label: KIND_LABEL[worst], source: fromWork ? "work" : "update",
+        detail: fromWork ? `${health!.detail}${callSays}` : `Update: ${KIND_LABEL[worst].toLowerCase()}` });
     } else if (isStale(f, oldestTaskAge(ptasks, p.id, today))) {
       needs.push({ project: p, why: "stale", label: `No update in ${STALE_DAYS} days`, detail: f.lastUpdateDays != null ? `Last update ${f.lastUpdateDays} days ago` : "No update yet" });
     }
@@ -153,8 +168,12 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
   try { risks = computeRisks({ tasks: tasks as Task[], members: people, capacities: input.capacities ?? {}, today: iso(today) }); } catch { risks = []; }
   const signals = risks.filter((r) => r.severity === "signal").length;
 
+  // your own work there (the switcher's dot counts it too)
+  const sig = input.signals?.get(wsKey(wsId));
+  const mine = { overdue: sig?.overdue ?? 0, dueToday: sig?.dueToday ?? 0 };
+
   const off = needs.filter((n) => n.why === "off_track").length;
-  const score = waiting.length * 3 + off * 3 + (needs.length - off) + behind.length * 2 + signals;
+  const score = waiting.length * 3 + off * 3 + (needs.length - off) + behind.length * 2 + signals + mine.overdue * 3 + mine.dueToday * 2;
   return {
     workspace: ws, role,
     goals: { behind, total: goals.length },
@@ -162,24 +181,33 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
     approvals: waiting,
     wins: { count: won.length, top: won.slice(0, 3), label: week.label },
     risks: signals,
+    mine,
     score,
   };
 }
 
-/** Every business you run, the one that needs you most first (ties keep the switcher's order). */
+/** Every business you run: the one that needs you most first (as Today's brief and the switcher say it, when
+ *  `signals` are given), then the rest by how much is behind (ties keep the switcher's order). */
 export function groupDigest(input: GroupInput): BusinessDigest[] {
   const runs = businessesYouRun(input.workspaces, input.members, input.me);
   const order = new Map(runs.map((w, i) => [wsKey(w.id), i]));
-  return runs
+  const list = runs
     .map((w) => businessDigest(w, roleInWorkspace(input.members, input.me, w.id)!, input))
     .sort((a, b) => b.score - a.score || (order.get(wsKey(a.workspace.id)) ?? 0) - (order.get(wsKey(b.workspace.id)) ?? 0));
+  const most = input.signals ? businessLead(input.signals, runs).lead?.key : list[0] && list[0].score > 0 ? wsKey(list[0].workspace.id) : undefined;
+  const i = most ? list.findIndex((d) => wsKey(d.workspace.id) === most) : -1;
+  if (i < 0) return list;
+  const lead = { ...list[i], needsMost: true };
+  return [lead, ...list.slice(0, i), ...list.slice(i + 1)];
 }
 
-/** "2 goals behind · 1 project off track · 1 approval" (or "All calm") */
+/** "1 approval · 1 of yours overdue · 1 project off track · 2 goals behind" (or "Nothing needs you") */
 export function digestLine(d: BusinessDigest): string {
   const bits: string[] = [];
   const p = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   if (d.approvals.length) bits.push(p(d.approvals.length, "approval"));
+  if (d.mine.overdue) bits.push(`${d.mine.overdue} of yours overdue`);
+  if (d.mine.dueToday) bits.push(`${d.mine.dueToday} of yours due today`);
   const off = d.projects.needs.filter((n) => n.why === "off_track").length;
   if (off) bits.push(`${p(off, "project")} off track`);
   const look = d.projects.needs.length - off;

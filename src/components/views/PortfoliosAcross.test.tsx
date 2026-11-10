@@ -61,6 +61,11 @@ describe("PortfoliosView · in Personal, across businesses", () => {
       expect.stringContaining("Q3 Product Launch"), expect.stringContaining("Clubhouse Fit-out"), expect.stringContaining("No longer visible to you"),
     ]);
     expect(within(rows[1]).getByText("Courtside Padel")).toBeInTheDocument();
+    // the unseen one fills the table's columns like the rest: why under Latest update, remove at the end
+    const cells = within(rows[2]).getAllByRole("cell");
+    expect(cells).toHaveLength(5);
+    expect(cells[1]).toHaveTextContent("You've lost access to it, or it was deleted");
+    expect(within(cells[4]).getByRole("button", { name: /^Remove the project you can no longer see/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cards" }));
   });
 

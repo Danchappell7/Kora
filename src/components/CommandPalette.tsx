@@ -236,7 +236,7 @@ const PALETTE_CSS = `
 `;
 
 export function CommandPalette({
-  open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll, canCreateProject = true,
+  open, onClose, onAction, onNavigate, tasks = [], onOpenTask, projects, onOpenProject, workspaces, onSearchAll, canCreateProject = true, canSeeGroup = false,
   ai, askContext, onApplyAsk, canAct, onGo, recent, recentTaskIds, initialQuery, personal, askFirst = false,
   comments, docs, onOpenDoc, onOpenPerson, onOpenComment, serverSearch, demoCorpus,
 }: {
@@ -257,6 +257,8 @@ export function CommandPalette({
   onSearchAll?: (text: string) => void;
   /** false drops the "New project" action (guests can view and comment, not create) */
   canCreateProject?: boolean;
+  /** Projects › Group is offered (you run two or more businesses) */
+  canSeeGroup?: boolean;
   /** Kanbo AI for Ask; undefined → on-device rules only (AI off, or no backend) */
   ai?: (q: string, tasks: Task[], ctx: AskContext) => Promise<AiOutcome<AskResult>>;
   /** today, me, the workspace's people and projects (defaults to the demo reference data) */
@@ -404,7 +406,7 @@ export function CommandPalette({
       return { kind: "task", id: t.id, label: t.title, status: t.status, where, due, overdue: !!t.dueDate && t.dueDate < today && t.status !== "done" };
     };
     const actions = ACTIONS.filter((a) => !((a.id === "new-project" || a.id === "plan-project") && !canCreateProject) && !(guest && WRITES.has(a.id)));
-    const targets = GO_TARGETS.filter((g) => !(guest && g.route.view === "automations"));
+    const targets = GO_TARGETS.filter((g) => !(guest && g.route.view === "automations") && !(!canSeeGroup && g.route.view === "group"));
     const crumbOf = (g: GoTarget): string | undefined => { const place = titleOf(g.route); return place !== g.label ? place : undefined; };
 
     if (!query) {
@@ -507,7 +509,7 @@ export function CommandPalette({
       { key: "go", heading: "Go to", items: goItems },
       { key: "actions", heading: "Actions", items: actionItems },
     ];
-  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today,
+  }, [open, query, q, tasks, projects, workspaces, onOpenProject, onSearchAll, canCreateProject, canSeeGroup, guest, canApply, recent, recentTaskIds, openedHere, personal, askFirst, ctx.today,
     hits, literal, onOpenDoc, onOpenPerson, onOpenComment, onOpenTask, onGo]);
 
   const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);

@@ -2,6 +2,7 @@
    already see), and a business you're only a member of, or one you're not in, never gets a section. */
 import { describe, it, expect } from "vitest";
 import { businessDigest, digestLine, goalsBehind, groupDigest, winsWeek, type GroupInput } from "./group";
+import { businessLead, workspaceSignals } from "./businesses";
 import type { ApprovalWithTask, Goal, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../data/types";
 
 const TODAY = new Date(2026, 9, 9);     // Friday 9 Oct 2026
@@ -99,5 +100,27 @@ describe("the Group page's businesses", () => {
     expect(digestLine(alpha)).toBe("1 approval · 1 project off track · 1 project to look at · 3 goals behind");
     expect(digestLine(beta)).toBe("1 project to look at");
     expect(digestLine({ ...beta, projects: { needs: [], total: 1 } })).toBe("Nothing needs you");
+  });
+
+  it("the latest update's call rides along when Kanbo's read of the work says worse (the project page shows the update)", () => {
+    const d = groupDigest(input({ statusUpdates: [upd("pa", "w-a", "at_risk", "2026-10-08T10:00:00Z")] }));
+    expect(d[0].projects.needs[0]).toMatchObject({ project: { id: "pa" }, label: "Off track", source: "work", detail: "3 overdue · Update: at risk" });
+  });
+
+  it("'needs you' means what the switcher and Today mean: your own work and requests there; that business comes first", () => {
+    // Beta: your own work, overdue and due today (the switcher's dot); Alpha only has things behind
+    const tasks = [...input().tasks, task({ id: "b-late", projectId: "pb", workspaceId: "w-b", dueDate: "2026-10-05" }), task({ id: "b-today", projectId: "pb", workspaceId: "w-b", dueDate: "2026-10-09" }),
+      task({ id: "b-late2", projectId: "pb", workspaceId: "w-b", dueDate: "2026-10-06" })];
+    const base = input({ tasks: tasks.filter((t) => !["a1", "a2", "a3"].includes(t.id)), approvals: [] });
+    const signals = workspaceSignals({ workspaces: WS, tasks: base.tasks, projects: base.projects, activity: [], approvals: [], me: "me", today: "2026-10-09" });
+    const d = groupDigest({ ...base, signals });
+    expect(d.map((x) => [x.workspace.name, !!x.needsMost])).toEqual([["Beta Padel", true], ["Alpha Studio", false]]);
+    expect(d[0].mine).toEqual({ overdue: 2, dueToday: 1 });
+    expect(digestLine(d[0])).toBe("2 of yours overdue · 1 of yours due today · 1 project off track");
+    // …the very business Today's brief names
+    expect(businessLead(signals, WS).lead?.workspace.name).toBe("Beta Padel");
+    // nothing needs you anywhere: no pill
+    const calm = workspaceSignals({ workspaces: WS, tasks: [], projects: base.projects, activity: [], approvals: [], me: "me", today: "2026-10-09" });
+    expect(groupDigest({ ...base, signals: calm }).some((x) => x.needsMost)).toBe(false);
   });
 });

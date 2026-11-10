@@ -3,6 +3,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, within, fireEvent } from "@testing-library/react";
 import { GroupView } from "./GroupView";
+import { workspaceSignals } from "../../lib/businesses";
 import type { ApprovalWithTask, Goal, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../../data/types";
 
 const TODAY = new Date(2026, 9, 9);
@@ -65,7 +66,7 @@ describe("GroupView", () => {
     // a calm business says so
     const b = section("Beta Padel");
     expect(within(b).getByText("Every goal is on track.")).toBeInTheDocument();
-    expect(within(b).getByText("Every project is on track and up to date.")).toBeInTheDocument();
+    expect(within(b).getByText("No project needs a look.")).toBeInTheDocument();
     expect(within(b).getByText("Nothing waiting for you.")).toBeInTheDocument();
   });
 
@@ -82,6 +83,31 @@ describe("GroupView", () => {
     expect(onOpen).toHaveBeenLastCalledWith("w-a", { kind: "goals" });
     fireEvent.click(within(section("Beta Padel")).getByRole("button", { name: "Open Beta Padel" }));
     expect(onOpen).toHaveBeenLastCalledWith("w-b", { kind: "business" });
+  });
+
+  it("'Needs you most' is the switcher's and Today's meaning: your own work and requests there", () => {
+    // your own work at Beta Padel, overdue and due today: it needs you most, and its line says so
+    const tasks = [...TASKS.filter((x) => x.id !== "a3"), t({ id: "b-late", projectId: "pb", workspaceId: "w-b", dueDate: "2026-10-05" }),
+      t({ id: "b-today", projectId: "pb", workspaceId: "w-b", dueDate: "2026-10-09" })];
+    const signals = workspaceSignals({ workspaces: WS, tasks, projects: PROJECTS, activity: [], approvals: [], me: "me", today: "2026-10-09" });
+    renderGroup({ tasks, approvals: [], signals });
+    // (Alpha's own overdue work weighs too: a1 and a2)
+    const names = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    const first = section(names[0]!);
+    expect(within(first).getByText("Needs you most")).toBeInTheDocument();
+    expect(screen.getAllByText("Needs you most")).toHaveLength(1);
+    expect(within(section("Beta Padel")).getByText(/1 of yours overdue · 1 of yours due today/)).toBeInTheDocument();
+    // a project off track says whose call that is
+    expect(within(section("Alpha Studio")).getByText("Off track")).toHaveAttribute("title", "Kanbo's read of the work");
+  });
+
+  it("a phone folds the calm blocks into one line", () => {
+    renderGroup();
+    const b = section("Beta Padel");
+    expect(within(b).getByRole("region", { name: "Goals behind" })).toHaveAttribute("data-calm", "true");
+    expect(within(b).getByRole("region", { name: "This week's wins" })).toHaveAttribute("data-calm", "true");
+    expect(b.querySelector(".kgrp-calmline")).toHaveTextContent("Every goal on trackNo project needs a lookNothing waiting for youNothing finished yet");
+    expect(within(section("Alpha Studio")).getByRole("region", { name: "Projects to look at" })).not.toHaveAttribute("data-calm");
   });
 
   it("wave 2's pace line shows under a goal", () => {
