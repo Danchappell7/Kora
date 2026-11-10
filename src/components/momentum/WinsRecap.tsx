@@ -18,7 +18,8 @@
 import { lazy, Suspense, useId, useMemo, useState } from "react";
 import type { Kudos, Member, MomentumPrefs, Project, Task } from "../../data/types";
 import { Icon, IconButton, ProjectChip, StatusGlyph } from "../primitives";
-import { getProject } from "../../data/data";
+import { getProject, WORKSPACES } from "../../data/data";
+import { accessOn, audienceOpen } from "../../lib/projectAccess";
 import { copyText, useOptionalToast } from "../rituals/shared";
 import {
   buildWinsRecap, focusLabel, localMoment, mondayOf, rangeLabel, recapHeadline, recapTitle, streakLabel, winsRecapText,
@@ -94,12 +95,15 @@ export function WinsRecap({ now, currentUserId, tasks, seen, projects, members, 
   if (!recap || hidden) return null;
 
   /* what's shared: this workspace's finished tasks and kudos only (never Personal, never another team's) */
+  // 0058 (D18): the team channel gets only Whole workspace projects' wins where project access is on
+  const wsRow = workspaceId ? WORKSPACES.find((w) => w.id === workspaceId) : undefined;
+  const teamOpen = (t: Task) => !accessOn(wsRow) || audienceOpen("team", wsRow, projects.find((p) => p.id === t.projectId && p.workspaceId === workspaceId));
   const sharedText = () => {
     const ws = workspaceId;
     const scoped = ws
       ? buildWinsRecap({
         now: at, timezone, currentUserId, projects, plannedDays, prefs, nameOf, focusLog,
-        tasks: tasks.filter((t) => (t.workspaceId ?? null) === ws), kudos: kudos.filter((k) => k.workspaceId === ws),
+        tasks: tasks.filter((t) => (t.workspaceId ?? null) === ws && teamOpen(t)), kudos: kudos.filter((k) => k.workspaceId === ws && (!k.taskId || !tasks.some((t) => t.id === k.taskId && !teamOpen(t)))),
         window: { kind: recap.kind, from: recap.from, to: recap.to },
       })
       : recap;

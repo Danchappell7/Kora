@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { TeamView, WorkspaceSettingsPanel } from "./TeamView";
 import type { Task, WorkspaceMember } from "../../data/types";
+import { WORKSPACES, setReferenceData } from "../../data/data";
 
 const task = { id: "t1", title: "Q3 budget", projectId: "p-launch", status: "todo", assigneeId: "m-1", aiScore: 1 } as unknown as Task;
 
@@ -207,10 +208,22 @@ describe("TeamView", () => {
   });
 
   it("describes the guest role honestly: every project in the workspace, comment only", () => {
-    team([]);
+    // (project access off here, as every workspace is until its owner turns it on)
+    const before = WORKSPACES;
+    setReferenceData({ workspaces: before.map((w) => (w.id === WS ? { ...w, projectAccess: { on: false, defaultVisibility: "workspace" as const, membersMayMakePrivate: false } } : w)) });
+    try {
+      team([]);
+      openInvite();
+      fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "guest" } });
+      expect(screen.getByText("Can see every project in this workspace and comment on its tasks, but can't change anything.", { exact: false })).toBeInTheDocument();
+    } finally { setReferenceData({ workspaces: before }); }
+  });
+
+  it("with project access on (0058), a guest sees only the projects they're added to", () => {
+    team([]);   // (the demo's Foundrise has it on)
     openInvite();
     fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "guest" } });
-    expect(screen.getByText("Can see every project in this workspace and comment on its tasks, but can't change anything.", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Sees only the projects they're added to and can comment on their tasks, but can't change anything.", { exact: false })).toBeInTheDocument();
   });
 
   it("warns what someone leaves behind before removing them, and that they come off tasks they follow", () => {

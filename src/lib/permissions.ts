@@ -11,18 +11,18 @@ export interface Caps {
   deleteWorkspace: boolean;  // delete or transfer ownership (owner only)
   createProjects: boolean;
   editContent: boolean;      // create/edit/delete tasks & projects (guests: view + comment only)
-  seeAllProjects: boolean;
 }
 
+// (what each role may SEE is project access's, 0058: lib/projectAccess.ts)
 const CAPS: Record<Role, Caps> = {
-  owner:  { manageMembers: true,  manageAdmins: true,  manageWorkspace: true,  deleteWorkspace: true,  createProjects: true,  editContent: true,  seeAllProjects: true },
-  admin:  { manageMembers: true,  manageAdmins: false, manageWorkspace: true,  deleteWorkspace: false, createProjects: true,  editContent: true,  seeAllProjects: true },
-  member: { manageMembers: false, manageAdmins: false, manageWorkspace: false, deleteWorkspace: false, createProjects: true,  editContent: true,  seeAllProjects: true },
-  guest:  { manageMembers: false, manageAdmins: false, manageWorkspace: false, deleteWorkspace: false, createProjects: false, editContent: false, seeAllProjects: true },
+  owner:  { manageMembers: true,  manageAdmins: true,  manageWorkspace: true,  deleteWorkspace: true,  createProjects: true,  editContent: true },
+  admin:  { manageMembers: true,  manageAdmins: false, manageWorkspace: true,  deleteWorkspace: false, createProjects: true,  editContent: true },
+  member: { manageMembers: false, manageAdmins: false, manageWorkspace: false, deleteWorkspace: false, createProjects: true,  editContent: true },
+  guest:  { manageMembers: false, manageAdmins: false, manageWorkspace: false, deleteWorkspace: false, createProjects: false, editContent: false },
 };
 
 /** Personal workspace (no role) behaves like a solo owner of your own space. */
-const SOLO: Caps = { manageMembers: false, manageAdmins: false, manageWorkspace: true, deleteWorkspace: true, createProjects: true, editContent: true, seeAllProjects: true };
+const SOLO: Caps = { manageMembers: false, manageAdmins: false, manageWorkspace: true, deleteWorkspace: true, createProjects: true, editContent: true };
 
 export const can = (role: Role | null | undefined, cap: keyof Caps): boolean =>
   role ? CAPS[role][cap] : SOLO[cap];
@@ -31,12 +31,19 @@ export const ROLE_META: Record<Role, { label: string; blurb: string }> = {
   owner:  { label: "Owner",  blurb: "Full control, billing & ownership" },
   admin:  { label: "Admin",  blurb: "Manage members & settings" },
   member: { label: "Member", blurb: "Create and edit work" },
-  // honest about today: until private projects land, a guest sees every project in the workspace
+  // honest about a workspace with project access off: a guest sees every project there (guestBlurb for on)
   guest:  { label: "Guest",  blurb: "Can see every project and comment" },
 };
 
-/** The fuller line the People page shows for a guest (role picker, profile, badge). */
+/** The fuller line the People page shows for a guest (role picker, profile, badge), project access off. */
 export const GUEST_LINE = "Can see every project in this workspace and comment on its tasks, but can't change anything. Team reports (Pulse, Workload, Insights) are for members.";
+
+/** A guest's short blurb: with project access on (0058) they see only the projects they're added to. */
+export const guestBlurb = (on: boolean): string => (on ? "Sees only the projects they're added to, and can comment" : ROLE_META.guest.blurb);
+/** A guest's fuller line, project access on or off. */
+export const guestLine = (on: boolean): string => (on
+  ? "Sees only the projects they're added to and can comment on their tasks, but can't change anything. Team reports (Pulse, Workload, Insights) are for members."
+  : GUEST_LINE);
 
 /** What to ask before removing someone: what they leave behind, said plainly.
  *  `open` is their open tasks here, `owns` the projects they own here. */

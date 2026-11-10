@@ -17,6 +17,7 @@ import type { WorkspaceEvent } from "../../data/types";
 import type { NewProject } from "../../data/store";
 import { KANBO_TODAY, getMember, toLocalISO } from "../../data/data";
 import { readCapacities } from "../../lib/radar";
+import { accessOn, audienceOpen } from "../../lib/projectAccess";
 import { awayNote, awayStretch, forTeamAt, getAvailability, seesTimeOff } from "../../lib/availability";
 import {
   PRESETS, SECTION_LABEL, SECTION_ORDER, agendaFacts, assembleAgenda, goalsWords, meetingDay, meetingPeople, meetingTitle, mayRun, overviewLede, type AgendaFacts,
@@ -102,8 +103,10 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
   const coming = people.filter((p) => !away.has(p.id));
 
   /* ---- where the notes go ---- */
-  // ("" is the recap only: read by the people the meeting is for. A project's docs are read by everyone at the business.)
-  const hostProjects = useMemo(() => projects.filter((p) => p.workspaceId === host && !p.archivedAt), [projects, host]);
+  // ("" is the recap only: read by the people the meeting is for. Notes go in a project the whole team can
+  // see: 0058, with project access on, only the projects everyone the meeting is for can read are offered)
+  const hostProjects = useMemo(() => projects.filter((p) => p.workspaceId === host && !p.archivedAt
+    && audienceOpen(preset, workspaces.find((w) => w.id === host), p)), [projects, host, preset, workspaces]);
   const meetingsProject = hostProjects.find((p) => p.name.trim().toLowerCase() === MEETINGS.toLowerCase() && !p.id.startsWith("tmp-"));
   const [projectId, setProjectId] = useState<string | null>(null);
   const [making, setMaking] = useState(false);
@@ -134,7 +137,9 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
   const makeMeetings = () => {
     if (!onCreateProject) return;
     setMaking(true);
-    onCreateProject({ name: MEETINGS, emoji: "🗓️", color: spectrumColor("cobalt"), workspaceId: host });
+    // (made Whole workspace on purpose: a team meeting's notes are the whole team's)
+    onCreateProject({ name: MEETINGS, emoji: "🗓️", color: spectrumColor("cobalt"), workspaceId: host,
+      ...(accessOn(workspaces.find((w) => w.id === host)) ? { visibility: "workspace" as const } : {}) });
   };
 
   const count = (s: MeetingSection) => facts.counts[s];
@@ -228,6 +233,7 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
           </span>
           <span className="kmtg-hint" id={`${uid}-dochint`}>
             {!docProjectId ? "Only the people this meeting is for can read the recap."
+              : accessOn(workspaces.find((w) => w.id === host)) ? (preset === "team" ? "Notes go in a project the whole team can see." : "Saved there only when you choose, at the end. Notes go in a project everyone at this meeting can see.")
               : preset === "team" ? `Everyone at ${hostName}${guestsHere ? ", guests too," : ""} can read docs in its projects.`
               : `Saved there only when you choose, at the end. Everyone at ${hostName}${guestsHere ? ", guests too," : ""} can read docs in its projects.`}
           </span>

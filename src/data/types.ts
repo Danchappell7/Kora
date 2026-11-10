@@ -673,7 +673,8 @@ export interface SlackStatus {
   updatedAt: string | null;
 }
 export type SlackPostKind = "standup" | "status" | "risks";
-export type SlackFailure = "not_connected" | "not_allowed" | "rate_limited" | "slack_rejected" | "invalid" | "unavailable" | "network";
+/** private_project (0058): a Members only or Private project is never posted to the team channel */
+export type SlackFailure = "not_connected" | "not_allowed" | "rate_limited" | "slack_rejected" | "invalid" | "unavailable" | "network" | "private_project";
 export type SlackPostResult = { ok: true } | { ok: false; reason: SlackFailure; message: string; retryAfter?: number };
 
 /* ---------- calendar feed (public.calendar_feed_tokens) ---------- */

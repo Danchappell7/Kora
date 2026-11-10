@@ -18,7 +18,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AiMark, Avatar, Button, EmptyState, Meter, Segmented, Sheet, StatusGlyph, Vellum } from "../primitives";
 import { useToast } from "../Toast";
-import { getMember, KANBO_TODAY, toLocalISO } from "../../data/data";
+import { getMember, getProject, KANBO_TODAY, toLocalISO, WORKSPACES } from "../../data/data";
+import { accessOn, audienceOpen } from "../../lib/projectAccess";
 import { ROLE_META } from "../../lib/permissions";
 import type { Kudos, Task, WorkspaceMember, WorkspaceEvent } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
@@ -186,6 +187,19 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
     [tasks, people, history, todayISO, capacities, since, period]);
   const risks = useMemo(() => computeRisks({ tasks, events: history?.events, eventsSince: history?.since, members: people, capacities, today: todayISO }),
     [tasks, history, people, capacities, todayISO]);
+  // 0058 (D18): a Slack channel is a team channel, so what's posted there leaves out Members only and
+  // Private projects (the stand-up, the risks and the write-up); the page itself shows everything you can see
+  const slackWs = WORKSPACES.find((w) => w.id === workspaceId);
+  const slackGated = accessOn(slackWs);
+  const slackTasks = useMemo(() => (slackGated ? tasks.filter((t) => {
+    const p = getProject(t.projectId);
+    return audienceOpen("team", slackWs, p && (p.workspaceId ?? null) === (t.workspaceId ?? workspaceId) ? p : undefined);
+  }) : tasks), [slackGated, slackWs, tasks, workspaceId]);
+  const leftOut = tasks.length - slackTasks.length;
+  const slackFacts = useMemo(() => (leftOut ? buildPulse({ tasks: slackTasks, members: people, events: history?.events, today: todayISO, capacities, since, period }) : facts),
+    [leftOut, slackTasks, people, history, todayISO, capacities, since, period, facts]);
+  const slackRisks = useMemo(() => (leftOut ? computeRisks({ tasks: slackTasks, events: history?.events, eventsSince: history?.since, members: people, capacities, today: todayISO }) : risks),
+    [leftOut, slackTasks, history, people, capacities, todayISO, risks]);
   const sinceWord = period === "week" ? "Monday" : sinceWords(since, todayISO);
   // a switch of period is announced once, with the new lede; realtime changes to the lede aren't
   const [announce, setAnnounce] = useState("");
@@ -210,12 +224,12 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   const request = useRef(0);
   const ready = (w: Extract<WriteUp, { status: "ready" }>) => { setDraft(w.text); setWriteUp(w); };
   const startWriteUp = async () => {
-    const template = pulseMarkdown(facts);
+    const template = pulseMarkdown(slackFacts);
     const id = ++request.current;
     if (!onWriteUp) { ready({ status: "ready", text: template, ai: false, note: "Written from your team's tasks (Kanbo AI is off)" }); return; }
     setWriteUp({ status: "loading" });
     let out: AiOutcome<string> | null = null;
-    try { out = await onWriteUp(pulseFactsForAi(facts, risks)); } catch { out = null; }
+    try { out = await onWriteUp(pulseFactsForAi(slackFacts, slackRisks)); } catch { out = null; }
     if (id !== request.current) return;   // closed, or asked again, meanwhile
     if (out && out.source === "ai" && typeof out.data === "string" && out.data.trim()) {
       ready({ status: "ready", text: out.data.trim(), ai: true });
@@ -261,9 +275,11 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
             options={[{ value: "day", label: `Since ${sinceWords(periodStart("day", todayISO), todayISO)}` }, { value: "week", label: "This week" }]} />
           <span className="kpulse-bar-end">
             {meeting && !readOnly && <RunMeetingButton scope={meeting} />}
-            <Button size="sm" variant="secondary" icon="copy" onClick={() => void copy(pulseMarkdown(facts), "slack")} disabled={loading}>Copy for Slack</Button>
+            <Button size="sm" variant="secondary" icon="copy" onClick={() => void copy(pulseMarkdown(slackFacts), "slack")} disabled={loading}
+              title={leftOut ? "Leaves out private projects" : undefined}>Copy for Slack</Button>
             {/* renders nothing until this workspace has a Slack channel (and never for guests) */}
-            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => pulseMarkdown(facts)} disabled={loading} />}
+            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => pulseMarkdown(slackFacts)} disabled={loading} />}
+            {leftOut > 0 && <span className="kpulse-note">Leaves out private projects</span>}
             <Button size="sm" variant="hero" icon="kanbo" onClick={() => void startWriteUp()} disabled={loading}>Write it up</Button>
           </span>
         </div>
@@ -289,7 +305,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
           <RadarPanel risks={risks} members={people} readOnly={readOnly} tasks={tasks} loading={loading} currentUserId={currentUserId}
             onOpen={onOpen} onNudge={onNudge} onPatch={onPatch} onOpenWorkload={onOpenWorkload}
             action={!readOnly && !loading && risks.length > 0
-              ? <SlackPostButton workspaceId={workspaceId} kind="risks" variant="ghost" getText={() => risksSlackText(risks)} />
+              ? <SlackPostButton workspaceId={workspaceId} kind="risks" variant="ghost" getText={() => risksSlackText(slackRisks)} />
               : undefined} />
         </aside>
         {goalsSlot && <div className="kpulse-goals">{goalsSlot}</div>}

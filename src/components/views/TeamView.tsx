@@ -10,7 +10,9 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { Icon, IconButton, Avatar, Button, EmptyState, Meter, Pill, SectionLabel, Segmented, Sheet, StatusGlyph, ProjectDot } from "../primitives";
 import { getProject, getMember, KANBO_TODAY, PROJECTS } from "../../data/data";
-import { can, canManageMember, assignableRoles, removeMemberQuestion, GUEST_LINE, ROLE_META } from "../../lib/permissions";
+import { can, canManageMember, assignableRoles, removeMemberQuestion, guestLine, ROLE_META } from "../../lib/permissions";
+import { accessOn } from "../../lib/projectAccess";
+import { WORKSPACES } from "../../data/data";
 import type { Task, Workspace, WorkspaceMember, Role } from "../../data/types";
 import { AVATAR_ACCEPT, AVATAR_MESSAGES, avatarExtension, avatarMime } from "../../lib/avatarUpload";
 import { uiZoom } from "../../lib/appearance";
@@ -131,10 +133,11 @@ function memberName(m: WorkspaceMember): string {
 }
 
 /** Role description shown on the Team page. Guests read every project in the
-    workspace (0041 RLS: active members read team rows) — say so, because
-    "guest" usually implies narrower access than that. */
-function roleBlurb(r: Role): string {
-  return r === "guest" ? GUEST_LINE : ROLE_META[r]?.blurb ?? "";
+    workspace (0041 RLS: active members read team rows) unless it has project
+    access on (0058), when they see only the projects they're added to: say
+    which, because "guest" usually implies narrower access than the first. */
+function roleBlurb(r: Role, wsId?: string | null): string {
+  return r === "guest" ? guestLine(accessOn(WORKSPACES.find((w) => w.id === wsId))) : ROLE_META[r]?.blurb ?? "";
 }
 
 const withArticle = (word: string) => (/^[aeiou]/i.test(word) ? "an " : "a ") + word;
@@ -193,7 +196,7 @@ async function copyText(text: string): Promise<boolean> {
 function RoleBadge({ m, always }: { m: WorkspaceMember; always?: boolean }) {
   if (m.status === "invited") return <Pill tone="neutral">Invited</Pill>;
   if (m.role === "member" && !always) return null;
-  return <Pill tone={m.role === "owner" ? "accent" : "neutral"} title={roleBlurb(m.role)}>{ROLE_META[m.role]?.label}</Pill>;
+  return <Pill tone={m.role === "owner" ? "accent" : "neutral"} title={roleBlurb(m.role, m.workspaceId)}>{ROLE_META[m.role]?.label}</Pill>;
 }
 
 /* Per pending email: "fresh" = invited from this page a moment ago, "sent" =
@@ -377,7 +380,7 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
             ) : pending ? (
               <span className="kprof-value">{ROLE_META[m.role]?.label}</span>
             ) : <RoleBadge m={m} always />}
-            <span className="kprof-hint">{roleBlurb(m.role)}</span>
+            <span className="kprof-hint">{roleBlurb(m.role, m.workspaceId)}</span>
           </div>
         </div>
 
@@ -896,7 +899,7 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
               <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as Role)} aria-label="Invite as role" className="kfield-select">
                 {inviteOptions.map((r) => <option key={r} value={r}>{ROLE_META[r].label}</option>)}
               </select>
-              <span className="kinvite-help"><b>{ROLE_META[inviteRole]?.label}</b> · {roleBlurb(inviteRole)}</span>
+              <span className="kinvite-help"><b>{ROLE_META[inviteRole]?.label}</b> · {roleBlurb(inviteRole, workspace)}</span>
             </label>
             <p className="kinvite-note"><Icon name="lock" size={14} sw={1.75} />
               <span>

@@ -243,7 +243,7 @@ export async function setSlackAutopost(workspaceId: string, enabled: boolean, ti
 
 /* ------------------------------------------------------------ posting */
 
-const FAILURES: readonly SlackFailure[] = ["not_connected", "not_allowed", "rate_limited", "slack_rejected", "invalid", "unavailable", "network"];
+const FAILURES: readonly SlackFailure[] = ["not_connected", "not_allowed", "rate_limited", "slack_rejected", "invalid", "unavailable", "network", "private_project"];
 const isFailure = (v: unknown): v is SlackFailure => typeof v === "string" && (FAILURES as readonly string[]).includes(v);
 
 /** "a minute", "3 minutes", "an hour". */
@@ -276,6 +276,8 @@ export function slackFailureMessage(reason: SlackFailure, opts: { detail?: strin
       }
     case "invalid": return opts.serverMessage && /^[A-Z].{3,200}[.]$/.test(opts.serverMessage) ? opts.serverMessage : "That couldn't be posted.";
     case "unavailable": return "Posting to Slack isn't switched on yet.";
+    // 0058: slack-post refuses a Members only or Private project's update (the server's words)
+    case "private_project": return "This project is private, so it isn't posted to the team channel.";
     case "network": return isOffline() ? SLACK_COPY.offline : "Couldn't reach Kanbo. Check your connection and try again.";
   }
 }

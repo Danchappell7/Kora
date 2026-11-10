@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { Goal, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../../data/types";
 import {
-  actionState, agendaFacts, assembleAgenda, goalsWords, itemsLine, mayRun, meetingPeople, meetingTitle, overviewLede, PRESETS, sectionOf, type AgendaInput,
+  actionState, agendaFacts, assembleAgenda, forAudience, goalsWords, itemsLine, mayRun, meetingPeople, meetingTitle, overviewLede, PRESETS, sectionOf, type AgendaInput,
 } from "./agenda";
 import { parseAgenda, type MeetingItem } from "./types";
 import { parseActivityMeta } from "../activityMeta";
@@ -219,5 +219,33 @@ describe("the recap in the Inbox (activity kind 'meeting')", () => {
     expect(meta).toEqual({ meetingId: "m1", workspaceId: "w-a", meetingPreset: "leadership", decisions: 2, actions: 3, docId: "d1", projectId: "pa" });
     expect(parseActivityMeta({ meeting_id: "m1", preset: "board", decisions: -1 })).toEqual({ meetingId: "m1" });
     expect(activityWorkspace({ id: "a", taskId: null, taskTitle: "x", kind: "meeting", detail: "", createdAt: "", meta: { meetingId: "m1", workspaceId: "w-b" } }, new Map(), [])).toBe("w-b");
+  });
+});
+
+describe("project access (0058, D17): an agenda carries only what everyone it's for can see", () => {
+  const on = { on: true, defaultVisibility: "workspace" as const, membersMayMakePrivate: false };
+  const gated = [{ ...WS[0], projectAccess: on }, WS[1]];
+  const projects = [proj("pa", "w-a"), proj("pm", "w-a", { visibility: "members" }), proj("pp", "w-a", { visibility: "private" }), proj("pb", "w-b")];
+  const secret = [
+    task({ id: "m-task", projectId: "pm", assigneeId: "max", status: "blocked", title: "Board pack" }),
+    task({ id: "p-task", projectId: "pp", assigneeId: "max", status: "done", completedAt: "2026-11-09", title: "Theo's contract" }),
+  ];
+  const ids = (f: ReturnType<typeof agendaFacts>) => f.people.flatMap((p) => [...p.done, ...p.today, ...p.blocked].map((e) => e.taskId));
+  it("a team meeting leaves out Members only and Private work; a leadership one keeps Members only", () => {
+    const team = agendaFacts(input({ workspaces: [gated[0]], tasks: [...TASKS, ...secret], projects }));
+    expect(ids(team)).not.toContain("m-task");
+    expect(ids(team)).not.toContain("p-task");
+    expect(ids(team)).toContain("done-max");
+    const lead = agendaFacts(input({ preset: "leadership", workspaces: [gated[0]], tasks: [...TASKS, ...secret], projects }));
+    expect(lead.risks.flatMap((r) => r.taskIds)).not.toContain("p-task");
+    const scoped = forAudience(input({ preset: "leadership", workspaces: [gated[0]], tasks: [...TASKS, ...secret], projects }));
+    expect(scoped.tasks.map((t) => t.id)).toContain("m-task");
+    expect(scoped.tasks.map((t) => t.id)).not.toContain("p-task");
+    expect(scoped.projects.map((p) => p.id)).toEqual(["pa", "pm", "pb"]);
+  });
+  it("with project access off, nothing is left out", () => {
+    const all = input({ tasks: [...TASKS, ...secret], projects });
+    expect(forAudience(all)).toBe(all);
+    expect(ids(agendaFacts(all))).toContain("p-task");
   });
 });

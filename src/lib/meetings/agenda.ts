@@ -22,6 +22,7 @@ import { groupGoalPace } from "../goalPace";
 import { goalLookup } from "../goalRules";
 import { fmtDayMonth, localDay } from "../weekMath";
 import { meetingDay } from "./types";
+import { accessOn, audienceOpen } from "../projectAccess";
 import type {
   AgendaAction, AgendaEntry, AgendaGoal, AgendaItem, AgendaProject, AgendaRisk, Meeting, MeetingItem, MeetingPreset, MeetingSection,
 } from "./types";
@@ -152,7 +153,26 @@ function underLeadership(g: Goal, byId: (id: string) => Goal | undefined): boole
   return false;
 }
 
-export function agendaFacts(input: AgendaInput): AgendaFacts {
+/** 0058 (D17): only the work everyone the meeting is for can see goes into its facts. A team meeting
+ *  takes Whole workspace projects; a leadership one Members only too; Private never. Free text can't be
+ *  scrubbed later, so this is the rule (the server strips any entry that slips past it). */
+export function forAudience(input: AgendaInput): AgendaInput {
+  const wsOf = (id: string | null | undefined) => (id ? input.workspaces.find((w) => w.id === id) : undefined);
+  if (!input.workspaces.some((w) => accessOn(w))) return input;
+  const projectOf = (wsId: string | null | undefined, projectId: string) => input.projects.find((p) => p.id === projectId && (p.workspaceId ?? null) === (wsId ?? null));
+  const open = (wsId: string | null | undefined, projectId: string) => audienceOpen(input.preset, wsOf(wsId), projectOf(wsId, projectId));
+  const openTask = (t: Task) => open(t.workspaceId, t.projectId);
+  return {
+    ...input,
+    tasks: input.tasks.filter(openTask),
+    ...(input.goalTasks ? { goalTasks: input.goalTasks.filter(openTask) } : {}),
+    projects: input.projects.filter((p) => !p.workspaceId || audienceOpen(input.preset, wsOf(p.workspaceId), p)),
+    statusUpdates: input.statusUpdates.filter((u) => open(u.workspaceId, u.projectId)),
+  };
+}
+
+export function agendaFacts(all: AgendaInput): AgendaFacts {
+  const input = forAudience(all);
   const { preset, members, today } = input;
   const byGoalId = goalLookup(input.goals);
   const todayISO = toLocalISO(today);

@@ -121,8 +121,13 @@ describe("the start sheet", () => {
     expect(notesGo).toHaveValue("");
     expect(within(dialog).getByText("Only the people this meeting is for can read the recap.")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "New Meetings project" })).toBeInTheDocument();
+    // (0058: Foundrise has project access on, so only Whole workspace projects take a team meeting's notes)
+    const offered = within(notesGo).getAllByRole("option").map((o) => (o as HTMLOptionElement).value);
+    expect(offered).toContain("p-launch");
+    expect(offered).not.toContain("p-seed");
+    expect(offered).not.toContain("p-payroll");
     fireEvent.change(notesGo, { target: { value: "p-launch" } });
-    expect(within(dialog).getByText("Everyone at Foundrise, guests too, can read docs in its projects.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Notes go in a project the whole team can see.")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Start meeting" }));
     await waitFor(() => expect(props.onStarted).toHaveBeenCalled());
     const m = props.onStarted.mock.calls[0][0];
@@ -144,8 +149,12 @@ describe("the start sheet", () => {
     expect(notesGo).toHaveValue("");
     // (no "Leadership" project is offered: everyone at the business would read it)
     expect(within(dialog).queryByRole("button", { name: /New .* project/ })).toBeNull();
+    // (a leadership meeting may keep its notes in a Members only project, never a Private one)
+    const offered = within(notesGo).getAllByRole("option").map((o) => (o as HTMLOptionElement).value);
+    expect(offered).toContain("p-seed");
+    expect(offered).not.toContain("p-payroll");
     fireEvent.change(notesGo, { target: { value: "p-launch" } });
-    expect(within(dialog).getByText("Saved there only when you choose, at the end. Everyone at Foundrise, guests too, can read docs in its projects.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Saved there only when you choose, at the end. Notes go in a project everyone at this meeting can see.")).toBeInTheDocument();
     expect(props.onCreateProject).not.toHaveBeenCalled();
   });
   it("a Group meeting is leadership only, and never goes round one business's people", async () => {
