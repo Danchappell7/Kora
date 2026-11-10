@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import type { Task, WorkspaceEvent } from "../data/types";
 import { computeRisks, loadForWeek, loadTone, readCapacities, taskHours, writeCapacities, type Risk } from "./radar";
 import { buildRecurrence } from "./taskOps";
+import { EMPTY_AVAILABILITY, resetAvailability, updateAvailability } from "./availability";
 
 // Wednesday 30 September 2026; the week runs Mon 28 Sep – Sun 4 Oct
 const TODAY = "2026-09-30";
@@ -247,6 +248,25 @@ describe("computeRisks", () => {
     expect(readCapacities()).toEqual({ "m-1": 20 });
     const rs = computeRisks({ tasks: [task({ assigneeId: "m-1", effortHours: 21, dueDate: day(1) })], members, today: TODAY });
     expect(rs.map((r) => r.mono)).toEqual(["21h / 20h"]);
+  });
+});
+
+describe("capacity shared by the team (0055)", () => {
+  it("once it's on, reads the business's shared weeks less time off (never this device's)", () => {
+    writeCapacities({ "m-1": 99 });
+    updateAvailability({ ...EMPTY_AVAILABILITY, status: "on", me: "m-self", activeWs: "ws",
+      roles: { ws: { "m-self": "owner", "m-1": "member", "m-2": "member" }, other: { "m-1": "member" } },
+      weeks: [{ workspaceId: "ws", userId: "m-1", weeklyHours: 32, workDays: [1, 2, 3, 4], dayStart: 480, dayEnd: 1080 },
+        { workspaceId: "other", userId: "m-1", weeklyHours: 8, workDays: [5], dayStart: 480, dayEnd: 1080 }],
+      timeOff: [{ id: "o", userId: "m-2", startsOn: "2000-01-01", endsOn: "2100-01-01", halfDay: null }] });
+    try {
+      expect(readCapacities()).toEqual({ "m-self": 40, "m-1": 32, "m-2": 0 });
+      expect(readCapacities("other")).toEqual({ "m-1": 8 });
+    } finally { resetAvailability(); }
+  });
+  it("someone off every working day this week with work due reads as away, not over capacity", () => {
+    const rs = risks([task({ assigneeId: "m-2", effortHours: 3, dueDate: day(1) })], { capacities: { "m-2": 0 } });
+    expect(rs.map((r) => [r.title, r.reason])).toEqual([["Theo is off this week", "3h due while they're away · 1 task"]]);
   });
 });
 

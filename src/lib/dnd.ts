@@ -69,7 +69,7 @@ import { createPortal } from "react-dom";
 /* ---------- what moves, and where it can land ---------- */
 
 /** where a drag started */
-export type DragSourceKind = "list" | "board" | "today" | "week" | "inbox" | "search" | "sidebar";
+export type DragSourceKind = "list" | "board" | "today" | "week" | "inbox" | "search" | "sidebar" | "workload";
 /** what can take a drop */
 export type DropTargetKind =
   | "today-slot"     // a time on Today's canvas: data { date: "YYYY-MM-DD", minute: 0–1439 } (snap 15)
@@ -79,7 +79,8 @@ export type DropTargetKind =
   | "project"        // a sidebar project row: id = project id ("move to project")
   | "person"         // a team person row: id = user id ("reassign")
   | "section"        // a list / board section: id = section id, data { projectId }
-  | "board-column";  // a board column: id = column key (status), data { projectId }
+  | "board-column"   // a board column: id = column key (status), data { projectId }
+  | "workload-week"; // a person's week in Team › Workload (0055): id "<userId>:<YYYY-MM-DD>", data { userId, weekStart }
 
 export interface TaskDragPayload {
   /** the tasks being dragged (≥ 1): the grabbed one, or every selected one when it's selected */

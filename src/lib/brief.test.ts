@@ -568,3 +568,18 @@ describe("composeTodayBrief: one goal line (0052)", () => {
     expect(ents(today2({ tasks: [deck()], nowMin: H(19), goalFor: (t) => goals[t.id] ?? null }).prose, "goal")).toEqual([]);
   });
 });
+
+describe("the working day (0055)", () => {
+  it("follows your week, and anything odd keeps 08:00–18:00", async () => {
+    const brief = await import("./brief");
+    try {
+      brief.setWorkingDay(7 * 60 + 30, 16 * 60);
+      expect([brief.WORK_START, brief.WORK_END]).toEqual([450, 960]);
+      expect(brief.freeGaps([], [], 0)).toEqual([{ start: 450, end: 960 }]);
+      brief.setWorkingDay(600, 630);
+      expect([brief.WORK_START, brief.WORK_END]).toEqual([480, 1080]);
+      brief.setWorkingDay(NaN, 900);
+      expect([brief.WORK_START, brief.WORK_END]).toEqual([480, 1080]);
+    } finally { brief.setWorkingDay(480, 1080); }
+  });
+});

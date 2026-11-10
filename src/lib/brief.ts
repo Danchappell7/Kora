@@ -14,9 +14,16 @@ import {
 } from "../components/views/planCanvas";
 import { needsActionText } from "./countRules";
 
-/** The working day that "free" and the suggestions are counted against. */
-export const WORK_START = 8 * 60;
-export const WORK_END = 18 * 60;
+/** The working day that "free" and the suggestions are counted against: 08:00–18:00 until your
+ *  week says otherwise (0055: components/availability sets it from your shared hours). */
+export let WORK_START = 8 * 60;
+export let WORK_END = 18 * 60;
+/** Set the working day (minutes from midnight). Anything odd (under an hour, out of the day) keeps 08:00–18:00. */
+export function setWorkingDay(start: number, end: number): void {
+  const ok = Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end <= 24 * 60 && end - start >= 60;
+  WORK_START = ok ? Math.round(start) : 8 * 60;
+  WORK_END = ok ? Math.round(end) : 18 * 60;
+}
 /** Under this much free time the day reads as fully booked. */
 const BOOKED_UNDER = 15;
 const TITLE_MAX = 56;

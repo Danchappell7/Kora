@@ -89,6 +89,8 @@ export interface GroupInput {
   approvals: readonly ApprovalWithTask[];
   today: Date;
   capacities?: Record<string, number>;
+  /** (0055) each business's own capacities this week (its shared weeks); `capacities` otherwise */
+  capacitiesFor?: (workspaceId: string | null) => Record<string, number>;
   /** wave 2: the pace line */
   pace?: GoalPace;
   /** each workspace's signals (lib/businesses workspaceSignals): your own work there, and who needs you most */
@@ -186,7 +188,7 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
   const people = members.filter((m) => (m.workspaceId ?? null) === wsId && m.status === "active" && m.userId)
     .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email, ...(m.role === "guest" ? { guest: true } : {}) }));
   let risks: Risk[] = [];
-  try { risks = computeRisks({ tasks: tasks as Task[], members: people, capacities: input.capacities ?? {}, today: iso(today) }); } catch { risks = []; }
+  try { risks = computeRisks({ tasks: tasks as Task[], members: people, capacities: input.capacitiesFor?.(wsId) ?? input.capacities ?? {}, today: iso(today) }); } catch { risks = []; }
   const signals = risks.filter((r) => r.severity === "signal").length;
 
   // your own work there (the switcher's dot counts it too)
