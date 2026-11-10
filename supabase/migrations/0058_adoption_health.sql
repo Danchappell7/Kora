@@ -32,7 +32,8 @@
 --      When the invited owner joins (claim_invites), the trigger hands the
 --      workspace to them: they become its owner, the admin who set it up
 --      stays as an admin, and what the admin set up there (project owners,
---      open tasks assigned to them, goals they own) becomes theirs.
+--      open tasks assigned to them, goals and portfolios they own) becomes
+--      theirs.
 --      workspace_handovers has no client access at all.
 --   5. admin_workspace_adoption(): per workspace, for platform admins:
 --      people, invited, weekly active, tasks done in the last 7 days, the
@@ -319,9 +320,15 @@ begin
    where workspace_id = new.workspace_id and owner_id = h.provisioned_by;
   update public.tasks set assignee_id = new.user_id::text
    where workspace_id = new.workspace_id and assignee_id = h.provisioned_by::text and status <> 'done';
+  -- (goals' and portfolios' owners: once 0052's and 0054's columns are in)
   if exists (select 1 from information_schema.columns
               where table_schema = 'public' and table_name = 'goals' and column_name = 'owner_id') then
     execute 'update public.goals set owner_id = $1 where workspace_id = $2 and owner_id = $3'
+      using new.user_id, new.workspace_id, h.provisioned_by;
+  end if;
+  if exists (select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'portfolios' and column_name = 'owner_id') then
+    execute 'update public.portfolios set owner_id = $1 where workspace_id = $2 and owner_id = $3'
       using new.user_id, new.workspace_id, h.provisioned_by;
   end if;
   return null;

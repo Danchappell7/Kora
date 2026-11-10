@@ -2615,7 +2615,7 @@ async function adoptionSuite(w: World) {
     }
   });
 
-  await test("0058: when the invited owner joins, the business is theirs, and what was set up for them is too", async () => {
+  await test("0058: when the invited owner joins, the business is theirs, and what was set up for them is too (projects, open tasks, goals, portfolios)", async () => {
     const ws = harbour!.workspace_id;
     const project = (await one<{ id: string }>(`select id::text as id from public.projects where workspace_id = $1::uuid`, [ws])).id;
     const mk = async (title: string, status: string) => (await asPerson<{ id: string }>(w.pg, root,
@@ -2624,6 +2624,8 @@ async function adoptionSuite(w: World) {
     const open = await mk("Book the opening photographer", "todo");
     const done = await mk("Sign the lease", "done");
     const goal = has0052 ? (await asPerson<{ id: string }>(w.pg, root, `insert into public.goals (user_id, workspace_id, name) values ($1::uuid, $2::uuid, '120 members by opening') returning id::text as id`, [root, ws]))[0].id : null;
+    const portfolio = (await asPerson<{ id: string }>(w.pg, root, `insert into public.portfolios (user_id, workspace_id, name, project_ids) values ($1::uuid, $2::uuid, 'Studio growth', array[$3]) returning id::text as id`, [root, ws, project]))[0].id;
+    const portfolioOwners = (await one<{ on: boolean }>(`select exists (select 1 from information_schema.columns where table_name = 'portfolios' and column_name = 'owner_id') as "on"`)).on;
     const nina = await person("nina58@harbourfit.co.uk", { approved: false });
     eq((await one<{ a: boolean }>(`select approved as a from public.profiles where id = $1::uuid`, [nina])).a, false, "set up so the invite does the approving");
     await w.pg.query(`update auth.users set email_confirmed_at = null where id = $1::uuid`, [nina]);
@@ -2635,6 +2637,7 @@ async function adoptionSuite(w: World) {
     eq((await one<{ a: string }>(`select assignee_id as a from public.tasks where id = $1::uuid`, [open])).a, nina, "the open task");
     eq((await one<{ a: string }>(`select assignee_id as a from public.tasks where id = $1::uuid`, [done])).a, root, "what's done stays as it was");
     if (goal) eq((await one<{ o: string }>(`select owner_id::text as o from public.goals where id = $1::uuid`, [goal])).o, nina, "the goal");
+    if (portfolioOwners) eq((await one<{ o: string }>(`select owner_id::text as o from public.portfolios where id = $1::uuid`, [portfolio])).o, nina, "the portfolio");
     eq(await one(`select new_owner::text as o, done_at is not null as done from public.workspace_handovers where workspace_id = $1::uuid`, [ws]), { o: nina, done: true }, "recorded");
     ok((await activity(nina, ws)).members.length === 2, "the new owner sees the health card's numbers");
     // and she can remove the admin who set it up
