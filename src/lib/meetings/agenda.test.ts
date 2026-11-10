@@ -252,6 +252,18 @@ describe("project access (0058, D17): an agenda carries only what everyone it's 
     const lead = agendaFacts(input({ preset: "leadership", workspaces: [gated[0]], tasks: [...TASKS, ...seedTasks], goalTasks: [...TASKS, ...seedTasks], projects, goals: [g] }));
     expect(lead.goals.map((x) => [x.id, x.pct, x.line])).toEqual([["g-seed", 75, "Past due at 75%"]]);
   });
+  it("whoever starts it: the workspace's owner sees every project, but the agenda's readers don't (owner or admin, the goal stays off)", () => {
+    const seedTasks = [1, 2, 3, 4].map((i) => task({ id: `s${i}`, projectId: "pm", status: i < 4 ? "done" : "todo" }));
+    const g = goal({ id: "g-seed", name: "Close the seed round", projectId: "pm", due: "2026-11-01" });
+    const gone = goal({ id: "g-gone", name: "Open the second site", projectId: "p-deleted", due: "2026-11-01" });
+    const run = (me: string) => agendaFacts(input({ me, workspaces: [gated[0]], tasks: [...TASKS, ...seedTasks], goalTasks: [...TASKS, ...seedTasks], projects, goals: [g, gone] }));
+    expect(WS[0].ownerId).toBe("me");
+    expect(run("me").goals.map((x) => x.id)).toEqual(["g-gone"]);     // (a deleted project's goal reads as it always did to the owner)
+    expect(run("ann").goals.map((x) => x.id)).toEqual([]);
+    const lead = agendaFacts(input({ preset: "leadership", workspaces: [gated[0]], tasks: [...TASKS, ...seedTasks], goalTasks: [...TASKS, ...seedTasks], projects,
+      goals: [goal({ id: "g-pay", name: "Settle pay bands", projectId: "pp", due: "2026-11-01" })] }));
+    expect(lead.goals.map((x) => x.id)).toEqual([]);
+  });
   it("with project access off, nothing is left out", () => {
     const all = input({ tasks: [...TASKS, ...secret], projects });
     expect(forAudience(all)).toBe(all);

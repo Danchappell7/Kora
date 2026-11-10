@@ -97,6 +97,9 @@ export interface GroupInput {
   pace?: GoalPace;
   /** each workspace's signals (lib/businesses workspaceSignals): your own work there, and who needs you most */
   signals?: ReadonlyMap<string, WorkspaceSignal>;
+  /** 0058: goals whose % comes from a project the readers can't see. Defaults to what `me` can't see
+   *  (hiddenProjectOf); a meeting's agenda says it for its audience (everyone at it reads it). */
+  hiddenGoal?: (g: Goal) => boolean;
 }
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -146,7 +149,7 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
   // (lib/countRules: top-level tasks, the rule the Goals page and each project's header use)
   const goalTasks = (input.goalTasks ?? all).filter((t) => (t.workspaceId ?? null) === wsId) as Task[];
   const pctOf = (pid: string) => projectProgressOf(goalTasks, pid).pct;
-  const behind = goalsBehind(goals, goalProgressMap(goals, pctOf, hiddenProjectOf(allProjects, input.workspaces, input.me)), today, input.pace);
+  const behind = goalsBehind(goals, goalProgressMap(goals, pctOf, input.hiddenGoal ?? hiddenProjectOf(allProjects, input.workspaces, input.me)), today, input.pace);
 
   // projects: Kanbo's read of the work, the latest update's call, or an update that's gone missing
   const needs: GroupProject[] = [];

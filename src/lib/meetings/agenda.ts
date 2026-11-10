@@ -20,6 +20,7 @@ import { computeRisks } from "../radar";
 import { businessDigest } from "../group";
 import { groupGoalPace } from "../goalPace";
 import { goalLookup } from "../goalRules";
+import { hiddenProjectOf } from "../goalFlow";
 import { fmtDayMonth, localDay } from "../weekMath";
 import { meetingDay } from "./types";
 import { accessOn, audienceOpen } from "../projectAccess";
@@ -173,6 +174,12 @@ export function forAudience(input: AgendaInput): AgendaInput {
 
 export function agendaFacts(all: AgendaInput): AgendaFacts {
   const input = forAudience(all);
+  // (0058: a goal whose % comes from a project the meeting's people can't all see is hidden for the agenda,
+  // whoever starts it: the workspace's owner sees every project, but the agenda's readers don't)
+  const kept = new Set(input.projects.map((p) => p.id));
+  const cut = new Set(all.projects.filter((p) => !kept.has(p.id)).map((p) => p.id));
+  const ownView = hiddenProjectOf(input.projects, input.workspaces, input.me);
+  const hiddenGoal = (g: Goal) => (!!g.projectId && cut.has(g.projectId)) || ownView(g);
   const { preset, members, today } = input;
   const byGoalId = goalLookup(input.goals);
   const todayISO = toLocalISO(today);
@@ -257,7 +264,7 @@ export function agendaFacts(all: AgendaInput): AgendaFacts {
     const wsGoals = input.goals.filter((g) => (g.workspaceId ?? null) === w.id && (preset === "leadership" || !underLeadership(g, byGoalId)));
     const digest = businessDigest(w, roleOf(members, input.me, w.id) ?? "member", {
       workspaces: input.workspaces, members, me: input.me, tasks: here, goalTasks: input.goalTasks, projects: input.projects,
-      goals: wsGoals, statusUpdates: input.statusUpdates, approvals: [], today, pace: groupGoalPace,
+      goals: wsGoals, statusUpdates: input.statusUpdates, approvals: [], today, pace: groupGoalPace, hiddenGoal,
       ...(input.capacitiesFor ? { capacitiesFor: (id: string | null) => (id ? input.capacitiesFor!(id) : {}) } : {}),
     });
     // (a key result sits inside its goal, as Pulse and Goals count them: "2 goals behind", not four)
