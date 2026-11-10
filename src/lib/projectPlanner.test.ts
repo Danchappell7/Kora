@@ -393,6 +393,19 @@ describe("planWarnings", () => {
     expect(planWarnings(draft(), { tasks: [], members, capacities: { maya: 60 }, today: TODAY }).some((w) => w.kind === "overloaded")).toBe(false);
     expect(planWarnings(draft(), { tasks: [], members, guestIds: ["maya"], capacities: {}, today: TODAY }).some((w) => w.kind === "overloaded")).toBe(false);
   });
+  it("reads the team's shared week, less time off, once 0055 is on (0055)", async () => {
+    const { EMPTY_AVAILABILITY, resetAvailability, updateAvailability } = await import("./availability");
+    const d = draft();
+    d.tasks[0].estimateHours = 10; d.tasks[1].estimateHours = 10;   // 20h in the week of 12 Oct
+    updateAvailability({ ...EMPTY_AVAILABILITY, status: "on", me: "me", activeWs: "ws", roles: { ws: { me: "owner", maya: "member" } },
+      weeks: [{ workspaceId: "ws", userId: "maya", weeklyHours: 30, workDays: [1, 2, 3, 4, 5], dayStart: 480, dayEnd: 1080 }],
+      timeOff: [{ id: "o", userId: "maya", startsOn: "2026-10-12", endsOn: "2026-10-14", halfDay: null }] });
+    try {
+      // 30h a week, three of her five days off: 12h
+      const w = planWarnings(d, { tasks: [], members, today: TODAY }).find((x) => x.kind === "overloaded");
+      expect(w?.message).toBe("Maya Lin would have 20h of work in the week of 12 Oct, against 12h of capacity.");
+    } finally { resetAvailability(); }
+  });
   it("someone already over without the plan isn't the plan's warning", () => {
     const d = draft();
     d.tasks[0].assigneeId = "theo"; d.tasks[1].assigneeId = "theo";
