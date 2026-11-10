@@ -58,10 +58,11 @@ describe("PortfoliosView · in Personal, across businesses", () => {
     fireEvent.click(screen.getByRole("button", { name: "Table" }));
     const table = screen.getByRole("table", { name: "Every opening projects" });
     const rows = within(table).getAllByRole("row").slice(1);
+    // (a project whose lead's call is rosier than its work comes first: the fit-out says At risk with its work off track)
     expect(rows.map((r) => r.textContent?.slice(0, 24))).toEqual([
-      expect.stringContaining("Q3 Product Launch"), expect.stringContaining("Clubhouse Fit-out"), expect.stringContaining("No longer visible to you"),
+      expect.stringContaining("Clubhouse Fit-out"), expect.stringContaining("Q3 Product Launch"), expect.stringContaining("No longer visible to you"),
     ]);
-    expect(within(rows[1]).getByText("Courtside Padel")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("Courtside Padel")).toBeInTheDocument();
     // the unseen one fills the table's columns like the rest: why under Latest update, remove at the end
     const cells = within(rows[2]).getAllByRole("cell");
     expect(cells).toHaveLength(5);

@@ -97,8 +97,8 @@ describe("GroupView", () => {
     expect(within(first).getByText("Needs you most")).toBeInTheDocument();
     expect(screen.getAllByText("Needs you most")).toHaveLength(1);
     expect(within(section("Beta Padel")).getByText(/1 of yours overdue · 1 of yours due today/)).toBeInTheDocument();
-    // a project off track says whose call that is
-    expect(within(section("Alpha Studio")).getByText("Off track")).toHaveAttribute("title", "Kanbo's read of the work");
+    // a project off track says whose call that is: no update yet, so Kanbo's read of the work
+    expect(within(section("Alpha Studio")).getByText("Off track")).toHaveAttribute("data-tip", expect.stringMatching(/^No update yet · Kanbo sees /));
   });
 
   it("a phone folds the calm blocks into one line", () => {
@@ -119,5 +119,20 @@ describe("GroupView", () => {
     renderGroup({ members: [mem("w-a", "owner"), mem("w-b", "member")] });
     expect(screen.getByText("One business at a time, for now")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { level: 2, name: "Alpha Studio" })).toBeNull();
+  });
+});
+
+describe("GroupView with an update day (0053)", () => {
+  it("a project past its day with nothing posted reads Update missing, and its owner can be asked from the row", () => {
+    const ask = vi.fn(async () => ({}) as never);
+    const asks = { canAsk: (p: Project) => p.ownerId !== "me", asked: () => undefined, ask };
+    const projects = PROJECTS.map((p) => (p.id === "pb" ? { ...p, ownerId: "bo" } : p));
+    const tasks = TASKS.map((x) => (x.id === "b1" ? { ...x, createdAt: "2026-09-01T09:00:00Z" } : x));
+    renderGroup({ projects, tasks, statusUpdates: [{ ...UPDATES[0], createdAt: "2026-09-20T10:00:00Z" }], asks });
+    const look = within(section("Beta Padel")).getByRole("region", { name: "Projects to look at" });
+    expect(within(look).getByText("Update missing")).toBeInTheDocument();
+    expect(within(look).getByRole("img", { name: /^On track\. Lead says On track/ })).toBeInTheDocument();
+    fireEvent.click(within(look).getByRole("button", { name: /for an update on Winter League$/ }));
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({ id: "pb" }));
   });
 });

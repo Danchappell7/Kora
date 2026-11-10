@@ -1,0 +1,72 @@
+/* ============================================================
+   KANBO — project updates (0053): Kanbo's question and the plan to
+   recover in the composer, a plan in the update history, the merged
+   status pill ("Lead says / Kanbo sees"), Ask for an update, the
+   update-day settings and Today's update line.
+   ============================================================ */
+
+/* ---------------- the composer: Kanbo's one question ---------------- */
+.kup-ask {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 10px; row-gap: 8px; padding: 10px 12px;
+  border-radius: var(--r-md, 8px); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.kup-ask-mark { display: inline-flex; padding-top: 3px; }
+.kup-ask-text { margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); text-wrap: pretty; }
+.kup-ask-acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------------- the composer: a plan to recover and a new date ---------------- */
+.kup-plan { display: flex; flex-direction: column; gap: 10px; }
+.kup-plan-label { display: flex; flex-direction: column; gap: 6px; margin: 0; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kup-plan-label-text { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kup-opt { margin-left: 4px; font-weight: 500; color: var(--ink-4); }
+.kpj-composer textarea.kpj-field.kup-plan-field { min-height: 64px; resize: vertical; }
+.kup-plan-date { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+
+/* ---------------- the update history: what a plan to recover said ---------------- */
+.kup-hist-plan { margin: 6px 0 0; padding: 8px 12px; border-left: 2px solid var(--hairline-strong); font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kup-hist-plan p { margin: 0; }
+.kup-hist-plan b { font-weight: 600; color: var(--ink); }
+.kup-hist-date { display: block; margin-top: 2px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kup-hist-date > span { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ---------------- one merged pill: the lead's call, marked when Kanbo sees worse ---------------- */
+.kup-pair { position: relative; cursor: default; }
+.kup-pair:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* its "Lead says · Kanbo sees" shows on keyboard focus as on hover */
+.kup-pair[data-tip]:focus-visible::after { opacity: 1; transform: translate(-50%, 0); transition-delay: 0s; }
+.kup-pair-mark { --kup-mark: var(--warn); flex-shrink: 0; width: 7px; height: 7px; margin-left: 2px; border-radius: 50%;
+  background: var(--kup-mark); box-shadow: 0 0 0 2px color-mix(in oklch, var(--kup-mark) 24%, transparent); }
+.kup-pair-mark[data-tone="signal"] { --kup-mark: var(--signal); }
+.kup-pair-mark[data-tone="ok"] { --kup-mark: var(--ok); }
+
+/* ---------------- a table's update cell: due, missing, or how long ago ---------------- */
+.kup-fresh { font: 500 12px/16px var(--font-ui, var(--font-display)); white-space: nowrap; }
+.kup-fresh[data-kind="missing"] { color: var(--warn); }
+.kup-fresh[data-kind="due"] { color: var(--ink-2); }
+
+/* ---------------- Ask for an update ---------------- */
+.kup-asked { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 4px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); white-space: nowrap; }
+.kup-asked > svg { color: var(--ok); }
+
+/* ---------------- Settings › Workspace › Project updates ---------------- */
+.kup-set { margin-bottom: 28px; }
+.kup-set-ctl { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.kup-set-ctl > select { width: auto; min-width: 140px; }
+
+/* ---------------- Today: your update is due (under the brief's words) ---------------- */
+.kup-line { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin: 14px 0 0; max-width: 760px; }
+.kup-line-text { flex: 1 1 360px; min-width: 0; margin: 0; font: 400 15px/26px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kup-line-proj {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 26px; margin: 0 1px; padding: 0 8px 0 5px; vertical-align: 1px;
+  border: 0; border-radius: 8px; background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); cursor: pointer;
+  font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); white-space: nowrap;
+  transition: background var(--d-1, 90ms) var(--ease);
+}
+.kup-line-proj:hover { background: var(--fill-2); }
+.kup-line-proj > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kup-sheet { padding: 4px 0 0; }
+@media (max-width: 859px) {
+  .kup-line { margin-top: 12px; }
+  .kup-line-text { font-size: 14px; line-height: 24px; }
+  .kup-line > .kbtn { flex: 1 1 100%; height: var(--h-touch, 44px); }
+}

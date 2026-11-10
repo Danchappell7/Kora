@@ -17,6 +17,7 @@ import type { Task, Project, Status, StatusUpdate, StatusKind, IconName } from "
 import type { ProjectTab } from "../../app-types";
 import type { Risk } from "../../lib/radar";
 import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, updateAuthor } from "../../lib/statusDraft";
+import { projectRhythm } from "../../lib/updateRhythm";
 import { progressOf } from "../../lib/countRules";
 import { storeProjectTemplate, projectBlueprint } from "../../lib/templates";
 import { ComposerPanel, ComposerPopover, POP_STYLE, focusInPageComposer, useHasInPageComposer, useInPageComposer, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
@@ -24,11 +25,14 @@ import { DraftInput } from "./DraftInput";
 import { SlackPostButton } from "../integrations";
 import { EditIdentitySheet, IdentityFields } from "./IdentityPicker";
 import { PresenceAvatars, useProjectPresence, type PresenceMe } from "../presence";
+import { UpdateDayField, UpdatePlanNote } from "../updates/UpdateDay";
 import "./projects.css";
 
 export type { AiStatus, PostStatus } from "./StatusComposer";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** does this project read its updates by an update day (0053) rather than the 14-day rule? */
+const rhythmOnFor = (p: Project) => !!projectRhythm(p);
 
 const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
   { v: "on_track", label: "On track", color: "var(--st-done)" },
@@ -55,11 +59,13 @@ export function relDay(iso: string): { label: string; days: number } {
 }
 
 type Tone = "neutral" | "accent" | "ok" | "warn" | "signal";
-export const STATUS_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", off_track: "signal" };
+export const STATUS_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", off_track: "signal", on_hold: "neutral" };
 
 /** A project's status pill: its latest update's call; without one, the status
- *  set by hand in About; otherwise "No update". */
+ *  set by hand in About; otherwise "No update". On hold set by hand stays,
+ *  whatever's posted meanwhile, until it's taken off in About. */
 export function projectStatusPill(project: Project, latest?: StatusUpdate): { tone: Tone; label: string; title: string } {
+  if (project.status === "on_hold") return { tone: "neutral", label: "On hold", title: latest ? "Put on hold by hand (take it off in About)" : "Set by hand; no update posted yet" };
   if (latest && STATUS_KIND_META[latest.status]) {
     const age = relDay(latest.createdAt);
     return { tone: STATUS_TONE[latest.status], label: STATUS_KIND_META[latest.status].label, title: `Latest update, ${age.label}` };
@@ -397,6 +403,7 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
                       )}
                     </div>
                     <p className="kpj-history-text">{u.summary}</p>
+                    <UpdatePlanNote update={u} />
                   </li>
                 );
               })}
@@ -498,8 +505,19 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
                 {PROJECT_STATUSES.map((s) => <option key={s.v} value={s.v}>{s.label}</option>)}
               </select>
             )}
-            {stale && <span className="kpj-card-meta kpj-warn">{facts.lastUpdateDays == null ? "No update yet" : `No update in ${facts.lastUpdateDays} days`}</span>}
+            {/* once updates are posting, the call is theirs; putting it on hold by hand still stays put */}
+            {editable && facts.latest && (
+              <select className="kpj-field" data-size="sm" value={project.status === "on_hold" ? "on_hold" : ""} aria-label="On hold"
+                onChange={(e) => onUpdate(project.id, { status: e.target.value })}>
+                <option value="">Active</option>
+                <option value="on_hold">On hold</option>
+              </select>
+            )}
+            {stale && !rhythmOnFor(project) && <span className="kpj-card-meta kpj-warn">{facts.lastUpdateDays == null ? "No update yet" : `No update in ${facts.lastUpdateDays} days`}</span>}
           </dd>
+
+          {/* 0053: when its updates are due (the team's day, or its own), and where this one stands */}
+          <UpdateDayField project={project} tasks={mine} latest={facts.latest} lastUpdateDays={facts.lastUpdateDays} canManage={canManage} onUpdate={onUpdate} />
 
           <dt>Owner</dt>
           <dd>

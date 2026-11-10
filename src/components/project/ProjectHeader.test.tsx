@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import type { Project, StatusKind, StatusUpdate, Task, FormDef } from "../../data/types";
 import type { Risk } from "../../lib/radar";
@@ -6,6 +6,7 @@ import { getUserProjectTemplates } from "../../lib/templates";
 import { refreshClock, toLocalISO } from "../../data/data";
 import { ProjectActions, ProjectNotice, ProjectPanels, ProjectTitleAddon } from "./ProjectHeader";
 import { clearStatusDrafts } from "./StatusComposer";
+import { noteRhythmSchema, resetRhythmSchema } from "../../lib/updateRhythm";
 import * as slack from "../../lib/slack";
 
 const P: Project = { id: "p-a", name: "Alpha", emoji: "🚀", color: "oklch(0.74 0.14 230)", workspaceId: "ws", ownerId: "m-self", contributorIds: ["m-1"] };
@@ -42,6 +43,7 @@ const lastPost = () => { const all = screen.getAllByRole("button", { name: "Post
 const box = () => screen.getByPlaceholderText(/What's the latest/) as HTMLTextAreaElement;
 
 beforeEach(() => { localStorage.clear(); clearStatusDrafts(); });
+afterEach(() => { resetRhythmSchema(); });
 /** move Kanbo's clock on `days`, as the live clock does at midnight in a tab left open */
 const afterDays = (days: number, fn: () => void) => {
   try { refreshClock(new Date(Date.now() + days * 86400000)); fn(); } finally { refreshClock(new Date()); }
@@ -476,7 +478,8 @@ describe("ProjectPanels", () => {
     expect(screen.getByRole("progressbar", { name: "Alpha progress" }).closest(".kpj-progress")).toHaveAttribute("title", "1 of 3 tasks done");
   });
 
-  it("About: flags a stale update once the day rolls over in a tab left open", () => {
+  it("About: flags a stale update once the day rolls over in a tab left open (before 0053: the 14-day rule)", () => {
+    noteRhythmSchema(false);
     const { rerender } = render(<ProjectPanels {...base({ tab: "about" })} />);
     expect(screen.queryByText(/No update in/)).not.toBeInTheDocument();
     afterDays(12, () => {
@@ -490,5 +493,74 @@ describe("ProjectPanels", () => {
     expect(screen.queryByRole("combobox", { name: "Project owner" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add a description…" })).not.toBeInTheDocument();
     expect(screen.getByText("No description.")).toBeInTheDocument();
+  });
+});
+
+describe("honest status (0053)", () => {
+  // TASKS: one blocked, nothing overdue — Kanbo reads it At risk
+  const open = (onPostStatus = vi.fn((..._: unknown[]) => Promise.resolve(true))) => {
+    render(<ProjectActions {...actionProps({ onPostStatus })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Post update" }));
+    fireEvent.change(box(), { target: { value: "All good this week" } });
+    return onPostStatus;
+  };
+
+  it("picking On track while Kanbo sees blocked work asks one calm question, and Keep On track posts it as called", async () => {
+    const onPostStatus = open();
+    fireEvent.click(screen.getByRole("button", { name: "On track" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Kanbo sees 1 blocked. Keep On track, or add a plan to recover?");
+    // never in the way: Post update works with the question still showing
+    fireEvent.click(screen.getByRole("button", { name: "Keep On track" }));
+    expect(screen.queryByText(/Keep On track, or add a plan/)).not.toBeInTheDocument();
+    await act(async () => { fireEvent.click(lastPost()); });
+    expect(onPostStatus).toHaveBeenCalledWith("p-a", "All good this week", "on_track");
+  });
+
+  it("Add a plan to recover takes Kanbo's call and puts the cursor in the plan, which posts with the update", async () => {
+    const onPostStatus = open();
+    fireEvent.click(screen.getByRole("button", { name: "On track" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add a plan to recover" }));
+    expect(screen.getByRole("button", { name: "At risk" })).toHaveAttribute("aria-pressed", "true");
+    const plan = screen.getByRole("textbox", { name: /Plan to recover/ });
+    await waitFor(() => expect(plan).toHaveFocus());
+    fireEvent.change(plan, { target: { value: "Maya takes the deck review" } });
+    expect(screen.getByRole("button", { name: /New target date/ })).toBeInTheDocument();
+    await act(async () => { fireEvent.click(lastPost()); });
+    expect(onPostStatus).toHaveBeenCalledWith("p-a", "All good this week", "at_risk", { recoveryPlan: "Maya takes the deck review" });
+  });
+
+  it("asks nothing when the call isn't rosier, and only At risk and Off track take a plan", async () => {
+    const onPostStatus = open();
+    fireEvent.click(screen.getByRole("button", { name: "Off track" }));
+    expect(screen.queryByText(/Keep On track/)).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /Plan to recover/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "On hold" }));
+    expect(screen.queryByRole("textbox", { name: /Plan to recover/ })).not.toBeInTheDocument();
+    await act(async () => { fireEvent.click(lastPost()); });
+    expect(onPostStatus).toHaveBeenCalledWith("p-a", "All good this week", "on_hold");
+  });
+
+  it("the history shows an update's plan to recover and new date, and On hold as its own call", () => {
+    const updates: StatusUpdate[] = [
+      { id: "u3", projectId: P.id, status: "on_hold", summary: "Paused for the board", createdAt: ago(1) },
+      { ...UPDATES[1], recoveryPlan: "Maya takes the deck review", targetDate: iso(10) },
+    ];
+    render(<ProjectPanels {...panelProps({ statusUpdates: updates })} />);
+    const history = screen.getByRole("region", { name: "Update history" });
+    expect(within(history).getByText("On hold")).toBeInTheDocument();
+    expect(within(history).getByText(/Maya takes the deck review/).closest("p")).toHaveTextContent("Plan to recover: Maya takes the deck review");
+    expect(within(history).getByText(/New target date/)).toBeInTheDocument();
+  });
+
+  it("On hold set by hand stays put when updates come in; About keeps the switch to take it off", () => {
+    const held = { ...P, status: "on_hold" };
+    const onUpdate = vi.fn();
+    render(<ProjectTitleAddon project={held} tasks={TASKS} statusUpdates={UPDATES} onOpenUpdates={() => {}} />);
+    expect(screen.getByRole("button", { name: "On hold" })).toHaveAttribute("title", expect.stringMatching(/^Put on hold by hand/));
+    render(<ProjectPanels {...panelProps({ tab: "about", project: held, onUpdate })} />);
+    const sw = screen.getByRole("combobox", { name: "On hold" });
+    expect(sw).toHaveDisplayValue("On hold");
+    fireEvent.change(sw, { target: { value: "" } });
+    expect(onUpdate).toHaveBeenCalledWith("p-a", { status: "" });
   });
 });

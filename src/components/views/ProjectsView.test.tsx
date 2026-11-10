@@ -1,10 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
 import type { Project, StatusUpdate, Task } from "../../data/types";
 import { PERSONAL_PROJECT, refreshClock } from "../../data/data";
 import { ProjectsView, directoryColumns } from "./ProjectsView";
 import { ProjectActions } from "../project/ProjectHeader";
 import { clearStatusDrafts } from "../project/StatusComposer";
+import { noteRhythmSchema, resetRhythmSchema } from "../../lib/updateRhythm";
+import type { AskForUpdate } from "../../lib/updateAsks";
 
 // d calendar days back at this time of day (24-hour steps drift a day across a clock change)
 const ago = (d: number) => { const x = new Date(); x.setDate(x.getDate() - d); return x.toISOString(); };
@@ -40,7 +42,9 @@ const props = (o: Partial<React.ComponentProps<typeof ProjectsView>> = {}): Reac
 const rowOf = (name: string) => screen.getByRole("link", { name: new RegExp(name) }).closest('[role="row"]') as HTMLElement;
 const names = () => within(screen.getByRole("table", { name: "Projects" })).getAllByRole("link").map((a) => a.textContent);
 
-beforeEach(() => { localStorage.clear(); clearStatusDrafts(); });
+// these read updates by the 14-day rule (before 0053); "with an update day" below reads them by the day
+beforeEach(() => { localStorage.clear(); clearStatusDrafts(); noteRhythmSchema(false); });
+afterEach(() => { resetRhythmSchema(); });
 
 describe("ProjectsView (the gallery, the default)", () => {
   const cards = () => within(screen.getByRole("list", { name: "Projects" })).getAllByRole("listitem");
@@ -281,5 +285,50 @@ describe("ProjectsView (the directory as a table)", () => {
     expect(directoryColumns(1200, true)).toEqual(["name", "status", "progress", "owner", "open", "overdue", "milestone", "update", "risks"]);
     expect(directoryColumns(900, false)).toEqual(["name", "status", "progress", "overdue", "milestone", "update"]);
     expect(directoryColumns(760, true)).toEqual(["name", "status", "progress", "overdue", "update", "risks"]);
+  });
+});
+
+describe("ProjectsView with an update day (0053)", () => {
+  // Friday 13 Nov 2026: the team's day is Friday (the default)
+  const NOW = new Date(2026, 10, 13, 10);
+  const made = "2026-10-01T09:00:00";
+  const T = [task("a1", "p-launch", { createdAt: made }), task("b1", "p-brand", { createdAt: made }), task("i1", "p-infra", { createdAt: made })];
+  const U: StatusUpdate[] = [
+    { id: "u1", projectId: "p-launch", status: "on_track", summary: "Going well", createdAt: "2026-11-11T10:00:00" },      // in this round
+    { id: "u2", projectId: "p-brand", status: "on_track", summary: "Logo is with the client", createdAt: "2026-11-04T10:00:00" },   // last round's
+  ];
+  const asks = (o: Partial<AskForUpdate> = {}): AskForUpdate => ({ canAsk: (p) => p.ownerId !== "m-self", asked: () => undefined, ask: vi.fn(async () => ({}) as never), ...o });
+  beforeEach(() => { noteRhythmSchema(true); vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW); refreshClock(NOW); });
+  afterEach(() => { vi.useRealTimers(); refreshClock(new Date()); });
+
+  it("reads each update against its day: missing (nothing ever, the round before lapsed too), due today, or how fresh", () => {
+    localStorage.setItem("kanbo-projects-view", "table");
+    render(<ProjectsView {...props({ tasks: T, statusUpdates: U })} />);
+    expect(within(rowOf("Infra")).getByText("Update missing")).toHaveClass("kpj-warn");
+    expect(within(rowOf("Brand")).getByText("Due today")).toBeInTheDocument();
+    expect(within(rowOf("Launch")).getByText("2d")).toHaveAttribute("title", "Last update 2 days ago. Next one due Fri 20 Nov.");
+    // Status sorts the missing first among equals
+    expect(names()).toEqual(["Infra", "Brand", "Launch"]);
+  });
+
+  it("a project with no update day (Never) is never missing; on a card the word is a sentence", () => {
+    render(<ProjectsView {...props({ tasks: T, statusUpdates: U, projects: PROJECTS.map((p) => p.id === "p-infra" ? { ...p, updateRhythm: { cadence: "never" as const, weekday: 5 } } : p) })} />);
+    expect(screen.getByRole("link", { name: "Infra" }).closest("li")).toHaveTextContent("No update yet");
+    expect(screen.getByRole("link", { name: "Brand" }).closest("li")).toHaveTextContent("Due today");
+  });
+
+  it("a lead can ask someone else's project for its update from its row; your own isn't offered", () => {
+    localStorage.setItem("kanbo-projects-view", "table");
+    const a = asks();
+    render(<ProjectsView {...props({ tasks: T, statusUpdates: U, asks: a, onPostUpdate: vi.fn() })} />);
+    fireEvent.click(within(rowOf("Infra")).getByRole("button", { name: /^Ask .* for an update on Infra$/ }));
+    expect(a.ask).toHaveBeenCalledWith(expect.objectContaining({ id: "p-infra" }));
+    expect(within(rowOf("Launch")).queryByRole("button", { name: /for an update on Launch/ })).toBeNull();   // yours
+  });
+
+  it("once asked, the row says so", () => {
+    localStorage.setItem("kanbo-projects-view", "table");
+    render(<ProjectsView {...props({ tasks: T, statusUpdates: U, asks: asks({ asked: (p) => (p.id === "p-infra" ? { id: "x", projectId: "p-infra", workspaceId: "ws", askedBy: "m-self", ownerId: "m-2", createdAt: "" } : undefined) }) })} />);
+    expect(within(rowOf("Infra")).getByText("Asked")).toBeInTheDocument();
   });
 });

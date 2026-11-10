@@ -7,7 +7,10 @@
    switches to that business and opens it. On a phone a calm block folds
    into one line, so a calm business is short.
    Everything comes from what's already loaded for you (lib/group), so
-   nothing shows that you couldn't open yourself.
+   nothing shows that you couldn't open yourself. A project carries one
+   pill, its lead's call and Kanbo's read together (a mark when the call
+   is rosier than the work; those come first), and one whose update is
+   missing can be asked for it there and then.
    `pace` is wave 2's hook: a goal's pace line, under its meter.
    ============================================================ */
 import { useMemo, type ReactNode } from "react";
@@ -18,6 +21,9 @@ import { digestLine, groupDigest, type BusinessDigest, type GoalPace, type GoalW
 import type { WorkspaceSignal } from "../../lib/businesses";
 import { readCapacities } from "../../lib/radar";
 import { BUSINESS_CSS, WorkspaceMark } from "../businesses/Businesses";
+import type { AskForUpdate } from "../../lib/updateAsks";
+import { MergedStatusPill } from "../updates/MergedStatusPill";
+import { AskForUpdateButton } from "../updates/AskForUpdate";
 import "../project/projects.css";
 
 /** Where a click on the Group page goes, in the business it belongs to. */
@@ -48,6 +54,8 @@ export interface GroupViewProps {
   pace?: GoalPace;
   /** each workspace's signals (your own work there, and who needs you most: the switcher's meaning) */
   signals?: ReadonlyMap<string, WorkspaceSignal>;
+  /** 0053: ask a project's owner for its missing update */
+  asks?: AskForUpdate;
 }
 
 const GROUP_CSS = `
@@ -79,6 +87,8 @@ const GROUP_CSS = `
 .kgrp-open:hover { color: var(--accent-text, var(--accent)); }
 .kgrp-meta { display: flex; align-items: center; gap: 8px; min-width: 0; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kgrp-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* (the one pill keeps its "Lead says / Kanbo sees" tip, and its whole word) */
+.kgrp-meta > .kup-pair { flex-shrink: 0; overflow: visible; }
 /* a project's why wraps rather than lose the update's call off its end */
 .kgrp-meta:has(> .kgrp-why) { flex-wrap: wrap; row-gap: 2px; }
 .kgrp-meta > .kgrp-why { white-space: normal; }
@@ -131,7 +141,7 @@ function Block({ title, n, of, tone, calm, children }: { title: string; n?: numb
 
 const Calm = ({ children }: { children: ReactNode }) => <p className="kgrp-calm"><Icon name="check" size={14} sw={2} />{children}</p>;
 
-function BusinessSection({ d, onOpen }: { d: BusinessDigest; onOpen: GroupViewProps["onOpen"] }) {
+function BusinessSection({ d, onOpen, asks }: { d: BusinessDigest; onOpen: GroupViewProps["onOpen"]; asks?: AskForUpdate }) {
   const ws = d.workspace;
   const wsId = ws.id!;
   const go = (to: GroupTarget) => onOpen(wsId, to);
@@ -201,10 +211,12 @@ function BusinessSection({ d, onOpen }: { d: BusinessDigest; onOpen: GroupViewPr
                     <div className="kgrp-line">
                       <ProjectTile project={n.project} size={16} />
                       <button type="button" className="kgrp-open" onClick={() => go({ kind: "project", projectId: n.project.id })}>{n.project.name}</button>
+                      {n.why === "missing" && <AskForUpdateButton project={n.project} asks={asks} compact />}
                     </div>
                     <div className="kgrp-meta">
-                      <Pill tone={n.why === "off_track" ? "signal" : n.why === "at_risk" ? "warn" : "neutral"}
-                        title={n.source === "work" ? "Kanbo's read of the work" : n.source === "update" ? "The latest update's call" : undefined}>{n.label}</Pill>
+                      {/* one pill: the lead's call and Kanbo's read together */}
+                      <MergedStatusPill m={n.status} />
+                      {(n.why === "missing" || n.why === "stale") && <span className="kup-fresh" data-kind="missing">{n.label}</span>}
                       <span className="kgrp-why">{n.detail}</span>
                     </div>
                   </li>
@@ -255,7 +267,7 @@ function BusinessSection({ d, onOpen }: { d: BusinessDigest; onOpen: GroupViewPr
   );
 }
 
-export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, onOpen, pace, signals }: GroupViewProps) {
+export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, onOpen, pace, signals, asks }: GroupViewProps) {
   // worked out once per change of what it reads (App re-renders every second while the focus timer runs)
   const digests = useMemo(
     () => groupDigest({ workspaces, members, me: currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, capacities: readCapacities(), pace, signals }),
@@ -275,7 +287,7 @@ export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks
               <p>Every business you run, side by side: what's behind, what's waiting for you and what got done. Tap or click anything to open it in its business.</p>
             </div>
             <div className="kgrp-list">
-              {digests.map((d) => <BusinessSection key={d.workspace.id} d={d} onOpen={onOpen} />)}
+              {digests.map((d) => <BusinessSection key={d.workspace.id} d={d} onOpen={onOpen} asks={asks} />)}
             </div>
           </>
         )}

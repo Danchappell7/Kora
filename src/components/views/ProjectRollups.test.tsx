@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { Task, Goal, AutomationRule, FormDef, Project, Portfolio, StatusUpdate } from "../../data/types";
 import { GoalsView, PortfoliosView } from "./GoalsPortfolios";
 import { AutomationsView, FormsView } from "./RulesForms";
+import { noteRhythmSchema, resetRhythmSchema } from "../../lib/updateRhythm";
 
 const proj = (id: string, name: string): Project => ({ id, name, emoji: "", color: "red", workspaceId: "ws" });
 
@@ -176,7 +177,9 @@ describe("PortfoliosView — exec table", () => {
   const pf: Portfolio = { id: "pf1", name: "Q3 launch", projectIds: ["pa", "pb"] };
   const updates: StatusUpdate[] = [{ id: "u1", projectId: "pa", status: "at_risk", summary: "Deck is late", createdAt: ago(2) }];
   const tasks = [task("t1", "pa", { status: "done" }), task("t2", "pa"), task("t3", "pb")];
-  beforeEach(() => localStorage.clear());
+  // (the 14-day rule, as before 0053: the portfolio tests in portfolios/ read updates by their day)
+  beforeEach(() => { localStorage.clear(); noteRhythmSchema(false); });
+  afterEach(() => resetRhythmSchema());
 
   it("reads each project's latest update, progress and staleness at a glance", () => {
     const onOpenProject = vi.fn();
@@ -187,7 +190,8 @@ describe("PortfoliosView — exec table", () => {
     expect(alpha).toHaveTextContent("At risk");
     expect(alpha).toHaveTextContent("Deck is late");
     expect(within(alpha).getByRole("progressbar", { name: "Alpha progress" })).toHaveAttribute("aria-valuenow", "50");
-    expect(beta).toHaveTextContent("No update");
+    // no update yet: the pill is Kanbo's read of the work, and the row says nobody's posted
+    expect(beta).toHaveTextContent("On trackNo update yet");
     expect(beta).toHaveTextContent("No update in 14 days");
     fireEvent.click(within(beta).getByRole("button", { name: "Open project Beta" }));
     expect(onOpenProject).toHaveBeenCalledWith("pb");

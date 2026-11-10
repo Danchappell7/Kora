@@ -122,8 +122,9 @@ describe("PortfoliosView — the numbers and who said it", () => {
       { id: "u2", projectId: "p2", status: "on_track", summary: "Palette shipped", createdAt: "2026-11-08T11:00:00Z", authorId: null },
     ];
     render(<PortfoliosView {...base} statusUpdates={updates} />);
-    expect(screen.getByText("Update: At risk").closest("[title]")?.getAttribute("title")).toContain(`, ${maya.name}): Deck is late`);
-    expect(screen.getByText("Update: On track").closest("[title]")?.getAttribute("title")).toContain(", Former member): Palette shipped");
+    // one pill per project: the lead's call, with who said what on hover and focus (and to a screen reader)
+    expect(screen.getByRole("img", { name: /^At risk\. Lead says At risk/ }).getAttribute("data-tip")).toContain(`, ${maya.name}): Deck is late`);
+    expect(screen.getByRole("img", { name: /^On track\. Lead says On track/ }).getAttribute("data-tip")).toContain(", Former member): Palette shipped");
   });
 
   it("an archived project keeps its % in the portfolio, as on the goal linked to it, and says it's archived", () => {

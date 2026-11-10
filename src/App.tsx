@@ -34,6 +34,12 @@ import {
   SlackLinkPage, GroupView,
 } from "./lazyViews";
 import type { GroupTarget } from "./components/views/GroupView";
+// 0053 project updates: the update day, Ask for an update, and your own on Today
+import { useTodayUpdates } from "./components/updates/TodayUpdates";
+import { UpdateRhythmPanel } from "./components/updates/UpdateRhythmPanel";
+import type { StatusExtras } from "./components/project/StatusComposer";
+import { useAskForUpdate } from "./lib/updateAsks";
+import type { UpdateRhythm } from "./lib/updateRhythm";
 // one view across businesses: All businesses on Today, Inbox and My tasks; the switcher's dots; Projects › Group
 import { useBusinessScope } from "./hooks/useBusinessScope";
 import { AllBusinessesToggle, BusinessChipsProvider, WorkspaceMark } from "./components/businesses/Businesses";
@@ -129,6 +135,7 @@ function RenderView({ render }: { render: () => React.ReactNode }) { return <>{r
 const TASK_VIEWS: readonly TaskView[] = ["list", "board", "timeline", "calendar", "files", "matrix"];
 /** (0048: Search saves views now — its old saved-search props get these) */
 const NO_SAVED_SEARCHES: SavedSearch[] = [];
+const NO_TASKS: Task[] = [];
 const noop = () => {};
 const isTaskView = (v: string | undefined): v is TaskView => !!v && (TASK_VIEWS as readonly string[]).includes(v);
 const GROUP_BYS: readonly GroupBy[] = ["status", "section", "due", "priority", "project", "none"];
@@ -2369,7 +2376,7 @@ export default function App() {
 
   /** `boardSettingsChange` (0048): just what changed on the board, for the database to merge (merge_board_settings);
    *  `boardSettings` is the whole object, for the app's own copy (and a database without that function). */
-  const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings; boardSettingsChange?: BoardSettingsChange }) => {
+  const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings; boardSettingsChange?: BoardSettingsChange; updateRhythm?: UpdateRhythm | null }) => {
     const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
     if (denyGuest([p.workspaceId])) return;
     const { boardSettingsChange, ...local } = patch;
@@ -2734,10 +2741,10 @@ export default function App() {
   }, [denyGuest, deferTmp, saveFailed]);
 
   // ---- project status updates ----
-  const postStatusUpdate = useCallback((projectId: string, summary: string, status: StatusKind): Promise<boolean> => {
+  const postStatusUpdate = useCallback((projectId: string, summary: string, status: StatusKind, extras?: StatusExtras): Promise<boolean> => {
     const wsId = projectWs(projectId);
     if (denyGuest([wsId])) return Promise.resolve(false);
-    return store.createStatusUpdate({ workspaceId: wsId, projectId, summary, status }, userIdRef.current)
+    return store.createStatusUpdate({ workspaceId: wsId, projectId, summary, status, ...extras }, userIdRef.current)
       .then((su) => { setStatusUpdates((s) => [su, ...s]); return true; })
       .catch((e) => { reportError(e, { op: "statusUpdate" }); toastError("Couldn't post the update — your text is still there."); return false; });
   }, [denyGuest, toastError]);
@@ -3009,6 +3016,18 @@ export default function App() {
       reportError(e, { op: "updateWorkspace" });
       setWorkspaces(before); setReferenceData({ workspaces: before });
       toastError("Couldn't save workspace settings: " + (e?.message || e));
+    });
+  }, [toastError]);
+
+  // 0053: the team's update day (owners and admins)
+  const updateWorkspaceRhythm = useCallback((workspaceId: string, rhythm: UpdateRhythm | null) => {
+    const before = workspacesRef.current;
+    const next = before.map((w) => w.id === workspaceId ? { ...w, updateRhythm: rhythm } : w);
+    setWorkspaces(next); setReferenceData({ workspaces: next });
+    store.setUpdateRhythm(workspaceId, rhythm).catch((e) => {
+      reportError(e, { op: "setUpdateRhythm" });
+      setWorkspaces(before); setReferenceData({ workspaces: before });
+      toastError("Couldn't save the update day — change undone.");
     });
   }, [toastError]);
 
@@ -3596,6 +3615,16 @@ export default function App() {
   const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview: myApprovals.toReview, workspaces, members: wsMembers,
     workspace, me: currentUserId, today: dayKey, allChosen: !!onboarding.businesses?.all });
   allBizRef.current = biz.all;
+
+  /* ---- 0053 project updates: Ask for an update (owners and admins), and yours on Today ---- */
+  const updateAsks = useAskForUpdate(currentUserId, roleIn);
+  // (Today's scope: every business on All businesses, else this workspace's projects)
+  const todayProjects = useMemo(() => (biz.all ? projects : projects.filter((p) => (p.workspaceId ?? null) === workspace)), [biz.all, projects, workspace]);
+  const todayUpdates = useTodayUpdates({
+    me: currentUserId, projects: todayProjects, tasks: tasks ?? NO_TASKS, statusUpdates, onPost: postStatusUpdate,
+    aiStatus: appearance.ai !== false ? (facts: unknown) => store.aiStatus(facts) : undefined,
+    readOnly: !biz.all && roleIn(workspace) === "guest",
+  });
   // (your choice, on every device: profiles.onboarding)
   const setAllBusinesses = useCallback((all: boolean) => changeOnboarding({ ...onboardingRef.current, businesses: all ? { all: true } : {} }), [changeOnboarding]);
   // the Inbox's "new" across every business while All businesses is on (else this workspace's, as ever)
@@ -4032,6 +4061,8 @@ export default function App() {
         dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })}
         // 0048: "/" in the rail's capture field picks a template, as Quick capture's does
         templates={activeReadOnly ? undefined : todayTemplates}
+        // 0053: your project update is due (or a lead asked for it): a line under the brief, a nudge, Kanbo's draft ready
+        updates={todayUpdates}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
         setupSlot={showSetup ? (fold) => (
@@ -4073,12 +4104,12 @@ export default function App() {
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
       case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
-        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} />;
+        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} asks={updateAsks} />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects}
         tasks={personal ? acrossReportTasks : reportTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} statusUpdates={statusUpdates}
-        acrossBusinesses={personal ? { workspaces } : undefined} readOnly={activeReadOnly}
+        acrossBusinesses={personal ? { workspaces } : undefined} readOnly={activeReadOnly} asks={updateAsks}
         onOpenProject={(pid) => { const p = projects.find((x) => x.id === pid); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId: pid }); }} />;
       case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
       case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
@@ -4108,7 +4139,8 @@ export default function App() {
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPlanProject={activeReadOnly ? undefined : () => openPlanner({ mode: "new" })}
-        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject} />;
+        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject}
+        asks={activeReadOnly ? undefined : updateAsks} />;
       // 0047: deleted tasks and projects, 30 days (rows come back through the realtime reload too)
       case "bin": return (
         <RecycleBin key={wsKey} workspaceId={workspace} workspaceName={activeWsName} role={workspace ? (myRole ?? null) : null} currentUserId={currentUserId}
@@ -4414,6 +4446,8 @@ export default function App() {
         section={settingsSection} onSection={setSettingsSection} isAdmin={canWorkspaceSettings} isGuest={activeReadOnly}
         renderWorkspace={canWorkspaceSettings ? () => (
           <>
+            {/* 0053: the day project updates are due here (before the workspace's own details, which end with Close workspace) */}
+            <UpdateRhythmPanel workspace={workspaces.find((w) => w.id === workspace)} onChange={updateWorkspaceRhythm} />
             <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
               onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
             {/* 0047: Settings › Workspace › History (who did what here; owners and admins see everyone's) */}

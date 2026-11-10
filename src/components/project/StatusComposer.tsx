@@ -5,25 +5,37 @@
    the top of the history. Every one of them edits the same draft
    per project, so closing a popover or switching tabs never throws
    typed words away.
+   Honest status (0053): picking On track while Kanbo sees overdue or
+   blocked work brings up one calm question (lib/honestStatus), never
+   a block on posting; At risk and Off track take a "Plan to recover"
+   and a new target date; On hold is a status of its own.
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
-import { AiMark, Button, Provenance, Segmented } from "../primitives";
+import { AiMark, Button, DateChip, Provenance, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { KANBO_TODAY, todayISO } from "../../data/data";
 import type { Project, StatusKind, StatusUpdate, Task } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
 import { draftStatusLocal, factLines, statusFacts, statusFactsForAi, statusFromHealth, type StatusFacts } from "../../lib/statusDraft";
+import { honestQuestion } from "../../lib/honestStatus";
 import "./projects.css";
+import "../updates/updates.css";
 
-export type PostStatus = (projectId: string, summary: string, status: StatusKind) => Promise<boolean> | void;
+/** What an At risk or Off track update adds (0053): its plan to recover and a new target date. */
+export interface StatusExtras { recoveryPlan?: string; targetDate?: string }
+export type PostStatus = (projectId: string, summary: string, status: StatusKind, extras?: StatusExtras) => Promise<boolean> | void;
 export type AiStatus = (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
 
 export const STATUS_OPTIONS: { value: StatusKind; label: string }[] = [
   { value: "on_track", label: "On track" },
   { value: "at_risk", label: "At risk" },
   { value: "off_track", label: "Off track" },
+  { value: "on_hold", label: "On hold" },
 ];
 const KINDS = new Set<string>(STATUS_OPTIONS.map((o) => o.value));
+/** the calls that take a plan to recover and a new target date */
+export const takesPlan = (k: StatusKind): boolean => k === "at_risk" || k === "off_track";
+export const PLAN_MAX = 2000;
 
 export const PLACEHOLDER = "What's the latest? Wins, risks, next steps…";
 
@@ -41,9 +53,14 @@ interface Draft {
   note: string | null;
   /** you've changed Kanbo's words, so they're yours now */
   edited: boolean;
+  /** At risk / Off track: the plan to recover, and a new target date */
+  plan: string;
+  target: string | null;
+  /** you answered Kanbo's question ("Keep On track"), so it's not asked again for this draft */
+  kept: boolean;
 }
 interface Entry { draft?: Draft; drafting?: { seq: number; typed: boolean }; posting?: boolean }
-const EMPTY: Draft = { text: "", kind: null, source: null, note: null, edited: false };
+const EMPTY: Draft = { text: "", kind: null, source: null, note: null, edited: false, plan: "", target: null, kept: false };
 const entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
 let draftSeq = 0;
@@ -117,6 +134,17 @@ export interface Composer {
   canPost: boolean;
   posting: boolean;
   post: () => void;
+  /** At risk / Off track: the plan to recover ("" none) and a new target date */
+  plan: string;
+  setPlan: (v: string) => void;
+  target: string | null;
+  setTarget: (d: string | null) => void;
+  /** Kanbo's one question when you pick On track and it sees overdue or blocked work (null: nothing to ask) */
+  question: string | null;
+  /** "Keep On track": the question goes, and the update posts as you called it */
+  keep: () => void;
+  /** "Add a plan to recover": the call Kanbo's read makes, with the plan field ready */
+  addPlan: () => void;
 }
 
 /** Why the on-device draft stood in for Kanbo's (the interface never says "AI", §2.3). */
@@ -157,7 +185,8 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
     const pid = id;
     const local = draftStatusLocal(facts);
     if (!aiStatus || how === "template") {
-      patchEntry(pid, { drafting: undefined, draft: { text: local.summary, kind: local.status, source: "template", note: null, edited: false } });
+      const keep = entries.get(pid)?.draft ?? EMPTY;
+      patchEntry(pid, { drafting: undefined, draft: { ...keep, text: local.summary, kind: local.status, source: "template", note: null, edited: false } });
       return;
     }
     const seq = ++draftSeq;
@@ -193,6 +222,12 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
     if (hasText && cur.source && !cur.edited) writeDraft(id, { ...EMPTY });
   };
 
+  const plan = cur.plan.trim();
+  const extras: StatusExtras | undefined = takesPlan(kind) && (plan || cur.target)
+    ? { ...(plan ? { recoveryPlan: plan.slice(0, PLAN_MAX) } : {}), ...(cur.target ? { targetDate: cur.target } : {}) }
+    : undefined;
+  const question = cur.kept ? null : honestQuestion(kind, { health: facts.total ? facts.health : null, overdue: facts.overdue.length, blocked: facts.blocked.length });
+
   const post = () => {
     const v = cur.text.trim();
     if (!v || posting || !onPost) return;
@@ -203,7 +238,7 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
       patchEntry(pid, { posting: false, ...(now && now.text.trim() !== v ? {} : { draft: EMPTY }) });
       if (alive.current) onPostedRef.current?.();
     };
-    const r = onPost(pid, v, kind);
+    const r = extras ? onPost(pid, v, kind, extras) : onPost(pid, v, kind);
     if (r && typeof (r as Promise<boolean>).then === "function") {
       patchEntry(pid, { posting: true });
       (r as Promise<boolean>).then(
@@ -232,6 +267,13 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
     canPost: !!onPost,
     posting,
     post,
+    plan: cur.plan,
+    setPlan: (v) => writeDraft(id, { plan: v }),
+    target: cur.target,
+    setTarget: (d) => writeDraft(id, { target: d }),
+    question,
+    keep: () => writeDraft(id, { kept: true }),
+    addPlan: () => writeDraft(id, { kind: facts.health === "off_track" ? "off_track" : "at_risk" }),
   };
 }
 
@@ -276,6 +318,13 @@ export function ComposerPanel({ c, onCancel, textRef, title }: {
       data-focus-ring={c.source === "ai" ? "none" : undefined} />
   );
   const changes = facts.changes === 1 ? "1 change" : `${facts.changes} changes`;
+  const planRef = useRef<HTMLTextAreaElement>(null);
+  const addPlan = () => {
+    c.addPlan();
+    // the plan field appears with the new call: put the cursor in it
+    window.setTimeout(() => planRef.current?.focus(), 0);
+  };
+  const withPlan = takesPlan(c.kind);
   return (
     <div className="kpj-composer">
       {title && (
@@ -284,6 +333,17 @@ export function ComposerPanel({ c, onCancel, textRef, title }: {
         </div>
       )}
       <Segmented ariaLabel="Project status" options={STATUS_OPTIONS} value={c.kind} onChange={c.setKind} />
+      {/* Kanbo's one question: asked, never in the way (Post update still posts it as you called it) */}
+      {c.question && (
+        <div className="kup-ask" role="status">
+          <span className="kup-ask-mark" aria-hidden="true"><AiMark size={14} /></span>
+          <p className="kup-ask-text">{c.question}</p>
+          <div className="kup-ask-acts">
+            <Button variant="ghost" size="sm" onClick={c.keep}>Keep On track</Button>
+            <Button variant="secondary" size="sm" onClick={addPlan}>Add a plan to recover</Button>
+          </div>
+        </div>
+      )}
       {/* one wrapper either way, so the field never remounts (and never drops focus) as Kanbo's words arrive or go */}
       <div className={c.source === "ai" ? "kvellum" : "kpj-draft"}>
         {field}
@@ -291,6 +351,20 @@ export function ComposerPanel({ c, onCancel, textRef, title }: {
       </div>
       {c.source === "template" && (
         <p className="kpj-composer-note">{c.note ?? `Drafted on this device from this week's ${changes}.`} Edit it before you post.</p>
+      )}
+      {withPlan && (
+        <div className="kup-plan">
+          <label className="kup-plan-label">
+            <span>Plan to recover <span className="kup-opt">optional</span></span>
+            <textarea ref={planRef} className="kpj-field kup-plan-field" rows={2} value={c.plan} maxLength={PLAN_MAX}
+              onChange={(e) => c.setPlan(e.target.value)} placeholder="What will get it back on track, and who's doing it?" />
+          </label>
+          <div className="kup-plan-date">
+            <span className="kup-plan-label-text" aria-hidden="true">New target date <span className="kup-opt">optional</span></span>
+            <DateChip size="sm" tone="plain" label="New target date" value={c.target ?? undefined} placeholder="Add a date"
+              onChange={(d) => c.setTarget(d ?? null)} />
+          </div>
+        </div>
       )}
       <div className="kpj-composer-foot">
         <Button variant="ghost" size="sm" onClick={() => { if (!c.drafting) c.draft(); }} aria-busy={c.drafting || undefined}>
