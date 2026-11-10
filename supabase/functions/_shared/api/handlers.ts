@@ -957,12 +957,21 @@ async function spawnNextOccurrence(ctx: RouteContext, tx: Tx, cur: Row): Promise
         and x.title = $3 and x.project_id = $4 and x.recurrence = $5 and x.due_date >= $6::date limit 1`,
     [id, s(cur.parent_id), String(cur.title ?? ""), String(cur.project_id), recurrence, occ.dueDate]);
   if (already.length) return null;
+  // Project access (0058): someone who can no longer see the project doesn't get its next occurrence; it comes
+  // to whoever completed this one (the app's rule on a move), with no plan of theirs on it
+  const cols = (await accessOn(tx))
+    ? CLONED_COLS.replace("my_section_id, assignee_id", `case when k.ok then src.my_section_id end, case when k.ok then src.assignee_id else $7::text end`)
+    : CLONED_COLS;
+  const kept = (await accessOn(tx))
+    ? ` cross join lateral (select src.workspace_id is null or src.assignee_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          or ${personRankSql("src.assignee_id", "src.workspace_id", "src.project_id")} >= 1 as ok) k`
+    : "";
   const clone = async (from: string, parent: string | null, due: string | null, start: string | null, original: string | null) => {
     const made = await tx.query<{ id: string }>(
       `insert into public.tasks (user_id, status, parent_id, due_date, start_date, original_due_date, position, ${CLONED_COLS})
-       select $1::uuid, 'todo', $2::uuid, $3::date, $4::date, $5::date, extract(epoch from clock_timestamp()) * 1000, ${CLONED_COLS}
-         from public.tasks where id = $6::uuid
-       returning id::text as id`, [me, parent, due, start, original, from]);
+       select $1::uuid, 'todo', $2::uuid, $3::date, $4::date, $5::date, extract(epoch from clock_timestamp()) * 1000, ${cols}
+         from public.tasks src${kept} where src.id = $6::uuid
+       returning id::text as id`, kept ? [me, parent, due, start, original, from, me] : [me, parent, due, start, original, from]);
     return made[0].id;
   };
   const root = await clone(id, s(cur.parent_id), occ.dueDate, occ.startDate, occ.originalDueDate);

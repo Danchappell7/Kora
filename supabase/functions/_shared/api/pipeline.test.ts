@@ -90,6 +90,8 @@ const routes: Route[] = [
   { method: "POST", path: "/fail", handler: async () => { throw new ApiFail(422, "validation_failed", "Some fields need attention.", { fields: { title: "Give the task a title." } }); } },
   { method: "GET", path: "/rls", handler: async () => { throw Object.assign(new Error("new row violates row-level security policy for table \"tasks\""), { code: "42501" }); } },
   { method: "GET", path: "/dupe", handler: async () => { throw Object.assign(new Error("duplicate key value"), { code: "23505" }); } },
+  // 0058's task trigger refusing an assignee who can't see the project
+  { method: "GET", path: "/assignee", handler: async () => { throw Object.assign(new Error("assignee can't see this project"), { code: "42501" }); } },
   { method: "GET", path: "/boom", handler: async () => { throw Object.assign(new Error("syntax error at or near \"selec\" in select * from secret_table"), { code: "42601" }); } },
   { method: "POST", path: "/boom", handler: async () => { throw new Error("kaput"); } },
   // writes in a transaction as the user (like the real handlers)
@@ -402,6 +404,9 @@ describe("errors", () => {
     const { call, logs } = setup(routes);
     expect((await call(WRITE, "GET", "/rls")).json.error.code).toBe("forbidden");
     expect((await call(WRITE, "GET", "/dupe")).status).toBe(409);
+    // Project access (0058): the database refusing an assignee reads as the API's own answer about that field
+    const who = await call(WRITE, "GET", "/assignee");
+    expect([who.status, who.json.error.code, who.json.error.details]).toEqual([422, "validation_failed", { fields: { assigneeId: "That person can't see this project." } }]);
     const boom = await call(WRITE, "GET", "/boom");
     expect(boom.status).toBe(500);
     expect(isError(boom.json, 500, "internal")).toBe(true);

@@ -3695,6 +3695,26 @@ async function projectAccessApiSuite(w: World) {
     eq(rows.map((r) => [r.project_id, r.assignee_id]), [[pay, w.alice], [pay, w.alice]], "both in Board pay, both now alice's");
     eq([rows[0].collaborators, rows[0].followers], [[dora], []], "bob dropped, dora kept");
   });
+  await test("0058 via REST, switch on: a repeating task's next occurrence comes to you when its assignee can't see the project any more", async () => {
+    const t = await rest(w, aliceKey, "POST", "/tasks", { title: "Monthly payroll check", projectId: pay, assigneeId: dora, dueDate: "2026-11-10" });
+    eq(t.status, 201, "made, for dora");
+    await pg.query(`update public.tasks set recurrence = 'monthly' where id = $1::uuid`, [t.json.id]);
+    await asPerson(pg, w.alice, `select public.remove_project_member($1::uuid, $2::uuid)`, [pay, dora]);
+    const done = await rest(w, aliceKey, "POST", `/tasks/${t.json.id}/complete`);
+    eq(done.status, 200, `completed: ${JSON.stringify(done.json)}`);
+    const next = await one<{ assignee_id: string; project_id: string }>(`select assignee_id, project_id from public.tasks where id = $1::uuid`, [done.json.nextOccurrence.id]);
+    eq([next.project_id, next.assignee_id], [pay, w.alice], "the next one is alice's");
+    await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'editor')`, [pay, dora]);
+  });
+  await test("0058 via REST, switch on: the database's own refusal of an assignee (a suspended account) is a 422 on assigneeId too", async () => {
+    await pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [dora]);
+    try {
+      const t = await rest(w, aliceKey, "POST", "/tasks", { title: "For a suspended account", projectId: pay, assigneeId: dora });
+      eq([t.status, t.json?.error?.details?.fields?.assigneeId], [422, "That person can't see this project."], "refused by the trigger, said plainly");
+    } finally {
+      await pg.query(`update public.profiles set suspended = false where id = $1::uuid`, [dora]);
+    }
+  });
   await test("0058 via REST, switch on: projects say who can see them; a new one can be made private by those allowed", async () => {
     eq((await rest(w, bobKey, "GET", `/projects/${w.launch}`)).json.visibility, "workspace", "Launch");
     eq((await rest(w, aliceKey, "GET", `/projects/${pay}`)).json.visibility, "private", "Board pay");

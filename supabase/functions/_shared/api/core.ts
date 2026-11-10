@@ -54,6 +54,11 @@ export function pgKind(e: unknown): "rls" | "read_only" | "not_null" | "check" |
 
 /** The API error for a Postgres error; null for "other" (the pipeline logs it and answers 500). */
 export function pgFailure(e: unknown): ApiFail | null {
+  // 0058's task trigger (42501): an assignee who can't see the task's project. The handlers check first;
+  // this is the backstop (a suspended account, a project that changed meanwhile)
+  if (/assignee can't see this project/.test(String((e as { message?: unknown })?.message ?? ""))) {
+    return invalid({ assigneeId: "That person can't see this project." });
+  }
   switch (pgKind(e)) {
     case "rls": return forbidden("You don't have permission to do that.");
     case "read_only": return forbidden("This key is read-only. Make a read & write key (kanbo_sk_…) in Settings › Developers to change data.");
