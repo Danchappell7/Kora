@@ -16,6 +16,7 @@ import type { StatusKind, StatusUpdate, UpdateComment, UpdateSections } from "..
 import { fmtShortDay, updateAuthor } from "../../lib/statusDraft";
 import { STATUS_TONES, STATUS_WORDS } from "../../lib/honestStatus";
 import { hasSections, SECTION_HINTS, SECTION_KEYS, SECTION_LABELS, SECTION_MAX } from "../../lib/updateSections";
+import { useUpdateAsksOn } from "../../lib/updateSchema";
 import {
   addUpdateComment, COMMENT_MAX, deleteUpdateComment, editUpdateComment, seenByNames, toggleUpdateReaction, UPDATE_REACTIONS,
   type UpdateThread,
@@ -34,7 +35,9 @@ const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
  *  only: moving the call elsewhere drops them), and who its Asks are for. */
 export interface UpdateEditPatch {
   summary: string; status: StatusKind; sections: UpdateSections | null;
-  recoveryPlan: string | null; targetDate: string | null; askUserIds: string[];
+  recoveryPlan: string | null; targetDate: string | null;
+  /** (left out before 0054: there's nowhere to keep it) */
+  askUserIds?: string[];
 }
 
 /** An update's sections as a short list (Asks say who they're for). */
@@ -73,6 +76,8 @@ function UpdateEditor({ update, people, onSave, onCancel }: {
   const [asks, setAsks] = useState<string[]>(update.askUserIds ?? []);
   const [saving, setSaving] = useState(false);
   const withPlan = takesPlan(status);
+  // who an Ask is for: only once 0054 is in (before it nobody would hear; the Ask's words still save)
+  const asksOn = useUpdateAsksOn();
   const asking = !!sections.asks?.trim();
   const save = async () => {
     if (!summary.trim() || saving) return;
@@ -80,7 +85,7 @@ function UpdateEditor({ update, people, onSave, onCancel }: {
     const ok = await onSave({
       summary: summary.trim(), status, sections: hasSections(sections) ? sections : null,
       recoveryPlan: withPlan ? plan.trim().slice(0, PLAN_MAX) || null : null, targetDate: withPlan ? target : null,
-      askUserIds: asking ? asks : [],
+      ...(asksOn ? { askUserIds: asking ? asks : [] } : {}),
     });
     setSaving(false);
     if (ok) onCancel();
@@ -99,7 +104,7 @@ function UpdateEditor({ update, people, onSave, onCancel }: {
               onChange={(e) => setSections((s) => ({ ...s, [k]: e.target.value }))} />
           </label>
         ))}
-        {people.length > 0 && asking && (
+        {asksOn && people.length > 0 && asking && (
           <div className="kuc-sec-who" role="group" aria-label="Who the asks are for">
             <span className="kuc-sec-who-label">Ask</span>
             {people.map((p) => (

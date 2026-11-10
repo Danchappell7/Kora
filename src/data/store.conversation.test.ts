@@ -91,12 +91,12 @@ describe("store: an author's edit and delete (0054)", () => {
     await expect(s.deleteStatusUpdate("su-1")).rejects.toThrow(/workspace owner or admin/);
   });
 
-  it("before 0054 an edit still saves, without the sections", async () => {
+  it("before 0054 an edit still saves, with the sections kept in its words (as when it's posted)", async () => {
     const fake = fakeClient(["sections"]);
     const s = await load(fake);
     const next = await s.editStatusUpdate(u, { summary: "Edited", status: "on_track", sections: { next: "Ship" } });
     expect(fake.writes[fake.writes.length - 1]).not.toHaveProperty("sections");
-    expect(next.summary).toBe("Edited");
+    expect(next.summary).toBe("Edited\n\nNext: Ship");
   });
 });
 

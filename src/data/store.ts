@@ -23,6 +23,7 @@ import {
 } from "./data";
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
 import { parseSections, sectionsAsText } from "../lib/updateSections";
+import { noteUpdateColumns } from "../lib/updateSchema";
 import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
@@ -616,6 +617,21 @@ const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => {
     ...(r.ask_user_ids?.length ? { askUserIds: r.ask_user_ids } : {}),
   };
 };
+/** Are 0054's update columns (sections, ask_user_ids) in? The rows say (select * brings every column); with
+ *  none to read, one small probe. Anything else (offline, a blip) leaves it unknown. */
+async function learnUpdateColumns(client: SupabaseClient, rows: readonly StatusUpdateRow[]): Promise<void> {
+  if (rows.length) { noteUpdateColumns("ask_user_ids" in rows[0] ? "full" : "old"); return; }
+  try {
+    const { error } = await client.from("status_updates").select("id,ask_user_ids").limit(1);
+    if (!error) noteUpdateColumns("full");
+    else if (missingColumn(error.message)?.col === "ask_user_ids") noteUpdateColumns("old");
+  } catch { /* unknown, for now */ }
+}
+/** A write's answer (or refusal) about 0054's update columns. */
+function noteUpdateWrite(row: Record<string, unknown>, stripped?: Record<string, unknown>): void {
+  if (!stripped) { if ("sections" in row || "ask_user_ids" in row) noteUpdateColumns("full"); return; }
+  if (("sections" in row && !("sections" in stripped)) || ("ask_user_ids" in row && !("ask_user_ids" in stripped))) noteUpdateColumns("old");
+}
 interface AutomationRuleRow { id: string; workspace_id: string | null; project_id: string; name: string; trigger: string; actions: unknown; enabled: boolean }
 const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: ((r.trigger as AutomationRule["trigger"]) || "task_created"), actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
 interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown; public_token?: string | null; public_enabled?: boolean | null }
@@ -1739,7 +1755,9 @@ export const store = {
     } catch { /* table not present yet */ }
     try {
       // newest first
-      statusUpdates = (await loadAllRows<StatusUpdateRow>(supabase, "status_updates")).sort((a, b) => byText(b.created_at, a.created_at) || byText(a.id, b.id)).map(rowToStatusUpdate);
+      const suRows = await loadAllRows<StatusUpdateRow>(supabase, "status_updates");
+      statusUpdates = suRows.sort((a, b) => byText(b.created_at, a.created_at) || byText(a.id, b.id)).map(rowToStatusUpdate);
+      void learnUpdateColumns(supabase, suRows);
     } catch { /* table not present yet */ }
     let automationRules: AutomationRule[] = [];
     try {
@@ -2376,9 +2394,13 @@ export const store = {
       ...(sections ? { sections } : {}), ...(asks ? { ask_user_ids: asks } : {}) };
     for (let i = 0; i < 6; i++) {
       const { data, error } = await supabase.from("status_updates").insert(row).select("*").single();
-      if (!error) return rowToStatusUpdate(data as StatusUpdateRow);
+      if (!error) {
+        if (data && typeof data === "object") noteUpdateWrite(data as Record<string, unknown>);
+        return rowToStatusUpdate(data as StatusUpdateRow);
+      }
       const stripped = withoutMissingColumn(row, error.message);
       if (!stripped) throw error;
+      noteUpdateWrite(row, stripped);
       // before 0053 / 0054: the plan, the date and the sections stay with the update, in its words
       const said = [row.summary as string, "recovery_plan" in row && !("recovery_plan" in stripped) ? `Plan to recover: ${input.recoveryPlan}` : "",
         "target_date" in row && !("target_date" in stripped) ? `New target date: ${input.targetDate}` : "",
@@ -2388,7 +2410,9 @@ export const store = {
     throw new Error("Couldn't post the update.");
   },
   /** Change your own update (0054 marks it edited; only its author may). Answers the saved row
-   *  (demo: the patched one); before 0054 the sections are left out. */
+   *  (demo: the patched one). Before 0053 / 0054 what was typed for a column that isn't there yet (the
+   *  plan to recover, the new date, the sections) stays with the update, in its words, as when it's posted;
+   *  who an Ask is for can't be kept (the editor doesn't offer it then). */
   async editStatusUpdate(u: StatusUpdate, patch: { summary?: string; status?: StatusKind; sections?: UpdateSections | null; askUserIds?: string[]; recoveryPlan?: string | null; targetDate?: string | null }): Promise<StatusUpdate> {
     const sections = patch.sections === null ? undefined : parseSections(patch.sections);
     if (!supabase) {
@@ -2403,17 +2427,27 @@ export const store = {
     if ("askUserIds" in patch) row.ask_user_ids = [...new Set(patch.askUserIds ?? [])].slice(0, 20);
     if ("recoveryPlan" in patch) row.recovery_plan = patch.recoveryPlan || null;
     if ("targetDate" in patch) row.target_date = patch.targetDate || null;
-    for (let i = 0; i < 6; i++) {
+    const base = "summary" in patch ? patch.summary ?? "" : u.summary;
+    const kept: { plan?: string; date?: string; sections?: string } = {};
+    for (let i = 0; i < 7; i++) {
       const { data, error } = await supabase.from("status_updates").update(row).eq("id", u.id).select("*");
       if (!error) {
         const got = (data as StatusUpdateRow[] | null)?.[0];
         // nothing came back: it isn't yours to change (or it's gone)
         if (!got) throw new Error("Only the person who posted an update can change it.");
+        noteUpdateWrite(got as unknown as Record<string, unknown>);
         return rowToStatusUpdate(got);
       }
       const stripped = withoutMissingColumn(row, error.message);
       if (!stripped) throw error;
-      row = stripped;
+      noteUpdateWrite(row, stripped);
+      // before 0053 / 0054: the plan, the date and the sections stay with the update, in its words
+      const gone = (col: string) => col in row && !(col in stripped);
+      if (gone("recovery_plan") && patch.recoveryPlan) kept.plan = `Plan to recover: ${patch.recoveryPlan}`;
+      if (gone("target_date") && patch.targetDate) kept.date = `New target date: ${patch.targetDate}`;
+      if (gone("sections") && sections) kept.sections = sectionsAsText(sections);
+      const said = [kept.plan, kept.date, kept.sections].filter(Boolean);
+      row = said.length ? { ...stripped, summary: [base, ...said].filter(Boolean).join("\n\n") } : stripped;
     }
     throw new Error("Couldn't save the update.");
   },

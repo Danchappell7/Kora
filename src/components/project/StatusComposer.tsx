@@ -11,7 +11,8 @@
    and a new target date; On hold is a status of its own.
    Sections (0054): optional Highlights / Risks / Asks / Next under the
    words, which Kanbo's drafts fill (Asks are yours to write), and the
-   people an Ask is for, who get it under "Needs your reply".
+   people an Ask is for, who get it under "Needs your reply" (offered
+   only once 0054 is known to be in: before it nobody could be told).
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { AiMark, Button, DateChip, Provenance, Segmented } from "../primitives";
@@ -22,6 +23,7 @@ import type { AiOutcome } from "../../lib/askTypes";
 import { draftStatusLocal, factLines, statusFacts, statusFactsForAi, statusFromHealth, type StatusFacts } from "../../lib/statusDraft";
 import { honestQuestion } from "../../lib/honestStatus";
 import { draftUpdateLocal, hasSections, parseSections, SECTION_HINTS, SECTION_KEYS, SECTION_LABELS, SECTION_MAX, type SectionKey } from "../../lib/updateSections";
+import { useUpdateAsksOn } from "../../lib/updateSchema";
 import "./projects.css";
 import "../updates/updates.css";
 import "../updates/conversation.css";
@@ -258,7 +260,8 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
 
   const plan = cur.plan.trim();
   const sections = parseSections(cur.sections);
-  const asks = sections?.asks ? cur.asks : [];
+  const asksOn = useUpdateAsksOn();
+  const asks = asksOn && sections?.asks ? cur.asks : [];
   const parts: StatusExtras = {
     ...(takesPlan(kind) && plan ? { recoveryPlan: plan.slice(0, PLAN_MAX) } : {}), ...(takesPlan(kind) && cur.target ? { targetDate: cur.target } : {}),
     ...(sections ? { sections } : {}), ...(asks.length ? { askUserIds: asks } : {}),
@@ -435,7 +438,9 @@ export function ComposerPanel({ c, onCancel, textRef, title, people }: {
 
 /** The four optional sections under the words, and who the Asks are for. */
 function ComposerSections({ c, people }: { c: Composer; people?: { id: string; name: string }[] }) {
-  const others = (people ?? []).filter((p) => p.name.trim());
+  // (before 0054 an update can't name who its Asks are for, so nobody would hear: the Ask's words still post)
+  const asksOn = useUpdateAsksOn();
+  const others = asksOn ? (people ?? []).filter((p) => p.name.trim()) : [];
   return (
     <fieldset className="kuc-sec">
       <legend className="kuc-sec-legend">

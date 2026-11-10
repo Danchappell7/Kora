@@ -1804,3 +1804,53 @@ describe("store (demo mode) — the redesign's seed and AI", () => {
     expect((await store.createTasksBatch([mkTask("t-demo-a")], "m-self"))[0].createdBy).toBe("m-self");
   });
 });
+
+describe("store (supabase) — what the update rows say about 0054 (who an Ask is for)", () => {
+  beforeEach(() => { localStorage.clear(); });
+  afterEach(() => { vi.doUnmock("../lib/supabase"); vi.doUnmock("../lib/monitoring"); });
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  const su = (extra: Record<string, unknown> = {}) => ({ id: "su-1", workspace_id: "ws", project_id: "p1", summary: "Words", status: "on_track", created_at: "2026-11-01T10:00:00Z", user_id: "user-a", ...extra });
+
+  it("update rows with ask_user_ids: 0054 is in, and the Ask people are offered", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "status_updates" && c.op === "select" ? { data: [su({ sections: null, ask_user_ids: [] })] } : undefined));
+    const { store: s } = await loadStore(fake);
+    const schema = await import("../lib/updateSchema");
+    await s.bootstrap({ id: "user-a" });
+    await settle();
+    expect(schema.updateColumns()).toBe("full");
+    expect(schema.updateAsksOn()).toBe(true);
+    expect(selects(fake, "status_updates").filter((c) => c.select !== "*")).toHaveLength(0);   // no probe needed
+  });
+
+  it("update rows without them (live at 0050): not in, and not offered", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => (c.table === "status_updates" && c.op === "select" ? { data: [su()] } : undefined));
+    const { store: s } = await loadStore(fake);
+    const schema = await import("../lib/updateSchema");
+    await s.bootstrap({ id: "user-a" });
+    await settle();
+    expect(schema.updateColumns()).toBe("old");
+    expect(schema.updateAsksOn()).toBe(false);
+  });
+
+  it("no updates to read: one small probe says (a missing column: not in; a blip: still unknown, so not offered)", async () => {
+    for (const [error, want] of [
+      [{ code: "42703", message: "column status_updates.ask_user_ids does not exist" }, "old"],
+      [null, "full"],
+      [{ code: "503", message: "upstream connect error" }, null],
+    ] as const) {
+      const fake = makeFake();
+      fake.setHandler((c) => {
+        if (c.table !== "status_updates" || c.op !== "select") return undefined;
+        return c.select === "id,ask_user_ids" ? (error ? { error } : { data: [] }) : { data: [] };
+      });
+      const { store: s } = await loadStore(fake);
+      const schema = await import("../lib/updateSchema");
+      await s.bootstrap({ id: "user-a" });
+      await settle();
+      expect(schema.updateColumns()).toBe(want);
+      expect(schema.updateAsksOn()).toBe(want === "full");
+    }
+  });
+});
