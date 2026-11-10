@@ -20,7 +20,7 @@ import type { Goal, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, 
 import { goalTree, useStableOrder, type GoalProgress } from "../views/reportingUtils";
 import { periodRange, quarterOf } from "../../lib/goalPeriods";
 import { paceDisagrees } from "../../lib/goalPace";
-import { canEditGoal, canMakeCompanyGoal, canSeeGoal, COMPANY_GOALS_RULE } from "../../lib/goalRules";
+import { canEditGoal, canMakeCompanyGoal, canSeeGoal, COMPANY_GOALS_RULE, goalLookup } from "../../lib/goalRules";
 import {
   checkinAge, checkinsOf, goalCarriedOver, goalGroup, goalProjectIds, goalsInQuarter, goalsSummary, GROUP_LABEL, hasWorkBehind, paceWords, periodShort, projectDot, quarterOptions, readGoals, takesCheckins,
   type GoalGroup, type GoalRead,
@@ -80,7 +80,11 @@ export function GoalsView(props: GoalsViewProps) {
   const [ownOpen, setOwnOpen] = useState<{ id: string; checkin: boolean } | null>(null);
   const realProjects = projects.filter((p) => p.id !== "p-personal");
   // a leadership-only goal you can't see never reaches you live; in the demo it's held back here
-  const visible = useMemo(() => (v2 ? goals.filter((g) => canSeeGoal(g, { me, role })) : goals), [v2, goals, me, role]);
+  const visible = useMemo(() => {
+    if (!v2) return goals;
+    const byId = goalLookup(goals);
+    return goals.filter((g) => canSeeGoal(g, { me, role }, byId));
+  }, [v2, goals, me, role]);
   const stable = useStableOrder(visible);
   const reads = useMemo(() => readGoals(visible, tasks, today), [visible, tasks, today]);
   const links = extras?.links ?? [];

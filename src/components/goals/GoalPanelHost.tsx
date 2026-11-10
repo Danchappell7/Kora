@@ -9,7 +9,7 @@
    ============================================================ */
 import { useEffect, useMemo } from "react";
 import type { Goal, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Project, Role, SavedView, StatusUpdate, Task, WorkspaceMember } from "../../data/types";
-import { canSeeGoal } from "../../lib/goalRules";
+import { canSeeGoal, goalLookup } from "../../lib/goalRules";
 import { GoalPanel } from "./GoalPanel";
 
 export interface GoalWrites {
@@ -51,18 +51,19 @@ export function GoalPanelHost(p: GoalPanelHostProps) {
   const goal = p.goals.find((g) => g.id === p.open.id);
   const ws = goal ? goal.workspaceId ?? null : null;
   const role = ws === null ? null : p.roleIn(ws);
-  const seen = !!goal && canSeeGoal(goal, { me: p.me, role });
+  const byId = useMemo(() => goalLookup(p.goals), [p.goals]);
+  const seen = !!goal && canSeeGoal(goal, { me: p.me, role }, byId);
   const { onClose } = p;
   useEffect(() => { if (!goal || !seen) onClose(); }, [goal, seen, onClose]);
   const scope = useMemo(() => {
-    const goals = p.goals.filter((g) => (g.workspaceId ?? null) === ws && canSeeGoal(g, { me: p.me, role }));
+    const goals = p.goals.filter((g) => (g.workspaceId ?? null) === ws && canSeeGoal(g, { me: p.me, role }, byId));
     const projects = p.projects.filter((x) => (x.workspaceId ?? null) === ws);
     const tasks = p.tasks.filter((t) => (t.workspaceId ?? null) === ws);
     const members = p.members.filter((m) => (m.workspaceId ?? null) === ws && m.status === "active");
     const views = (p.views ?? []).filter((v) => (ws === null ? v.workspaceId === null && v.userId === p.me : v.workspaceId === ws && v.shared))
       .map((v) => ({ id: v.id, name: v.name, emoji: v.emoji }));
     return { goals, projects, tasks, members, views };
-  }, [p.goals, p.projects, p.tasks, p.members, p.views, ws, role, p.me]);
+  }, [p.goals, p.projects, p.tasks, p.members, p.views, ws, role, p.me, byId]);
   if (!goal || !seen) return null;
   return (
     <GoalPanel goal={goal} goals={scope.goals} projects={scope.projects} tasks={scope.tasks} extras={p.extras} me={p.me} role={role}

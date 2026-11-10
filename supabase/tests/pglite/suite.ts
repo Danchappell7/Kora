@@ -1695,6 +1695,63 @@ async function goalsSuite(w: World) {
     eq(await count(w.bob, "goals", "id = $1::uuid", [gl]), 0, "a member again");
   });
 
+  await test("0052 attack: a leadership-only goal hides the goals under it too (made the app's way: no visibility of their own), with their check-ins, links and search", async () => {
+    // erin (admin) locks an objective, then adds key results the way the goal panel does:
+    // parent, kind and owner, and no visibility (so each is 'everyone' on its own)
+    const lead = await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Quasar layoffs", visibility: "leadership" });
+    const kr = await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Quasar cut 20 percent headcount", parent_id: lead, kind: "key_result", owner_id: erin, target: 20, current: 5 });
+    const deeper = await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Quasar notice letters", parent_id: kr, kind: "key_result", owner_id: erin });
+    eq((await goal(kr)).visibility, "everyone", "the key result isn't locked itself");
+    await asPerson(w.pg, erin, `insert into public.goal_checkins (goal_id, value, note) values ($1::uuid, 7, 'Quasar wave one')`, [kr]);
+    await asPerson(w.pg, erin, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [kr, w.launch]);
+    for (const [who, label, n] of [[w.alice, "alice (owner)", 1], [erin, "erin (admin)", 1], [w.bob, "bob (member)", 0], [dan, "dan (member)", 0], [w.gus, "gus (guest)", 0], [w.carol, "carol (outsider)", 0]] as const) {
+      eq(await count(who, "goals", "id = any($1::uuid[])", [[kr, deeper]]), n * 2, `${label}: the key results`);
+      eq(await count(who, "goal_checkins", "goal_id = $1::uuid", [kr]), n, `${label}: their check-ins`);
+      eq(await count(who, "goal_links", "goal_id = $1::uuid", [kr]), n, `${label}: their links`);
+    }
+    eq((await asPerson<{ name: string }>(w.pg, w.bob, `select name from public.goals where name like 'Quasar%'`)).length, 0, "bob reads nothing of it by name");
+    if (await one<{ on: boolean }>(`select to_regprocedure('public.kanbo_fts(text, text)') is not null as "on"`).then((r) => r.on)) {
+      const titles = async (user: string) => (await asPerson<{ title: string }>(w.pg, user, `select title from public.search_all('quasar', '{}'::jsonb, 20) where kind = 'goal'`)).map((r) => r.title).sort();
+      eq(await titles(w.bob), [], "search hands bob none of it");
+      eq(await titles(dan), [], "nor dan");
+      eq(await titles(erin), ["Quasar cut 20 percent headcount", "Quasar layoffs", "Quasar notice letters"], "an admin finds all three");
+    }
+    // a member who owns one of the key results reads it (and what's under it), not the goal above
+    eq((await asPerson(w.pg, erin, `update public.goals set owner_id = $1::uuid where id = $2::uuid returning id`, [w.bob, kr])).length, 1, "erin hands the key result to bob");
+    eq(await count(w.bob, "goals", "id = any($1::uuid[])", [[kr, deeper]]), 2, "bob reads his key result and the one under it");
+    eq(await count(w.bob, "goals", "id = $1::uuid", [lead]), 0, "but not the objective");
+    eq(await count(dan, "goals", "id = any($1::uuid[])", [[kr, deeper]]), 0, "dan still reads none of them");
+    // the objective's own people read the whole branch
+    eq((await asPerson(w.pg, erin, `update public.goals set contributors = $1::uuid[] where id = $2::uuid returning id`, [`{${dan}}`, lead])).length, 1, "dan helps on the objective");
+    eq(await count(dan, "goals", "id = any($1::uuid[])", [[lead, kr, deeper]]), 3, "dan reads the objective and everything under it");
+    eq(await count(dan, "goal_checkins", "goal_id = $1::uuid", [kr]), 1, "and its key result's check-ins");
+  });
+
+  await test("0052: locking a goal that already has key results hides them; opening it up shows them again, as they were", async () => {
+    const obj = await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Zephyr objective" });
+    const kr = await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Zephyr key result", parent_id: obj, kind: "key_result", owner_id: erin });
+    const own = await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Zephyr locked on its own", parent_id: obj, kind: "key_result", owner_id: erin, visibility: "leadership" });
+    eq(await count(w.bob, "goals", "id = any($1::uuid[])", [[obj, kr, own]]), 2, "before: the objective and its open key result");
+    eq((await asPerson(w.pg, erin, `update public.goals set visibility = 'leadership' where id = $1::uuid returning id`, [obj])).length, 1, "erin locks the objective");
+    eq(await count(w.bob, "goals", "id = any($1::uuid[])", [[obj, kr, own]]), 0, "locked: none of the branch");
+    eq((await asPerson(w.pg, erin, `update public.goals set visibility = 'everyone' where id = $1::uuid returning id`, [obj])).length, 1, "and opens it up again");
+    eq(await count(w.bob, "goals", "id = any($1::uuid[])", [[obj, kr, own]]), 2, "after: as before (the one locked on its own stays locked)");
+    eq(await goal(kr).then((g) => g.visibility), "everyone", "nothing under it was rewritten");
+  });
+
+  await test("0052 attack: goal_readable (the rule's own helper) tells nobody more than reading the goal would", async () => {
+    const lead = await mkGoal(erin, { user_id: erin, workspace_id: w.w1, name: "Helper probe", visibility: "leadership" });
+    const ask = async (user: string, ws: string, vis: string, parent: string | null) =>
+      (await asPerson<{ ok: boolean }>(w.pg, user, `select public.goal_readable($1::uuid, $2, null, '{}'::uuid[], $3::uuid) as ok`, [ws, vis, parent]))[0].ok;
+    eq(await ask(w.carol, w.w1, "everyone", null), false, "an outsider learns nothing about w1");
+    eq(await ask(w.gus, w.w1, "everyone", null), false, "nor a guest");
+    eq(await ask(w.bob, w.w1, "everyone", lead), false, "a member: no, as reading it says");
+    eq(await count(w.bob, "goals", "parent_id = $1::uuid", [lead]), 0, "(reading agrees)");
+    eq(await ask(w.bob, w.w1, "everyone", (await one<{ id: string }>(`select id::text as id from public.goals where workspace_id = $1::uuid limit 1`, [w.w2])).id), true,
+      "another workspace's goal as the parent tells him nothing about it (it isn't followed)");
+    eq(await ask(erin, w.w1, "leadership", lead), true, "an admin: yes");
+  });
+
   await test("0052: a check-in's author is the person posting, whatever the request says; the newest sets the goal's value, and taking it back restores the one before", async () => {
     const row = (await asPerson<{ id: string; author_id: string; workspace_id: string }>(w.pg, dan,
       `insert into public.goal_checkins (goal_id, value, confidence, note, author_id, workspace_id, created_at) values ($1::uuid, 1500000, 4, '  Two big renewals  ', $2::uuid, $3::uuid, '2020-01-01')
@@ -1901,7 +1958,9 @@ async function goalsSuite(w: World) {
       select p.proname as name from pg_proc p join pg_namespace n on n.oid = p.pronamespace
        where n.nspname = 'public' and p.prosecdef and p.prosrc ~* '\\m(goals|goal_checkins|goal_links)\\M'
          and has_function_privilege('authenticated', p.oid, 'execute') order by 1`);
-    eq(rows.rows.map((r) => r.name), [], "security-definer functions open to authenticated");
+    // goal_readable, the leadership rule's own helper: only a yes or no, within your own workspace, and never
+    // more than reading the goal says (its own test is above)
+    eq(rows.rows.map((r) => r.name), ["goal_readable"], "security-definer functions open to authenticated");
     eq((await w.pg.query<{ n: number }>(`select count(*)::int as n from pg_publication_tables where pubname = 'supabase_realtime' and tablename in ('goal_checkins', 'goal_links')`)).rows[0].n, 2, "both stream live");
   });
 

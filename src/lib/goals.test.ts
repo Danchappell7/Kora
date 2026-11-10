@@ -5,7 +5,7 @@ import type { Goal } from "../data/types";
 import { isPeriod, periodChoices, periodLabel, periodRange, quarterOf } from "./goalPeriods";
 import { goalNumbersGap, goalProgressMap, goalStartValue, goalValuePct, tracksOwnNumber } from "./goalProgress";
 import { goalPace, groupGoalPace, paceCurve, paceDisagrees, paceWindow } from "./goalPace";
-import { canDeleteGoal, canEditGoal, canHandOverGoal, canMakeCompanyGoal, canPlaceGoal, canSeeGoal, isGoalPerson } from "./goalRules";
+import { canDeleteGoal, canEditGoal, canHandOverGoal, canMakeCompanyGoal, canPlaceGoal, canSeeGoal, goalLookup, isGoalPerson } from "./goalRules";
 import { goalsBehind } from "./group";
 
 const g = (o: Partial<Goal> & { id: string }): Goal => ({ name: o.id, status: "on_track", workspaceId: "ws", ...o });
@@ -193,5 +193,24 @@ describe("who may do what (as 0052)", () => {
     expect(canSeeGoal(lead, { me, role: "admin" })).toBe(true);
     expect(canSeeGoal(team(), { me, role: "member" })).toBe(true);
     expect(canSeeGoal(team(), { me, role: "guest" })).toBe(false);
+  });
+  it("leadership only hides the goals under it too (key results made with no visibility of their own), as goal_readable does", () => {
+    const lead = team({ id: "lead", ownerId: "boss", contributors: ["deputy"], visibility: "leadership" });
+    const kr = team({ id: "kr", parentId: "lead", ownerId: "boss", contributors: [] });
+    const deeper = team({ id: "deeper", parentId: "kr", ownerId: "boss", contributors: [] });
+    const all = [lead, kr, deeper];
+    const byId = goalLookup(all);
+    const seen = (who: string, role: "member" | "admin") => all.filter((x) => canSeeGoal(x, { me: who, role }, byId)).map((x) => x.id);
+    expect(seen(me, "member")).toEqual([]);                          // a member: none of the branch
+    expect(seen(me, "admin")).toEqual(["lead", "kr", "deeper"]);     // an admin: all of it
+    expect(seen("deputy", "member")).toEqual(["lead", "kr", "deeper"]);   // the objective's own people: the whole branch
+    expect(all.filter((x) => canSeeGoal(x, { me, role: "member" }, goalLookup([lead, { ...kr, ownerId: me }, deeper]))).map((x) => x.id))
+      .toEqual(["deeper"]);   // (deeper's walk passes a kr that's mine)
+    expect(canSeeGoal({ ...kr, ownerId: me }, { me, role: "member" }, byId)).toBe(true);   // your own key result, whatever's above it
+    // opening the objective up shows its key results again; without the lookup only the goal's own setting counts
+    expect(seen(me, "member").length).toBe(0);
+    const open = goalLookup([{ ...lead, visibility: "everyone" as const }, kr, deeper]);
+    expect([kr, deeper].every((x) => canSeeGoal(x, { me, role: "member" }, open))).toBe(true);
+    expect(canSeeGoal(kr, { me, role: "member" })).toBe(true);
   });
 });

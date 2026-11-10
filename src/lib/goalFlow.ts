@@ -21,7 +21,7 @@ import type { Goal, GoalCheckin, GoalLink, Project, Role, StatusUpdate, Task } f
 import { goalNumbersGap, goalProgressMap, type GoalProgress } from "./goalProgress";
 import { goalPace, type PaceRead } from "./goalPace";
 import { periodLabel, periodRange, quarterOf } from "./goalPeriods";
-import { canSeeGoal, isGoalPerson } from "./goalRules";
+import { canSeeGoal, goalLookup, isGoalPerson } from "./goalRules";
 import { progressOf, projectPct } from "./countRules";
 
 /** A goal as every screen reads it. */
@@ -99,7 +99,8 @@ export function goalsForTask(task: Pick<Task, "id" | "projectId" | "parentId">, 
 
 /** The goals a person may see (team goals by their role there; personal ones are theirs). */
 export function seeableGoals(goals: Goal[], me: string, roleIn: (wsId: string | null) => Role | null | undefined): Goal[] {
-  return goals.filter((g) => canSeeGoal(g, { me, role: roleIn(g.workspaceId ?? null) }));
+  const byId = goalLookup(goals);
+  return goals.filter((g) => canSeeGoal(g, { me, role: roleIn(g.workspaceId ?? null) }, byId));
 }
 
 /* ---------------- words ---------------- */

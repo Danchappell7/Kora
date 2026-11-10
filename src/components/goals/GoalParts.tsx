@@ -167,7 +167,7 @@ export function GoalMetaRow({ goal, members, canHandOver, canEdit, today, onUpda
         <span className="kgl-period"><Icon name="calendar" size={14} sw={1.75} />{periodLabel(goal.period, goal.periodStart, goal.periodEnd)}</span>
       ) : null}
       {goal.kind && goal.kind !== "objective" && <span className="kgl-kind">{KIND_LABEL[goal.kind]}</span>}
-      {goal.visibility === "leadership" && <Pill tone="neutral" icon="lock" title="Only owners, admins, the goal's owner and the people helping can see it">Leadership only</Pill>}
+      {goal.visibility === "leadership" && <Pill tone="neutral" icon="lock" title="Only owners, admins, the goal's owner and the people helping can see it, and the goals under it">Leadership only</Pill>}
     </div>
   );
 }
@@ -494,7 +494,7 @@ export function GoalDetails({ goal, members, canEdit, canHandOver, startInNumber
       {!personal && canHandOver && (
         <div className="kgl-field kgl-field-wide">
           <Toggle checked={goal.visibility === "leadership"} label="Leadership only"
-            description="Only owners, admins, the goal's owner and the people helping can see it, its check-ins and its links."
+            description="Only owners, admins, the goal's owner and the people helping can see it, its check-ins and links, and the key results under it (each one's own people still see theirs)."
             onChange={(on) => onUpdate({ visibility: on ? "leadership" : "everyone" })} />
         </div>
       )}

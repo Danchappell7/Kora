@@ -4,7 +4,8 @@
    the page only offers what will be accepted:
    · read: a team goal is for its workspace's owner, admins and members
      (never guests); a leadership-only one for owners and admins, its
-     owner and its contributors;
+     owner and its contributors, and so are the goals under it (its key
+     results, theirs…) unless they're yours (0052's goal_readable);
    · edit, delete, check in, link work: owners and admins, the goal's
      owner and its contributors (deleting a team goal with key results
      under it, which would make them company goals: owners and admins);
@@ -28,12 +29,31 @@ const isPersonal = (g: Pick<Goal, "workspaceId">) => (g.workspaceId ?? null) ===
 export const isGoalPerson = (g: Pick<Goal, "ownerId" | "contributors">, me: string): boolean =>
   g.ownerId === me || (g.contributors ?? []).includes(me);
 
-/** May they read it? (Personal goals reach only their creator in the first place.) */
-export function canSeeGoal(g: Rules, { me, role }: Who): boolean {
+type Branch = Rules & Pick<Goal, "parentId">;
+
+/** May they read it? (Personal goals reach only their creator in the first place.) With `byId`, the goals
+ *  above it count too: a leadership-only goal hides its key results (and theirs) from a member, unless the
+ *  member is on one of them (or on a goal in between), as the database's goal_readable has it. */
+export function canSeeGoal(g: Branch, { me, role }: Who, byId?: (id: string) => Branch | undefined): boolean {
   if (isPersonal(g)) return true;
   if (role === "guest" || !role) return false;
-  return g.visibility !== "leadership" || runs(role) || isGoalPerson(g, me);
+  if (runs(role) || isGoalPerson(g, me)) return true;
+  if (g.visibility === "leadership") return false;
+  for (let cur = g.parentId, hops = 0; cur && byId && hops < 100; hops++) {
+    const up = byId(cur);
+    if (!up) break;
+    if (isGoalPerson(up, me)) return true;
+    if (up.visibility === "leadership") return false;
+    cur = up.parentId;
+  }
+  return true;
 }
+
+/** A goal list's lookup for canSeeGoal's walk up the tree. */
+export const goalLookup = <T extends Pick<Goal, "id">>(goals: readonly T[]): ((id: string) => T | undefined) => {
+  const m = new Map(goals.map((g) => [g.id, g]));
+  return (id) => m.get(id);
+};
 
 /** May they edit it, delete it, check in on it and link work to it? */
 export function canEditGoal(g: Rules, { me, role }: Who): boolean {

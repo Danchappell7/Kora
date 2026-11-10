@@ -15,7 +15,11 @@
 --   2. THE RULES (one place: goal_visible, goal_editable, goal_may_place):
 --        read    a team goal: the workspace's owner, admins and members (0041),
 --                never guests (0051). A leadership-only goal: owners and
---                admins, the goal's owner and its contributors only.
+--                admins, the goal's owner and its contributors only; and the
+--                goals under it (its key results, theirs and so on) with it,
+--                for as long as it's leadership only: a member reads one of
+--                those only if it's theirs (or they're on a goal above it
+--                that they can read).
 --        edit    a team goal, delete it, post a check-in or link work to it:
 --                owners and admins, the goal's owner and its named
 --                contributors (any member could, 0041:213-226).
@@ -156,7 +160,41 @@ returns boolean language sql stable set search_path = public as $$
                   where p.id = p_parent and p.workspace_id = p_ws
                     and public.goal_editable(p.workspace_id, p.owner_id, p.contributors, p.user_id)) end;
 $$;
+-- Who reads a goal, given what's above it: goal_visible for the goal itself and for every
+-- goal above it, so a leadership-only goal hides its key results (and theirs) too, without
+-- anyone having to lock each one, and opening it up again shows them as they were. The
+-- people of a goal always read it (its owner and contributors; on a goal above it, the
+-- whole branch below), and owners and admins read every one. Reads the goals above past
+-- row security (it's the rule that decides), and only within the workspace: for a guest
+-- or an outsider it says no outright (0041 and 0051 keep them out of team goals anyway),
+-- so asking it about any goal tells nobody more than reading the goal would.
+create or replace function public.goal_readable(p_ws uuid, p_visibility text, p_owner uuid, p_contributors uuid[], p_parent uuid)
+returns boolean language plpgsql stable security definer set search_path = public as $$
+declare
+  me uuid := auth.uid();
+  my_role text;
+  cur uuid := p_parent;
+  g record;
+  hops integer := 0;
+begin
+  if p_ws is null then return true; end if;   -- personal: its creator's alone (0041 decides)
+  my_role := public.ws_role(p_ws);
+  if my_role in ('owner', 'admin') then return true; end if;
+  if my_role is distinct from 'member' then return false; end if;
+  if p_owner = me or me = any (coalesce(p_contributors, '{}')) then return true; end if;
+  if coalesce(p_visibility, 'everyone') = 'leadership' then return false; end if;
+  while cur is not null and hops < 100 loop
+    select x.visibility, x.owner_id, x.contributors, x.parent_id into g
+      from public.goals x where x.id = cur and x.workspace_id = p_ws;
+    if not found then return true; end if;
+    if g.owner_id = me or me = any (coalesce(g.contributors, '{}')) then return true; end if;
+    if g.visibility = 'leadership' then return false; end if;
+    cur := g.parent_id; hops := hops + 1;
+  end loop;
+  return true;
+end; $$;
 grant execute on function public.goal_visible(uuid, text, uuid, uuid[]) to authenticated;
+grant execute on function public.goal_readable(uuid, text, uuid, uuid[], uuid) to authenticated;
 grant execute on function public.goal_editable(uuid, uuid, uuid[], uuid) to authenticated;
 grant execute on function public.goal_may_place(uuid, uuid) to authenticated;
 
@@ -478,7 +516,7 @@ begin
   drop policy if exists "goals: owners, admins, owner and contributors delete" on public.goals;
   drop policy if exists "goals: company goals are for owners and admins" on public.goals;
   create policy "goals: leadership only" on public.goals as restrictive for select
-    using (public.goal_visible(workspace_id, visibility, owner_id, contributors));
+    using (public.goal_readable(workspace_id, visibility, owner_id, contributors, parent_id));
   create policy "goals: owners, admins, owner and contributors edit" on public.goals as restrictive for update
     using (public.goal_editable(workspace_id, owner_id, contributors, user_id)) with check (true);
   create policy "goals: owners, admins, owner and contributors delete" on public.goals as restrictive for delete
@@ -529,6 +567,9 @@ returns boolean language sql stable set search_path = pg_catalog, public as $$
      and (select count(*) from pg_catalog.pg_policy p where p.polrelid = to_regclass('public.goals') and not p.polpermissive
             and p.polname in ('goals: leadership only', 'goals: owners, admins, owner and contributors edit',
                               'goals: owners, admins, owner and contributors delete', 'goals: company goals are for owners and admins')) = 4
+     -- (the leadership rule looks up the tree: a leadership-only goal hides the goals under it)
+     and exists (select 1 from pg_catalog.pg_policy p where p.polrelid = to_regclass('public.goals') and p.polname = 'goals: leadership only'
+                  and pg_catalog.pg_get_expr(p.polqual, p.polrelid) ~ 'goal_readable')
      and (select count(*) from pg_catalog.pg_policy p where not p.polpermissive and p.polname = 'guests: no team reports'
             and p.polrelid in (to_regclass('public.goal_checkins'), to_regclass('public.goal_links'))) = 2
      and (select count(*) from pg_catalog.pg_policy p where p.polrelid = to_regclass('public.goal_checkins')
