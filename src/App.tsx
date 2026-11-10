@@ -920,8 +920,11 @@ export default function App() {
     setAutomationRules((cur) => keepTmp(b.automationRules, cur)); setForms((cur) => keepTmp(b.forms, cur));
     // 0058 (undefined: couldn't be read this time: keep what's on screen)
     setProjectMembers((cur) => (b.projectMembers === undefined ? cur : b.projectMembers));
+    // a reload (someone's access may have changed: being taken off a project, or it made private,
+    // writes no approval rows): "Approvals for you" and the chips are read again (the first load asks itself)
+    if (!initial) { refreshApprovalSummaries(); refreshMyApprovals(); }
     return true;
-  }, [mergeServerTasks, applyProjects, applyTags, noteSchemaBehind]);
+  }, [mergeServerTasks, applyProjects, applyTags, noteSchemaBehind, refreshApprovalSummaries, refreshMyApprovals]);
 
   useEffect(() => {
     if (auth.configured && !authUserId) {
