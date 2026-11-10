@@ -181,6 +181,13 @@ export interface SavedSearch {
   query: Record<string, unknown>;
 }
 export type GoalStatus = "on_track" | "at_risk" | "off_track" | "done";
+/** 0052: higher or lower is better (cut churn from 8% to 5% is "lower") */
+export type GoalDirection = "higher" | "lower";
+export type GoalKind = "objective" | "key_result" | "metric";
+/** 0052: who reads a team goal: everyone in it, or owners, admins and the goal's own people */
+export type GoalVisibility = "everyone" | "leadership";
+/** how the pace line runs from start to due: evenly, slow then fast, or not at all */
+export type GoalPaceMode = "linear" | "backloaded" | "off";
 export interface Goal {
   id: string;
   name: string;
@@ -193,7 +200,53 @@ export interface Goal {
   workspaceId?: string | null;
   position?: number;
   parentId?: string;   // sub-goal of another goal
-  projectId?: string;  // linked project (auto-progress)
+  projectId?: string;  // linked project (its % is the goal's)
+  /** goals.created_at: where the pace line starts when there's no period */
+  createdAt?: string;
+  /* ---- 0052 (absent until it's run) ---- */
+  /** who owns it; null once their account is deleted (an owner or admin gives it a new one) */
+  ownerId?: string | null;
+  /** the people helping, who may edit it too */
+  contributors?: string[];
+  /** "2027-Q1", "2027-H2", "2027-FY" or "custom" (with periodStart / periodEnd) */
+  period?: string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  /** where the number started (the % runs from here to the target) */
+  startValue?: number | null;
+  direction?: GoalDirection;
+  /** the owner's confidence, 1 (low) to 5 (high), from the latest check-in */
+  confidence?: number | null;
+  kind?: GoalKind;
+  visibility?: GoalVisibility;
+  archivedAt?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  pace?: GoalPaceMode;
+  /** how much it counts in its parent's roll-up (1 when unset) */
+  weight?: number | null;
+}
+/** 0052: one number (and how sure you are) posted against a goal */
+export interface GoalCheckin {
+  id: string;
+  goalId: string;
+  workspaceId?: string | null;
+  /** who posted it; null once their account is deleted ("Former member") */
+  authorId: string | null;
+  value: number;
+  confidence?: number | null;
+  note?: string;
+  createdAt: string;
+}
+export type GoalLinkKind = "project" | "task" | "view";
+/** 0052: work a goal is linked to (always in the goal's own workspace) */
+export interface GoalLink {
+  id: string;
+  goalId: string;
+  workspaceId?: string | null;
+  kind: GoalLinkKind;
+  targetId: string;
+  createdAt?: string;
 }
 export interface Portfolio {
   id: string;

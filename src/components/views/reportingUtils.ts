@@ -4,7 +4,7 @@
    Kept free of JSX so the maths is unit-tested directly.
    ============================================================ */
 import { useRef } from "react";
-import type { Task, Goal, TagDef } from "../../data/types";
+import type { Task, TagDef } from "../../data/types";
 import { csvCell, downloadCsv as downloadCsvText, toCsv } from "../../lib/exportTasks";
 import { DAY_MS, round1, localDay, fmtDayMonth, addDays, startOfWeekMon, workdays, taskLoadInWeek } from "../../lib/weekMath";
 import { progressOf } from "../../lib/countRules";
@@ -443,51 +443,8 @@ export function goalDescendants<G extends { id: string; parentId?: string }>(goa
   return out;
 }
 
-export interface GoalProgress {
-  pct: number;
-  source: "project" | "subgoals" | "manual";
-  children: number;
-  /** average of the sub-goals, when there are any (shown alongside a goal's own number) */
-  subPct?: number;
-}
-
-/** Progress for every goal:
- *  - a linked project drives it;
- *  - otherwise a goal that tracks its own number (current > 0) keeps current / target,
- *    so parents that already tracked a figure don't change when sub-goals are added;
- *  - otherwise a goal with sub-goals rolls up as their average (the untouched
- *    0 / 100 parent used to read 0% however far along its sub-goals were);
- *  - otherwise current / target. */
-export function goalProgressMap(goals: Goal[], projectPct: (projectId: string) => number): Map<string, GoalProgress> {
-  const ids = new Set(goals.map((g) => g.id));
-  const kids = new Map<string, Goal[]>();
-  for (const g of goals) if (g.parentId && g.parentId !== g.id && ids.has(g.parentId)) { const a = kids.get(g.parentId) ?? []; a.push(g); kids.set(g.parentId, a); }
-  const memo = new Map<string, GoalProgress>();
-  const visiting = new Set<string>();
-  const manual = (g: Goal) => (g.target && g.target > 0 ? Math.max(0, Math.min(100, ((g.current ?? 0) / g.target) * 100)) : 0);
-  const calc = (g: Goal): GoalProgress => {
-    const hit = memo.get(g.id); if (hit) return hit;
-    const children = kids.get(g.id) ?? [];
-    let subPct: number | undefined;
-    if (children.length && !visiting.has(g.id)) {
-      visiting.add(g.id);
-      const vals = children.filter((c) => !visiting.has(c.id)).map((c) => calc(c).pct);
-      visiting.delete(g.id);
-      if (vals.length) subPct = vals.reduce((a, b) => a + b, 0) / vals.length;
-    }
-    const n = children.length;
-    const withSub = subPct === undefined ? {} : { subPct };
-    let res: GoalProgress;
-    if (g.projectId) res = { pct: projectPct(g.projectId), source: "project", children: n, ...withSub };
-    else if (subPct !== undefined && !((g.current ?? 0) > 0)) res = { pct: subPct, source: "subgoals", children: n, subPct };
-    else res = { pct: manual(g), source: "manual", children: n, ...withSub };
-    memo.set(g.id, res);
-    return res;
-  };
-  goals.forEach((g) => calc(g));
-  memo.forEach((v, k) => memo.set(k, { ...v, pct: Math.round(v.pct), ...(v.subPct === undefined ? {} : { subPct: Math.round(v.subPct) }) }));
-  return memo;
-}
+/* A goal's % (direction-aware, weighted roll-ups): one rule, in lib/goalProgress. */
+export { goalProgressMap, type GoalProgress } from "../../lib/goalProgress";
 
 /* ---------------- Portfolios: auto health (mirrors the project overview) ---------------- */
 
