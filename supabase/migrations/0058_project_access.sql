@@ -159,6 +159,9 @@ alter table public.trash add column if not exists access jsonb;
 alter table public.audit_events add column if not exists project_id text;
 alter table public.audit_events add column if not exists access jsonb;
 create index if not exists audit_events_project_idx on public.audit_events (workspace_id, project_id) where project_id is not null;
+-- (a purged task's or project's earlier rows: pa_trg_audit_events)
+create index if not exists audit_events_target_idx on public.audit_events (workspace_id, target_kind, target_id, created_at desc)
+  where project_id is not null;
 -- 1f. whose access a webhook's deliveries follow once its address changes hands (null: its creator's)
 alter table public.webhooks add column if not exists url_set_by uuid references auth.users (id) on delete set null;
 
@@ -418,14 +421,18 @@ returns boolean language sql security definer stable set search_path = public as
 $$;
 
 -- 2g. who manages a project's people and visibility (D12). p_on_rule: judge by the switch-on rule
--- whatever the switch says (visibility always is); people follow today's rule while it's off.
+-- whatever the switch says (visibility always is); people follow today's rule while it's off, on a
+-- Whole workspace project. A Members only or Private one keeps the switch-on rule while it's off too
+-- (the rollback window): otherwise anyone could add themselves, or take it over, and keep that when
+-- it's switched back on.
 create or replace function public.pa_manage_rule(p_project uuid, p_on_rule boolean)
 returns boolean language sql security definer stable set search_path = public as $$
   select coalesce((
     select case
       when auth.uid() is null or not public.can_act() then false
       when p.workspace_id is null then p.user_id = auth.uid()
-      when not (coalesce(p_on_rule, false) or coalesce(w.project_access, false)) then public.can_write(p.workspace_id)
+      when not (coalesce(p_on_rule, false) or coalesce(w.project_access, false) or p.visibility <> 'workspace')
+        then public.can_write(p.workspace_id)
       else r.role = 'owner'
         or (r.role in ('admin', 'member') and (p.owner_id = auth.uid()
               or exists (select 1 from public.project_members m
@@ -675,14 +682,33 @@ end $internal$;
 -- One row per contributor_ids entry: editor for active owners, admins and members, commenter for
 -- guests; never the project's owner (implicit) or anyone not active. contributor_ids itself is left
 -- as it is, and the creator isn't added, so who gets 0054's update notices stays as it was.
--- (Not on a re-run, nor after the undo file: nobody who was removed comes back.)
+-- Not on a re-run. After the undo file (not recorded, but project_members kept), contributor_ids was
+-- the app's list of a project's people again, with nothing keeping project_members in step: the rows
+-- are brought back to it (whoever was taken off, left the workspace or became its owner meanwhile
+-- loses their row; whoever was added gets one; a guest's editor row becomes commenter), and the
+-- grants of invites claimed meanwhile go (their projects were never given). Nobody who was taken off
+-- a project comes back.
 do $seed$
 begin
-  if exists (select 1 from public.schema_migrations where version = '0058')
-     or exists (select 1 from public.project_members) then
-    return;
-  end if;
+  if exists (select 1 from public.schema_migrations where version = '0058') then return; end if;
   perform set_config('kanbo.pa_sync', 'on', true);
+  if exists (select 1 from public.project_members) then
+    delete from public.project_members m
+     using public.projects p
+     where p.id = m.project_id
+       and (p.workspace_id is null
+            or m.user_id = p.owner_id
+            or not (m.user_id = any (coalesce(p.contributor_ids, '{}'::uuid[])))
+            or public.pa_ws_member_role(m.user_id, p.workspace_id) = 'none');
+    update public.project_members m set workspace_id = p.workspace_id, updated_at = now()
+      from public.projects p
+     where p.id = m.project_id and m.workspace_id is distinct from p.workspace_id;
+    update public.project_members m set role = 'commenter', updated_at = now()
+     where m.role = 'editor' and public.pa_ws_member_role(m.user_id, m.workspace_id) = 'guest';
+    delete from public.project_member_invites i
+     where not exists (select 1 from public.workspace_members x where x.id = i.member_id and x.status = 'invited')
+        or not exists (select 1 from public.projects p where p.id = i.project_id and p.workspace_id = i.workspace_id);
+  end if;
   insert into public.project_members (project_id, workspace_id, user_id, role)
   select p.id, p.workspace_id, c.uid,
          case public.user_ws_role(c.uid, p.workspace_id) when 'guest' then 'commenter' else 'editor' end
@@ -903,11 +929,17 @@ begin
      is distinct from (old.project_access, old.project_access_default, old.project_access_member_private) then
     new.project_access_changed_at := now();
   end if;
+  -- switching on: a sub-task that was moved to another project on its own while it was off stands on
+  -- its own from now on (D11), so its parent's delete or move never takes it along
+  if new.project_access and not coalesce(old.project_access, false) then
+    perform public.pa_detach_strays(new.id, null);
+  end if;
   return new;
 end; $$;
 
 -- projects, before: a new project's visibility; visibility only through set_project_visibility();
--- an owner change by a manager to a non-guest (switch on); contributor_ids mirrors project_members
+-- an owner change by a manager to a non-guest (switch on, or a project that isn't Whole workspace);
+-- contributor_ids mirrors project_members
 create or replace function public.pa_trg_projects_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -961,12 +993,14 @@ begin
     raise exception 'not authorized';
   end if;
   if new.workspace_id is null then new.visibility := 'workspace'; end if;     -- moved to Personal: nothing to gate
-  if direct and new.owner_id is distinct from old.owner_id and new.workspace_id is not null and public.pa_on(new.workspace_id) then
+  if direct and new.owner_id is distinct from old.owner_id and new.workspace_id is not null
+     and (public.pa_on(new.workspace_id) or old.visibility <> 'workspace') then
     if not public.pa_can_manage(old.id) then raise exception 'not authorized'; end if;
     if public.user_ws_role(new.owner_id, new.workspace_id) not in ('owner', 'admin', 'member') then raise exception 'invalid owner'; end if;
   end if;
   if new.contributor_ids is distinct from old.contributor_ids and coalesce(current_setting('kanbo.pa_sync', true), '') <> 'on' then
-    -- an older tab writing contributor_ids: today's rule while the switch is off, the managers' while it's on
+    -- an older tab writing contributor_ids: today's rule while the switch is off (on a Whole workspace
+    -- project), the managers' while it's on
     if direct and not public.pa_can_manage(old.id) then raise exception 'not authorized'; end if;
     if new.workspace_id is not null and new.workspace_id is not distinct from old.workspace_id then
       prev := coalesce(current_setting('kanbo.pa_sync', true), '');
@@ -1006,8 +1040,34 @@ begin
   perform set_config('kanbo.pa_sync', prev, true);
 end; $$;
 
+-- (internal) D11's strays: the tasks under p_roots (every task in the workspace when null) that sit in
+-- another project than their parent's become tasks of their own (parent_id := null). Answers how many.
+create or replace function public.pa_detach_strays(p_ws uuid, p_roots uuid[])
+returns integer language plpgsql security definer set search_path = public as $$
+declare ids uuid[];
+begin
+  if p_ws is null then return 0; end if;
+  if p_roots is null then
+    select coalesce(array_agg(c.id), '{}') into ids
+      from public.tasks c join public.tasks p on p.id = c.parent_id
+     where c.workspace_id = p_ws and p.workspace_id = p_ws and c.project_id is distinct from p.project_id;
+  else
+    with recursive d(id, project_id, stray) as (
+      select t.id, t.project_id, false from public.tasks t where t.id = any (p_roots) and t.workspace_id = p_ws
+      union
+      select c.id, c.project_id, c.project_id is distinct from d.project_id
+        from public.tasks c join d on c.parent_id = d.id and not d.stray
+       where c.workspace_id = p_ws
+    ) select coalesce(array_agg(distinct d.id), '{}') into ids from d where d.stray;
+  end if;
+  if cardinality(ids) = 0 then return 0; end if;
+  update public.tasks set parent_id = null where id = any (ids) and parent_id is not null;
+  return cardinality(ids);
+end; $$;
+
 -- projects, after: a new project's people; a narrower visibility flushes what's waiting; an owner
--- change (switch on) swaps the owner and their row; a move takes its people's rows along
+-- change (switch on, or a project that isn't Whole workspace) swaps the owner and their row; a move
+-- takes its people's rows along
 create or replace function public.pa_trg_projects_after() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -1047,7 +1107,8 @@ begin
       perform public.pa_flush_held(new.workspace_id, new.id);
     end if;
   end if;
-  if new.owner_id is distinct from old.owner_id and new.workspace_id is not null and public.pa_on(new.workspace_id) then
+  if new.owner_id is distinct from old.owner_id and new.workspace_id is not null
+     and (public.pa_on(new.workspace_id) or new.visibility <> 'workspace') then
     perform set_config('kanbo.pa_sync', 'on', true);
     delete from public.project_members where project_id = new.id and user_id = new.owner_id;
     if old.owner_id is not null and public.user_ws_role(old.owner_id, new.workspace_id) in ('owner', 'admin', 'member') then
@@ -1148,7 +1209,17 @@ declare
   moved boolean;
   who uuid;
 begin
-  if new.workspace_id is null or public.pa_restoring() or not public.pa_on(new.workspace_id) then return new; end if;
+  if new.workspace_id is null or not public.pa_on(new.workspace_id) then return new; end if;
+  if public.pa_restoring() then
+    -- (back from the bin under a parent that's in another project now: it comes back on its own)
+    if new.parent_id is not null then
+      select t.project_id, t.workspace_id into par from public.tasks t where t.id = new.parent_id;
+      if found and par.workspace_id = new.workspace_id and par.project_id is distinct from new.project_id then
+        new.parent_id := null;
+      end if;
+    end if;
+    return new;
+  end if;
   if new.parent_id is not null
      and (tg_op = 'INSERT' or new.parent_id is distinct from old.parent_id or new.project_id is distinct from old.project_id
           or new.workspace_id is distinct from old.workspace_id) then
@@ -1181,16 +1252,43 @@ begin
   return new;
 end; $$;
 
--- tasks, after a move (switch on): its sub-tasks move with it
+-- tasks, after a move (switch on): the sub-tasks that were in its project move with it. One in another
+-- project (moved there on its own while the switch was off, or back from the bin) isn't the mover's to
+-- take: it stays where it is, on its own (D11).
 create or replace function public.pa_trg_tasks_after() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   if new.workspace_id is null or new.project_id is not distinct from old.project_id or not public.pa_on(new.workspace_id) then
     return null;
   end if;
+  update public.tasks set parent_id = null
+   where parent_id = new.id and workspace_id = new.workspace_id
+     and project_id is distinct from old.project_id and project_id is distinct from new.project_id;
   update public.tasks set project_id = new.project_id
-   where parent_id = new.id and workspace_id = new.workspace_id and project_id is distinct from new.project_id;
+   where parent_id = new.id and workspace_id = new.workspace_id and project_id is not distinct from old.project_id;
   return null;
+end; $$;
+
+-- tasks and projects, before delete (switch on; sorts before 0047's trg_trash_task / trg_trash_project):
+-- a sub-task in another project than its parent stands on its own first, so the delete (parent_id's
+-- on delete cascade, the bin's whole-tree entry) never takes it, or puts it in a bin row people who
+-- can't see it may purge
+create or replace function public.pa_trg_tasks_delete() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if old.workspace_id is not null and public.pa_on(old.workspace_id) then
+    perform public.pa_detach_strays(old.workspace_id, array[old.id]);
+  end if;
+  return old;
+end; $$;
+create or replace function public.pa_trg_projects_delete() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if old.workspace_id is not null and public.pa_on(old.workspace_id) then
+    perform public.pa_detach_strays(old.workspace_id,
+      array(select t.id from public.tasks t where t.workspace_id = old.workspace_id and t.project_id = old.id::text));
+  end if;
+  return old;
 end; $$;
 
 -- status_updates (0054's Asks): only people who can comment on it (sorts after its guard and author triggers)
@@ -1396,9 +1494,14 @@ begin
   return old;
 end; $$;
 
--- audit_events, before insert: the project a history row is about, and its access then. Never raises.
+-- audit_events, before insert: the project a history row is about, and its access then. A task or
+-- project that's gone by now (deleted for good from the bin, by hand or by housekeeping after 30 days:
+-- its bin row and its project may both have gone, and 0047's purge row names neither) takes what the
+-- history knew while it was there: its newest earlier row's project and access (task.deleted,
+-- project.deleted, …). Never raises.
 create or replace function public.pa_trg_audit_events() returns trigger
 language plpgsql security definer set search_path = public as $$
+declare prior record;
 begin
   begin
     new.project_id := case new.target_kind
@@ -1408,6 +1511,16 @@ begin
       when 'doc' then (select d.project_id::text from public.project_docs d where d.id = public.kanbo_uuid(new.target_id))
       else new.detail ->> 'project_id' end;
     new.access := public.pa_access_snapshot(new.workspace_id, new.project_id);
+    if new.access is null and new.target_kind in ('task', 'project') and new.target_id is not null and new.workspace_id is not null then
+      select e.project_id, e.access into prior from public.audit_events e
+       where e.workspace_id = new.workspace_id and e.target_kind = new.target_kind and e.target_id = new.target_id
+         and e.project_id is not null
+       order by (e.access is not null) desc, e.created_at desc, e.id desc limit 1;
+      if found then
+        new.project_id := coalesce(new.project_id, prior.project_id);
+        new.access := coalesce(public.pa_access_snapshot(new.workspace_id, new.project_id), prior.access);
+      end if;
+    end if;
   exception when others then
     raise warning 'project access: history row kept without its project (%)', sqlerrm;
   end;
@@ -1583,10 +1696,12 @@ begin
                            'pa_trg_webhook_deliveries_gate', 'pa_trg_webhooks_url', 'pa_trg_approval_reviewers', 'pa_trg_kudos',
                            'pa_trg_trash_capture', 'pa_trg_trash_restore', 'pa_trg_trash_purge', 'pa_trg_audit_events',
                            'pa_trg_goal_links', 'pa_trg_goals_project', 'pa_trg_forms_token', 'pa_trg_notion_syncs',
-                           'pa_trg_update_asks', 'pa_trg_bill_rates', 'pa_trg_meetings', 'pa_trg_meeting_items'] loop
+                           'pa_trg_update_asks', 'pa_trg_bill_rates', 'pa_trg_meetings', 'pa_trg_meeting_items',
+                           'pa_trg_tasks_delete', 'pa_trg_projects_delete'] loop
     execute format('revoke execute on function public.%I() from public, anon, authenticated', f);
   end loop;
-  foreach f in array array['public.pa_mirror_contributors(uuid)', 'public.pa_audience_open(text,uuid[],uuid,text)',
+  foreach f in array array['public.pa_mirror_contributors(uuid)', 'public.pa_detach_strays(uuid,uuid[])',
+                           'public.pa_audience_open(text,uuid[],uuid,text)',
                            'public.pa_task_audience_open(text,uuid[],text)', 'public.pa_project_audience_open(text,uuid[],text)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
@@ -1665,6 +1780,8 @@ language sql immutable set search_path = pg_catalog as $$
     ('workspace_members', 'trg_ws_members_pa', 'after update of role, status, user_id or delete', 'pa_trg_ws_members', null),
     ('tasks', 'trg_tasks_pa', 'before insert or update of project_id, parent_id, assignee_id, collaborators, followers, workspace_id', 'pa_trg_tasks', null),
     ('tasks', 'trg_tasks_pa_after', 'after update of project_id', 'pa_trg_tasks_after', null),
+    ('tasks', 'trg_tasks_pa_delete', 'before delete', 'pa_trg_tasks_delete', null),
+    ('projects', 'trg_projects_pa_delete', 'before delete', 'pa_trg_projects_delete', null),
     ('status_updates', 'trg_status_update_pa', 'before insert or update', 'pa_trg_status_update', 'ask_user_ids'),
     ('status_update_comments', 'trg_status_update_comment_pa', 'before insert or update', 'pa_trg_status_update_comment', null),
     ('activity', 'trg_activity_pa_gate', 'before insert', 'pa_trg_activity_gate', null),
@@ -1948,6 +2065,15 @@ begin
                  else a.detail ->> 'project_id' end as pid
             from public.audit_events a where a.project_id is null) x
    where e.id = x.id and x.pid is not null;
+  -- (a task deleted for good before this file: its purge row names no project, its task.deleted row does)
+  update public.audit_events e set project_id = x.pid
+    from (select distinct on (a.id) a.id, b.project_id as pid
+            from public.audit_events a
+            join public.audit_events b on b.workspace_id = a.workspace_id and b.target_kind = a.target_kind
+                                       and b.target_id = a.target_id and b.project_id is not null
+           where a.project_id is null and a.target_kind = 'task'
+           order by a.id, b.created_at desc) x
+   where e.id = x.id;
 end $history$;
 
 -- ---------- 7. done: record it ----------

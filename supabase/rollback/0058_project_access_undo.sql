@@ -10,9 +10,12 @@
 -- who's on which project (project_members, project_member_invites), each project's
 -- visibility, the workspaces' settings (every switch is turned off: with no rules behind
 -- it, a switch that says "on" would only mislead the app), trash.access,
--- audit_events.project_id / access and webhooks.url_set_by. Running 0058 again afterwards
--- puts every rule back; its seeding is skipped because project_members still has rows, so
--- nobody who was taken off a project comes back. Then switch each workspace on again.
+-- audit_events.project_id / access and webhooks.url_set_by. While it's out, the app keeps a
+-- project's people in contributor_ids again (as before 0058) and nothing keeps project_members
+-- in step. Running 0058 again afterwards puts every rule back and brings project_members back
+-- to contributor_ids (people taken off meanwhile, or who left the workspace, lose their rows;
+-- people added meanwhile get one), so nobody who was taken off a project comes back. Then switch
+-- each workspace on again.
 --
 -- Safe to run more than once. Nothing here needs 0058's own functions to be working.
 -- ============================================================
@@ -86,6 +89,8 @@ begin
     ('workspace_members', 'trg_ws_members_pa'),
     ('tasks', 'trg_tasks_pa'),
     ('tasks', 'trg_tasks_pa_after'),
+    ('tasks', 'trg_tasks_pa_delete'),
+    ('projects', 'trg_projects_pa_delete'),
     ('status_updates', 'trg_status_update_pa'),
     ('status_update_comments', 'trg_status_update_comment_pa'),
     ('activity', 'trg_activity_pa_gate'),

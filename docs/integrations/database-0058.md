@@ -92,6 +92,21 @@ No new secrets and no new schedule.
 - **Meetings.** A team meeting's agenda carries only Whole workspace work; a
   leadership meeting's also Members only. Private projects are never on an
   agenda, and a meeting's notes doc can't be in one its people can't open.
+- **Sub-tasks** always have their parent's project while the switch is on.
+  Turning it on frees any sub-task that was moved to another project on its
+  own while it was off: it stays in its project as a task of its own, so
+  moving or deleting its old parent (or the parent's project) never takes it
+  along. A sub-task back from the bin under a parent that has moved since
+  comes back on its own too.
+- **While the switch is off** a Whole workspace project's people follow
+  today's rule (any owner, admin or member). A Members only or Private one
+  keeps the switch-on rule (the workspace's owner, the project's owner, its
+  editors, admins on Members only), for its people and its owner alike, so
+  nobody can add themselves or take one over while it's off and keep that
+  when it's turned back on.
+- **The history** of something deleted for good (by hand or by the bin's
+  30-day clear-out) keeps the project and access it had, so a Private task's
+  or project's name never reaches admins who couldn't see it.
 - **Removing someone** from a workspace removes them from its projects.
   Making someone a guest turns their editor roles into commenter.
 - **Every change** to the switch, a visibility or a project's people touches
@@ -110,7 +125,7 @@ templates; exports; and a device's offline copy until its next load.
 |---|---|---|
 | One workspace (normal) | Its owner switches Project access off in Settings › Workspace. In an emergency, in the SQL editor: `update public.workspaces set project_access = false where id = '<workspace id>';` | Instant: the next query uses today's rule, and open apps reload. People, visibility and settings are kept for next time. |
 | Every workspace | `update public.workspaces set project_access = false where project_access;` | The same, everywhere. |
-| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). Running 0058 again afterwards puts every rule back without re-adding anyone. A commented-out last block drops the data too: only if you're sure. |
+| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). While it's out, the app keeps a project's people in its contributors list again (as before 0058). Running 0058 again afterwards puts every rule back and brings project people back to that list: anyone taken off meanwhile, or who left the workspace, loses their place, and anyone added gets one, so nobody who was taken off comes back. A commented-out last block drops the data too: only if you're sure. |
 
 ## Tests
 

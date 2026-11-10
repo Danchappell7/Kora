@@ -109,6 +109,27 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     }
     return { error: "no result" };
   }
+  /** Several steps, each as someone (null: the service role / SQL editor), in one transaction that's
+   *  always rolled back: the world is as it was afterwards. */
+  type Run = (who: string | null, sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+  async function scenario<T>(fn: (run: Run, exec: (sql: string) => Promise<unknown>) => Promise<T>): Promise<T> {
+    let out: T | undefined;
+    try {
+      await pg.transaction(async (tx) => {
+        const run: Run = async (who, sql, params = []) => {
+          await tx.query(`reset role`);
+          await tx.query(`select set_config('request.jwt.claims', '', true)`);
+          if (who) await tx.query(WITH_USER_SQL, [claims(who), ""]);
+          return (await tx.query(sql, params)).rows as Record<string, unknown>[];
+        };
+        out = await fn(run, async (sql) => { await tx.query(`reset role`); await tx.query(`select set_config('request.jwt.claims', '', true)`); return tx.exec(sql); });
+        throw new Rollback([]);
+      });
+    } catch (e) {
+      if (!(e instanceof Rollback)) throw e;
+    }
+    return out as T;
+  }
   /** As someone, for real (committed). */
   async function as<T = Record<string, unknown>>(who: string, sql: string, params: unknown[] = []): Promise<T[]> {
     return pg.transaction(async (tx) => {
@@ -752,6 +773,28 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq("rows" in after ? after.rows[0] : errOf(after), { old_owner: "editor", new_owner_rows: 0 }, "swapped");
   });
 
+  await test("0058, switch off: a Members only or Private project's people and owner keep the switch-on rule (nobody takes one over while it's off and keeps it when it's on again)", async () => {
+    const off: [string, unknown[]][] = [[`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]]];
+    const refused = async (who: Who, sql: string, params: unknown[], what: string) => {
+      const e = errOf(await attempt(w.id[who], sql, params, off));
+      ok(/not authorized/.test(e), `${what}: ${e || "allowed"}`);
+    };
+    await refused("M2", `select public.set_project_member($1::uuid, $2::uuid, 'editor')`, [w.proj.PP, w.id.M2], "a member adding themselves to PP");
+    await refused("A", `select public.set_project_member($1::uuid, $2::uuid, 'editor')`, [w.proj.PP, w.id.A], "an admin adding themselves to PP");
+    await refused("MC", `update public.projects set owner_id = $2::uuid where id = $1::uuid returning id`, [w.proj.PM, w.id.MC], "a commenter taking PM over");
+    await refused("M2", `update public.projects set contributor_ids = contributor_ids || $2::uuid where id = $1::uuid returning id`, [w.proj.PP, w.id.M2], "an old tab ticking a member onto PP");
+    await refused("MV", `select public.remove_project_member($1::uuid, $2::uuid)`, [w.proj.PM, w.id.ME], "a viewer taking its editor off PM");
+    const stored = async (who: Who, p: Proj, u: Who) => {
+      const r = await attempt(w.id[who], `select public.set_project_member($1::uuid, $2::uuid, 'viewer') as r`, [w.proj[p], w.id[u]], off);
+      return "rows" in r ? r.rows[0].r : errOf(r);
+    };
+    eq(await stored("ME", "PP", "M2"), "viewer", "PP's editor still manages its people");
+    eq(await stored("A", "PM", "M2"), "viewer", "an admin manages a Members only project's");
+    eq(await stored("M2", "PW", "MC"), "viewer", "and a Whole workspace project is today's rule (any member)");
+    ok(okOf(await attempt(w.id.M2, `update public.projects set owner_id = $2::uuid where id = $1::uuid returning id`, [w.proj.PW, w.id.M2], off)), "a Whole workspace project's owner: today's rule");
+    eq((await attempt(w.id.M2, `select id from public.tasks where project_id = $1`, [w.proj.PP]) as { rows: unknown[] }).rows.length, 0, "on again: M2 reads nothing of PP");
+  });
+
   // ---------------------------------------------------------------- 7. triggers on tasks
   await test("0058, switch on: an assignee who can't see the project is refused from the app (42501) and handed to the owner from the server", async () => {
     const r = await attempt(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'x', $2, $3, $4::uuid) returning id`, [w.id.ME, w.proj.PP, w.id.M2, w.ws]);
@@ -965,6 +1008,88 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     await as(w.id.O, `select public.restore_from_trash($1::uuid)`, [tb.id]);
     eq((await one<{ p: string }>(`select project_id as p from public.tasks where id = $1::uuid`, [w.sub.PQ])).p, w.proj.PQ, "PQ and its sub-task are back where they were");
     await as(w.id.ME, `select public.remove_project_member($1::uuid, $2::uuid)`, [w.proj.PQ, w.id.MC]);
+  });
+
+  await test("0058, switch on: deleting for good (purge_trash, or housekeeping after 30 days) never shows an admin a Private task's or project's name in the history", async () => {
+    const got = await scenario(async (run) => {
+      const binOf = async (item: string) => (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null order by deleted_at desc limit 1`, [item]))[0].id as string;
+      // the owner deletes a PP sub-task and deletes it for good; an editor bins PP's task and housekeeping purges it;
+      // the owner deletes PP itself and purges it; and a Whole workspace sub-task the same way (its row stays the admins')
+      await run(w.id.O, `delete from public.tasks where id = $1::uuid`, [w.sub.PP]);
+      await run(w.id.O, `select public.purge_trash($1::uuid)`, [await binOf(w.sub.PP)]);
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [w.task.PP]);
+      await run(null, `update public.trash set purge_after = now() - interval '1 day' where id = $1::uuid`, [await binOf(w.task.PP)]);
+      await run(null, `select public.trash_housekeeping()`);
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [w.proj.PP]);
+      await run(w.id.O, `select public.purge_trash($1::uuid)`, [await binOf(w.proj.PP)]);
+      await run(w.id.O, `delete from public.tasks where id = $1::uuid`, [w.sub.PW]);
+      await run(w.id.O, `select public.purge_trash($1::uuid)`, [await binOf(w.sub.PW)]);
+      const read = async (who: Who) => (await run(w.id[who], `select action || ' ' || target_title as x from public.audit_events where action like '%.purged'`)).map((r) => r.x as string).sort();
+      return {
+        A: await read("A"), O: await read("O"),
+        stored: (await run(null, `select target_title || ': ' || (project_id is not null) || ' ' || coalesce(access ->> 'visibility', '-') as x from public.audit_events where action like '%.purged'`)).map((r) => r.x as string).sort(),
+      };
+    });
+    eq(got.A, ["task.purged Sub PW"], "the admin reads only the Whole workspace purge");
+    eq(got.O, ["project.purged Zebra PP", "task.purged Sub PP", "task.purged Sub PW", "task.purged Zebra plan PP"], "the owner reads all four");
+    eq(got.stored, ["Sub PP: true private", "Sub PW: true workspace", "Zebra PP: true private", "Zebra plan PP: true private"],
+      "each purge row keeps its project and its access from before");
+  });
+
+  await test("0058: a sub-task in another project than its parent is never taken along (switching on detaches it; a parent's move or delete, or its project's, leaves it; back from the bin it stands alone)", async () => {
+    const got = await scenario(async (run) => {
+      const at = async (id: string) => (await run(null, `select parent_id::text as parent, project_id as project from public.tasks where id = $1::uuid`, [id]))[0] ?? null;
+      const mk = async (title: string, project: string, parent: string | null = null) => (await run(w.id.O,
+        `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid, $5::uuid) returning id::text as id`,
+        [w.id.O, title, project, w.ws, parent]))[0].id as string;
+      // switch off: a member hangs a PP task under a PW task (the app's task panel does it by moving a sub-task alone)
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      const stray = await mk("Stray PP", w.proj.PP);
+      await run(w.id.M2, `update public.tasks set parent_id = $2::uuid where id = $1::uuid`, [stray, w.task.PW]);
+      const hung = await at(stray);
+      await run(w.id.O, `select public.set_project_access($1::uuid, true)`, [w.ws]);
+      const afterOn = await at(stray);
+      // planted with the switch on, past every trigger (the shape a restore or an old row may leave)
+      const pw2 = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra PW2', $2::uuid, 'workspace') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+      const plant = async (title: string, parent: string) => {
+        await run(null, `set local session_replication_role = replica`);
+        const id = (await run(null, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid, $5::uuid) returning id::text as id`,
+          [w.id.O, title, w.proj.PP, w.ws, parent]))[0].id as string;
+        await run(null, `set local session_replication_role = origin`);
+        return id;
+      };
+      const s2 = await plant("Stray 2", w.task.PW);
+      // a member moves the PW parent to another open project: its own sub-task goes along, the PP one doesn't
+      await run(w.id.M2, `update public.tasks set project_id = $2 where id = $1::uuid`, [w.task.PW, pw2]);
+      const moved = { s2: await at(s2), sub: await at(w.sub.PW), m2Reads: (await run(w.id.M2, `select id from public.tasks where id = $1::uuid`, [s2])).length };
+      // an admin who can't see PP deletes the parent: the PP one stays, out of the parent's bin row
+      const s3 = await plant("Stray 3", w.task.PW);
+      await run(w.id.A, `delete from public.tasks where id = $1::uuid`, [w.task.PW]);
+      const bin = (await run(null, `select (summary -> 'counts' ->> 'tasks')::int as n, snapshot::text like '%Stray%' as has_stray from public.trash where item_id = $1::uuid and restored_at is null`, [w.task.PW]))[0];
+      const deleted = { s3: await at(s3), bin };
+      // the owner deletes PW2 itself, with a PP task planted under one of its tasks
+      const root = await mk("Root PW2", pw2);
+      const s4 = await plant("Stray 4", root);
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [pw2]);
+      const projectGone = { s4: await at(s4), root: await at(root) };
+      // back from the bin under a parent that's moved to another project since: on its own
+      const r1 = await mk("Parent R1", w.proj.PW);
+      const c1 = await mk("Child C1", w.proj.PW, r1);
+      await run(w.id.O, `delete from public.tasks where id = $1::uuid`, [c1]);
+      await run(w.id.O, `update public.tasks set project_id = $2 where id = $1::uuid`, [r1, w.proj.PM]);
+      const cb = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [c1]))[0].id as string;
+      await run(w.id.O, `select public.restore_from_trash($1::uuid)`, [cb]);
+      return { hung, afterOn, moved, deleted, projectGone, restored: await at(c1) };
+    });
+    eq(got.hung, { parent: w.task.PW, project: w.proj.PP }, "switch off: hung under the PW task, still in PP");
+    eq(got.afterOn, { parent: null, project: w.proj.PP }, "switching on: it stands on its own");
+    eq(got.moved.s2, { parent: null, project: w.proj.PP }, "the parent's move leaves the PP one where it is");
+    eq(got.moved.sub?.project !== w.proj.PW, true, "while the parent's own sub-task goes along");
+    eq(got.moved.m2Reads, 0, "and the member still can't read it");
+    eq(got.deleted.s3, { parent: null, project: w.proj.PP }, "the admin's delete leaves it");
+    eq(got.deleted.bin, { n: 2, has_stray: false }, "the parent's bin row holds only the parent and its own sub-task");
+    eq(got.projectGone, { s4: { parent: null, project: w.proj.PP }, root: null }, "deleting the project leaves the PP one too");
+    eq(got.restored, { parent: null, project: w.proj.PW }, "a sub-task back from the bin under a parent that's moved stands alone");
   });
 
   // ---------------------------------------------------------------- 14. what the database queues: the Inbox, held notices, webhooks
@@ -1218,6 +1343,10 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
   await test("0058's undo: the old bodies come back word for word, the rules go, the data stays; then 0058 again puts every rule back (nobody re-added)", async () => {
     const before = await snapshot();
     const members = await q(`select project_id, user_id, role from public.project_members order by 1, 2`);
+    // (0058 again brings the rows back to the people still in the workspace: R's stale row, planted past the triggers, goes)
+    const staying = await q(`select m.project_id, m.user_id, m.role from public.project_members m
+                              where public.pa_ws_member_role(m.user_id, m.workspace_id) <> 'none' order by 1, 2`);
+    ok(staying.length === members.length - 1, "one stale row (R's)");
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const undo = readFileSync(join(process.cwd(), "supabase", "rollback", "0058_project_access_undo.sql"), "utf8");
@@ -1254,8 +1383,38 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     await applyFile(pg, "0058_project_access.sql");
     await as(w.id.O, `select public.set_project_access($1::uuid, true)`, [w.ws]);
     same(before, await snapshot(), "after the undo and 0058 again", ["mine", "myTriggers", "bodies"]);
-    eq(await q(`select project_id, user_id, role from public.project_members order by 1, 2`), members, "nobody re-added or removed");
+    eq(await q(`select project_id, user_id, role from public.project_members order by 1, 2`), staying, "nobody re-added; only the row of someone who'd left the workspace went");
     await spotChecks("undo + 0058");
+  });
+
+  await test("0058's undo, people changed the old way meanwhile, then 0058 again: project_members follows contributor_ids (nobody taken off comes back, nor anyone who left)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const undo = readFileSync(join(process.cwd(), "supabase", "rollback", "0058_project_access_undo.sql"), "utf8");
+    const back = new Map(Object.entries(w.id).map(([k, v]) => [v as string, k]));
+    const pmPeople = (rows: Record<string, unknown>[]) => rows.map((r) => `${back.get(r.u as string) ?? r.u}:${r.role}`).sort();
+    const got = await scenario(async (run, exec) => {
+      const before = pmPeople(await run(null, `select user_id::text as u, role from public.project_members where project_id = $1::uuid`, [w.proj.PM]));
+      await exec(undo);
+      // the app as before 0058: PM's people are contributor_ids again (Gail off, Gil on); Gwen leaves the workspace
+      await run(w.id.O, `update public.projects set contributor_ids = array_append(array_remove(contributor_ids, $2::uuid), $3::uuid) where id = $1::uuid`, [w.proj.PM, w.id.GC, w.id.G2]);
+      await run(null, `delete from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [w.ws, w.id.GV]);
+      const stale = (await run(null, `select count(*)::int as n from public.project_members where project_id = $1::uuid and user_id in ($2::uuid, $3::uuid)`, [w.proj.PM, w.id.GC, w.id.GV]))[0].n;
+      await exec(migrationSql("0058_project_access.sql"));
+      // Gwen is invited back as a guest, and the switch goes on again
+      await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'gv.pa@example.org', 'Gwen', 'guest', 'active')`, [w.ws, w.id.GV]);
+      await run(w.id.O, `select public.set_project_access($1::uuid, true)`, [w.ws]);
+      const reads = async (who: Who) => (await run(w.id[who], `select id from public.projects where id = $1::uuid`, [w.proj.PM])).length;
+      return {
+        before, stale, GC: await reads("GC"), GV: await reads("GV"), G2: await reads("G2"),
+        people: pmPeople(await run(null, `select user_id::text as u, role from public.project_members where project_id = $1::uuid`, [w.proj.PM])),
+        intact: (await run(null, `select public.project_access_intact() as ok`))[0].ok,
+      };
+    });
+    eq(got.stale, 2, "while it's out, nothing keeps project_members in step");
+    eq([got.GC, got.GV, got.G2], [0, 0, 1], "Gail (taken off) and Gwen (left, back as a guest) don't read PM; Gil (added) does");
+    eq(got.people, [...got.before.filter((x) => !x.startsWith("GC:") && !x.startsWith("GV:")), "G2:commenter"].sort(), "PM's people, the others' roles kept");
+    eq(got.intact, true, "every rule back");
   });
 
   const ALL = migrationFiles();
