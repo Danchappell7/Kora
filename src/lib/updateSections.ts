@@ -7,9 +7,10 @@
    they need). Before 0054 they're kept in the update's text.
    Pure: no React, no I/O.
    ============================================================ */
-import type { UpdateSections } from "../data/types";
+import type { StatusKind, UpdateSections, WorkspaceMember } from "../data/types";
 import type { StatusFacts } from "./statusDraft";
-import { fmtShortDay } from "./statusDraft";
+import { getMember } from "../data/data";
+import { draftStatusLocal, fmtShortDay } from "./statusDraft";
 import { localDay } from "../components/views/reportingUtils";
 
 export const SECTION_KEYS = ["highlights", "risks", "asks", "next"] as const;
@@ -42,12 +43,30 @@ export function sectionsAsText(s: UpdateSections | undefined): string {
   return SECTION_KEYS.filter((k) => s[k]?.trim()).map((k) => `${SECTION_LABELS[k]}: ${s[k]!.trim()}`).join("\n");
 }
 
+/** Who an Ask in a project's update can be for: the active people of its workspace (guests too: they read its
+ *  updates), never you. None in Personal. */
+export function askPeopleIn(members: readonly WorkspaceMember[], workspaceId: string | null, me: string): { id: string; name: string }[] {
+  if (workspaceId === null) return [];
+  return members.filter((m) => m.status === "active" && m.userId && m.userId !== me && (m.workspaceId ?? null) === workspaceId)
+    .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email }));
+}
+
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const clean = (title: string) => title.trim().replace(/[.!?;:,\s]+$/, "");
 const list = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
-/** Highlights, Risks and Next written on this device from a project's facts (Asks stay yours). */
-export function draftSectionsLocal(f: StatusFacts): UpdateSections {
+/** Kanbo's update written on this device, saying each thing once: when the sections carry what's done, at risk and
+ *  next, the words are just the headline (how far it's got, and its critical path); with nothing for the sections,
+ *  the words say it all. */
+export function draftUpdateLocal(f: StatusFacts): { summary: string; status: StatusKind; sections: UpdateSections } {
+  const sections = draftSectionsLocal(f, { cpInSummary: true });
+  if (!hasSections(sections)) return { ...draftStatusLocal(f), sections };
+  return { ...draftStatusLocal(f, { brief: true }), sections };
+}
+
+/** Highlights, Risks and Next written on this device from a project's facts (Asks stay yours).
+ *  `cpInSummary`: the words already name the critical path, so Next doesn't again. */
+export function draftSectionsLocal(f: StatusFacts, { cpInSummary = false }: { cpInSummary?: boolean } = {}): UpdateSections {
   const today = localDay(f.today) ?? new Date();
   const out: UpdateSections = {};
   if (f.done7.length) {
@@ -67,7 +86,7 @@ export function draftSectionsLocal(f: StatusFacts): UpdateSections {
   if (risks.length) out.risks = risks.join(" ");
   const next: string[] = [];
   if (f.nextMilestone) next.push(`${clean(f.nextMilestone.title)}, ${fmtShortDay(f.nextMilestone.dueDate, today)}.`);
-  if (f.criticalPath && f.criticalPath.id !== f.nextMilestone?.id) next.push(`Unblock the critical path: ${clean(f.criticalPath.title)}.`);
+  if (f.criticalPath && f.criticalPath.id !== f.nextMilestone?.id && !cpInSummary) next.push(`Unblock the critical path: ${clean(f.criticalPath.title)}.`);
   if (next.length) out.next = next.join(" ");
   return out;
 }

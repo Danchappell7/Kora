@@ -458,9 +458,9 @@ const STATUS_SYSTEM = [
   '{"summary": string, "status": "on_track" | "at_risk" | "off_track", "sections": {"highlights": string, "risks": string, "next": string}}',
   "",
   "Rules:",
-  "- summary: 2 to 4 sentences in British English, plain text, no emoji. Lead with where the project stands, then what moved since the last update, then the main risk or blocker and what happens next.",
+  "- summary: 1 to 2 sentences in British English, plain text, no emoji: where the project stands overall (how far it's got, and the call). The sections carry the details, so never repeat in the summary what a section says, and never say the same thing in two sections.",
   "- status: on_track when work is moving and nothing important is late; at_risk when something important is late, blocked or slipping; off_track when a milestone or the end date will clearly be missed.",
-  "- sections: one short sentence or two each. highlights: what finished or went well. risks: what might slip, and why. next: what happens next, with dates from the facts. Leave a section out when the facts give nothing for it. Never write asks: only the owner knows what they need.",
+  "- sections: one short sentence or two each. highlights: what finished or went well. risks: what might slip, and why. next: what happens next, with dates from the facts. Leave a section out when the facts give nothing for it. Never write asks: only the owner knows what they need. With no sections at all, the summary may run to 4 sentences and say what moved, the main risk and what happens next.",
   "- Use only the facts. Never invent tasks, people, dates or numbers.",
 ].join("\n");
 

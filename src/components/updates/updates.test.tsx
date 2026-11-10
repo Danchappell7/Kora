@@ -9,6 +9,8 @@ import { noteRhythmSchema, resetRhythmSchema } from "../../lib/updateRhythm";
 import { resetUpdateAsks, type AskForUpdate } from "../../lib/updateAsks";
 import type { DueUpdate } from "../../lib/updateDue";
 import { UpdateLine, useTodayUpdates } from "./TodayUpdates";
+import { UpdateSheet } from "./UpdateSheet";
+import { clearStatusDrafts } from "../project/StatusComposer";
 import { MergedStatusPill } from "./MergedStatusPill";
 import { AskForUpdateButton } from "./AskForUpdate";
 import { UpdateRhythmPanel } from "./UpdateRhythmPanel";
@@ -77,6 +79,35 @@ describe("Today's update line", () => {
     expect(result.current.line).toBeNull();
     rerender({ onPost: undefined });
     expect(result.current.noticed).toEqual([]);
+  });
+});
+
+describe("the update sheet Today opens", () => {
+  it("opens on Kanbo's draft; when its AI simply isn't there, the on-device one says so calmly (the brief already said Kanbo drafted it)", async () => {
+    clearStatusDrafts();
+    const aiStatus = vi.fn(async () => ({ data: null, source: "unavailable" as const }));
+    render(<UpdateSheet project={proj("p1")} tasks={[task("t1", "p1")]} statusUpdates={[]} onPost={vi.fn(async () => true)} aiStatus={aiStatus} open onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Update" })).not.toHaveValue(""));
+    expect(aiStatus).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/^Drafted on this device from this week's/)).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't draft/)).toBeNull();
+    // asking for a redraft by hand still says when it couldn't
+    fireEvent.click(screen.getByRole("button", { name: "Redraft" }));
+    await waitFor(() => expect(screen.getByText(/couldn't draft this one just now/)).toBeInTheDocument());
+  });
+  it("an Ask written there can name who it's for, so it reaches their Needs your reply", async () => {
+    clearStatusDrafts();
+    const onPost = vi.fn(async () => true);
+    render(<UpdateSheet project={proj("p1")} tasks={[task("t1", "p1")]} statusUpdates={[]} onPost={onPost} open onClose={vi.fn()}
+      people={[{ id: "sana", name: "Sana Rao" }, { id: "theo", name: "Theo Vance" }]} />);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Update" })).not.toHaveValue(""));
+    fireEvent.click(screen.getByRole("button", { name: /Highlights, risks, asks and next/ }));
+    fireEvent.change(screen.getByPlaceholderText("What you need, and from whom"), { target: { value: "Sana, sign off the hero copy by Thursday?" } });
+    const who = screen.getByRole("group", { name: "Who the asks are for" });
+    fireEvent.click(within(who).getByRole("button", { name: "Sana" }));
+    expect(within(who).getByRole("button", { name: "Sana" })).toHaveAttribute("aria-pressed", "true");
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Post update/ })); });
+    expect(onPost).toHaveBeenCalledWith("p1", expect.any(String), expect.any(String), expect.objectContaining({ askUserIds: ["sana"] }));
   });
 });
 

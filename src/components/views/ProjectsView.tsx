@@ -96,7 +96,7 @@ interface Row {
   atRisk: boolean;
 }
 
-export function ProjectsView({ projects, tasks, statusUpdates, members: _members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject, asks }: {
+export function ProjectsView({ projects, tasks, statusUpdates, members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject, asks }: {
   projects: Project[];
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -115,6 +115,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
 }) {
   // the built-in Personal project is where loose tasks live, not a project anyone runs
   const real = useMemo(() => projects.filter((p) => p.id !== "p-personal"), [projects]);
+  // who an Ask in an update can be for: this workspace's people, never you
+  const askPeople = useMemo(() => members.filter((m) => m.id !== currentUserId), [members, currentUserId]);
   const phone = useMediaQuery("(max-width: 859px)");
   // no hover (a tablet): a table row's Draft and Post update could never be revealed, so cards
   const touch = useMediaQuery("(hover: none)");
@@ -417,13 +419,14 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
         {menuAsk.can && (
           <button type="button" role="menuitem" className="kpj-menu-item" disabled={!!menuAsk.asked} aria-label={menuAsk.asked ? "Asked for an update" : menuAsk.label}
             onClick={() => { setCardMenu(null); void menuAsk.ask(); }}>
-            <Icon name={menuAsk.asked ? "check" : "message"} size={16} sw={1.75} />{menuAsk.asked ? "Asked for an update" : "Ask for an update"}
+            <Icon name={menuAsk.asked ? "check" : "bell"} size={16} sw={1.75} />{menuAsk.asked ? "Asked for an update" : "Ask for an update"}
           </button>
         )}
       </Popover>
       {composer && composerProject && (
         <RowComposer project={composerProject} tasks={tasks} statusUpdates={statusUpdates} onPost={onPostUpdate} aiStatus={aiStatus}
-          request={composer} anchorRef={anchorRef} onClose={() => setComposer((c) => (c ? { ...c, open: false } : c))} />
+          request={composer} anchorRef={anchorRef} onClose={() => setComposer((c) => (c ? { ...c, open: false } : c))}
+          people={askPeople} />
       )}
     </div>
   );
@@ -459,7 +462,7 @@ function UpdateAge({ facts, fresh, long }: { facts: StatusFacts; fresh: UpdateFr
 }
 
 /** The directory's composer: "Draft update" has Kanbo write it, "Post update" opens an empty field. */
-function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request, anchorRef, onClose }: {
+function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request, anchorRef, onClose, people }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -468,6 +471,8 @@ function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request,
   request: { id: string; open: boolean; mode: "draft" | "post"; seq: number };
   anchorRef: React.RefObject<HTMLElement>;
   onClose: () => void;
+  /** who an Ask can be for */
+  people?: { id: string; name: string }[];
 }) {
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost, aiStatus, onPosted: onClose });
   useEffect(() => {
@@ -475,5 +480,5 @@ function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request,
     if (request.mode === "draft") c.ensureDraft(); else c.startFresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request.seq]);
-  return <ComposerPopover open={request.open} anchorRef={anchorRef} onClose={onClose} c={c} />;
+  return <ComposerPopover open={request.open} anchorRef={anchorRef} onClose={onClose} c={c} people={people} />;
 }

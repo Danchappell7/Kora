@@ -38,7 +38,7 @@ export interface TodayUpdates {
 const firstName = (id?: string) => (id ? getMember(id)?.name?.trim().split(/\s+/)[0] : undefined) || "A lead";
 
 /** Today's update line, nudge and sheet for the signed-in person. Off (nothing) for a guest or without `onPost`. */
-export function useTodayUpdates({ me, projects, tasks, statusUpdates, onPost, aiStatus, readOnly }: {
+export function useTodayUpdates({ me, projects, tasks, statusUpdates, onPost, aiStatus, readOnly, peopleFor }: {
   me: string;
   projects: Project[];
   tasks: Task[];
@@ -46,6 +46,8 @@ export function useTodayUpdates({ me, projects, tasks, statusUpdates, onPost, ai
   onPost?: PostStatus;
   aiStatus?: AiStatus;
   readOnly?: boolean;
+  /** who an Ask in a project's update can be for (its workspace's people, never you) */
+  peopleFor?: (project: Project) => { id: string; name: string }[];
 }): TodayUpdates {
   const asks = useUpdateAsks(me);
   const today = todayISO();
@@ -68,7 +70,7 @@ export function useTodayUpdates({ me, projects, tasks, statusUpdates, onPost, ai
     sheet: shown && onPost ? (
       <Suspense fallback={null}>
         <UpdateSheet key={shown.id} project={shown} tasks={tasks} statusUpdates={statusUpdates} onPost={onPost} aiStatus={aiStatus}
-          open={openId === shown.id} onClose={() => setOpenId(null)} />
+          open={openId === shown.id} onClose={() => setOpenId(null)} people={peopleFor?.(shown)} />
       </Suspense>
     ) : null,
   };

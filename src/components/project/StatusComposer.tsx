@@ -21,7 +21,7 @@ import type { Project, StatusKind, StatusUpdate, Task, UpdateSections } from "..
 import type { AiOutcome } from "../../lib/askTypes";
 import { draftStatusLocal, factLines, statusFacts, statusFactsForAi, statusFromHealth, type StatusFacts } from "../../lib/statusDraft";
 import { honestQuestion } from "../../lib/honestStatus";
-import { draftSectionsLocal, hasSections, parseSections, SECTION_HINTS, SECTION_KEYS, SECTION_LABELS, SECTION_MAX, type SectionKey } from "../../lib/updateSections";
+import { draftUpdateLocal, hasSections, parseSections, SECTION_HINTS, SECTION_KEYS, SECTION_LABELS, SECTION_MAX, type SectionKey } from "../../lib/updateSections";
 import "./projects.css";
 import "../updates/updates.css";
 import "../updates/conversation.css";
@@ -136,9 +136,9 @@ export interface Composer {
   note: string | null;
   drafting: boolean;
   /** fill the words: Kanbo's AI when it's on, else the on-device template */
-  draft: (how?: "best" | "template") => void;
+  draft: (how?: "best" | "template", opts?: DraftOpts) => void;
   /** Draft update: Kanbo writes it, unless there are words worth keeping (yours, or its own) */
-  ensureDraft: () => void;
+  ensureDraft: (opts?: DraftOpts) => void;
   /** Post update: an empty field to write in. Kanbo's untouched words go; yours stay. */
   startFresh: () => void;
   canDraftAi: boolean;
@@ -166,10 +166,15 @@ export interface Composer {
   toggleAsk: (id: string) => void;
 }
 
-/** Why the on-device draft stood in for Kanbo's (the interface never says "AI", §2.3). */
-const why = (out: AiOutcome<unknown> | null): string =>
+/** `auto`: written as something opened (Today's sheet), not asked for: when Kanbo's AI simply isn't
+ *  there, the on-device draft says so calmly rather than as a failure. */
+export interface DraftOpts { auto?: boolean }
+
+/** Why the on-device draft stood in for Kanbo's (the interface never says "AI", §2.3); null: no need to say. */
+const why = (out: AiOutcome<unknown> | null, auto = false): string | null =>
   out?.source === "limit" ? "You've used today's Kanbo drafts, so this one was written on this device."
   : out?.source === "off" ? "Kanbo's drafting is turned off, so this one was written on this device."
+  : auto ? null
   : "Kanbo couldn't draft this one just now, so it was written on this device.";
 
 /**
@@ -200,9 +205,10 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
   const drafting = !!entry?.drafting;
   const posting = !!entry?.posting;
 
-  const draft = (how: "best" | "template" = "best") => {
+  const draft = (how: "best" | "template" = "best", { auto = false }: DraftOpts = {}) => {
     const pid = id;
-    const local = draftStatusLocal(facts);
+    // (the words and the sections, saying each thing once)
+    const local = draftUpdateLocal(facts);
     // Kanbo's sections come with its words (a redraft rewrites both); an Ask you wrote stays yours
     const withSections = (keep: Draft, drafted: UpdateSections | undefined): UpdateSections => {
       const out: UpdateSections = { ...(drafted ?? {}) };
@@ -212,7 +218,7 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
     if (!aiStatus || how === "template") {
       const keep = entries.get(pid)?.draft ?? EMPTY;
       patchEntry(pid, { drafting: undefined, draft: { ...keep, text: local.summary, kind: local.status, source: "template", note: null, edited: false,
-        sections: withSections(keep, draftSectionsLocal(facts)) } });
+        sections: withSections(keep, local.sections) } });
       return;
     }
     const seq = ++draftSeq;
@@ -227,9 +233,10 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
       const keep = entries.get(pid)?.draft ?? EMPTY;
       if (out?.source === "ai" && summary) {
         const k = KINDS.has(out.data.status) ? out.data.status : local.status;
-        writeDraft(pid, { text: summary, kind: k, source: "ai", note: null, edited: false, sections: withSections(keep, parseSections(out.data.sections) ?? draftSectionsLocal(facts)) });
+        // (an AI draft without sections says it all in its words: nothing laid under them to say it twice)
+        writeDraft(pid, { text: summary, kind: k, source: "ai", note: null, edited: false, sections: withSections(keep, parseSections(out.data.sections)) });
       } else {
-        writeDraft(pid, { text: local.summary, kind: local.status, source: "template", note: why(out), edited: false, sections: withSections(keep, draftSectionsLocal(facts)) });
+        writeDraft(pid, { text: local.summary, kind: local.status, source: "template", note: why(out, auto), edited: false, sections: withSections(keep, local.sections) });
       }
     };
     let pending: Promise<AiOutcome<{ summary: string; status: StatusKind; sections?: UpdateSections }>>;
@@ -238,11 +245,11 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
   };
 
   const hasText = !!cur.text.trim();
-  const ensureDraft = () => {
+  const ensureDraft = (opts: DraftOpts = {}) => {
     if (drafting) return;
     // an untouched on-device draft is replaced by Kanbo's AI when it's on (unless the AI just fell back to it)
     const redraft = !hasText || (cur.source === "template" && !cur.edited && !cur.note && !!aiStatus);
-    if (redraft) draft();
+    if (redraft) draft("best", opts);
   };
   const startFresh = () => {
     if (drafting) patchEntry(id, { drafting: undefined });
@@ -308,7 +315,9 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
     sections: cur.sections,
     setSection: (k, v) => writeDraft(id, { sections: { ...cur.sections, [k]: v }, ...(cur.source ? { edited: true } : {}) }),
     sectionsOpen: cur.sectionsOpen || hasSections(cur.sections),
-    setSectionsOpen: (open) => writeDraft(id, open ? { sectionsOpen: true } : { sectionsOpen: false, sections: {}, asks: [] }),
+    // (taking the sections away from Kanbo's untouched on-device draft puts what they said back into its words)
+    setSectionsOpen: (open) => writeDraft(id, open ? { sectionsOpen: true } : { sectionsOpen: false, sections: {}, asks: [],
+      ...(cur.source === "template" && !cur.edited && cur.text.trim() ? { text: draftStatusLocal(facts).summary } : {}) }),
     asks: cur.asks,
     toggleAsk: (pid) => writeDraft(id, { asks: cur.asks.includes(pid) ? cur.asks.filter((x) => x !== pid) : [...cur.asks, pid].slice(0, 20) }),
   };
@@ -459,11 +468,13 @@ function ComposerSections({ c, people }: { c: Composer; people?: { id: string; n
 }
 
 /** The composer as a 400px popover under its trigger (header "Draft update" / "Post update", directory rows). */
-export function ComposerPopover({ open, anchorRef, onClose, c }: {
+export function ComposerPopover({ open, anchorRef, onClose, c, people }: {
   open: boolean;
   anchorRef: RefObject<HTMLElement>;
   onClose: () => void;
   c: Composer;
+  /** who an Ask can be for (people who can read the update; never you) */
+  people?: { id: string; name: string }[];
 }) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   // a small dialog: Tab cycles inside it (Popover leaves Tab alone for dialogs)
@@ -481,7 +492,7 @@ export function ComposerPopover({ open, anchorRef, onClose, c }: {
       align="end" minWidth={320} initialFocus={textRef} className="kpj-pop"
       style={{ ...POP_STYLE, width: 400, padding: 0 }}>
       <div onKeyDown={onKeyDown}>
-        <ComposerPanel c={c} onCancel={onClose} textRef={textRef} title={`Update on ${c.project.name}`} />
+        <ComposerPanel c={c} onCancel={onClose} textRef={textRef} title={`Update on ${c.project.name}`} people={people} />
       </div>
     </Popover>
   );

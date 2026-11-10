@@ -234,7 +234,9 @@ describe("ProjectsView (the directory as a table)", () => {
     render(<ProjectsView {...props({ onPostUpdate, onOpenProject })} />);
     fireEvent.click(screen.getByRole("button", { name: "Draft update for Infra" }));
     const box = screen.getByRole("textbox", { name: "Update" }) as HTMLTextAreaElement;
-    expect(box.value).toMatch(/^Nothing finished this week; 0% done overall\. Overdue: Task t6\./);
+    // (0054: the words are the headline, and what's overdue is said once, under Risks)
+    expect(box.value).toMatch(/^Nothing finished this week; 0% done overall\./);
+    expect(box.value).not.toMatch(/Overdue/);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Post update" })); });
     // half its work is overdue (0054: Kanbo's draft puts that under Risks too)
     expect(onPostUpdate).toHaveBeenCalledWith("p-infra", box.value, "off_track", { sections: { risks: "Overdue: Task t6." } });

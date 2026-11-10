@@ -38,7 +38,8 @@ import type { GroupTarget } from "./components/views/GroupView";
 import { useTodayUpdates } from "./components/updates/TodayUpdates";
 import { UpdateRhythmPanel } from "./components/updates/UpdateRhythmPanel";
 import type { StatusExtras } from "./components/project/StatusComposer";
-import { useAskForUpdate } from "./lib/updateAsks";
+import { ownerCanPost, useAskForUpdate } from "./lib/updateAsks";
+import { askPeopleIn } from "./lib/updateSections";
 import type { UpdateRhythm } from "./lib/updateRhythm";
 // one view across businesses: All businesses on Today, Inbox and My tasks; the switcher's dots; Projects › Group
 import { useBusinessScope } from "./hooks/useBusinessScope";
@@ -2769,7 +2770,8 @@ export default function App() {
       .catch((e) => { reportError(e, { op: "statusUpdate" }); toastError("Couldn't post the update — your text is still there."); return false; });
   }, [denyGuest, toastError]);
   // 0054: an author changes their own update (marked edited); the author or a lead deletes one
-  const editStatusUpdate = useCallback((u: StatusUpdate, patch: { summary: string; status: StatusKind; sections: UpdateSections | null }): Promise<boolean> => {
+  const editStatusUpdate = useCallback((u: StatusUpdate, patch: { summary: string; status: StatusKind; sections: UpdateSections | null;
+    recoveryPlan?: string | null; targetDate?: string | null; askUserIds?: string[] }): Promise<boolean> => {
     if (denyGuest([u.workspaceId ?? null])) return Promise.resolve(false);
     return store.editStatusUpdate(u, patch)
       .then((next) => { setStatusUpdates((s) => s.map((x) => (x.id === u.id ? next : x))); return true; })
@@ -2785,6 +2787,8 @@ export default function App() {
   }, [toastError]);
   // an Inbox update item opens its project's Updates tab with its replies open (or its portfolio's page)
   const [updateFocus, setUpdateFocus] = useState<string | null>(null);
+  // (the update the Inbox opened is brought into view once: leaving the project forgets it)
+  useEffect(() => { if (route.view !== "project") setUpdateFocus(null); }, [route.view]);
 
   // ---- automation rules ----
   type RulePatch = { name?: string; actions?: AutomationAction[]; enabled?: boolean; trigger?: AutomationRule["trigger"] };
@@ -3654,13 +3658,19 @@ export default function App() {
   allBizRef.current = biz.all;
 
   /* ---- 0053 project updates: Ask for an update (owners and admins), and yours on Today ---- */
-  const updateAsks = useAskForUpdate(currentUserId, roleIn);
-  // (Today's scope: every business on All businesses, else this workspace's projects)
-  const todayProjects = useMemo(() => (biz.all ? projects : projects.filter((p) => (p.workspaceId ?? null) === workspace)), [biz.all, projects, workspace]);
+  // (never of a guest owner: a guest can't post an update)
+  const updateAsks = useAskForUpdate(currentUserId, roleIn, (p) => ownerCanPost(p, wsMembers));
+  // (Today's scope: every business on All businesses, else this workspace's projects; never one where you're a guest)
+  const todayProjects = useMemo(() => (biz.all ? projects : projects.filter((p) => (p.workspaceId ?? null) === workspace))
+    .filter((p) => roleIn(p.workspaceId) !== "guest"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [biz.all, projects, workspace, wsMembers]);
   const todayUpdates = useTodayUpdates({
     me: currentUserId, projects: todayProjects, tasks: tasks ?? NO_TASKS, statusUpdates, onPost: postStatusUpdate,
     aiStatus: appearance.ai !== false ? (facts: unknown) => store.aiStatus(facts) : undefined,
     readOnly: !biz.all && roleIn(workspace) === "guest",
+    // (an Ask in it can be for anyone in the project's own workspace)
+    peopleFor: (p) => askPeopleIn(wsMembers, p.workspaceId ?? null, currentUserId),
   });
   // (your choice, on every device: profiles.onboarding)
   const setAllBusinesses = useCallback((all: boolean) => changeOnboarding({ ...onboardingRef.current, businesses: all ? { all: true } : {} }), [changeOnboarding]);
@@ -4015,6 +4025,7 @@ export default function App() {
               me={currentUser ? { userId: currentUserId, name: currentUser.name, color: currentUser.color ?? "" } : null} /></Suspense>,
             actions: (
               <Suspense fallback={null}><ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}
+                people={assignees.filter((m) => m.id !== currentUserId)}
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
                 onDuplicate={activeReadOnly ? undefined : duplicateProject}
                 onArchive={activeReadOnly || !canArchiveProject(openProject, { myRole }) ? undefined : (id) => setProjectArchived(id, true)}

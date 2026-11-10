@@ -33,7 +33,7 @@ describe("prompt builders", () => {
       command: ['"answer"', '"actions"', '"cites"', '"op": "update"', '"op": "create"', "Never delete"],
       extract: ['"tasks"', '"title"', '"assigneeName"', "Never invent people"],
       standup: ['{"text": string}', "5 short lines", "British English", "no emoji"],
-      status: ['"summary"', '"on_track" | "at_risk" | "off_track"', "2 to 4 sentences", '"sections"', "Never write asks"],
+      status: ['"summary"', '"on_track" | "at_risk" | "off_track"', "1 to 2 sentences", "never repeat in the summary", '"sections"', "Never write asks"],
       portfolio: ['"summary"', '"sections"', '"asks"', "how many projects are on track", "Never invent projects"],
     };
     for (const mode of MODES) {
