@@ -79,6 +79,10 @@ main[tabindex="-1"]:focus { outline: none; }
 .ksb-wsi-n { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
   background: var(--accent-fill, var(--accent)); color: var(--on-accent); font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
 .ksb-wsi-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
+/* …and what they are, in words, under the name (a touch screen has no hover to say it) */
+.ksb-wsi[data-sig] { height: auto; min-height: 40px; padding-top: 4px; padding-bottom: 4px; }
+.ksb-wsi-txt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.ksb-wsi-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
 /* phone drawer only: search sits under the switcher (the header has it on desktop) */
 .ksb-search {
@@ -800,12 +804,16 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
               const sig = sigOf(w.id);
               const unread = sig?.unread ?? 0, needs = sig?.attention ?? 0;
               const said = [unread > 0 && `${unread} unread`, needs > 0 && `needs you: ${sig!.detail}`].filter(Boolean).join(", ");
+              const sub = [needs > 0 && sig!.detail, unread > 0 && `${unread} unread`].filter(Boolean).join(" · ");
               return (
                 <button key={w.id ?? "personal"} ref={current ? wsCurrentRef : undefined} type="button" className="ksb-wsi"
-                  onClick={() => switchWorkspace(w.id)} aria-current={current ? "true" : undefined}
-                  aria-label={said ? `${w.name}, ${said}` : undefined} title={needs > 0 ? sig!.detail : undefined}>
+                  onClick={() => switchWorkspace(w.id)} aria-current={current ? "true" : undefined} data-sig={sub ? "" : undefined}
+                  aria-label={said ? `${w.name}, ${said}` : undefined}>
                   {w.logoUrl ? <img src={w.logoUrl} alt="" /> : <Icon name={w.kind === "personal" ? "user" : "briefcase"} size={16} sw={1.75} />}
-                  <span className="truncate" style={{ flex: 1, minWidth: 0 }}>{w.name}</span>
+                  <span className="ksb-wsi-txt">
+                    <span className="truncate">{w.name}</span>
+                    {sub && <span className="ksb-wsi-sub" aria-hidden="true">{sub}</span>}
+                  </span>
                   {(unread > 0 || needs > 0) && (
                     <span className="ksb-wsi-sig" aria-hidden="true">
                       {needs > 0 && <span className="ksb-wsi-dot" />}

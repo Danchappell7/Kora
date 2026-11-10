@@ -35,6 +35,9 @@ describe("Sidebar · the switcher's signals", () => {
     expect(within(menu).getByRole("button", { name: "Beta Padel, 2 unread, needs you: 1 approval · 2 overdue" })).toBeInTheDocument();
     expect(within(menu).getByRole("button", { name: "Alpha Studio, 3 unread" })).toBeInTheDocument();
     expect(within(menu).getByRole("button", { name: "Personal" })).toBeInTheDocument();
+    // …and says it in words under the name (a touch screen has no hover)
+    expect(within(menu).getByText("1 approval · 2 overdue · 2 unread")).toBeInTheDocument();
+    expect(within(menu).getByText("3 unread")).toBeInTheDocument();
   });
 
   it("nothing elsewhere (or no signals at all): no dot, plain names", () => {
