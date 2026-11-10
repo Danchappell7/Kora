@@ -211,7 +211,7 @@ export async function markUpdatesSeen(ids: readonly string[], me: string, author
   } catch { /* offline: it's counted next time */ }
 }
 
-/** Email and push for the people a new update is for (the database has already put it in their Inbox). Best-effort. */
+/** Email and push for the people a new update's Ask names (the database has already put it in their Inbox, and its FYI readers'). Best-effort. */
 export function notifyUpdatePosted(updateId: string): void {
   if (!supabase || !updateId || updateId.startsWith("tmp-")) return;
   try {

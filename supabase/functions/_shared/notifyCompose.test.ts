@@ -197,4 +197,14 @@ describe("a posted update (0054)", () => {
     const [f] = digestThreads([it("3", { update_event: "posted", ask: false })]);
     expect(f.lines).toEqual(["Sana posted an update"]);
   });
+  it("the digest: a busy update is one thread for its project, not a line per reply", () => {
+    const reply = (id: string, who: string, project = "p-1"): DigestItem =>
+      ({ id, task_id: null, task_title: project === "p-1" ? "Brand Refresh" : "Launch", kind: "update", detail: who, created_at: `2026-11-10T09:0${id}:00Z`,
+        meta: { update_event: "comment", ask: false, project_id: project, status_update_id: "su" } });
+    const threads = digestThreads([reply("1", "Maya Lin"), reply("2", "Theo Vance"), reply("3", "Maya Lin"), reply("4", "Sana Rao", "p-2")]);
+    expect(threads.map((t) => [t.title, t.lines])).toEqual([
+      ["Launch", ["1 reply on your update from Sana"]],
+      ["Brand Refresh", ["3 replies on your update from Maya and Theo"]],
+    ]);
+  });
 });

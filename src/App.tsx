@@ -2765,7 +2765,7 @@ export default function App() {
     const wsId = projectWs(projectId);
     if (denyGuest([wsId])) return Promise.resolve(false);
     return store.createStatusUpdate({ workspaceId: wsId, projectId, summary, status, ...extras }, userIdRef.current)
-      .then((su) => { setStatusUpdates((s) => [su, ...s]); if (wsId) notifyUpdatePosted(su.id); return true; })
+      .then((su) => { setStatusUpdates((s) => [su, ...s]); if (wsId && su.askUserIds?.length) notifyUpdatePosted(su.id); return true; })
       .catch((e) => { reportError(e, { op: "statusUpdate" }); toastError("Couldn't post the update — your text is still there."); return false; });
   }, [denyGuest, toastError]);
   // 0054: an author changes their own update (marked edited); the author or a lead deletes one

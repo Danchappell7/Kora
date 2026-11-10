@@ -226,12 +226,20 @@ export interface DigestThread {
 const DIGEST_ORDER = ["mention", "doc_mention", "approval", "assigned", "comment", "kudos", "update", "integration"];
 const digestRank = (k: string) => { const i = DIGEST_ORDER.indexOf(k); return i < 0 ? 99 : i; };
 
-/** Unread items → threads (one per task; a doc mention or notice stands alone), mentions first, then newest. */
+/** The thread an item belongs to: its task; a project update's, its project (a portfolio update's, its portfolio);
+ *  a doc mention or notice stands alone. */
+function threadKey(it: DigestItem): string {
+  if (it.task_id) return `t:${it.task_id}`;
+  const ref = it.kind === "update" ? it.meta?.project_id ?? it.meta?.portfolio_id : null;
+  return typeof ref === "string" && ref ? `u:${ref}` : `i:${it.id}`;
+}
+
+/** Unread items → threads (see threadKey), mentions first, then newest. */
 export function digestThreads(items: readonly DigestItem[]): DigestThread[] {
   const groups = new Map<string, DigestItem[]>();
   for (const it of items) {
     if (SELF.has(it.kind)) continue;
-    const key = it.task_id ? `t:${it.task_id}` : `i:${it.id}`;
+    const key = threadKey(it);
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(it);
   }
   const out: DigestThread[] = [];

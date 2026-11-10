@@ -56,10 +56,8 @@ import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 import { dueDigestPush, pushDueDigest, pushToUser, vapidFromEnv, type VapidKeys } from "../_shared/webpush.ts";
 import { sendEmail } from "../_shared/email.ts";
 import { addDays, digestDue, digestMoment, localParts, NOTIFY_KINDS, planDelivery, resolveNotifyPrefs, type NotifyKind } from "../_shared/notifyTiming.ts";
-import {
-  digestEmail, digestThreads, dueEmail, filterDigestItems, updateDueEmail, updateDuePush, type DigestItem, type DigestUpdate, type DueTask, type UpdateDueItem,
-} from "../_shared/notifyCompose.ts";
-import { addWorkingDays, dueDayWords, dueOnOrBefore, effectiveRhythm, FOLLOW_UPS, isReminderDay, rhythmState } from "../_shared/updateRhythm.ts";
+import { digestEmail, digestThreads, dueEmail, filterDigestItems, type DigestItem, type DigestUpdate, type DueTask } from "../_shared/notifyCompose.ts";
+import { digestUpdates, emptyRhythmReport, ownerPrefs, remindOwner, updateOwners, type RemindDeps } from "../_shared/updateReminders.ts";
 import { deliverNotice, drainQueue, supabaseDrainDeps, supabaseQueueStore, type SendOutcome } from "../_shared/notifyQueue.ts";
 
 interface TaskRow {
@@ -344,155 +342,45 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
 
 /* ---------------------------- the update rhythm (0053) ---------------------------- */
 
-/** Update-day reminders go out in the owner's working day: from this local time… */
-const RHYTHM_FROM = 9 * 60;
-/** …until this one (a day the runs miss isn't made up in the evening). */
-const RHYTHM_UNTIL = 18 * 60;
-
-interface OwnedProject { id: string; name: string; workspace_id: string; status: string | null; update_rhythm: unknown }
-
-/** An owner's project updates that are theirs to post today (in their timezone): the update day or a working
- *  follow-up day, with nothing posted since the round before. Archived and on-hold projects, and projects in a
- *  workspace they've left, are skipped. [] before 0053 (no update_rhythm column to read). */
-async function ownerUpdatesDue(supa: Supa, ownerId: string, today: string, tz: string): Promise<UpdateDueItem[]> {
-  const { data: ps, error } = await supa.from("projects").select("id,name,workspace_id,status,update_rhythm")
-    .eq("owner_id", ownerId).not("workspace_id", "is", null).is("archived_at", null).order("id").limit(200);
-  if (error || !ps?.length) return [];
-  const projects = (ps as OwnedProject[]).filter((p) => p.status !== "on_hold");
-  const wsIds = [...new Set(projects.map((p) => String(p.workspace_id)))];
-  if (!wsIds.length) return [];
-  const { data: ws, error: wsErr } = await supa.from("workspaces").select("id,owner_id,update_rhythm").in("id", wsIds);
-  if (wsErr) return [];
-  const wsById = new Map<string, { owner_id: string; update_rhythm: unknown }>((ws ?? []).map((w: { id: string; owner_id: string; update_rhythm: unknown }) => [String(w.id), w]));
-  // still in the workspace: an active member, or its owner
-  const inWs = new Set<string>();
-  const { data: ms } = await supa.from("workspace_members").select("workspace_id").eq("user_id", ownerId).eq("status", "active").in("workspace_id", wsIds);
-  for (const m of ms ?? []) inWs.add(String(m.workspace_id));
-  for (const [id, w] of wsById) if (String(w.owner_id) === ownerId) inWs.add(id);
-  const local = (iso: string) => localParts(new Date(iso), tz).date;
-  const out: UpdateDueItem[] = [];
-  for (const p of projects) {
-    const w = wsById.get(String(p.workspace_id));
-    if (!w || !inWs.has(String(p.workspace_id))) continue;
-    const rhythm = effectiveRhythm(p.update_rhythm, w.update_rhythm);
-    const due = dueOnOrBefore(rhythm, today);
-    // most days, for most projects, it isn't one: their updates aren't read
-    if (!due || today > addWorkingDays(due, FOLLOW_UPS)) continue;
-    const { data: last } = await supa.from("status_updates").select("created_at,status").eq("project_id", p.id)
-      .order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (last?.status === "on_hold") continue;
-    const { data: first } = await supa.from("tasks").select("created_at").eq("project_id", p.id).is("archived_at", null)
-      .order("created_at", { ascending: true }).limit(1).maybeSingle();
-    const state = rhythmState({
-      rhythm, today,
-      lastUpdate: last?.created_at ? local(String(last.created_at)) : null,
-      startedOn: first ? (first.created_at ? local(String(first.created_at)) : "1970-01-01") : null,
-    });
-    if (state.kind !== "due" || !isReminderDay(state, today)) continue;
-    out.push({ projectId: p.id, name: String(p.name ?? ""), when: dueDayWords(state.due, today), followUp: state.followUp });
-  }
-  return out;
-}
-
-/** The digest's "Your project updates": what ownerUpdatesDue finds, and the leads' asks since the last digest that
- *  nothing's been posted after. */
-async function digestUpdates(supa: Supa, userId: string, today: string, tz: string, since: string): Promise<DigestUpdate[]> {
-  const out: DigestUpdate[] = (await ownerUpdatesDue(supa, userId, today, tz))
-    .map((i) => ({ projectId: i.projectId, name: i.name, line: i.followUp === 0 || i.when === "today" ? "due today" : `was due ${i.when}` }));
-  const { data: asks, error } = await supa.from("update_asks").select("project_id,asked_by,created_at")
-    .eq("owner_id", userId).gt("created_at", since).order("created_at", { ascending: false }).limit(20);
-  if (error) return out;   // before 0053
-  for (const a of (asks ?? []) as { project_id: string; asked_by: string; created_at: string }[]) {
-    if (out.some((u) => u.projectId === a.project_id)) continue;
-    const { data: p } = await supa.from("projects").select("id,name,owner_id,archived_at").eq("id", a.project_id).maybeSingle();
-    if (!p || p.archived_at || String(p.owner_id) !== userId) continue;
-    const { data: later } = await supa.from("status_updates").select("id").eq("project_id", a.project_id).gt("created_at", a.created_at).limit(1);
-    if (later?.length) continue;
-    const { data: asker } = await supa.from("profiles").select("first_name").eq("id", a.asked_by).maybeSingle();
-    out.push({ projectId: String(p.id), name: String(p.name ?? ""), line: `${oneLine(String(asker?.first_name ?? "")).slice(0, 40) || "A lead"} asked for one` });
-  }
-  return out;
-}
-
 /** The update-day reminders (run inside "digest"): one push and one email a day per owner, listing every update
- *  that's theirs. Once a day per owner however often it runs (released when a send failed, so a later run retries). */
+ *  that's theirs (_shared/updateReminders: who's owed one, and the once-a-day claim). */
 async function rhythm(supa: Supa, env: Env) {
-  const report = { owners: 0, open: 0, due: 0, sent: 0, pushed: 0, held: 0, inDigest: 0, already: 0, failed: 0, note: "" };
+  const report = emptyRhythmReport();
   if (!env.resendKey && !env.vapid) return { ...report, note: "no senders" };
   // before 0053 there are no update days
   const probe = await supa.from("workspaces").select("update_rhythm").limit(1);
   if (probe.error) return { ...report, note: "update days need 0053" };
-  const owners = new Set<string>();
-  for (let fromRow = 0; ; fromRow += PAGE) {
-    const { data, error } = await supa.from("projects").select("owner_id")
-      .not("workspace_id", "is", null).is("archived_at", null).not("owner_id", "is", null).order("id").range(fromRow, fromRow + PAGE - 1);
-    if (error) { console.warn("[rhythm] projects:", String(error.message)); break; }
-    for (const p of data ?? []) if (UUID.test(String(p.owner_id))) owners.add(String(p.owner_id));
-    if (!data || data.length < PAGE) break;
-  }
+  const owners = await updateOwners(supa);
   let pushOn = !!env.vapid;
   if (pushOn) {
     const { error } = await supa.from("push_subscriptions").select("id").limit(1);
     if (error) pushOn = false;
   }
-  const store = supabaseQueueStore(supa);
-  const now = new Date();
+  // everyone's prefs in one read, so an owner outside their 09:00–18:00 costs nothing more
+  const prefs = await ownerPrefs(supa, owners);
+  const vapid = pushOn ? env.vapid : null;
+  const resendKey = env.resendKey;
+  const deps: RemindDeps = {
+    db: supa, store: supabaseQueueStore(supa), now: new Date(), appUrl: env.appUrl,
+    claim: async (key) => (await hit(supa, key, { windowSec: 36 * 3600 })).allowed,
+    release: (key) => release(supa, key),
+    push: vapid ? async (ownerId, push) => {
+      const res = await pushToUser(supa, ownerId, push, vapid, { ttl: 12 * 3600 });
+      return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
+    } : undefined,
+    email: resendKey ? async (ownerId, mail): Promise<SendOutcome> => {
+      const { data: u } = await supa.auth.admin.getUserById(ownerId);
+      const email = u?.user?.email;
+      if (!email) return "nothing";
+      const res = await sendEmail({ resendKey, from: env.from }, { to: email, subject: mail.subject, html: mail.html, text: mail.text });
+      return res.ok ? "sent" : "failed";
+    } : undefined,
+    afterEmail: async () => { await sleep(550); },   // Resend: ~2 requests a second
+  };
   for (const ownerId of owners) {
     report.owners++;
-    const { data: prof } = await supa.from("profiles").select("notify_prefs,suspended,approved").eq("id", ownerId).maybeSingle();
-    if (prof?.suspended || prof?.approved === false) continue;
-    const prefs = resolveNotifyPrefs(prof?.notify_prefs ?? {});
-    const local = localParts(now, prefs.timezone);
-    if (local.minutes < RHYTHM_FROM || local.minutes >= RHYTHM_UNTIL) continue;
-    report.open++;
-    const key = `${KEY_PREFIX}rhythm:${ownerId}:${local.date}`;
-    if (!(await hit(supa, key, { windowSec: 36 * 3600 })).allowed) { report.already++; continue; }
-    let items: UpdateDueItem[];
-    try { items = await ownerUpdatesDue(supa, ownerId, local.date, prefs.timezone); }
-    catch (e) { console.warn("[rhythm]", String((e as Error)?.message ?? e)); report.failed++; await release(supa, key); continue; }
-    if (!items.length) continue;
-    report.due++;
-    const push = updateDuePush(items);
-    const mail = updateDueEmail(items, env.appUrl);
-    const base = {
-      userId: ownerId, kind: "update" as const, eventKey: `update_due:${local.date}`, bundleKey: `update_due:${local.date}`,
-      taskId: null, actorId: null, actorName: "", title: items.length === 1 ? oneLine(items[0].name) : "Project updates",
-    };
-    const payload = { v: 1 as const, line: push.title, url: "/today", push, email: { subject: mail.subject, html: mail.html } };
-    let failed = false;
-    if (env.vapid && pushOn) {
-      const vapid = env.vapid;
-      const r = await deliverNotice({ ...base, channel: "push", payload }, {
-        store, now, prefs,
-        send: async () => {
-          const res = await pushToUser(supa, ownerId, push, vapid, { ttl: 12 * 3600 });
-          return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
-        },
-      });
-      if (r.result === "sent") report.pushed++;
-      else if (r.result === "held") report.held++;
-      else if (r.result === "failed") failed = true;
-    }
-    if (env.resendKey) {
-      const resendKey = env.resendKey;
-      const r = await deliverNotice({ ...base, channel: "email", payload }, {
-        store, now, prefs,
-        send: async (): Promise<SendOutcome> => {
-          const { data: u } = await supa.auth.admin.getUserById(ownerId);
-          const email = u?.user?.email;
-          if (!email) return "nothing";
-          const res = await sendEmail({ resendKey, from: env.from }, { to: email, subject: mail.subject, html: mail.html, text: mail.text });
-          return res.ok ? "sent" : "failed";
-        },
-      });
-      if (r.result === "sent") report.sent++;
-      else if (r.result === "held") report.held++;
-      else if (r.result === "digest") report.inDigest++;
-      else if (r.result === "failed") failed = true;
-      if (r.result === "sent" || r.result === "failed") await sleep(550);   // Resend: ~2 requests a second
-    }
-    // a send that failed outright (no queue to retry it from): a later run today tries again
-    if (failed) { report.failed++; await release(supa, key); }
+    const p = prefs.get(ownerId);
+    if (p) await remindOwner(ownerId, p, deps, report);
   }
   return report;
 }
