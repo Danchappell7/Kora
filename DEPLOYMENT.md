@@ -905,9 +905,12 @@ back at once, with nothing lost.
 **Do it after Step 18, in this order.** Any number of days can pass between the
 steps; nothing breaks while you wait.
 
-1. **Deploy the nine functions** (no new secrets, no new schedule). They're
+1. **Deploy the twelve functions** (no new secrets, no new schedule). They're
    safe now, before 0058: until it's in they fall back to today's rule, and
-   with it in and the switch off they answer as today too.
+   with it in and the switch off they answer as today too. **Don't switch
+   Project access on for any business until this step is done:** the old
+   functions don't know about it, so they'd still post, unfurl and email
+   Members only and Private work.
    - `notify`, `daily-reminders`: emails, push notices and the digest name only
      work the person can see.
    - `slack-post`, `slack-standup`, `slack-app`: only Whole workspace projects
@@ -919,12 +922,18 @@ steps; nothing breaks while you wait.
      they're added to.
    - `api`, `mcp`: no writes into a project you can only view, and no
      assigning someone who can't see it.
+   - `notion`: a Notion page whose Owner can't see the project comes in
+     unassigned (the sync no longer stops on it).
+   - `ics-feed`: a calendar names a project only where the task really is in
+     it.
+   - `webhook-dispatch`: an endpoint follows whoever last set its address;
+     if they leave or become a guest it's switched off.
 
    It runs from `~/Downloads/kora-app` and stops with "The new code isn't in this
    folder yet." (before asking for your token) if the folder doesn't have it.
 
    ```bash
-   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0058_project_access.sql ] && [ -f supabase/functions/_shared/projectAccess.ts ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && R=htnchiljplrnjkwimgla && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy daily-reminders --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-standup --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-post --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy public-form --no-verify-jwt --project-ref $R --use-api && supabase functions deploy invite-member --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && echo "All nine functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0058_project_access.sql ] && [ -f supabase/functions/_shared/projectAccess.ts ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && R=htnchiljplrnjkwimgla && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy daily-reminders --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-standup --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-post --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy public-form --no-verify-jwt --project-ref $R --use-api && supabase functions deploy invite-member --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notion --project-ref $R --use-api && supabase functions deploy ics-feed --no-verify-jwt --project-ref $R --use-api && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && echo "All twelve functions deployed."; unset SUPABASE_ACCESS_TOKEN
    ```
 2. **Run 0058** in the SQL editor
    (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>), after

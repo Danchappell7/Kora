@@ -43,8 +43,9 @@ in the bin, what it left behind keeps the project's access.
 
 ## Owner steps
 
-1. Deploy the functions first (they work before 0058: they fall back to
-   today's rule), then run the migration in the SQL editor:
+1. Deploy the functions first (DEPLOYMENT.md Step 19 lists the twelve; they
+   work before 0058: they fall back to today's rule), and never switch a
+   business on before they're out. Then run the migration in the SQL editor:
    <https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>
    (paste the whole file, press **Run**; "Success. No rows returned").
    - *"0058 needs …"*: run the file it names, then this one again.
