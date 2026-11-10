@@ -176,7 +176,7 @@ export function GoalCheckins({ goal, checkins, members, canEdit, canPost, today,
       <div className="kgl-checkin-row">
         {latest ? (
           <span className="kgl-latest">
-            <span>Checked in {daysAgo(latest.createdAt, today)}{personal ? "" : ` by ${first(personName(latest.authorId, members))}`}:</span>
+            <span>Checked in {daysAgo(latest.createdAt, today)}{personal ? "" : ` by ${latest.authorId === me ? "you" : first(personName(latest.authorId, members))}`}:</span>
             <b className="kpj-mono">{withUnit(latest.value, goal.unit)}</b>
             {latest.confidence ? <span className="kgl-conf">Confidence {CONFIDENCE_LABEL[latest.confidence].toLowerCase()}</span> : null}
             {latest.note && <q className="kgl-note">{latest.note}</q>}
@@ -201,7 +201,7 @@ export function GoalCheckins({ goal, checkins, members, canEdit, canPost, today,
             <li key={c.id}>
               <span className="kgl-history-when">{daysAgo(c.createdAt, today)}</span>
               <b className="kpj-mono">{withUnit(c.value, goal.unit)}</b>
-              {!personal && <span className="kgl-history-who">{first(personName(c.authorId, members))}</span>}
+              {!personal && <span className="kgl-history-who">{c.authorId === me ? "You" : first(personName(c.authorId, members))}</span>}
               {c.note && <span className="kgl-history-note">{c.note}</span>}
               {canEdit && (c.authorId === me || isAdmin || personal) && (
                 <IconButton icon="x" size="sm" tone="danger" label={`Take back the check-in of ${withUnit(c.value, goal.unit)}`} onClick={() => onRemove(c)} />

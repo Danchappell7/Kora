@@ -266,10 +266,6 @@ function GoalCard({ g, depth, goals, ordered, progress: prog, realProjects, task
               {(Object.keys(GOAL_STATUS) as GoalStatus[]).map((s) => <option key={s} value={s}>{GOAL_STATUS[s].label}</option>)}
             </select>
           ) : <Pill tone={meta.tone}>{meta.label}</Pill>}
-          {editable && v2 && (
-            <IconButton icon={g.archivedAt ? "undo" : "archive"} size="sm" label={g.archivedAt ? `Restore goal ${g.name}` : `Archive goal ${g.name}`}
-              onClick={() => update({ archivedAt: g.archivedAt ? null : new Date().toISOString() })} />
-          )}
           {editable && (
             <IconButton icon="trash" size="sm" tone="danger" label={`Delete goal ${g.name}`} onClick={() => {
               const msg = childCount
@@ -285,7 +281,7 @@ function GoalCard({ g, depth, goals, ordered, progress: prog, realProjects, task
           onCommit={(v) => update({ description: v })} className="kpj-name-input kpj-goal-desc" />
       ) : g.description ? <p className="kpj-goal-desc-text">{g.description}</p> : null}
       {v2 && <GoalMetaRow goal={g} members={members} canHandOver={canHandOver} canEdit={editable} today={today} onUpdate={update} />}
-      <div className="kpj-card-row">
+      {(editable || g.due || overdue || (ownNumber && (g.target ?? 0) !== 0)) && <div className="kpj-card-row">
         {editable ? (
           <>
             <select className="kpj-field" data-size="sm" value={g.projectId ?? ""} onChange={(e) => update({ projectId: e.target.value || undefined })} style={{ maxWidth: 220 }} aria-label={`Project linked to ${g.name}`}>
@@ -304,8 +300,10 @@ function GoalCard({ g, depth, goals, ordered, progress: prog, realProjects, task
           </>
         ) : g.due ? <DateChip size="sm" label={`Due date for ${g.name}`} value={g.due} tone="plain" readOnly onChange={() => undefined} /> : null}
         {overdue && <Pill tone="signal">Overdue</Pill>}
-      </div>
-      {ownNumber && (editable ? (
+        {/* to read: the numbers beside the date */}
+        {!editable && ownNumber && (g.target ?? 0) !== 0 && <span className="kpj-card-meta">{numbersLine(g)}</span>}
+      </div>}
+      {ownNumber && editable && (
         <div className="kpj-card-row">
           <span className="kpj-goal-nums">
             <DraftInput type="number" value={g.current ?? 0} label={`Current value for ${g.name}`} onCommit={(v) => saveNum("current", v)} className="kpj-field kpj-mono" />
@@ -313,13 +311,11 @@ function GoalCard({ g, depth, goals, ordered, progress: prog, realProjects, task
             <DraftInput type="number" value={g.target ?? 0} label={`Target for ${g.name}`} onCommit={(v) => saveNum("target", v)} className="kpj-field kpj-mono" />
             <DraftInput value={g.unit ?? ""} placeholder="unit" label={`Unit for ${g.name}`} onCommit={(v) => update({ unit: v })} className="kpj-field" />
           </span>
-          {v2 && g.startValue != null && (
+          {v2 && g.startValue != null && (g.startValue !== 0 || g.direction === "lower") && (
             <span className="kpj-card-meta">From {fmtGoalValue(g.startValue, g.unit)}{g.direction === "lower" ? " · lower is better" : ""}</span>
           )}
         </div>
-      ) : (g.target ?? 0) !== 0 ? (
-        <div className="kpj-card-row"><span className="kpj-card-meta">{numbersLine(g)}</span></div>
-      ) : null)}
+      )}
       <div className="kpj-goal-progress">
         <Meter value={pct} height={6} label={`${g.name} progress`} />
         <span className="kpj-mono">{pct}%</span>
@@ -343,6 +339,12 @@ function GoalCard({ g, depth, goals, ordered, progress: prog, realProjects, task
             </Button>
           )}
           {canAddUnder && !addingUnder && <Button size="sm" variant="ghost" icon="plus" onClick={() => onAddUnder(true)}>Add a key result</Button>}
+          {editable && (
+            <Button size="sm" variant="ghost" icon={g.archivedAt ? "undo" : "archive"} aria-label={g.archivedAt ? `Restore goal ${g.name}` : `Archive goal ${g.name}`}
+              onClick={() => update({ archivedAt: g.archivedAt ? null : new Date().toISOString() })}>
+              {g.archivedAt ? "Restore" : "Archive"}
+            </Button>
+          )}
         </div>
       )}
       {v2 && details && editable && <GoalDetails goal={g} members={members} canEdit={editable} canHandOver={canHandOver} onUpdate={update} />}

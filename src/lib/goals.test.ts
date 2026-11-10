@@ -125,6 +125,8 @@ describe("pace and the suggested status", () => {
     const progress = goalProgressMap(goals, () => 0);
     expect(goalsBehind(goals, progress, TODAY, groupGoalPace).map((x) => [x.goal.id, x.why, x.pace?.line])).toEqual([["slow", "pace", "Behind pace by 14%"]]);
     expect(groupGoalPace(goals[1], progress.get("fine")!, TODAY)).toEqual({ behind: false, line: "On pace" });
+    // an archived goal's quarter is over: it isn't behind
+    expect(goalsBehind([g({ id: "old", ...q4, current: 1, target: 100, status: "off_track", archivedAt: "2026-10-02T00:00:00Z" })], progress, TODAY, groupGoalPace)).toEqual([]);
   });
 });
 
