@@ -31,10 +31,11 @@ import { getMember, toLocalISO } from "../../data/data";
 import type { Task } from "../../data/types";
 import type { AiOutcome, ExtractedTask } from "../../lib/askTypes";
 import { getProjectDoc, saveProjectDoc } from "../../lib/docs";
+import { usePresence } from "../../lib/presence";
 import { PRESETS, mayRun, meetingDay, meetingPeople, sectionOf, SECTION_LABEL } from "../../lib/meetings/agenda";
 import { extractText, linkCreated, makeTaskText, meetingDoc } from "../../lib/meetings/notes";
 import {
-  addItem, deleteItem, endMeeting, getMeeting, handMeeting, isDemoMeetings, joinMeeting, listAttendees, listItems, meetingsMode, moveMeeting, presentMeeting,
+  addItem, deleteItem, endMeeting, getMeeting, handMeeting, isDemoMeetings, joinMeeting, listAttendees, listItems, meetingsMode, moveMeeting, presentMeeting, probeMeetings,
   setMeetingDoc, subscribeMeeting, updateItem, type ItemInput,
 } from "../../lib/meetings/sync";
 import type { AgendaItem, Meeting, MeetingAttendee, MeetingItem } from "../../lib/meetings/types";
@@ -79,26 +80,31 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
   const inFlight = useRef(0);
   useEffect(() => {
     let alive = true;
-    Promise.all([getMeeting(meetingId).catch(() => null), listItems(meetingId).catch(() => []), listAttendees(meetingId).catch(() => [])])
-      .then(([m, its, ats]) => {
-        if (!alive) return;
-        setMeeting(m);
-        setItems(its);
-        setAttendees(ats);
-        if (m?.status === "live") void joinMeeting(m.id, me);
-      });
-    const off = subscribeMeeting(meetingId, (c) => {
-      if (c.meeting) {
-        const next = c.meeting;
-        setMeeting((cur) => {
-          if (!cur) return next;
-          // your own moves are on their way: keep your place until they land
-          const mine = next.presenterId === me && (pendingMove.current || inFlight.current > 0);
-          return mine ? { ...next, place: cur.place, placeKey: cur.placeKey, movedAt: cur.movedAt } : next;
+    let off = () => {};
+    // (where meetings live is known first: opened from the Inbox, nothing may have asked yet)
+    void probeMeetings().then(() => {
+      if (!alive) return;
+      Promise.all([getMeeting(meetingId).catch(() => null), listItems(meetingId).catch(() => []), listAttendees(meetingId).catch(() => [])])
+        .then(([m, its, ats]) => {
+          if (!alive) return;
+          setMeeting(m);
+          setItems(its);
+          setAttendees(ats);
+          if (m?.status === "live") void joinMeeting(m.id, me);
         });
-      }
-      if (c.items) setItems(c.items);
-      if (c.attendees) setAttendees(c.attendees);
+      off = subscribeMeeting(meetingId, (c) => {
+        if (c.meeting) {
+          const next = c.meeting;
+          setMeeting((cur) => {
+            if (!cur) return next;
+            // your own moves are on their way: keep your place until they land
+            const mine = next.presenterId === me && (pendingMove.current || inFlight.current > 0);
+            return mine ? { ...next, place: cur.place, placeKey: cur.placeKey, movedAt: cur.movedAt } : next;
+          });
+        }
+        if (c.items) setItems(c.items);
+        if (c.attendees) setAttendees(c.attendees);
+      });
     });
     return () => { alive = false; off(); };
   }, [meetingId, me]);
@@ -122,7 +128,12 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
     && (live || (!!meeting.endedAt && Date.now() - new Date(meeting.endedAt).getTime() < 7 * 86400000));
   const hostRole = meeting ? members.find((m) => m.workspaceId === meeting.workspaceId && m.userId === me && m.status === "active")?.role : undefined;
   const canEnd = !!meeting && live && (presenting || meeting.startedBy === me || hostRole === "owner" || hostRole === "admin" || host?.ownerId === me);
-  const inRoom = attendees.filter((a) => a.joinedAt && a.userId !== me).map((a) => a.userId);
+  // who's here: once meetings are shared, whoever has the room open now (realtime presence, names only); in the
+  // demo and before 0056, whoever has joined
+  const meP = useMemo(() => ({ userId: me, name: getMember(me)?.name ?? "You", color: getMember(me)?.color ?? "" }), [me]);
+  const { peers } = usePresence(live && meetingsMode() === "shared" ? `meeting:${meetingId}` : null, meP);
+  const joined = attendees.filter((a) => a.joinedAt && a.userId !== me).map((a) => a.userId);
+  const inRoom = meetingsMode() === "shared" ? [...new Set(peers.map((p) => p.userId))].filter((id) => id !== me && joined.includes(id)) : joined;
   const presenterName = meeting?.presenterId ? (meeting.presenterId === me ? "You" : firstName(nameOf(meeting.presenterId) ?? "Someone")) : null;
   const recipients = attendees.filter((a) => a.userId !== me).map((a) => nameOf(a.userId) ?? "").filter(Boolean);
 
@@ -159,12 +170,17 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
 
   const takeOver = async () => {
     if (!meeting) return;
+    const here = idx;
     const r = await presentMeeting(meeting.id, me);
     if (!r.ok) { toast?.error(r.message); return; }
-    setMeeting(r.data);
     setFollow(true);
-    // you carry on from where you are
-    if (idx !== r.data.place) go(idx);
+    // you carry on from where you are: everyone comes to you
+    if (here === r.data.place) { setMeeting(r.data); return; }
+    setMeeting({ ...r.data, place: here, placeKey: r.data.agenda[here]?.key ?? null, movedAt: new Date().toISOString() });
+    inFlight.current++;
+    const m = await moveMeeting(meeting.id, here, r.data.agenda[here]?.key ?? null, me);
+    inFlight.current--;
+    if (!m.ok) toast?.error(m.message);
   };
   const [handOpen, setHandOpen] = useState(false);
   const handRef = useRef<HTMLButtonElement>(null);
@@ -314,8 +330,9 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
       const k = e.key;
       if (k === "Escape") { e.preventDefault(); if (help) setHelp(false); else onClose(); return; }
       if (!meeting || meeting.status !== "live") return;
-      if (k === "ArrowRight" || k === "ArrowDown" || k === "PageDown" || k === "j") { e.preventDefault(); go(idx + 1); }
-      else if (k === "ArrowLeft" || k === "ArrowUp" || k === "PageUp" || k === "k") { e.preventDefault(); go(idx - 1); }
+      // (← → and a clicker's Page Up / Page Down; ↑ ↓ still scroll a long item)
+      if (k === "ArrowRight" || k === "PageDown" || k === "j") { e.preventDefault(); go(idx + 1); }
+      else if (k === "ArrowLeft" || k === "PageUp" || k === "k") { e.preventDefault(); go(idx - 1); }
       else if (k === "Home") { e.preventDefault(); go(0); }
       else if (k === "End") { e.preventDefault(); go(n - 1); }
       else if (k === "n" && canWrite) { e.preventDefault(); if (phone) setNotesOpen(true); window.setTimeout(() => composerRef.current?.focus(), 0); }
@@ -434,7 +451,7 @@ export function MeetingRoom({ meetingId, data, onClose, createTasks, aiExtract, 
           </footer>
           {help && (
             <div className="kmtg-help" role="note">
-              <p><kbd>←</kbd> <kbd>→</kbd> or <kbd>J</kbd> <kbd>K</kbd> previous and next · <kbd>Home</kbd> <kbd>End</kbd> first and last</p>
+              <p><kbd>←</kbd> <kbd>→</kbd> (or <kbd>K</kbd> <kbd>J</kbd>, a clicker's page keys) previous and next · <kbd>Home</kbd> <kbd>End</kbd> first and last</p>
               <p><kbd>N</kbd> write a note · {presenting ? "you're presenting: everyone follows you" : <><kbd>F</kbd> follow {presenterName} or look round on your own</>} · <kbd>Esc</kbd> leave (it carries on)</p>
             </div>
           )}

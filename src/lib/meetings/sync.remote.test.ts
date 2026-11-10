@@ -7,7 +7,7 @@ const from = vi.fn();
 const rpc = vi.fn();
 vi.mock("../supabase", () => ({ supabase: { from: (t: string) => from(t), rpc: (...a: unknown[]) => rpc(...a), channel: () => ({ on() { return this; }, subscribe() { return this; } }), removeChannel: async () => "ok" }, isSupabaseConfigured: true }));
 
-import { addItem, endMeeting, isDemoMeetings, lastMeeting, liveMeetings, meetingsMode, moveMeeting, probeMeetings, resetMeetings, startMeeting, type StartInput } from "./sync";
+import { addItem, endMeeting, getMeeting, isDemoMeetings, lastMeeting, liveMeetings, meetingsMode, moveMeeting, probeMeetings, resetMeetings, startMeeting, type StartInput } from "./sync";
 
 /** a query builder that resolves to `result` however it's chained (and remembers how) */
 const calls: string[] = [];
@@ -45,6 +45,16 @@ describe("before 0056 is run", () => {
     const r = await startMeeting(input);
     expect(r.ok).toBe(true);
     expect(meetingsMode()).toBe("local");
+  });
+});
+
+describe("opened straight from the Inbox", () => {
+  it("asks where meetings live first, then reads the meeting from the database", async () => {
+    from.mockImplementation(() => query({ data: { ...ROW, status: "ended", ended_at: "2026-11-10T10:30:00Z" }, error: null }));
+    const m = await getMeeting("m1");
+    expect(meetingsMode()).toBe("shared");
+    expect(m).toMatchObject({ id: "m1", status: "ended", title: "Alpha team meeting" });
+    expect(calls).toContain('eq("id","m1")');
   });
 });
 

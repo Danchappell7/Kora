@@ -1,7 +1,8 @@
 /* Meetings (0056), wired through the whole app in demo mode: Team › Pulse's Run meeting opens the start sheet,
    Start opens the room over the page (Previous / Next and the keys), End and send recap turns it into the recap,
    and Pulse then has no live meeting; the Inbox's recap from last week opens that meeting's recap; the Group page
-   offers a meeting on each business. A guest at a business sees no Run meeting there. */
+   offers a meeting on each business. (A guest never has Pulse, and its Run meeting is the team's only: TeamPulse's
+   own test.) */
 import { describe, it, expect, afterEach, beforeAll, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import App from "./App";

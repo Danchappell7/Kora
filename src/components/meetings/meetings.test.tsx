@@ -157,9 +157,12 @@ describe("the room", () => {
     expect(screen.getByRole("heading", { name: "Maya Lin" })).toBeInTheDocument();   // looking round on your own
     fireEvent.click(back);
     expect(screen.getByRole("heading", { name: "Wrap up" })).toBeInTheDocument();
-    // Present: you take over from where you are
+    // Present: you take over from where you are, and everyone comes to you
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(screen.getByRole("heading", { name: "Radar risks" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Present" }));
-    await waitFor(async () => expect((await getMeeting(m.id))?.presenterId).toBe("m-self"));
+    await waitFor(async () => expect(await getMeeting(m.id)).toMatchObject({ presenterId: "m-self", place: 2, placeKey: "risks" }));
+    expect(screen.getByRole("heading", { name: "Radar risks" })).toBeInTheDocument();
   });
   it("logs a decision and an action with an owner on this item; Make task goes through Extract tasks and links the task", async () => {
     const m = await startOne();

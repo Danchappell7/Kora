@@ -197,6 +197,7 @@ export function memAct(id: string, by: string, act: { place?: number; presenterI
 
 /** One meeting (null when it's gone, or you can't read it). */
 export async function getMeeting(id: string): Promise<Meeting | null> {
+  if (mode === "unknown") await probeMeetings();
   if (shared()) {
     const { data, error } = await supabase!.from("meetings").select("*").eq("id", id).maybeSingle();
     if (error) { if (isMissingSchema(error)) markOff(); else throw error; return null; }
@@ -207,6 +208,7 @@ export async function getMeeting(id: string): Promise<Meeting | null> {
 }
 
 export async function listItems(meetingId: string): Promise<MeetingItem[]> {
+  if (mode === "unknown") await probeMeetings();
   if (shared()) {
     const { data, error } = await supabase!.from("meeting_items").select("*").eq("meeting_id", meetingId).order("created_at", { ascending: true });
     if (error) throw error;
@@ -216,6 +218,7 @@ export async function listItems(meetingId: string): Promise<MeetingItem[]> {
 }
 
 export async function listAttendees(meetingId: string): Promise<MeetingAttendee[]> {
+  if (mode === "unknown") await probeMeetings();
   if (shared()) {
     const { data, error } = await supabase!.from("meeting_attendees").select("*").eq("meeting_id", meetingId);
     if (error) throw error;
