@@ -779,6 +779,65 @@ say "The new code isn't in this folder yet." and stop before asking for your tok
    the per-address limit is weaker until that's looked at.
 6. **Connect an AI app**: Settings › Developers › Connect your AI has the steps for each one.
 
+### Step 17: Goals 2.0, update days and update conversations (database updates 0051–0054)
+
+Goal owners, quarters, check-ins and leadership-only goals (0052); update days,
+"Ask for an update" and honest status (0053); replies, reactions, "Seen by", Asks
+that name people, and portfolio pages (0054). 0051 (wave 1: guests can't read a
+team's goals or portfolios) comes first. The details are in
+[database-0052.md](docs/integrations/database-0052.md),
+[database-0053.md](docs/integrations/database-0053.md) and
+[database-0054.md](docs/integrations/database-0054.md).
+
+The website can go out before any of this. Until each file has run, the app
+keeps to what the database has: goals work as before (anyone who writes edits
+and deletes them), Ask for an update isn't offered, an update's Asks are kept in
+its words without naming anyone, replies and portfolio updates say they aren't
+switched on yet, and webhooks offer only the events the database takes.
+
+**Do it in this order.** The functions first, then the four files, oldest first.
+Any number of days can pass between the steps; nothing breaks while you wait.
+
+1. **Deploy the functions** (no new secrets, no new schedule). They're safe to
+   deploy now, before the files: what's new in them waits for the database
+   (`notify` answers "not found" for update asks until 0053, and the update-day
+   reminders skip until then), and everything else works as before. They must go
+   **before** 0054: after it, endpoints can subscribe to `status_update.posted`,
+   which the old `webhook-dispatch` can't build, so every delivery of it fails
+   and 20 failures in a row switch the endpoint off; and the old `ai-assist`
+   can't draft portfolio updates (the app falls back to its own draft).
+   - `notify`, `daily-reminders`: update asks, Ask notices, update-day reminders
+     and the digest's "Your project updates" (a held one is checked again before
+     it goes).
+   - `ai-assist`: section-by-section status drafts and portfolio drafts.
+   - `webhook-dispatch`, `api`, `mcp`: the `status_update.posted` event and the
+     On hold status.
+   - `slack-post`, `slack-standup`, `slack-app`: On hold in Slack.
+   - `invite-member`: wave 1's guest wording (if it hasn't gone out yet).
+
+   It runs from `~/Downloads/kora-app` and stops with "The new code isn't in this
+   folder yet." (before asking for your token) if the folder doesn't have it.
+
+   ```bash
+   cd ~/Downloads/kora-app && { [ -f supabase/migrations/0054_update_conversation.sql ] && [ -f supabase/functions/_shared/updateReminders.ts ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && R=htnchiljplrnjkwimgla && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && supabase functions deploy daily-reminders --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-standup --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy ai-assist --project-ref $R --use-api && supabase functions deploy slack-post --project-ref $R --use-api && supabase functions deploy invite-member --project-ref $R --use-api && echo "All ten functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   ```
+2. **Run 0051, 0052, 0053 and 0054, in that order**, each in the SQL editor
+   (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>):
+   copy one with `pbcopy < ~/Downloads/kora-app/supabase/migrations/0051_guest_leadership_lock.sql`
+   (then `0052_goals_v2.sql`, `0053_update_rhythm.sql`, `0054_update_conversation.sql`),
+   paste, press **Run** ("Success. No rows returned"), then run the VERIFY query
+   at the end of that file (every column `true`) before the next one. Each is
+   safe to run again. 0052 and 0054 stop with a clear message if 0051 isn't in.
+   Run 0053 before 0054: 0054 works without it, but update days, Ask for an
+   update and On hold come with 0053.
+3. **Reload the app** (a tab left open keeps what it learnt about the database
+   until it reloads) and check: a goal's panel has an owner and a quarter;
+   Settings › Workspace › Project updates has an update day; an update has
+   Reply; and Settings › Developers › Webhooks lists "Project update posted".
+
+If 0041, 0046, 0047 or 0048 is ever run again, run the files after it again too,
+in order (each file's "Running other files again" table says why).
+
 ---
 
 ## Reference

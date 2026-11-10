@@ -147,7 +147,7 @@ describe("the live check in DEPLOYMENT.md", () => {
     expect(read("DEPLOYMENT.md")).toMatch(/register 201/);
   });
   it("runs steps 1 and 2 only from a folder with the new code, before asking for the token", () => {
-    const step = read("DEPLOYMENT.md").split("### Step 16")[1].split("\n---")[0];
+    const step = read("DEPLOYMENT.md").split("### Step 16")[1].split("\n---")[0].split("\n### Step ")[0];
     const commands = step.split("\n").filter((l) => /read -s .*supabase (db query|functions deploy)/.test(l));
     expect(commands).toHaveLength(2);
     for (const c of commands) {
@@ -161,7 +161,7 @@ describe("the live check in DEPLOYMENT.md", () => {
     expect(step).toMatch(/new code isn't in that folder/);
   });
   it("says db.ts's other functions need deploying too", () => {
-    const step = read("DEPLOYMENT.md").split("### Step 16")[1];
+    const step = read("DEPLOYMENT.md").split("### Step 16")[1].split("\n### Step ")[0];
     for (const fn of ["mcp", "api", "webhook-dispatch", "notion", "slack-app"]) expect(step, fn).toContain(`supabase functions deploy ${fn}`);
     expect(step).not.toMatch(/No other function needs deploying/);
   });
