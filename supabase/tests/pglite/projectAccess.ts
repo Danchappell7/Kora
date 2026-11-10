@@ -965,6 +965,30 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
         [w.ws, w.task.PM]);
       ok(/not authorized/.test(errOf(item)), `a team meeting's item on a members-only task: ${errOf(item) || "allowed"}`);
     });
+
+    await test("0058, switch on: a meeting still ends after its notes project narrows (or the switch goes on while it runs), and its recap goes out", async () => {
+      const got = await scenario(async (run, _exec, tryRun) => {
+        const m = (await run(w.id.O, `select id::text as id from public.start_meeting($1::uuid, 'team', 'Zebra sync', null, '[]'::jsonb, array[$3::uuid], $2::uuid, null)`, [w.ws, w.proj.PW, w.id.M2]))[0].id as string;
+        await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [w.proj.PW]);
+        const ended = await tryRun(w.id.O, `select status from public.end_meeting($1::uuid, null, null)`, [m]);
+        const recap = (await run(null, `select meta from public.activity where user_id = $1::uuid and kind = 'meeting' and meta ->> 'meeting_id' = $2`, [w.id.M2, m])).map((r) => r.meta as Record<string, unknown>);
+        // a notes project it's given now is still checked
+        const m2 = (await run(w.id.O, `select id::text as id from public.start_meeting($1::uuid, 'team', 'Zebra sync 2', null, '[]'::jsonb, null, null, null)`, [w.ws]))[0].id as string;
+        const moved = errOf(await tryRun(w.id.O, `select public.set_meeting_doc($1::uuid, $2::uuid, $3::uuid)`, [m2, w.doc.PP, w.proj.PP]));
+        await run(w.id.O, `select public.end_meeting($1::uuid, null, null)`, [m2]);
+        // switched on while a leadership meeting with its notes in PP runs
+        await run(w.id.O, `select public.set_project_access($1::uuid, false)`, [w.ws]);
+        const l = (await run(w.id.O, `select id::text as id from public.start_meeting($1::uuid, 'leadership', 'Zebra leads', array[$1::uuid], '[]'::jsonb, null, $2::uuid, null)`, [w.ws, w.proj.PP]))[0].id as string;
+        await run(w.id.O, `select public.set_project_access($1::uuid, true)`, [w.ws]);
+        const ended2 = await tryRun(w.id.O, `select status from public.end_meeting($1::uuid, null, null)`, [l]);
+        return { ended: "rows" in ended ? ended.rows[0].status : errOf(ended), recap, moved, ended2: "rows" in ended2 ? ended2.rows[0].status : errOf(ended2) };
+      });
+      eq(got.ended, "ended", "the team meeting ends after PW goes Private");
+      eq(got.recap.length, 1, "Moe gets its recap");
+      ok(!("doc_id" in got.recap[0]) && !("project_id" in got.recap[0]), `without the notes in a project Moe can't see: ${JSON.stringify(got.recap[0])}`);
+      ok(/not authorized/.test(got.moved), `moving a team meeting's notes into a Private project: ${got.moved || "moved"}`);
+      eq(got.ended2, "ended", "the leadership meeting ends after the switch went on");
+    });
   }
 
   // ---------------------------------------------------------------- 12. switch off again: the rollback

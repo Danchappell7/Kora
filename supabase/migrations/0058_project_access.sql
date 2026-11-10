@@ -1727,11 +1727,14 @@ declare
   doc_project uuid;
 begin
   if not exists (select 1 from unnest(wss) x where public.pa_on(x)) then return new; end if;
-  -- the notes doc goes in a project its audience can open
-  if new.doc_project_id is not null and not public.pa_project_audience_open(new.preset, wss, new.doc_project_id::text) then
+  -- the notes doc goes in a project its audience can open (when it's set or changed: a meeting whose
+  -- notes project has since narrowed still ends, and its recap goes out without the doc)
+  if new.doc_project_id is not null and (tg_op = 'INSERT' or new.doc_project_id is distinct from old.doc_project_id)
+     and not public.pa_project_audience_open(new.preset, wss, new.doc_project_id::text) then
     raise exception 'not authorized';
   end if;
-  if new.doc_id is not null and to_regclass('public.project_docs') is not null then
+  if new.doc_id is not null and (tg_op = 'INSERT' or new.doc_id is distinct from old.doc_id)
+     and to_regclass('public.project_docs') is not null then
     select d.project_id into doc_project from public.project_docs d where d.id = new.doc_id;
     if doc_project is not null and not public.pa_project_audience_open(new.preset, wss, doc_project::text) then
       raise exception 'not authorized';
