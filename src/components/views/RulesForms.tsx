@@ -67,7 +67,7 @@ function TagPicker({ value, tags, onChange, label, disabled = false }: { value: 
   );
 }
 
-export function AutomationsView({ rules, projects, members, sections, tags, onCreate, onUpdate, onDelete, projectId, readOnly = false }: {
+export function AutomationsView({ rules, projects, members, sections, tags, onCreate, onUpdate, onDelete, projectId, readOnly = false, viewOnly }: {
   rules: AutomationRule[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -81,10 +81,13 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
   projectId?: string;
   /** view only (guests) */
   readOnly?: boolean;
+  /** 0058: projects you can view but not change; their rules read as a guest's, and new ones go elsewhere */
+  viewOnly?: ReadonlySet<string>;
 }) {
   const tagMap = tags ?? TAGS;
   const realProjects = projects.filter((p) => p.id !== "p-personal");
-  const { pid, setPid, fixed } = useTargetProject(realProjects, projectId);
+  const targets = realProjects.filter((p) => !viewOnly?.has(p.id));
+  const { pid, setPid, fixed } = useTargetProject(targets, projectId);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [trigger, setTrigger] = useState<AutomationRule["trigger"]>("task_created");
@@ -94,11 +97,11 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
     type === "set_priority" ? "medium" : type === "set_assignee" ? (members[0]?.id ?? "") : type === "add_tag" ? firstTag : "";
   const personName = (id: string) => members.find((m) => m.id === id)?.name ?? (getMember(id)?.name ? `${getMember(id)!.name} (former member)` : "(former member)");
   const ordered = useStableOrder(projectId ? rules.filter((r) => r.projectId === projectId) : rules);
-  const canAdd = !readOnly && realProjects.length > 0;
+  const canAdd = !readOnly && targets.length > 0 && !(projectId && viewOnly?.has(projectId));
 
   const adder = adding && canAdd && (
     <div className="kpj-adder">
-      {!fixed && <select className="kpj-field" value={pid} onChange={(e) => setPid(e.target.value)} aria-label="Project">{realProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+      {!fixed && <select className="kpj-field" value={pid} onChange={(e) => setPid(e.target.value)} aria-label="Project">{targets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
       <select className="kpj-field" value={trigger} onChange={(e) => setTrigger(e.target.value as AutomationRule["trigger"])} aria-label="Trigger">
         {(Object.keys(TRIGGER_LABEL) as AutomationRule["trigger"][]).map((t) => <option key={t} value={t}>When {TRIGGER_LABEL[t]}</option>)}
       </select>
@@ -132,24 +135,25 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
                 {ordered.map((rule) => {
                   const proj = getProject(rule.projectId) ?? realProjects.find((p) => p.id === rule.projectId);
                   const projSections = sections.filter((s) => s.projectId === rule.projectId);
+                  const locked = readOnly || !!viewOnly?.has(rule.projectId);
                   const setActions = (actions: AutomationAction[]) => onUpdate(rule.id, { actions });
                   const setValue = (i: number, value: string) => setActions(rule.actions.map((x, j) => j === i ? { ...x, value } : x));
                   return (
                     <article key={rule.id} className="kpj-card" data-paused={!rule.enabled || undefined} aria-label={`Rule ${rule.name}`}>
                       <div className="kpj-card-head">
                         {proj && !projectId && <ProjectDot color={proj.color} size={10} title={proj.name} />}
-                        {readOnly
+                        {locked
                           ? <span className="kpj-name-static">{rule.name}</span>
                           : <DraftInput value={rule.name} required label={`Rule name: ${rule.name}`} onCommit={(v) => onUpdate(rule.id, { name: v })} className="kpj-name-input" />}
                         <div className="kpj-card-side">
                           {!projectId && proj && <span className="kpj-card-meta">{proj.name}</span>}
                           {!rule.enabled && <span className="kpj-card-meta">Paused</span>}
                           <button type="button" role="switch" className="ktoggle-switch" aria-checked={rule.enabled} aria-label={`Run rule ${rule.name}`}
-                            title={rule.enabled ? "On: click to pause" : "Paused: click to turn on"} disabled={readOnly}
+                            title={rule.enabled ? "On: click to pause" : "Paused: click to turn on"} disabled={locked}
                             onClick={() => onUpdate(rule.id, { enabled: !rule.enabled })}>
                             <span className="ktoggle-thumb" aria-hidden="true" />
                           </button>
-                          {!readOnly && (
+                          {!locked && (
                             <IconButton icon="trash" size="sm" tone="danger" label={`Delete rule ${rule.name}`}
                               onClick={() => { if (window.confirm(`Delete the rule “${rule.name}”?`)) onDelete(rule.id); }} />
                           )}
@@ -158,45 +162,45 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
                       <div className="kpj-card-body">
                         <div className="kpj-rule-when">
                           <span>When</span>
-                          <select className="kpj-field" data-size="sm" value={rule.trigger} disabled={readOnly}
+                          <select className="kpj-field" data-size="sm" value={rule.trigger} disabled={locked}
                             onChange={(e) => onUpdate(rule.id, { trigger: e.target.value as AutomationRule["trigger"] })} aria-label={`Trigger for ${rule.name}`}>
                             {(Object.keys(TRIGGER_LABEL) as AutomationRule["trigger"][]).map((t) => <option key={t} value={t}>{TRIGGER_LABEL[t]}</option>)}
                           </select>
                           <span>then</span>
                         </div>
                         <div className="kpj-rule-actions">
-                          {rule.actions.length === 0 && <p className="kpj-rule-empty">No actions yet. The rule does nothing until it has one{readOnly ? "." : ": add one below."}</p>}
+                          {rule.actions.length === 0 && <p className="kpj-rule-empty">No actions yet. The rule does nothing until it has one{locked ? "." : ": add one below."}</p>}
                           {rule.actions.map((a, i) => (
                             <div key={i} className="kpj-rule-action">
                               <span className="kpj-rule-action-label">{ACTION_LABEL[a.type]}</span>
                               {a.type === "set_priority" && (
-                                <select className="kpj-field" value={a.value} disabled={readOnly} onChange={(e) => setValue(i, e.target.value)} aria-label={`Priority set by ${rule.name}`}>
+                                <select className="kpj-field" value={a.value} disabled={locked} onChange={(e) => setValue(i, e.target.value)} aria-label={`Priority set by ${rule.name}`}>
                                   {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_META[p]?.label ?? p}</option>)}
                                 </select>
                               )}
                               {a.type === "set_assignee" && (
-                                <select className="kpj-field" value={a.value} disabled={readOnly} onChange={(e) => setValue(i, e.target.value)} aria-label={`Person assigned by ${rule.name}`}>
+                                <select className="kpj-field" value={a.value} disabled={locked} onChange={(e) => setValue(i, e.target.value)} aria-label={`Person assigned by ${rule.name}`}>
                                   {!a.value && <option value="" disabled>Choose a person…</option>}
                                   {a.value && !members.some((m) => m.id === a.value) && <option value={a.value}>{personName(a.value)}</option>}
                                   {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                                 </select>
                               )}
                               {a.type === "set_section" && (
-                                <select className="kpj-field" value={a.value} disabled={readOnly} onChange={(e) => setValue(i, e.target.value)} aria-label={`Section used by ${rule.name}`}>
+                                <select className="kpj-field" value={a.value} disabled={locked} onChange={(e) => setValue(i, e.target.value)} aria-label={`Section used by ${rule.name}`}>
                                   <option value="">No section</option>
                                   {a.value && !projSections.some((sct) => sct.id === a.value) && <option value={a.value}>(deleted section)</option>}
                                   {projSections.map((sct) => <option key={sct.id} value={sct.id}>{sct.name}</option>)}
                                 </select>
                               )}
-                              {a.type === "add_tag" && <TagPicker value={a.value} tags={tagMap} onChange={(v) => setValue(i, v)} label={`Tag added by ${rule.name}`} disabled={readOnly} />}
-                              {!readOnly && (
+                              {a.type === "add_tag" && <TagPicker value={a.value} tags={tagMap} onChange={(v) => setValue(i, v)} label={`Tag added by ${rule.name}`} disabled={locked} />}
+                              {!locked && (
                                 <IconButton icon="x" size="sm" label={`Remove “${ACTION_LABEL[a.type]}” from ${rule.name}`} style={{ marginLeft: "auto" }}
                                   onClick={() => setActions(rule.actions.filter((_, j) => j !== i))} />
                               )}
                             </div>
                           ))}
                         </div>
-                        {!readOnly && (
+                        {!locked && (
                           <div className="kpj-rule-add">
                             {(Object.keys(ACTION_LABEL) as AutomationActionType[]).map((type) => (
                               <button key={type} type="button" className="kpj-chip" aria-label={`Add action “${ACTION_LABEL[type]}” to ${rule.name}`}
@@ -229,7 +233,7 @@ const FORM_FIELDS: { key: FormFieldKey; label: string }[] = [
 /** `assigneeId` is "" when the form asks for an assignee and the submitter
  *  chose "Unassigned", and undefined when the form doesn't ask. */
 export interface FormValues { title: string; description?: string; priority?: string; dueDate?: string; assigneeId?: string }
-export function FormsView({ forms, projects, members, onCreate, onUpdate, onDelete, onSubmit, onPublicChange, projectId, readOnly = false }: {
+export function FormsView({ forms, projects, members, onCreate, onUpdate, onDelete, onSubmit, onPublicChange, projectId, readOnly = false, viewOnly }: {
   forms: FormDef[];
   projects: Project[];
   members: { id: string; name: string }[];
@@ -244,9 +248,12 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
   projectId?: string;
   /** guests: see which forms there are and what they ask for; no filling in, building, renaming or deleting */
   readOnly?: boolean;
+  /** 0058: projects you can view but not change; their forms read as a guest's (filing into one needs edit rights) */
+  viewOnly?: ReadonlySet<string>;
 }) {
   const realProjects = projects.filter((p) => p.id !== "p-personal");
-  const { pid, setPid, fixed } = useTargetProject(realProjects, projectId);
+  const targets = realProjects.filter((p) => !viewOnly?.has(p.id));
+  const { pid, setPid, fixed } = useTargetProject(targets, projectId);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [fillFor, setFillFor] = useState<string | null>(null);
@@ -261,11 +268,11 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
     setVals({ title: "" }); setFillFor(null);
   };
   const ordered = useStableOrder(projectId ? forms.filter((f) => f.projectId === projectId) : forms);
-  const canAdd = !readOnly && realProjects.length > 0;
+  const canAdd = !readOnly && targets.length > 0 && !(projectId && viewOnly?.has(projectId));
 
   const adder = adding && canAdd && (
     <div className="kpj-adder">
-      {!fixed && <select className="kpj-field" value={pid} onChange={(e) => setPid(e.target.value)} aria-label="Project">{realProjects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+      {!fixed && <select className="kpj-field" value={pid} onChange={(e) => setPid(e.target.value)} aria-label="Project">{targets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
       {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
       <input autoFocus className="kpj-field" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); else if (e.key === "Escape") { e.stopPropagation(); setAdding(false); } }} placeholder="Form name, e.g. Bug report" aria-label="New form name" />
       <Button variant="primary" onClick={add} disabled={!name.trim()}>Add</Button>
@@ -297,27 +304,29 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                 {ordered.map((f) => {
                   const proj = getProject(f.projectId) ?? realProjects.find((p) => p.id === f.projectId);
                   const filling = fillFor === f.id;
+                  const viewer = !readOnly && !!viewOnly?.has(f.projectId);
+                  const locked = readOnly || viewer;
                   return (
                     <article key={f.id} className="kpj-card" aria-label={`Request form ${f.name}`}>
                       <div className="kpj-card-head">
                         {proj && !projectId && <ProjectDot color={proj.color} size={10} title={proj.name} />}
-                        {readOnly
+                        {locked
                           ? <span className="kpj-name-static">{f.name}</span>
                           : <DraftInput value={f.name} required label={`Form name: ${f.name}`} onCommit={(v) => onUpdate(f.id, { name: v })} className="kpj-name-input" />}
                         <div className="kpj-card-side">
                           {!projectId && proj && <span className="kpj-card-meta">{proj.name}</span>}
-                          {!readOnly && (
+                          {!locked && (
                             <Button variant={filling ? "ghost" : "secondary"} size="sm" aria-expanded={filling} aria-label={`${filling ? "Close" : "Open"} form ${f.name}`}
                               onClick={() => { setFillFor(filling ? null : f.id); setVals({ title: "" }); }}>{filling ? "Close" : "Open form"}</Button>
                           )}
-                          {!readOnly && (
+                          {!locked && (
                             <IconButton icon="trash" size="sm" tone="danger" label={`Delete form ${f.name}`}
                               onClick={() => { if (window.confirm(`Delete the form “${f.name}”?`)) onDelete(f.id); }} />
                           )}
                         </div>
                       </div>
-                      {readOnly ? (
-                        <p className="kpj-card-meta" style={{ margin: "8px 0 0" }}>Asks for a title{f.fields.length ? `, ${FORM_FIELDS.filter((ff) => f.fields.includes(ff.key)).map((ff) => ff.label.toLowerCase()).join(", ")}` : ""}.</p>
+                      {locked ? (
+                        <p className="kpj-card-meta" style={{ margin: "8px 0 0" }}>Asks for a title{f.fields.length ? `, ${FORM_FIELDS.filter((ff) => f.fields.includes(ff.key)).map((ff) => ff.label.toLowerCase()).join(", ")}` : ""}.{viewer ? ` You can view ${proj?.name ?? "this project"}, but not file into it.` : ""}</p>
                       ) : (
                         <div className="kpj-form-fields" role="group" aria-label={`Fields asked for by ${f.name}`}>
                           {FORM_FIELDS.map((ff) => {
@@ -332,8 +341,8 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                         </div>
                       )}
                       {/* anyone with the link can submit (guests only see the link while it's on) */}
-                      <PublicLinkPanel form={f} canEdit={!readOnly} projectName={proj?.name} projectColor={proj?.color} onChange={(p) => onPublicChange?.(f.id, p)} />
-                      {filling && !readOnly && (
+                      <PublicLinkPanel form={f} canEdit={!locked} projectName={proj?.name} projectColor={proj?.color} onChange={(p) => onPublicChange?.(f.id, p)} />
+                      {filling && !locked && (
                         <form className="kpj-form-fill" aria-label={`Fill in ${f.name}`} onSubmit={(e) => { e.preventDefault(); submit(f); }}>
                           {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
                           <input autoFocus className="kpj-field" value={vals.title} onChange={(e) => setVals((v) => ({ ...v, title: e.target.value }))} placeholder="Title (required)" aria-label="Title"

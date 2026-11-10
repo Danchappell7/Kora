@@ -2441,9 +2441,10 @@ export default function App() {
   // duplicate / recurrence / sub-tasks call persistTask directly (no rules)
   // (on Today a new task of yours lands on today's plan; one for a teammate, or one a
   // rule hands to someone else, never plans their day for them)
-  const createTask = useCallback((t: Task) => {
-    if (denyEdit([t.projectId])) return;
+  const createTask = useCallback((t: Task): boolean => {
+    if (denyEdit([t.projectId])) return false;
     persistTask(unplanIfTheirs(applyAutomation({ ...t, planToday: routeRef.current.view === "plan" ? (t.planToday ?? true) : false })));
+    return true;
   }, [denyEdit, persistTask, applyAutomation, unplanIfTheirs]);
 
   // Today's capture: in the workspace you're planning; yours unless you named someone
@@ -2941,7 +2942,8 @@ export default function App() {
 
   // ---- automation rules ----
   type RulePatch = { name?: string; actions?: AutomationAction[]; enabled?: boolean; trigger?: AutomationRule["trigger"] };
-  const ruleWs = (id: string) => { const r = rulesRef.current.find((x) => x.id === id); return r ? r.workspaceId ?? projectWs(r.projectId) : workspaceRef.current; };
+  // (a rule, form or field is its project's: changing one needs edit rights there, 0058)
+  const denyRule = (id: string) => { const r = rulesRef.current.find((x) => x.id === id); return r ? denyEdit([r.projectId]) : denyGuest([workspaceRef.current]); };
   const createRule = useCallback((projectId: string, name: string, actions: AutomationAction[], trigger: AutomationRule["trigger"] = "task_created") => {
     const wsId = projectWs(projectId);
     if (denyEdit([projectId])) return;
@@ -2955,23 +2957,23 @@ export default function App() {
       .catch((e) => { reportError(e, { op: "createRule" }); setAutomationRules((rs) => rs.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the rule: " + (e?.message || e)); });
   }, [denyEdit, settleTmp, toastError]);
   const updateRule = useCallback((id: string, patch: RulePatch) => {
-    if (denyGuest([ruleWs(id)])) return;
+    if (denyRule(id)) return;
     setAutomationRules((rs) => rs.map((x) => x.id === id ? { ...x, ...patch } : x));
     if (deferTmp(id, patch)) return;
     store.updateRule(id, patch).catch(saveFailed("updateRule"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyEdit, denyGuest, deferTmp, saveFailed]);
   const deleteRule = useCallback((id: string) => {
-    if (denyGuest([ruleWs(id)])) return;
+    if (denyRule(id)) return;
     setAutomationRules((rs) => rs.filter((x) => x.id !== id));
     if (deferTmp(id)) return;
     store.deleteRule(id).catch(saveFailed("deleteRule", "Couldn't delete the rule."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyEdit, denyGuest, deferTmp, saveFailed]);
 
   // ---- intake forms ----
   const formsRef = useRef<FormDef[]>([]); formsRef.current = forms;
-  const formWs = (id: string) => { const f = formsRef.current.find((x) => x.id === id); return f ? f.workspaceId ?? projectWs(f.projectId) : workspaceRef.current; };
+  const denyForm = (id: string) => { const f = formsRef.current.find((x) => x.id === id); return f ? denyEdit([f.projectId]) : denyGuest([workspaceRef.current]); };
   const createForm = useCallback((projectId: string, name: string, fields: FormFieldKey[]) => {
     const wsId = projectWs(projectId);
     if (denyEdit([projectId])) return;
@@ -2985,34 +2987,35 @@ export default function App() {
       .catch((e) => { reportError(e, { op: "createForm" }); setForms((fs) => fs.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the form: " + (e?.message || e)); });
   }, [denyEdit, settleTmp, toastError]);
   const updateForm = useCallback((id: string, patch: { name?: string; fields?: FormFieldKey[] }) => {
-    if (denyGuest([formWs(id)])) return;
+    if (denyForm(id)) return;
     setForms((fs) => fs.map((x) => x.id === id ? { ...x, ...patch } : x));
     if (deferTmp(id, patch)) return;
     store.updateForm(id, patch).catch(saveFailed("updateForm"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyEdit, denyGuest, deferTmp, saveFailed]);
   const deleteForm = useCallback((id: string) => {
-    if (denyGuest([formWs(id)])) return;
+    if (denyForm(id)) return;
     setForms((fs) => fs.filter((x) => x.id !== id));
     if (deferTmp(id)) return;
     store.deleteForm(id).catch(saveFailed("deleteForm", "Couldn't delete the form."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyEdit, denyGuest, deferTmp, saveFailed]);
   // a form submission becomes a task (and runs the project's automation rules).
   // It goes to the project's owner by default — never silently to the submitter.
   // A form that asks for an assignee sends "" for its explicit "Unassigned".
-  const submitForm = useCallback((projectId: string, vals: FormValues) => {
+  // (false: it wasn't taken, so the form keeps what was typed)
+  const submitForm = useCallback((projectId: string, vals: FormValues): boolean => {
     const proj = getProject(projectId);
-    if (denyGuest([proj?.workspaceId ?? null])) return;
-    createTask({
+    const taken = createTask({
       id: newTaskId(),
       title: vals.title, description: vals.description ?? "", status: "todo", priority: (vals.priority as Task["priority"]) || "medium",
       projectId, assigneeId: vals.assigneeId ?? (proj?.ownerId || userIdRef.current), tags: [], dependencies: [], subtasks: [],
       comments: 0, aiScore: 50, aiReason: undefined, focusMin: 30, dur: 30, scheduled: null, planToday: false,
       recurrence: "none", dueDate: vals.dueDate || undefined, position: Date.now(),
     });
-    toastSuccess("Submitted — task created");
-  }, [denyGuest, createTask, toastSuccess]);
+    if (taken) toastSuccess("Submitted — task created");
+    return taken;
+  }, [createTask, toastSuccess]);
 
   // ---- custom fields (per-project definitions) ----
   const createCustomField = useCallback((projectId: string, name: string, type: CustomFieldDef["type"], options: string[] = []) => {
@@ -3030,11 +3033,11 @@ export default function App() {
   const customFieldsRef = useRef<CustomFieldDef[]>([]); customFieldsRef.current = customFields;
   const deleteCustomField = useCallback((id: string) => {
     const f = customFieldsRef.current.find((c) => c.id === id);
-    if (denyGuest([f ? f.workspaceId ?? projectWs(f.projectId) : workspaceRef.current])) return;
+    if (f ? denyEdit([f.projectId]) : denyGuest([workspaceRef.current])) return;
     setCustomFields((cs) => cs.filter((c) => c.id !== id));
     if (deferTmp(id)) return;
     store.deleteCustomField(id).catch(saveFailed("deleteCustomField", "Couldn't delete the field."));
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyEdit, denyGuest, deferTmp, saveFailed]);
 
   /* ---- tags ---- */
   const createTag = useCallback((label: string, color: string) => {
@@ -4536,8 +4539,9 @@ export default function App() {
           acrossBusinesses={personal ? { workspaces } : undefined} readOnly={activeReadOnly} asks={updateAsks}
           onOpenPortfolio={(id) => setRoute({ view: "portfolios", portfolioId: id })} onOpenProject={openProjectFromPf} />;
       }
-      case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
-      case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
+      // (a project you can only view keeps its rules and forms read-only here too)
+      case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} viewOnly={viewOnlyProjects} />;
+      case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} viewOnly={viewOnlyProjects} />;
       // (your own plan on each task: "Add to Today" knows what's already on your day)
       // (All businesses, switched on: every workspace's items together, each with its business's chip; every
       // action still goes through the task's own workspace, and a reply only mentions people who can see the task)

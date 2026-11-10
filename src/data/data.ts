@@ -894,6 +894,9 @@ export const DEMO_RULES: AutomationRule[] = [
 export const DEMO_FORMS: FormDef[] = [
   { id: "form-launch", projectId: "p-launch", workspaceId: "ws-foundrise", name: "Launch requests",
     description: "Ask the launch team for copy, assets or a fix before launch day.", fields: ["description", "priority", "dueDate"] },
+  // (Harbour's Fee review is Members only, and Daniel can only view it: its form reads, but doesn't file)
+  { id: "form-hb-fees", projectId: "p-hb-fees", workspaceId: "ws-harbour", name: "Fee questions",
+    description: "Ask before you quote a client outside their fee band.", fields: ["description"] },
 ];
 
 export const fmtClock = (m: number): string => {

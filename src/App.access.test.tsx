@@ -165,6 +165,15 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     expect(within(panel).getByText("View only")).toBeInTheDocument();
     expect(within(panel).queryByRole("textbox", { name: "Add a comment" })).toBeNull();
   });
+  it("Projects › Requests shows its form, but it can't be filled in, changed or deleted there", async () => {
+    inWs("ws-harbour", "/projects/requests");
+    await boot();
+    const card = await screen.findByRole("article", { name: "Request form Fee questions" });
+    expect(within(card).getByText(/You can view Fee review, but not file into it\./)).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: "Open form Fee questions" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Delete form Fee questions" })).toBeNull();
+    expect(within(card).queryByRole("textbox", { name: /Form name/ })).toBeNull();
+  });
 });
 
 describe("App · Daniel the guest (Northlight Studio)", () => {

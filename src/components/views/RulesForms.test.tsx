@@ -1,8 +1,9 @@
-/* FormsView › each form's public link (PublicLinkPanel, demo mode). */
+/* FormsView › each form's public link (PublicLinkPanel, demo mode); Rules and Requests for a project
+   you can only view (0058). */
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { FormsView } from "./RulesForms";
-import type { FormDef, Project } from "../../data/types";
+import { AutomationsView, FormsView } from "./RulesForms";
+import type { AutomationRule, FormDef, Project } from "../../data/types";
 
 const project: Project = { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: "oklch(0.6 0.2 264)", workspaceId: "ws" };
 const form: FormDef = { id: "33333333-3333-4333-8333-333333333333", projectId: "p-launch", workspaceId: "ws", name: "Launch requests", fields: ["description"] };
@@ -31,5 +32,42 @@ describe("FormsView › public link", () => {
     // link off: nothing for a guest at all
     expect(within(card).queryByRole("switch", { name: "Anyone with the link can submit" })).toBeNull();
     expect(within(card).queryByRole("button", { name: /regenerate/i })).toBeNull();
+  });
+});
+
+describe("Projects › Rules and Requests: a project you can only view (0058)", () => {
+  const other: Project = { id: "p-ops", name: "Ops", emoji: "", color: "oklch(0.6 0.1 120)", workspaceId: "ws" };
+  const rule: AutomationRule = { id: "r-1", workspaceId: "ws", projectId: "p-launch", name: "Triage", trigger: "task_created", actions: [{ type: "set_priority", value: "high" }], enabled: true };
+
+  it("its rules read as a guest's: no pause, rename or delete; a new rule goes into a project you can change", () => {
+    const onUpdate = vi.fn(), onCreate = vi.fn();
+    render(<AutomationsView rules={[rule]} projects={[project, other]} members={[]} sections={[]} onCreate={onCreate} onUpdate={onUpdate} onDelete={vi.fn()} viewOnly={new Set(["p-launch"])} />);
+    const card = screen.getByRole("article", { name: "Rule Triage" });
+    expect(within(card).getByRole("switch", { name: "Run rule Triage" })).toBeDisabled();
+    expect(within(card).queryByRole("button", { name: "Delete rule Triage" })).toBeNull();
+    expect(within(card).queryByRole("textbox")).toBeNull();
+    fireEvent.click(within(card).getByRole("switch", { name: "Run rule Triage" }));
+    expect(onUpdate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "New rule" }));
+    expect([...screen.getByRole("combobox", { name: "Project" }).querySelectorAll("option")].map((o) => o.value)).toEqual(["p-ops"]);
+  });
+
+  it("its forms can't be filled in, built or deleted here (filing needs edit rights), and the card says so", () => {
+    forms({ projects: [project, other], viewOnly: new Set(["p-launch"]) });
+    const card = screen.getByRole("article", { name: "Request form Launch requests" });
+    expect(within(card).queryByRole("button", { name: "Open form Launch requests" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Delete form Launch requests" })).toBeNull();
+    expect(within(card).getByText(/You can view Q3 Product Launch, but not file into it\./)).toBeInTheDocument();
+    expect(within(card).queryByRole("switch", { name: "Anyone with the link can submit" })).toBeNull();
+  });
+
+  it("a form you can change still files, and a refused one keeps what was typed", () => {
+    const onSubmit = vi.fn(() => false);
+    forms({ onSubmit });
+    fireEvent.click(screen.getByRole("button", { name: "Open form Launch requests" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Fix the banner" } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit request" }));
+    expect(onSubmit).toHaveBeenCalledWith("p-launch", expect.objectContaining({ title: "Fix the banner" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Fix the banner");
   });
 });
