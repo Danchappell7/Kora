@@ -68,4 +68,14 @@ describe("update asks, signed in", () => {
     expect(err).toMatchObject({ reason: "unavailable" });
     expect(rpc).not.toHaveBeenCalled();
   });
+
+  it("finding the table missing on a later read (after a blip) still takes the Ask buttons away", async () => {
+    from.mockReturnValueOnce(reads({ error: { code: "08006", message: "connection reset" } }));
+    await loadUpdateAsks("me");                   // a blip: nothing known yet, so asking is still offered
+    from.mockReturnValue(reads({ error: { code: "PGRST205", message: "Could not find the table 'public.update_asks' in the schema cache" } }));
+    const { result } = renderHook(() => useAskForUpdate("me", () => "owner"));
+    expect(result.current).toBeDefined();
+    await waitFor(() => expect(asksOn()).toBe(false));
+    await waitFor(() => expect(result.current).toBeUndefined());
+  });
 });

@@ -43,6 +43,8 @@ let missing = false;
 let seq = 0;
 const listeners = new Set<() => void>();
 const tell = () => listeners.forEach((fn) => fn());
+/** Not there (before 0053): say so with a new snapshot, so everyone reading asks (and asksOn()) renders again. */
+const markMissing = () => { missing = true; rows = [...rows]; tell(); };
 const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
 
 /** Is "Ask for an update" there to offer? (Before 0053 the table and function aren't.) */
@@ -63,7 +65,7 @@ export async function loadUpdateAsks(me: string, force = false): Promise<UpdateA
   const { data, error } = await supabase.from("update_asks").select(ASK_COLUMNS).gte("created_at", since).order("created_at", { ascending: false }).limit(500);
   if (error) {
     loaded = "no";
-    if (isMissing(error)) { missing = true; tell(); }
+    if (isMissing(error)) markMissing();
     return rows;
   }
   loaded = "yes";
@@ -100,7 +102,7 @@ export async function askForUpdate(project: Pick<Project, "id" | "workspaceId" |
   if (missing) throw new AskError("unavailable", "Asking for updates isn't switched on yet.");
   const { data, error } = await supabase.rpc("ask_for_update", { p_project: project.id });
   if (error) {
-    if (isMissing(error)) { missing = true; tell(); throw new AskError("unavailable", "Asking for updates isn't switched on yet."); }
+    if (isMissing(error)) { markMissing(); throw new AskError("unavailable", "Asking for updates isn't switched on yet."); }
     const m = errText(error);
     if (/recent|already asked/i.test(m)) throw new AskError("recent", "Someone asked about this project today.");
     if (/too many/i.test(m)) throw new AskError("recent", "You've asked for a lot of updates today. Try again tomorrow.");
