@@ -908,7 +908,7 @@ insert into public.schema_migrations (version) values ('0052') on conflict (vers
 --   and exists (select 1 from pg_trigger t where t.tgname = 'trg_goal_checkins_apply'
 --     and t.tgtype & 16 = 16)                                                                          as checkin_records,
 --   to_regprocedure('public.kanbo_fts(text, text)') is null
---   or (pg_get_functiondef('public.search_all(text, jsonb, integer)'::regprocedure) like '%''goal''::text%'
---       and not (select p.prosecdef from pg_proc p where p.oid = 'public.search_all(text, jsonb, integer)'::regprocedure)
+--   or (pg_get_functiondef(to_regprocedure('public.search_all(text, jsonb, integer)')) like '%''goal''::text%'
+--       and not (select p.prosecdef from pg_proc p where p.oid = to_regprocedure('public.search_all(text, jsonb, integer)'))
 --       and to_regclass('public.goals_fts_idx') is not null)                                           as goals_in_search;
 -- ============================================================
