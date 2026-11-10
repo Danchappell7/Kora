@@ -377,6 +377,27 @@ const SCHEMAS: Record<string, unknown> = {
       },
     },
   },
+  // webhook data only (status_update.posted, 0054)
+  StatusUpdateEvent: {
+    type: "object",
+    description: "The `data` of status_update.posted webhook events: a project update someone just posted.",
+    required: ["object", "id", "projectId", "workspaceId", "authorId", "authorName", "status", "summary", "sections", "askUserIds", "recoveryPlan", "targetDate", "createdAt", "project"],
+    properties: {
+      object: { const: "status_update" }, id: uuid(), projectId: { type: "string" }, workspaceId: nullable("string", { format: "uuid" }),
+      authorId: nullable("string", { format: "uuid" }), authorName: nullable("string"),
+      status: { type: "string", enum: ["on_track", "at_risk", "off_track", "on_hold"] }, summary: { type: "string" },
+      sections: {
+        type: ["object", "null"], description: "The optional Highlights / Risks / Asks / Next (each up to 2,000 characters).",
+        properties: { highlights: { type: "string" }, risks: { type: "string" }, asks: { type: "string" }, next: { type: "string" } },
+      },
+      askUserIds: { type: "array", items: uuid(), description: "The people its Asks name." },
+      recoveryPlan: nullable("string", { maxLength: 2000 }), targetDate: date(), createdAt: nullable("string", { format: "date-time" }),
+      project: {
+        type: ["object", "null"], required: ["id", "name", "workspaceId", "url"],
+        properties: { id: uuid(), name: nullable("string"), workspaceId: nullable("string", { format: "uuid" }), url: nullable("string", { format: "uri" }) },
+      },
+    },
+  },
   TaskList: listSchema("Task"), ProjectList: listSchema("Project"), SectionList: listSchema("Section"),
   CommentList: listSchema("Comment"), MemberList: listSchema("Member"), WorkspaceList: listSchema("Workspace"),
 };
@@ -552,7 +573,7 @@ const INTRO = [
   "",
   "**Automations.** A project's automations (\"When a task is created\", \"status changed\", \"task completed\") run for API changes too, exactly as in the app. A value a rule names that the task can't take (someone outside the workspace, another project's section) is skipped.",
   "",
-  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Task, project, comment and member events carry the same JSON as this API. `approval.requested` and `approval.decided` (team workspaces) carry an `ApprovalEvent`: the request, its reviewers and task, and for a decision `decision.decision` (`approved`, `changes_requested`, or `cancelled` when it was withdrawn or its task moved out of the workspace: then `task` is the task as it was in this workspace). `kudos.given` (team workspaces) carries a `KudosEvent`: who thanked whom for which finished task, with the emoji and optional note.",
+  "**Webhooks.** To hear about changes as they happen instead of polling, add a webhook in Settings › Developers › Webhooks. Task, project, comment and member events carry the same JSON as this API. `approval.requested` and `approval.decided` (team workspaces) carry an `ApprovalEvent`: the request, its reviewers and task, and for a decision `decision.decision` (`approved`, `changes_requested`, or `cancelled` when it was withdrawn or its task moved out of the workspace: then `task` is the task as it was in this workspace). `kudos.given` (team workspaces) carries a `KudosEvent`: who thanked whom for which finished task, with the emoji and optional note. `status_update.posted` carries a `StatusUpdateEvent`: the update's call, words, sections and the people its Asks name, with its project.",
 ].join("\n");
 
 /** The document, with `serverUrl` (…/functions/v1/api/v1) as its only server. */

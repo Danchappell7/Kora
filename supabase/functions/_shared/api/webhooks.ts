@@ -33,6 +33,7 @@ export const WEBHOOK_EVENTS: readonly WebhookEventType[] = [
   "comment.created", "project.created", "project.updated", "member.joined",
   "approval.requested", "approval.decided",
   "kudos.given",
+  "status_update.posted",
 ];
 
 /** The event catalogue (docs, Settings checklist). */
@@ -48,6 +49,7 @@ export const WEBHOOK_EVENT_INFO: Readonly<Record<WebhookEventType, { label: stri
   "approval.requested": { label: "Approval requested", description: "Someone asks for approval on a task. `data` is the request with its reviewers and task." },
   "approval.decided":   { label: "Approval decided",   description: "A reviewer approves or asks for changes, or the request is cancelled. `decision` says which; `status` is where the request now stands." },
   "kudos.given":        { label: "Kudos given",        description: "Someone thanks a teammate for a finished task. `data` is the kudos (who, to whom, the emoji and note) and its task." },
+  "status_update.posted": { label: "Project update posted", description: "Someone posts a project update. `data` is the update (its call, words, sections and who its Asks name) and its project." },
 };
 
 export const WEBHOOK_HEADERS = {

@@ -11,7 +11,7 @@ import {
 const migration = readFileSync(new URL("../../../migrations/0046_api_webhooks_notion.sql", import.meta.url), "utf8");
 // 0047 recreates webhook_event_names() with the approval events: the latest definition is the one that counts
 const migration0047 = readFileSync(new URL("../../../migrations/0047_bin_history_approvals_docs.sql", import.meta.url), "utf8");
-// the latest webhook_event_names(): 0048 adds kudos.given to 0047's
+// the latest webhook_event_names(): 0048 adds kudos.given to 0047's (and lists 0054's status_update.posted, so a re-run keeps it)
 const migration0048 = readFileSync(new URL("../../../migrations/0048_ux_wave.sql", import.meta.url), "utf8");
 const SECRET = "whsec_jdGsQXdTNkPSgmI33ZLnz23lIrUXcu9vDtOYAOWNaJQ";
 const BODY = JSON.stringify({ id: "evt_1", type: "task.created", createdAt: "2026-10-05T18:00:00.000Z", workspaceId: null, data: {} });
@@ -124,13 +124,14 @@ describe("constants match the 0046 SQL", () => {
   it("event names = webhook_event_names() (0048's, which adds kudos.given to 0047's approval events and 0046's)", () => {
     const names = (sql: string) => {
       const m = /function public\.webhook_event_names\(\)[\s\S]*?array\[([\s\S]*?)\]::text\[\]/.exec(sql);
-      return (m?.[1].match(/'([a-z.]+)'/g) ?? []).map((s) => s.slice(1, -1));
+      return (m?.[1].match(/'([a-z._]+)'/g) ?? []).map((s) => s.slice(1, -1));
     };
     expect([...WEBHOOK_EVENTS]).toEqual(names(migration0048));
     expect(names(migration0048).slice(0, names(migration0047).length)).toEqual(names(migration0047));
     expect(names(migration0047).slice(0, names(migration).length)).toEqual(names(migration));
     expect(WEBHOOK_EVENTS).toContain("approval.decided");
     expect(WEBHOOK_EVENTS).toContain("kudos.given");
+    expect(WEBHOOK_EVENTS).toContain("status_update.posted");
     expect(Object.keys(WEBHOOK_EVENT_INFO).sort()).toEqual([...WEBHOOK_EVENTS].sort());
   });
   it("retry schedule = webhook_record_result's backoff", () => {

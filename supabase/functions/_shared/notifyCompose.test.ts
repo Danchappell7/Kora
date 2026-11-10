@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   composeBundle, digestEmail, digestThreads, dueEmail, eventEmail, filterDigestItems, kudosEmail, kudosPush, noticeLine, peopleList,
-  updateAskEmail, updateAskPush, updateDueEmail, updateDuePush, type ComposeRow, type DigestItem,
+  postedLine, statusWord, updateAskEmail, updateAskPush, updateDueEmail, updateDuePush, updatePostedEmail, updatePostedPush, type ComposeRow, type DigestItem,
 } from "./notifyCompose";
 
 const T = "22222222-2222-4222-8222-222222222222";
@@ -164,5 +164,37 @@ describe("project updates (0053: the update-day reminder and Ask for an update)"
     expect(m.subject).toBe("Your Kanbo digest: your project update");
     expect(m.html).toContain(`/p/${P}/updates`);
     expect(m.text).toMatch(/Kanbo has a draft ready on Today/);
+  });
+});
+
+describe("a posted update (0054)", () => {
+  const u = { actorName: "Sana Rao", projectName: "Brand <Refresh>", projectId: "p-1", status: "at_risk", summary: "Hero waits on copy.", ask: "Daniel, approve the hero by Thursday?" };
+  it("the people its Ask names: a push and an email that lead with the ask", () => {
+    const p = updatePostedPush(u);
+    expect(p).toMatchObject({ title: "Sana Rao asked you something", url: "/p/p-1/updates", kind: "update" });
+    expect(p.body).toBe("Brand <Refresh>: Daniel, approve the hero by Thursday?");
+    const m = updatePostedEmail(u, true, "https://www.kanbo.co.uk/p/p-1/updates");
+    expect(m.subject).toBe("Sana Rao asked you something in the Brand <Refresh> update");
+    expect(m.html).toContain("Daniel, approve the hero by Thursday?");
+    expect(m.html).toContain("Brand &lt;Refresh&gt;");
+    expect(postedLine(u, true)).toBe("Sana Rao asked you something in an update");
+  });
+  it("everyone else: an FYI email with the call and the words", () => {
+    const m = updatePostedEmail({ ...u, ask: null }, false, "");
+    expect(m.subject).toBe("Sana Rao posted an update on Brand <Refresh>: At risk");
+    expect(m.html).toContain("Hero waits on copy.");
+    expect(postedLine(u, false)).toBe("Sana Rao posted an update");
+    expect(statusWord("on_hold")).toBe("On hold");
+    expect(statusWord("great")).toBe("");
+  });
+  it("the digest: an Ask for you, replies on yours, and what was posted, under the project", () => {
+    const it = (id: string, meta: Record<string, unknown>, who = "Sana Rao"): DigestItem =>
+      ({ id, task_id: null, task_title: "Brand Refresh", kind: "update", detail: who, created_at: `2026-11-10T09:0${id}:00Z`, meta });
+    const [t] = digestThreads([it("1", { update_event: "posted", ask: true, status_update_id: "su" })]);
+    expect(t).toMatchObject({ title: "Brand Refresh", lines: ["Sana asked you something in an update"] });
+    const [r] = digestThreads([it("2", { update_event: "comment", ask: false }, "Maya Lin")]);
+    expect(r.lines).toEqual(["1 reply on your update from Maya"]);
+    const [f] = digestThreads([it("3", { update_event: "posted", ask: false })]);
+    expect(f.lines).toEqual(["Sana posted an update"]);
   });
 });

@@ -22,6 +22,7 @@ const bodies: Record<string, Record<string, unknown>> = {
   extract: { mode: "extract", text: "Maya to send the brief by Fri.\nTheo books the venue.", today: "2026-09-30", members, projects, hint: "Launch sync" },
   standup: { mode: "standup", today: "2026-09-30", facts: { done: [{ who: "Maya Chen", title: "Ship tokens" }], blocked: [] } },
   status: { mode: "status", today: "2026-09-30", facts: { project: "Q3 Product Launch", overdue: 2, done7d: 5 } },
+  portfolio: { mode: "portfolio", today: "2026-09-30", facts: { portfolio: "Q3 launch", projects: [{ name: "Q3 Product Launch", call: "at_risk", latest: { summary: "Deck is late." } }] } },
 };
 const plan = (mode: string, over: Record<string, unknown> = {}) => modeRequest(mode, { ...bodies[mode], ...over }, NOW) as ModePlan;
 const known: Known = { taskIds: new Set(["t-1", "t-2", "t-3"]), memberIds: new Set(members.map((m) => m.id)), projectIds: new Set(projects.map((p) => p.id)) };
@@ -32,7 +33,8 @@ describe("prompt builders", () => {
       command: ['"answer"', '"actions"', '"cites"', '"op": "update"', '"op": "create"', "Never delete"],
       extract: ['"tasks"', '"title"', '"assigneeName"', "Never invent people"],
       standup: ['{"text": string}', "5 short lines", "British English", "no emoji"],
-      status: ['"summary"', '"on_track" | "at_risk" | "off_track"', "2 to 4 sentences"],
+      status: ['"summary"', '"on_track" | "at_risk" | "off_track"', "2 to 4 sentences", '"sections"', "Never write asks"],
+      portfolio: ['"summary"', '"sections"', '"asks"', "how many projects are on track", "Never invent projects"],
     };
     for (const mode of MODES) {
       const p = plan(mode);
@@ -349,5 +351,15 @@ describe("filterStandup and filterStatus", () => {
     expect(filterStatus({ summary: " On track. ", status: "on_track" })).toEqual({ summary: "On track.", status: "on_track" });
     expect(filterStatus({ summary: "Fine.", status: "great" })).toBeNull();
     expect(filterStatus({ status: "at_risk" })).toBeNull();
+  });
+
+  it("status and portfolio (0054): sections are kept to their keys and bounded; a project draft never writes Asks", () => {
+    const out = filterStatus({ summary: "Moving.", status: "at_risk", sections: { highlights: " Shipped the palette. ", risks: "x".repeat(900), asks: "Approve the budget", next: 4, gossip: "no" } });
+    expect(out).toEqual({ summary: "Moving.", status: "at_risk", sections: { highlights: "Shipped the palette.", risks: "x".repeat(600) } });
+    expect(filterStatus({ summary: "Moving.", status: "on_track", sections: "all good" })).toEqual({ summary: "Moving.", status: "on_track" });
+    const pf = modeRequest("portfolio", bodies.portfolio, NOW) as ModePlan;
+    expect(pf.finish({ summary: "1 of 1 on track.", status: "on_track", sections: { asks: "Q3: approve the deck", next: "Launch day, Wed 18 Nov." } }))
+      .toEqual({ summary: "1 of 1 on track.", status: "on_track", sections: { asks: "Q3: approve the deck", next: "Launch day, Wed 18 Nov." } });
+    expect(modeRequest("portfolio", { mode: "portfolio" }, NOW)).toMatchObject({ error: "bad_request" });
   });
 });

@@ -43,6 +43,14 @@
 // still own the project and be in the workspace. Prefs "update_email" /
 // "update_push"; their digest, quiet hours and bundling apply.
 //
+// { kind: "status_update", updateId } (0054): after the caller posted a team
+// project update (the database has already put it in Inboxes). Only its
+// author may ask, once per update, within 10 minutes of it. The project's
+// owner and contributors get an email (FYI: no push; their digest takes it
+// instead when they have one); the people its Ask names get a push and an
+// email ("Needs your reply"). Everyone must still be in the workspace.
+// Prefs "update_email" / "update_push"; quiet hours and bundling apply.
+//
 // { kind: "test", endpoint? } sends Settings' test notification to the
 // caller's own device(s): 200 { ok, sent } · 409 { reason: "no_subscription" }
 // · 429 { reason: "rate_limited" } · 503 { reason: "unconfigured" }.
@@ -89,7 +97,7 @@ import {
 import {
   APPROVAL_EVENT_WINDOW_SEC, approvalEmail, approvalNoticeText, approvalPush, planApprovalNotice, type ApprovalRow, type ReviewerRow,
 } from "../_shared/approvalNotify.ts";
-import { eventEmail, kudosEmail, kudosPush, noticeLine, updateAskEmail, updateAskPush } from "../_shared/notifyCompose.ts";
+import { eventEmail, kudosEmail, kudosPush, noticeLine, postedLine, updateAskEmail, updateAskPush, updatePostedEmail, updatePostedPush } from "../_shared/notifyCompose.ts";
 import {
   DEFAULT_RECIPIENT, deliverNotice, drainQueue, readRecipient, readSnoozedUntil, rescheduleHeld, supabaseDrainDeps, supabaseQueueStore,
   type Notice, type SendOutcome,
@@ -139,6 +147,7 @@ Deno.serve(async (req) => {
     if (kind === "approval") return await sideDrain(supa, env, await approvalNotice(supa, req, body, env));
     if (kind === "kudos") return await sideDrain(supa, env, await kudosNotice(supa, req, body, env));
     if (kind === "update_ask") return await sideDrain(supa, env, await updateAskNotice(supa, req, body, env));
+    if (kind === "status_update") return await sideDrain(supa, env, await statusUpdateNotice(supa, req, body, env));
 
     if (!env.resendKey && !env.vapid) return json({ error: "no RESEND_API_KEY" }, 400);
     const taskId = String(body?.taskId ?? "");
@@ -570,6 +579,80 @@ async function updateAskNotice(supa: Supa, req: Request, body: Record<string, un
       send: () => sendMail(supa, env, id, mail.subject, mail.html),
     });
     if (r.result === "sent") sent++;
+  }
+  return json({ ok: true, sent, pushed });
+}
+
+/** How fresh an update must be to be news (the app asks straight after posting it). */
+const POSTED_FRESH_MS = 10 * 60 * 1000;
+
+/** kind "status_update" (0054): email (and, for the people its Ask names, push) for the update the caller just posted.
+ *  Everything comes from the update and its project as the database has them; only its author may ask, once per update;
+ *  every recipient must still be in the workspace. Their "update" prefs, quiet hours, digest and bundling apply. */
+async function statusUpdateNotice(supa: Supa, req: Request, body: Record<string, unknown>, env: Env): Promise<Response> {
+  if (!env.resendKey && !env.vapid) return json({ error: "no RESEND_API_KEY" }, 400);
+  const updateId = String(body?.updateId ?? "");
+  if (!UUID.test(updateId)) return json({ error: "bad updateId" }, 400);
+  const actor = await signedInActor(supa, req);
+  if (actor instanceof Response) return actor;
+  const { actorId, who, ap } = actor;
+  const volume = await hit(supa, `${KEY_PREFIX}notify:${actorId}`, { windowSec: 600, max: 150 });
+  if (!volume.allowed) return json({ error: "too many notifications — slow down", retryAfter: volume.retryAfter }, 429);
+  const { data: u } = (await supa.from("status_updates").select("id,project_id,workspace_id,author_id,summary,status,sections,ask_user_ids,created_at")
+    .eq("id", updateId).maybeSingle()) as { data: { id: string; project_id: string; workspace_id: string | null; author_id: string | null; summary: string; status: string;
+      sections: Record<string, unknown> | null; ask_user_ids: string[] | null; created_at: string } | null };
+  // someone else's update (or none): nothing to say, and nothing given away about which exist
+  if (!u || u.author_id !== actorId) return json({ error: "update not found" }, 404);
+  if (!u.workspace_id) return json({ ok: true, sent: 0, note: "personal" });
+  if (Date.now() - Date.parse(u.created_at) > POSTED_FRESH_MS) return json({ ok: true, sent: 0, note: "not new" });
+  if (!UUID.test(u.project_id)) return json({ ok: true, sent: 0, note: "no project" });
+  const { data: p } = (await supa.from("projects").select("id,name,workspace_id,owner_id,contributor_ids,archived_at").eq("id", u.project_id)
+    .maybeSingle()) as { data: { id: string; name: string | null; workspace_id: string | null; owner_id: string | null; contributor_ids: string[] | null; archived_at: string | null } | null };
+  if (!p || p.archived_at || p.workspace_id !== u.workspace_id) return json({ ok: true, sent: 0, note: "project changed" });
+  const members = await teamMembers(supa, u.workspace_id);
+  if (!members.has(actorId)) return json({ ok: true, sent: 0, note: "not a member" });
+  // once per update, email and push alike (a replayed call tells nobody again)
+  const once = await hit(supa, `${KEY_PREFIX}notify:status_update:${u.id}`, { windowSec: Math.ceil(POSTED_FRESH_MS / 1000) + 60 });
+  if (!once.allowed) return json({ ok: true, sent: 0, note: "already told" });
+  const asked = new Set((u.ask_user_ids ?? []).map(String));
+  const recips = [...new Set([p.owner_id ?? "", ...(p.contributor_ids ?? []), ...asked].map(String))]
+    .filter((id) => UUID.test(id) && id !== actorId && members.has(id))
+    .slice(0, MAX_RECIPIENTS);
+  const actorName = `${ap?.first_name ?? ""} ${ap?.last_name ?? ""}`.trim() || who?.user?.email || "Someone";
+  const ask = typeof u.sections?.asks === "string" ? oneLine(u.sections.asks) : null;
+  const posted = { actorName, projectName: p.name || "", projectId: p.id, status: u.status, summary: u.summary, ask };
+  const path = `/p/${encodeURIComponent(p.id)}/updates`;
+  const link = env.appUrl ? `${env.appUrl}${path}` : "";
+  const store = supabaseQueueStore(supa);
+  const base = { kind: "update", bundleKey: `update:${p.id}`, taskId: null, actorId, actorName, title: oneLine(p.name || "a project") } as const;
+  let sent = 0, pushed = 0;
+  for (const id of recips) {
+    const person = await readRecipient(supa, id).catch(() => DEFAULT_RECIPIENT);
+    if (!person) continue;
+    const isAsked = asked.has(id);
+    const line = postedLine(posted, isAsked);
+    const now = new Date();
+    // push only for an Ask that names you: an FYI waits for your email (or digest)
+    if (isAsked && env.vapid) {
+      const vapid = env.vapid;
+      const push = updatePostedPush(posted);
+      const r = await deliverNotice({ ...base, userId: id, channel: "push", eventKey: `status_update:${u.id}`, payload: { v: 1, line, url: path, push } }, {
+        store, now, prefs: person.prefs,
+        send: async () => {
+          const res = await pushToUser(supa, id, push, vapid);
+          return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
+        },
+      });
+      if (r.result === "sent") pushed++;
+    }
+    if (env.resendKey) {
+      const mail = updatePostedEmail(posted, isAsked, link);
+      const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `status_update:${u.id}`, payload: { v: 1, line, url: path, email: { subject: mail.subject, html: mail.html } } }, {
+        store, now, prefs: person.prefs,
+        send: () => sendMail(supa, env, id, mail.subject, mail.html),
+      });
+      if (r.result === "sent") sent++;
+    }
   }
   return json({ ok: true, sent, pushed });
 }

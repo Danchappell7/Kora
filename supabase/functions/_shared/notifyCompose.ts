@@ -10,7 +10,9 @@
 //     mention named ("Sana mentioned you");
 //   • the morning due list and the daily digest (daily-reminders);
 //   • project updates (0053): the update-day reminder (daily-reminders'
-//     digest run) and "Ask for an update" (notify), and both in the digest.
+//     digest run) and "Ask for an update" (notify), and both in the digest;
+//   • (0054) a posted update for the project's owner and contributors, and
+//     an Ask in it for the people it names (notify { kind: "status_update" }).
 // Everything user-written is escaped; titles are one line and capped.
 // ============================================================
 import type { PushMessage } from "./webpush.ts";
@@ -221,7 +223,7 @@ export interface DigestThread {
   latest: string;
 }
 
-const DIGEST_ORDER = ["mention", "doc_mention", "approval", "assigned", "comment", "kudos", "integration"];
+const DIGEST_ORDER = ["mention", "doc_mention", "approval", "assigned", "comment", "kudos", "update", "integration"];
 const digestRank = (k: string) => { const i = DIGEST_ORDER.indexOf(k); return i < 0 ? 99 : i; };
 
 /** Unread items → threads (one per task; a doc mention or notice stands alone), mentions first, then newest. */
@@ -247,6 +249,15 @@ export function digestThreads(items: readonly DigestItem[]): DigestThread[] {
       else if (kind === "assigned") lines.push(/^Request via\b/i.test(xs[0].detail) ? `New request ${oneLine(xs[0].detail.replace(/^Request\s+/i, ""), 80)}` : `${ppl || "Someone"} assigned you`);
       else if (kind === "approval") lines.push(xs.length === 1 ? `${ppl || "Someone"}: approval ${String(xs[0].meta?.event ?? "update").replace(/_/g, " ")}` : `${xs.length} approval updates`);
       else if (kind === "kudos") lines.push(`${ppl || "Someone"} sent you kudos`);
+      // 0054: a project update (the thread is its project): an Ask for you, replies, or posted
+      else if (kind === "update") {
+        const asks = xs.filter((x) => x.meta?.ask === true);
+        const replies = xs.filter((x) => x.meta?.update_event === "comment" && x.meta?.ask !== true);
+        const posted = xs.length - asks.length - replies.length;
+        if (asks.length) lines.push(`${peopleList(asks.map((x) => x.detail)) || "Someone"} asked you something in an update`);
+        if (replies.length) lines.push(`${plural(replies.length, "reply", "replies")} on your update${names(replies) ? ` from ${names(replies)}` : ""}`);
+        if (posted > 0) lines.push(posted === 1 ? `${names(xs.filter((x) => x.meta?.ask !== true && x.meta?.update_event !== "comment")) || "Someone"} posted an update` : `${posted} updates posted`);
+      }
       else if (kind === "integration") lines.push(oneLine(xs[0].detail || "An integration needs you", 120));
       else lines.push(plural(xs.length, "update"));
     }
@@ -388,6 +399,50 @@ export function updateAskEmail(askerName: string, name: string, link: string): {
     heading,
     paragraphs: ["Kanbo has drafted one from this week's work. Check it, change what you like, and post. Everyone following the project sees it."],
     cta: link ? { label: "Review the draft", href: link } : undefined,
+    footnotes: ["Change project update emails in Kanbo › Settings › Notifications."],
+  });
+  return { subject: oneLine(heading, 180), html: mail.html, text: mail.text };
+}
+
+/* ---------- a posted update (0054) ---------- */
+
+const STATUS_WORDS: Record<string, string> = { on_track: "On track", at_risk: "At risk", off_track: "Off track", on_hold: "On hold" };
+/** "On track" for a status key ("" for anything else). */
+export const statusWord = (s: string | null | undefined): string => STATUS_WORDS[String(s)] ?? "";
+
+/** What a posted update says in a notice: who, which project, its call, and (for the people its Ask names) the Ask. */
+export interface PostedUpdate { actorName: string; projectName: string; projectId: string; status: string; summary: string; ask?: string | null }
+
+/** One line in a bundle: "Sana Rao posted an update" · "Sana Rao asked you something". */
+export const postedLine = (u: Pick<PostedUpdate, "actorName">, asked: boolean): string =>
+  `${who(u.actorName)} ${asked ? "asked you something in an update" : "posted an update"}`;
+
+/** The push, for the people an Ask names (FYI readers get email only, or the digest). */
+export function updatePostedPush(u: PostedUpdate): PushMessage {
+  return {
+    title: `${who(u.actorName)} asked you something`,
+    body: oneLine(u.ask ? `${projectName(u.projectName)}: ${u.ask}` : `In the ${projectName(u.projectName)} update.`, 160),
+    url: `/p/${encodeURIComponent(u.projectId)}/updates`,
+    tag: `update-posted-${u.projectId}`,
+    kind: "update",
+  };
+}
+
+/** The email: the call, the words, and (asked) what it asks of you. */
+export function updatePostedEmail(u: PostedUpdate, asked: boolean, link: string): { subject: string; html: string; text: string } {
+  const word = statusWord(u.status);
+  const heading = asked
+    ? `${who(u.actorName)} asked you something in the ${projectName(u.projectName)} update`
+    : `${who(u.actorName)} posted an update on ${projectName(u.projectName)}${word ? `: ${word}` : ""}`;
+  const quote = (t: string) => `<p style="margin:0;padding:8px 12px;border-left:3px solid #e4e4e7;color:#3f3f46">${esc(oneLine(t, 600))}</p>`;
+  const mail = renderEmail({
+    heading,
+    paragraphs: [
+      ...(asked && u.ask ? [`<strong>The ask</strong>`, quote(u.ask)] : []),
+      quote(u.summary),
+      asked ? "Reply on the update, and everyone following the project sees it." : "Reply or react on the update in Kanbo.",
+    ],
+    cta: link ? { label: asked ? "Reply" : "Open the update", href: link } : undefined,
     footnotes: ["Change project update emails in Kanbo › Settings › Notifications."],
   });
   return { subject: oneLine(heading, 180), html: mail.html, text: mail.text };

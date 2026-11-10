@@ -155,7 +155,8 @@ export type WebhookEventType =
   | "task.created" | "task.updated" | "task.completed" | "task.deleted"
   | "comment.created" | "project.created" | "project.updated" | "member.joined"
   | "approval.requested" | "approval.decided"
-  | "kudos.given";
+  | "kudos.given"
+  | "status_update.posted";
 export type WebhookDeliveryType = WebhookEventType | "ping";
 
 /** What a webhook endpoint receives (the POST body). */
@@ -223,6 +224,28 @@ export type ApiApprovalEvent = ApiApproval & {
   /** null for approval.requested */
   decision: ApiApprovalDecision | null;
 };
+
+/** status_update.posted's data (0054): a project update someone just posted (team or personal). */
+export interface ApiStatusUpdateEvent {
+  object: "status_update";
+  id: string;
+  projectId: string;
+  workspaceId: string | null;
+  /** who posted it (null once their account is deleted), and their name */
+  authorId: string | null;
+  authorName: string | null;
+  status: "on_track" | "at_risk" | "off_track" | "on_hold";
+  summary: string;
+  /** the optional Highlights / Risks / Asks / Next (null when it has none) */
+  sections: { highlights?: string; risks?: string; asks?: string; next?: string } | null;
+  /** the people its Asks name */
+  askUserIds: string[];
+  recoveryPlan: string | null;
+  targetDate: string | null;
+  createdAt: string | null;
+  /** its project (null when it isn't a team project Kanbo can name) */
+  project: { id: string; name: string | null; workspaceId: string | null; url: string | null } | null;
+}
 
 /** kudos.given's data (0048): someone thanked a teammate for a finished team task. */
 export interface ApiKudosEvent {
@@ -499,6 +522,33 @@ export function serialiseKudosEvent(p: Row, ctx?: SerialiseCtx): ApiKudosEvent {
   };
 }
 
+const UPDATE_STATUSES = new Set(["on_track", "at_risk", "off_track", "on_hold"]);
+/** The outbox payload of status_update.posted ({ status_update, author_name, project }) → its data. */
+export function serialiseStatusUpdateEvent(p: Row, ctx?: SerialiseCtx): ApiStatusUpdateEvent {
+  const asRow = (v: unknown): Row => (v && typeof v === "object" && !Array.isArray(v) ? (v as Row) : {});
+  const u = asRow(p.status_update), pr = p.project && typeof p.project === "object" ? asRow(p.project) : null;
+  const raw = asRow(u.sections);
+  const sections: ApiStatusUpdateEvent["sections"] = {};
+  for (const k of ["highlights", "risks", "asks", "next"] as const) { const v = nonEmpty(raw[k]); if (v) sections[k] = v; }
+  const pid = pr ? nonEmpty(pr.id) : null;
+  return {
+    object: "status_update",
+    id: String(u.id ?? ""),
+    projectId: str(u.project_id) ?? "",
+    workspaceId: nonEmpty(u.workspace_id),
+    authorId: nonEmpty(u.author_id),
+    authorName: nonEmpty(p.author_name),
+    status: (UPDATE_STATUSES.has(String(u.status)) ? u.status : "on_track") as ApiStatusUpdateEvent["status"],
+    summary: str(u.summary) ?? "",
+    sections: Object.keys(sections).length ? sections : null,
+    askUserIds: strArray(u.ask_user_ids),
+    recoveryPlan: nonEmpty(u.recovery_plan),
+    targetDate: isoDate(u.target_date),
+    createdAt: isoTime(u.created_at),
+    project: pid ? { id: pid, name: nonEmpty(pr!.name), workspaceId: nonEmpty(pr!.workspace_id), url: projectUrl(pid, ctx) } : null,
+  };
+}
+
 /** The outbox payload of an approval event ({ approval, reviewers, task, decision? }) → its data. */
 export function serialiseApprovalEvent(p: Row, ctx?: SerialiseCtx): ApiApprovalEvent {
   const asRow = (v: unknown): Row => (v && typeof v === "object" && !Array.isArray(v) ? (v as Row) : {});
@@ -587,6 +637,8 @@ export function serialiseEvent(o: OutboxEvent, ctx?: SerialiseCtx): WebhookEnvel
       return { ...base, data: serialiseApprovalEvent(p, ctx) };
     case "kudos.given":
       return { ...base, data: serialiseKudosEvent(p, ctx) };
+    case "status_update.posted":
+      return { ...base, data: serialiseStatusUpdateEvent(p, ctx) };
     case "ping": {
       const w = asRow(p.webhook);
       const data: ApiPing = {
