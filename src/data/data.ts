@@ -597,8 +597,9 @@ const FIRST_VALUE = pacedValue(25, 10, 0.03, QUARTER);
 const COURT_HOURS = pacedValue(52, 80, -0.12, COURT_WINDOW);
 const RETAINERS = pacedValue(0, 6, 0.05, QUARTER);
 const BOOKS = pacedValue(0, 24, 0.02, { start: `${KANBO_TODAY.getFullYear()}-01-01`, end: `${KANBO_TODAY.getFullYear()}-12-31` });
+const WINBACK = pacedValue(0, 120, -0.21, QUARTER);
 
-export const DEMO_GOALS: Goal[] = [
+const GOALS_SEED: Goal[] = [
   { id: "g-launch", name: `Launch Q3 on ${launchDayLabel}`, description: "Ship the Q3 launch on the date we told customers.",
     status: "on_track", projectId: "p-launch", due: LAUNCH_DAY, workspaceId: "ws-foundrise", position: 0,
     createdAt: daysAgoAt(40, 9, 30), ownerId: "m-self", contributors: ["m-1", "m-3"], kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 3 },
@@ -646,7 +647,20 @@ export const DEMO_GOALS: Goal[] = [
     due: `${KANBO_TODAY.getFullYear()}-12-31`, workspaceId: null, position: 0, createdAt: daysAgoAt(300, 8, 0), ownerId: "m-self", contributors: [],
     period: `${KANBO_TODAY.getFullYear()}-FY`, periodStart: `${KANBO_TODAY.getFullYear()}-01-01`, periodEnd: `${KANBO_TODAY.getFullYear()}-12-31`,
     kind: "metric", direction: "higher", visibility: "everyone", pace: "linear" },
+  // ---- stage 2 (appended): a key result of Daniel's that's well behind pace (Kanbo noticed offers a check-in),
+  // still marked on track (the goal panel suggests otherwise, calmly)
+  { id: "g-winback", name: "Win back 120 lapsed accounts", description: "Accounts that stopped paying in the last year, paying again.",
+    target: 120, current: WINBACK, startValue: 0, unit: "accounts", status: "on_track", due: QUARTER.end, workspaceId: "ws-foundrise", position: 5, parentId: "g-actives", weight: 1,
+    createdAt: daysAgoAt(43, 9, 0), ownerId: "m-self", contributors: ["m-3"], ...inQuarter, kind: "key_result", direction: "higher", visibility: "everyone", pace: "linear", confidence: 2 },
 ];
+/* Each goal wears its own icon and colour (0052), as projects wear theirs. */
+const GOAL_LOOKS: Record<string, [icon: string, hue: Parameters<typeof spectrumColor>[0]]> = {
+  "g-launch": ["🚀", "sky"], "g-actives": ["📈", "jade"], "g-reco-paying": ["💰", "amber"], "g-court-hours": ["🎾", "citron"],
+  "g-court-open": ["🏗️", "tangerine"], "g-churn": ["🧲", "coral"], "g-activation": ["⚡", "violet"], "g-raise": ["💼", "cobalt"],
+  "g-reco-onboard": ["🧭", "lagoon"], "g-reco-ttv": ["⏱️", "sky"], "g-reco-ship": ["📦", "orchid"], "g-harbour-clients": ["🤝", "jade"],
+  "g-harbour-review": ["📋", "iris"], "g-books": ["📚", "rose"], "g-winback": ["🔁", "rose"],
+};
+export const DEMO_GOALS: Goal[] = GOALS_SEED.map((g) => (GOAL_LOOKS[g.id] ? { ...g, icon: GOAL_LOOKS[g.id][0], color: spectrumColor(GOAL_LOOKS[g.id][1]) } : g));
 
 /* Each goal's check-ins, newest first: the goal's current value is its newest. Earlier
    ones climb towards it from the start value (never from before the goal's period began). */
@@ -676,6 +690,7 @@ export const DEMO_GOAL_CHECKINS: GoalCheckin[] = [
   ...checkinTrail("g-court-hours", "ws-courtside", 52, COURT_HOURS, COURT_WINDOW.start, 1, [[6, "m-2", 2, "Weekday evenings fill; weekend mornings don't"], [20, "m-2", 3]]),
   ...checkinTrail("g-harbour-clients", "ws-harbour", 0, RETAINERS, QUARTER.start, 1, [[11, "m-3", 4, "Two signed, a third with legal"]]),
   ...checkinTrail("g-books", null, 0, BOOKS, `${KANBO_TODAY.getFullYear()}-01-01`, 1, [[12, "m-self", null]]),
+  ...checkinTrail("g-winback", "ws-foundrise", 0, WINBACK, QUARTER.start, 1, [[9, "m-self", 2, "Lapsed list cleaned up; the first win-back emails are out"], [26, "m-3", 3]]),
 ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
 /* The work each goal is linked to (its own workspace's): the project a goal reads its %
@@ -690,6 +705,8 @@ export const DEMO_GOAL_LINKS: GoalLink[] = [
   { id: "gl-reco-ship", goalId: "g-reco-ship", workspaceId: "ws-reco", kind: "project", targetId: "p-onboard" },
   { id: "gl-court-open", goalId: "g-court-open", workspaceId: "ws-courtside", kind: "project", targetId: "p-clubhouse" },
   { id: "gl-harbour-review", goalId: "g-harbour-review", workspaceId: "ws-harbour", kind: "project", targetId: "p-northwind" },
+  // stage 2: the work behind Daniel's win-back key result
+  { id: "gl-winback-brief", goalId: "g-winback", workspaceId: "ws-foundrise", kind: "task", targetId: "t-21" },
 ];
 
 export const DEMO_PORTFOLIOS: Portfolio[] = [

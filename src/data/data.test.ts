@@ -722,7 +722,7 @@ describe("demo seed", () => {
       .toEqual([["ws-reco", "on_track"], ["ws-courtside", "at_risk"], ["ws-courtside", "off_track"]]);
     // 0052's appended after them
     expect(DEMO_GOALS.map((g) => g.id)).toEqual(["g-launch", "g-actives", "g-reco-paying", "g-court-hours", "g-court-open",
-      "g-churn", "g-activation", "g-raise", "g-reco-onboard", "g-reco-ttv", "g-reco-ship", "g-harbour-clients", "g-harbour-review", "g-books"]);
+      "g-churn", "g-activation", "g-raise", "g-reco-onboard", "g-reco-ttv", "g-reco-ship", "g-harbour-clients", "g-harbour-review", "g-books", "g-winback"]);
     expect(DEMO_PORTFOLIOS[0]).toEqual(expect.objectContaining({ name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"] }));
     // a Personal portfolio across businesses, one of whose projects has gone from view
     expect(DEMO_PORTFOLIOS[1]).toMatchObject({ workspaceId: null, projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"] });
