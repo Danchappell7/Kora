@@ -3131,7 +3131,10 @@ async function adoptionSuite(w: World) {
     ok(a.days.every((d, i) => i === 0 || d.day > a.days[i - 1].day), "oldest first");
     ok(!/T\d\d:|\d\d:\d\d/.test(JSON.stringify(a)), "no time of day anywhere in it");
     eq(await activity(pat, w.w1), a, "an admin sees the same");
-    eq((await activity(w.carol, w.w2)).members.map((m) => m.user_id), [w.carol], "carol reads her own business");
+    // (Elsewhere's people: carol, and whoever the 0055/0056 suites put there)
+    const elsewhere = (await w.pg.query<{ id: string }>(`select user_id::text as id from public.workspace_members where workspace_id = $1::uuid and status = 'active' and user_id is not null order by user_id`, [w.w2])).rows.map((r) => r.id);
+    ok(elsewhere.includes(w.carol) && !elsewhere.includes(w.bob), "Elsewhere is carol's, without bob");
+    eq((await activity(w.carol, w.w2)).members.map((m) => m.user_id), elsewhere, "carol reads her own business");
   });
   await test("0058 attack: a member, a guest, an outsider and a suspended admin can't see who's active", async () => {
     for (const [who, u] of [["member", w.bob], ["guest", w.gus], ["outsider", w.carol]] as const) await raises(activity(u, w.w1), /not authorized/).catch((e) => { throw new Error(`${who}: ${(e as Error).message}`); });
@@ -3382,6 +3385,54 @@ async function adoptionSuite(w: World) {
   });
 }
 
+/** Wave 3 together (0055, 0056, 0058; there's no 0057): each file again, twice, and 0041 and 0048 again
+ *  after them, keep every policy, trigger, RLS switch and table grant the database had (the owner may run
+ *  any of them again; a re-run of 0041 drops the content tables' policies and has to put them all back). */
+async function waveThreeRerunSuite(w: World, files: string[]) {
+  const snapshot = async () => {
+    const q = async (sql: string) => (await w.pg.query<{ k: string }>(sql)).rows.map((r) => r.k);
+    return {
+      policies: await q(`select concat_ws(' | ', schemaname, tablename, policyname, permissive, roles::text, cmd, qual, with_check) as k from pg_policies where schemaname in ('public', 'realtime') order by 1`),
+      triggers: await q(`select concat_ws(' | ', c.relname, t.tgname, pg_get_triggerdef(t.oid)) as k from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
+        where not t.tgisinternal and n.nspname in ('public', 'auth') order by 1`),
+      rls: await q(`select concat_ws(' | ', c.relname, c.relrowsecurity::text, c.relforcerowsecurity::text) as k from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' order by 1`),
+      grants: await q(`select concat_ws(' | ', table_name, grantee, privilege_type) as k from information_schema.role_table_grants where table_schema = 'public' and grantee in ('anon', 'authenticated') order by 1`),
+    };
+  };
+  const diff = (was: string[], now: string[]) => [...was.filter((x) => !now.includes(x)).map((x) => `- ${x}`), ...now.filter((x) => !was.includes(x)).map((x) => `+ ${x}`)];
+  const same = async (before: Awaited<ReturnType<typeof snapshot>>, after: string) => {
+    const now = await snapshot();
+    for (const k of ["policies", "triggers", "rls", "grants"] as const) {
+      const d = diff(before[k], now[k]);
+      if (d.length) throw new Error(`${after}: ${k} changed: ${d.slice(0, 6).join(" ; ")}${d.length > 6 ? ` (and ${d.length - 6} more)` : ""}`);
+    }
+  };
+  const wave = ["0055_shared_availability.sql", "0056_meetings.sql", "0058_adoption_health.sql"].filter((f) => files.includes(f));
+  await test("wave 3: 0055, 0056 and 0058 are all in, and nothing is numbered 0057", async () => {
+    eq(wave.length, 3, "wave 3's files in this set");
+    ok(!files.some((f) => f.startsWith("0057")), "no 0057");
+    const v = (await w.pg.query<{ v: string }>(`select version as v from public.schema_migrations where version in ('0055', '0056', '0057', '0058') order by version`)).rows.map((r) => r.v);
+    eq(v, ["0055", "0056", "0058"], "recorded");
+  });
+  const before = await snapshot();
+  await test("wave 3: 0055, 0056 and 0058 each run twice more keep every policy, trigger and grant", async () => {
+    for (const f of wave) { await applyFile(w.pg, f); await applyFile(w.pg, f); }
+    await same(before, "after the files twice");
+    const n = (await w.pg.query<{ n: number }>(`select count(*)::int as n from public.schema_migrations where version in ('0055', '0056', '0058')`)).rows[0].n;
+    eq(n, 3, "each recorded once");
+  });
+  await test("wave 3: 0041 run again keeps every policy (its restore hooks put 0046/0051/0052/0054's back; 0055..0058 aren't touched)", async () => {
+    await applyFile(w.pg, "0041_security_hardening_2.sql");
+    await same(before, "after 0041");
+  });
+  if (files.includes("0048_ux_wave.sql")) {
+    await test("wave 3: 0048 run again keeps every policy", async () => {
+      await applyFile(w.pg, "0048_ux_wave.sql");
+      await same(before, "after 0048");
+    });
+  }
+}
+
 export async function main(argv: string[]): Promise<number> {
   const all = migrationFiles();
   // 0051..0056 need only 0041/0042/0046/0047 (0052 also 0051), and 0058 0016/0032/0038/0041/0042: they run in the set without 0048/0049 too
@@ -3418,6 +3469,7 @@ export async function main(argv: string[]): Promise<number> {
     await availabilitySuite(w);
     await meetingsSuite(w);
     await adoptionSuite(w);
+    await waveThreeRerunSuite(w, files);
     console.log(`${name}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     await w.closeDriver();
     await w.pg.close();
