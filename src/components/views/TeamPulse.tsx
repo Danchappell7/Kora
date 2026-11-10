@@ -257,7 +257,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
           </span>
         </div>
 
-        <div className="kpulse-lede-wrap">
+        <div className="kpulse-lede-wrap" data-tour="pulse">
           {loading ? (
             <div className="kpulse-lede-skel" aria-hidden="true"><span className="skel" /><span className="skel" /></div>
           ) : (

@@ -1,7 +1,9 @@
 /* ============================================================
    KANBO — Today › "Get set up" card.                   [0048 → u1]
-   For owners/admins: invite your team, connect a calendar, add your
-   company domain, connect Slack. For members: plan your day, complete a
+   For a team's owners/admins (0058): pick a pack, bring your work in,
+   invite your pilot group, set your update day, post your first update
+   (in Personal: invite your team, connect a calendar, and for a site
+   admin the company domain). For members: plan your day, complete a
    task, install the app, set notifications (guests: the two of those
    they can do: install, notifications). A progress ring ("2 of 4"),
    each item a button that takes you there (onAction), ticked items
@@ -27,7 +29,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Button, IconButton, StatusGlyph } from "../primitives";
 import type { OnboardingState, SetupItemId, TourRole } from "../../data/types";
 import {
-  checklistView, dismissSetupChecklist, tickSetupItem, withSignalTicks, type SetupSignals,
+  checklistView, dismissSetupChecklist, setupItemsFor, tickedAt, tickSetupItem, withSignalTicks, type SetupSignals,
 } from "../../lib/onboarding";
 
 export interface SetupChecklistProps {
@@ -41,6 +43,10 @@ export interface SetupChecklistProps {
   onAction: (id: SetupItemId) => void;
   /** optional: items this person can't do here, left out (e.g. ["add_domain"] for an owner who isn't a site admin) */
   hidden?: readonly SetupItemId[];
+  /** in Personal: its own short list (lib/onboardingItems PERSONAL_SETUP_ITEMS), not a team's rollout */
+  personal?: boolean;
+  /** the team workspace a rollout item is ticked in (0058: they're ticked per workspace) */
+  workspaceId?: string | null;
   /** optional: Today's fold (TodayCardFold): folded, the card is one row until it's opened. Without it, the card is whole. */
   fold?: { folded: boolean; onFold: (folded: boolean) => void } | null;
 }
@@ -82,8 +88,8 @@ function SetupRing({ done, total }: { done: number; total: number }) {
   );
 }
 
-export function SetupChecklist({ role, onboarding, signals, onChange, onAction, hidden, fold }: SetupChecklistProps) {
-  const opts = { hidden };
+export function SetupChecklist({ role, onboarding, signals, onChange, onAction, hidden, personal, workspaceId, fold }: SetupChecklistProps) {
+  const opts = { hidden, personal, workspaceId };
   const view = checklistView(role, onboarding, signals, opts);
   const headId = "ksetup" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const listId = headId + "-list";
@@ -111,12 +117,12 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
   useEffect(() => {
     const next = withSignalTicks(role, onboarding, signals, new Date(), opts);
     if (!next) return;
-    const fresh = Object.keys(next.checklist?.done ?? {}).filter((id) => !onboarding.checklist?.done?.[id as SetupItemId] && !reported.current.has(id));
+    const fresh = setupItemsFor(role, opts).filter((id) => !!tickedAt(next.checklist, id, opts) && !tickedAt(onboarding.checklist, id, opts) && !reported.current.has(`${workspaceId ?? ""}:${id}`));
     if (!fresh.length) return;
-    fresh.forEach((id) => reported.current.add(id));
+    fresh.forEach((id) => reported.current.add(`${workspaceId ?? ""}:${id}`));
     onChange(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalKey, role]);
+  }, [signalKey, role, workspaceId]);
 
   // finished in front of you: say so (and, with motion, celebrate) before the host lets it go
   useEffect(() => {
@@ -128,7 +134,7 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
   }, [view.complete]);
 
   const toggle = (id: SetupItemId, label: string, done: boolean) => {
-    const next = tickSetupItem(onboarding, id, !done);
+    const next = tickSetupItem(onboarding, id, !done, new Date(), opts);
     const after = checklistView(role, next, signals, opts);
     if (!after.complete) setAnnounce(`${label} ${done ? "not done" : "done"}. ${after.done} of ${after.total} done.`);
     onChange(next);
@@ -139,7 +145,7 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
     ? "Everything's in place. This card will tuck itself away."
     : folded
     ? `${view.done} of ${view.total} done${next ? ` · Next: ${next.label}` : ""}`
-    : `${view.done} of ${view.total} done · ${WORDS[view.total] ?? view.total} quick things ${role === "owner" ? "to get your team going" : "to make Kanbo yours"}.`;
+    : `${view.done} of ${view.total} done · ${WORDS[view.total] ?? view.total} quick things ${role === "owner" && !personal ? "to get your team going" : role === "owner" ? "to get going" : "to make Kanbo yours"}.`;
 
   return (
     <section ref={cardRef} className="ksetup" aria-labelledby={headId} data-complete={view.complete || undefined} data-celebrate={celebrate || undefined}

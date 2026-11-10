@@ -10,8 +10,10 @@
      task, so in Personal the approval step is shown as a task that
      explains it (a real request only when made in a team workspace).
    • "Get set up": a checklist card on Today until done or dismissed —
-     owners: invite your team, connect a calendar, add your company
-     domain, connect Slack; members (and guests): plan your day, complete
+     a team's owners and admins (0058): pick a pack, bring your work in,
+     invite your pilot group, set your update day, post your first update;
+     Personal: invite your team, connect a calendar (a site admin: add
+     your company domain); members (and guests): plan your day, complete
      a task, install the app, set notifications. Items tick themselves from
      what the app can see (SetupSignals) or by hand; progress ring.
    State: profiles.onboarding (keys tour / checklist / sample; momentum is
@@ -36,7 +38,7 @@ import type {
 import { parseOnboardingState } from "./profileState";
 import { supabase } from "./supabase";
 import type { TourSampleDeps } from "./onboardingSample";
-import { setupItemsFor, type ChecklistOpts } from "./onboardingItems";
+import { setupItemsFor, tickedAt, TEAM_SETUP_ITEMS, type ChecklistOpts } from "./onboardingItems";
 
 export { parseOnboardingState } from "./profileState";
 export type { TourSampleDeps, TourSamplePlan, TourSampleCtx } from "./onboardingSample";
@@ -51,6 +53,11 @@ export const TOUR_ANCHORS = {
   planDay: '[data-tour="plan-day"]',
   taskPanel: '[data-tour="task-panel"]',
   inboxTriage: '[data-tour="inbox-triage"]',
+  // a team's rhythm (0058): Pulse's lede, the Goals page's summary, a project's Updates tab, My tasks › Waiting on
+  pulse: '[data-tour="pulse"]',
+  goals: '[data-tour="goals"]',
+  updates: '[aria-label="Project views"] [data-tab-id="updates"]',
+  waiting: '[aria-label="My tasks"] [data-tab-id="waiting"]',
 } as const;
 export type TourAnchor = keyof typeof TOUR_ANCHORS;
 
@@ -62,7 +69,7 @@ export function tourRoleOf(role: Role | null | undefined, personal: boolean): To
 
 /** The checklist's items per role, in order.  [final] (declared in the leaf module ./onboardingItems, unchanged,
  *  so the lazy words module can use it without importing this one) */
-export { SETUP_ITEMS, setupItemsFor, type ChecklistOpts } from "./onboardingItems";
+export { SETUP_ITEMS, PERSONAL_SETUP_ITEMS, TEAM_SETUP_ITEMS, setupItemsFor, tickedAt, type ChecklistOpts } from "./onboardingItems";
 
 /** What the app can see right now (the integrator computes these; any item already true counts as done). */
 export type SetupSignals = Partial<Record<SetupItemId, boolean>>;
@@ -85,7 +92,20 @@ export interface SetupFacts {
   installed?: boolean;
   /** push on here (lib/push isPushOnHere), or notification preferences saved */
   notificationsChosen?: boolean;
+  /* ---- a team's rollout (0058) ---- */
+  /** live projects in the team workspace (a pack makes three or more) */
+  projects?: number;
+  /** tasks in the team workspace (an established team's work is already in) */
+  tasks?: number;
+  /** the workspace's update day has been chosen (0053) */
+  updateDaySet?: boolean;
+  /** you've posted a project update in the workspace */
+  postedUpdate?: boolean;
 }
+/** A team's work counts as brought in at this many tasks (a pack alone makes fewer). */
+export const IMPORTED_AT_TASKS = 50;
+/** A pilot group: three people besides you, joined or invited. */
+export const PILOT_SIZE = 3;
 export function setupSignals(f: SetupFacts): SetupSignals {
   return {
     invite_team: (f.teammates ?? 0) > 0,
@@ -96,6 +116,11 @@ export function setupSignals(f: SetupFacts): SetupSignals {
     complete_task: !!f.completedAny,
     install_app: !!f.installed,
     set_notifications: !!f.notificationsChosen,
+    pick_pack: (f.projects ?? 0) >= 3,
+    import_work: (f.tasks ?? 0) >= IMPORTED_AT_TASKS,
+    invite_pilot: (f.teammates ?? 0) >= PILOT_SIZE,
+    set_update_day: !!f.updateDaySet,
+    post_update: !!f.postedUpdate,
   };
 }
 
@@ -106,7 +131,7 @@ export type { TourStep } from "./onboardingCopy";
 export const TOUR_MINUTES = 3;
 /** The tour for a role, and where a saved step resumes: the words live in ./onboardingCopy (only the lazy
  *  TourHost loads them). */
-export { tourSteps, resumeIndex } from "./onboardingCopy";
+export { tourSteps, resumeIndex, type TourContext } from "./onboardingCopy";
 
 /** Should the tour start by itself? (a new person who hasn't finished or skipped it, or one part-way through) */
 export function shouldAutoStartTour(state: OnboardingState, opts: { isNewAccount: boolean }): boolean {
@@ -177,9 +202,8 @@ export function __resetTourBus(): void { pending = null; wanted = false; startLi
 
 /** done / total / complete for a role (no words: the shell uses it to decide whether to mount the card). */
 export function checklistProgress(role: TourRole, state: OnboardingState, signals: SetupSignals, opts: ChecklistOpts = {}): { done: number; total: number; complete: boolean } {
-  const ticked = state.checklist?.done ?? {};
   const ids = setupItemsFor(role, opts);
-  const done = ids.filter((id) => !!signals[id] || !!ticked[id]).length;
+  const done = ids.filter((id) => !!signals[id] || !!tickedAt(state.checklist, id, opts)).length;
   return { done, total: ids.length, complete: ids.length > 0 && done === ids.length };
 }
 /** The card's items with their words (in ./onboardingCopy, loaded with the card). */
@@ -222,9 +246,17 @@ export function useShowSetupChecklist(role: TourRole, state: OnboardingState, si
   return show || (hold && !dismissed);
 }
 
-/** The checklist after a tick / untick (manual), recorded at `now`. */
-export function tickSetupItem(state: OnboardingState, id: SetupItemId, done: boolean, now = new Date()): OnboardingState {
+/** The checklist after a tick / untick (manual), recorded at `now` (a team's rollout item: in `opts.workspaceId`). */
+export function tickSetupItem(state: OnboardingState, id: SetupItemId, done: boolean, now = new Date(), opts: ChecklistOpts = {}): OnboardingState {
   const list = state.checklist ?? {};
+  if (TEAM_SETUP_ITEMS.has(id)) {
+    const ws = opts.workspaceId;
+    if (!ws) return state;
+    const ticks = { ...(list.teams?.[ws] ?? {}) };
+    if (done) ticks[id] = ticks[id] ?? now.toISOString();
+    else delete ticks[id];
+    return { ...state, checklist: { ...list, teams: { ...(list.teams ?? {}), [ws]: ticks } } };
+  }
   const ticks = { ...(list.done ?? {}) };
   if (done) ticks[id] = ticks[id] ?? now.toISOString();
   else delete ticks[id];
@@ -234,11 +266,10 @@ export function tickSetupItem(state: OnboardingState, id: SetupItemId, done: boo
 /** Record ticks the app can see (signals) that aren't saved yet, so progress sticks (e.g. "installed" is only
  *  visible inside the installed app). Null when there's nothing new. */
 export function withSignalTicks(role: TourRole, state: OnboardingState, signals: SetupSignals, now = new Date(), opts: ChecklistOpts = {}): OnboardingState | null {
-  const ticks = state.checklist?.done ?? {};
-  const fresh = setupItemsFor(role, opts).filter((id) => signals[id] && !ticks[id]);
+  const fresh = setupItemsFor(role, opts).filter((id) => signals[id] && !tickedAt(state.checklist, id, opts) && (!TEAM_SETUP_ITEMS.has(id) || !!opts.workspaceId));
   if (!fresh.length) return null;
   let next = state;
-  for (const id of fresh) next = tickSetupItem(next, id, true, now);
+  for (const id of fresh) next = tickSetupItem(next, id, true, now, opts);
   return next;
 }
 
@@ -249,7 +280,7 @@ export function dismissSetupChecklist(state: OnboardingState, dismissed: boolean
 
 /* ================================ saving ================================ */
 
-const KEYS = ["v", "tour", "checklist", "sample", "momentum", "businesses"] as const;
+const KEYS = ["v", "tour", "checklist", "sample", "momentum", "businesses", "welcomed"] as const;
 
 /** What merge_onboarding does, on the client: one level deep, a key set to null is removed. */
 export function applyOnboardingPatch(state: OnboardingState, patch: OnboardingPatch): OnboardingState {

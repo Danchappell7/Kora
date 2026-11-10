@@ -151,7 +151,7 @@ export function GoalsView(props: GoalsViewProps) {
         ) : (
           <>
             {groups.length > 0 && (
-              <p className="kgp-summary" aria-live="polite">
+              <p className="kgp-summary" aria-live="polite" data-tour="goals">
                 {summary.parts.map((p, i) => typeof p === "string" ? <span key={i}>{p}</span>
                   : <button key={i} type="button" className="kgp-sum-goal" title={p.text.length > SUM_NAME ? p.text : undefined} onClick={() => openGoal(p.goalId)}>{clip(p.text)}</button>)}
               </p>

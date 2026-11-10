@@ -221,12 +221,17 @@ describe("views, onboarding, search chips, board, kudos counts", () => {
   });
   it("the tour's roles, checklist items and anchors (each anchor is on a real element)", () => {
     expect([tourRoleOf("admin", false), tourRoleOf("member", false), tourRoleOf("guest", false), tourRoleOf(null, true)]).toEqual(["owner", "member", "guest", "owner"]);
-    expect(SETUP_ITEMS.owner).toEqual(["invite_team", "connect_calendar", "add_domain", "connect_slack"]);
+    // 0058: a team's owners get the rollout list (Slack is paused; the company domain is the platform's)
+    expect(SETUP_ITEMS.owner).toEqual(["pick_pack", "import_work", "invite_pilot", "set_update_day", "post_update"]);
     expect(SETUP_ITEMS.member).toEqual(["plan_day", "complete_task", "install_app", "set_notifications"]);
-    const files = ["components/Sidebar.tsx", "components/Topbar.tsx", "components/views/TodayView.tsx", "components/TaskDetail.tsx", "components/views/InboxView.tsx"].map(src).join("\n");
+    const files = ["components/Sidebar.tsx", "components/Topbar.tsx", "components/views/TodayView.tsx", "components/TaskDetail.tsx", "components/views/InboxView.tsx",
+      "components/views/TeamPulse.tsx", "components/goals/GoalsView.tsx", "components/tasks/TasksPage.tsx", "components/primitives/kit.tsx"].map(src).join("\n");
     for (const sel of Object.values(TOUR_ANCHORS)) {
       const name = /data-tour="([^"]+)"/.exec(sel)?.[1];
-      expect(files.includes(`data-tour="${name}"`) || files.includes(`"${name}"`), name).toBe(true);
+      if (name) { expect(files.includes(`data-tour="${name}"`) || files.includes(`"${name}"`), name).toBe(true); continue; }
+      // (0058's tab anchors: a Tabs row by its label, and the tab by its id)
+      const [, label, tab] = /\[aria-label="([^"]+)"\] \[data-tab-id="([^"]+)"\]/.exec(sel) ?? [];
+      expect(files.includes(`"${label}"`) && files.includes("data-tab-id") && files.includes(`"${tab}"`), sel).toBe(true);
     }
   });
   it("search chips: merged patches; removing one re-merges the rest", () => {

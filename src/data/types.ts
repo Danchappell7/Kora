@@ -55,6 +55,17 @@ export interface Workspace {
   logoUrl?: string;
   /** 0053 workspaces.update_rhythm: the team's update day (unset: weekly on Friday). Absent before 0053. */
   updateRhythm?: UpdateRhythm | null;
+  /** 0058 workspaces.rollout: the rollout checklist (null: nothing planned yet). Absent before 0058. */
+  rollout?: RolloutPlan | null;
+}
+
+/** 0058: a workspace's rollout plan. Each part is optional; the champion and the pilot group are
+ *  the workspace's owners, admins and members (user ids). */
+export interface RolloutPlan {
+  champion?: string | null;
+  pilot?: string[];
+  /** "YYYY-MM-DD" */
+  goLive?: string | null;
 }
 
 export type Role = "owner" | "admin" | "member" | "guest";
@@ -67,6 +78,10 @@ export interface WorkspaceMember {
   role: Role;
   status: "invited" | "active";
   title?: string;          // free-text position e.g. "Co-founder" (per workspace)
+  /** 0058: when they joined (an invite claimed); null for people who joined before it was recorded. Absent before 0058. */
+  joinedAt?: string | null;
+  /** an invite's: when it was sent (workspace_members.created_at) */
+  invitedAt?: string;
 }
 
 export type Recurrence = "none" | "daily" | "weekdays" | "weekly" | "biweekly" | "monthly";
@@ -1498,11 +1513,14 @@ export interface OnboardingTourState {
   updatedAt?: string;
 }
 export type SetupItemId =
-  | "invite_team" | "connect_calendar" | "add_domain" | "connect_slack"          // owners / admins
+  | "invite_team" | "connect_calendar" | "add_domain" | "connect_slack"          // Personal (and owners before 0058's rollout list)
+  | "pick_pack" | "import_work" | "invite_pilot" | "set_update_day" | "post_update"   // a team's owners / admins
   | "plan_day" | "complete_task" | "install_app" | "set_notifications";         // everyone else
 export interface OnboardingChecklistState {
   /** item → when it was ticked (ISO). Items also tick themselves from what the app sees (SetupSignals). */
   done?: Partial<Record<SetupItemId, string>>;
+  /** 0058: a team's rollout items are ticked per workspace (workspace id → item → when) */
+  teams?: Record<string, Partial<Record<SetupItemId, string>>>;
   dismissedAt?: string | null;
 }
 /** The "Kanbo tour" sample project (made on request in Personal; removable in one click). */
@@ -1511,9 +1529,11 @@ export interface OnboardingSample { projectId: string; taskIds: string[]; docId?
 export interface MomentumPrefs { streakHidden?: boolean; recapHidden?: boolean; daysOff?: string[] }
 /** All businesses on Today, Inbox and My tasks (off unless you switch it on): your choice, on every device. */
 export interface BusinessesPrefs { all?: boolean }
+/** "Welcome to <workspace>" on Today: workspace id → when you put it away (shown once per workspace). */
+export type WelcomedPrefs = Record<string, string>;
 /** profiles.onboarding. ONE top-level key per feature, merged one level deep by
  *  merge_onboarding(patch) (null removes a key): tour / checklist (U1), sample (U1), momentum (U10),
- *  businesses (All businesses). */
+ *  businesses (All businesses), welcomed (the new-member welcome card). */
 export interface OnboardingState {
   v?: 1;
   tour?: OnboardingTourState;
@@ -1521,6 +1541,8 @@ export interface OnboardingState {
   sample?: OnboardingSample;
   momentum?: MomentumPrefs;
   businesses?: BusinessesPrefs;
+  /** the new-member welcome card, put away per workspace */
+  welcomed?: WelcomedPrefs;
 }
 export type OnboardingPatch = { [K in keyof OnboardingState]?: OnboardingState[K] | null };
 

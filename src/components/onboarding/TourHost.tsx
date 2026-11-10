@@ -33,7 +33,7 @@ import { Button, IconButton, Kbd, KanboLogo } from "../primitives";
 import type { OnboardingState, OnboardingTourState, TourRole } from "../../data/types";
 import type { Route } from "../../app-types";
 import {
-  TOUR_ANCHORS, TOUR_MINUTES, onTourDecline, onTourRequest, resumeIndex, shouldAutoStartTour, tourState, tourSteps, type TourStep,
+  TOUR_ANCHORS, TOUR_MINUTES, onTourDecline, onTourRequest, resumeIndex, shouldAutoStartTour, tourState, tourSteps, type TourContext, type TourStep,
 } from "../../lib/onboarding";
 import { routeOf } from "../../lib/nav";
 import { DOCK_BELOW, boxOf, findTourAnchor, placeCoachCard, sameBox, spotlightBox, type Box, type Size } from "./tourPlacement";
@@ -50,6 +50,8 @@ export interface TourHostProps {
   onNavigate?: (route: Route) => void;
   /** a step that shows the task panel asks the app to open a task (the sample project's first, if any) */
   onOpenTask?: (taskId: string) => void;
+  /** where it runs (0058): in a team workspace the tour shows the team's rhythm too (Waiting on, Pulse, Goals, updates) */
+  context?: TourContext;
 }
 
 type Phase = "idle" | "offer" | "running";
@@ -75,14 +77,15 @@ const touchFirst = (vw: number) => vw < DOCK_BELOW || media("(pointer: coarse)")
 const viewportNow = (): Size => ({ width: window.innerWidth, height: window.innerHeight });
 const MINUTES_WORD = ["zero", "one", "two", "three", "four", "five"][TOUR_MINUTES] ?? String(TOUR_MINUTES);
 
-export function TourHost({ role, onboarding, onChange, isNewAccount, onNavigate, onOpenTask }: TourHostProps) {
+export function TourHost({ role, onboarding, onChange, isNewAccount, onNavigate, onOpenTask, context }: TourHostProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [index, setIndex] = useState(0);
   const [announce, setAnnounce] = useState("");
   const [anchor, setAnchor] = useState<Box | null>(null);
   const [cardSize, setCardSize] = useState<Size>({ width: 360, height: 230 });
   const [viewport, setViewport] = useState<Size>(() => (typeof window === "undefined" ? { width: 1280, height: 800 } : viewportNow()));
-  const steps = useMemo(() => tourSteps(role), [role]);
+  const team = !!context?.team, projectId = context?.projectId ?? null;
+  const steps = useMemo(() => tourSteps(role, { team, projectId }), [role, team, projectId]);
   const at = Math.min(index, steps.length - 1);
   const step: TourStep | null = phase === "running" ? steps[at] ?? null : null;
 
@@ -150,7 +153,7 @@ export function TourHost({ role, onboarding, onChange, isNewAccount, onNavigate,
     if (!shouldAutoStartTour(onboarding, { isNewAccount: !!isNewAccount })) return;
     handled.current = true;
     const saved = onboarding.tour?.step;
-    begin(saved ? { phase: "running", index: resumeIndex(role, saved), explicit: false } : { phase: "offer", index: 0, explicit: false });
+    begin(saved ? { phase: "running", index: resumeIndex(role, saved, { team, projectId }), explicit: false } : { phase: "offer", index: 0, explicit: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tourKey, isNewAccount, role, begin]);
 

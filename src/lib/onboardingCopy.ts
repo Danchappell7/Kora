@@ -9,7 +9,7 @@
 import type { OnboardingState, SetupItemId, TourRole } from "../data/types";
 import type { Route } from "../app-types";
 import type { SetupSignals, TourAnchor } from "./onboarding";
-import { setupItemsFor, type ChecklistOpts } from "./onboardingItems";
+import { setupItemsFor, tickedAt, type ChecklistOpts } from "./onboardingItems";
 
 export interface TourStep {
   id: string;
@@ -56,6 +56,28 @@ const STEP_INBOX: TourStep = {
   body: "Mentions, assignments and requests land here, sorted into what needs your reply, what's new to you and what's just for your information. R replies, A adds to Today, H snoozes and E archives.",
   touchBody: "Mentions, assignments and requests land here, sorted into what needs your reply, what's new to you and what's just for your information. Tap ⋯ on an item to reply, snooze or archive it.",
 };
+/* a team's rhythm (0058): who's doing what, the quarter's goals, each project's update, what you're waiting on */
+const STEP_WAITING: TourStep = {
+  id: "waiting", anchor: "waiting", title: "Waiting on", route: { view: "tasks", tab: "waiting" },
+  body: "Work you've handed to someone, or that's blocked on someone else, sits in My tasks › Waiting on, by person, so nothing slips through. Nudge them from there.",
+  touchBody: "Work you've handed to someone, or that's blocked on someone else, sits in My tasks › Waiting on, by person, so nothing slips through.",
+};
+const STEP_PULSE: TourStep = {
+  id: "pulse", anchor: "pulse", title: "Team Pulse", route: { view: "pulse" },
+  body: "Pulse reads the team's day in one line: what moved, who's stretched and what's at risk, so you can step in early. Radar sits beside it.",
+  touchBody: "Pulse reads the team's day in one line: what moved, who's stretched and what's at risk, so you can step in early. It's under Team.",
+};
+const STEP_GOALS: TourStep = {
+  id: "goals", anchor: "goals", title: "This quarter's goals", route: { view: "goals" },
+  body: "Every goal has an owner, a quarter and check-ins. The pace line says whether it's on track, and the work behind it moves its number.",
+  touchBody: "Every goal has an owner, a quarter and check-ins. The pace line says whether it's on track, and the work behind it moves its number.",
+};
+const STEP_UPDATES: TourStep = {
+  id: "updates", anchor: "updates", title: "Project updates",
+  body: "On the team's update day, each project's owner posts how it's really going: highlights, risks, asks and what's next. Kanbo drafts it from the week's work.",
+  touchBody: "On the team's update day, each project's owner posts how it's really going: highlights, risks, asks and what's next. Kanbo drafts it from the week's work.",
+};
+
 const STEP_INVITE: TourStep = {
   id: "invite", anchor: null, title: "Bring your team in",
   body: "Kanbo is better together. Invite people from Team, or start a team workspace from the switcher at the top of the sidebar. Guests can follow along without editing. Your “Get set up” card on Today has the rest.",
@@ -80,21 +102,32 @@ const GUEST_WORDS: Readonly<Record<string, readonly [body: string, touchBody: st
     "Mentions and replies to you land here, sorted into what needs your reply and what's just for your information. R replies, H snoozes and E archives.",
     "Mentions and replies to you land here, sorted into what needs your reply and what's just for your information. Tap ⋯ on an item to reply, snooze or archive it.",
   ],
+  updates: [
+    "Each project's owner posts how it's really going on the team's update day. Read it, reply to it and react: the team sees what you think.",
+    "Each project's owner posts how it's really going on the team's update day. Read it, reply to it and react: the team sees what you think.",
+  ],
 };
 
-/** The tour for a role (owner/admin, member, guest: guests never see write-only steps). */
-export function tourSteps(role: TourRole): TourStep[] {
+/** Where the tour runs (0058): in a team workspace it shows the team's rhythm too. `projectId`: a project
+ *  whose Updates tab the updates step opens (none: that step is a centred card). */
+export interface TourContext { team?: boolean; projectId?: string | null }
+
+/** The tour for a role (owner/admin, member, guest: guests never see write-only steps). In a team workspace
+ *  it adds Waiting on, Pulse, Goals and project updates (a guest: updates only, which they read and reply to). */
+export function tourSteps(role: TourRole, ctx: TourContext = {}): TourStep[] {
+  const updates: TourStep = ctx.projectId ? { ...STEP_UPDATES, route: { view: "project", projectId: ctx.projectId, tab: "updates" } } : { ...STEP_UPDATES, anchor: null };
   if (role === "guest") {
-    return [STEP_PLACES, STEP_SEARCH, STEP_PANEL, STEP_INBOX].map((s) => ({ ...s, body: GUEST_WORDS[s.id][0], touchBody: GUEST_WORDS[s.id][1] }));
+    const steps = ctx.team ? [STEP_PLACES, STEP_SEARCH, STEP_PANEL, STEP_INBOX, updates] : [STEP_PLACES, STEP_SEARCH, STEP_PANEL, STEP_INBOX];
+    return steps.map((s) => ({ ...s, body: GUEST_WORDS[s.id][0], touchBody: GUEST_WORDS[s.id][1] }));
   }
-  const member = [STEP_PLACES, STEP_SEARCH, STEP_CAPTURE, STEP_PLAN, STEP_PANEL, STEP_INBOX];
+  const member = [STEP_PLACES, STEP_SEARCH, STEP_CAPTURE, STEP_PLAN, STEP_PANEL, STEP_INBOX, ...(ctx.team ? [STEP_WAITING, STEP_PULSE, STEP_GOALS, updates] : [])];
   return role === "owner" ? [...member, STEP_INVITE] : member;
 }
 
 /** Where a saved step resumes (its index in the role's tour; 0 when it's not in this role's tour). */
-export function resumeIndex(role: TourRole, stepId: string | null | undefined): number {
+export function resumeIndex(role: TourRole, stepId: string | null | undefined, ctx: TourContext = {}): number {
   if (!stepId) return 0;
-  const i = tourSteps(role).findIndex((s) => s.id === stepId);
+  const i = tourSteps(role, ctx).findIndex((s) => s.id === stepId);
   return i < 0 ? 0 : i;
 }
 
@@ -119,13 +152,17 @@ export const SETUP_COPY: Readonly<Record<SetupItemId, { label: string; hint: str
   complete_task: { label: "Complete a task", hint: "Tick the circle beside any task to finish it.", action: "Open" },
   install_app: { label: "Install the app", hint: "Kanbo on your dock or home screen, with notifications.", action: "Install" },
   set_notifications: { label: "Set your notifications", hint: "Choose what reaches you, and when.", action: "Choose" },
+  pick_pack: { label: "Start from a business pack", hint: "Projects, goals and routines for your kind of business, in one step.", action: "Pick" },
+  import_work: { label: "Bring your work in", hint: "Paste a list or a spreadsheet, or upload a CSV.", action: "Import" },
+  invite_pilot: { label: "Invite your pilot group", hint: "Three to five people who'll try it first and tell you what works.", action: "Invite" },
+  set_update_day: { label: "Set your update day", hint: "The day each project's owner posts how it's really going.", action: "Set" },
+  post_update: { label: "Post your first update", hint: "Show the team how it's done. Kanbo drafts it from the week's work.", action: "Post" },
 };
 
 export function checklistView(role: TourRole, state: OnboardingState, signals: SetupSignals, opts: ChecklistOpts = {}): { items: ChecklistItemView[]; done: number; total: number; complete: boolean } {
-  const ticked = state.checklist?.done ?? {};
   const items = setupItemsFor(role, opts).map((id): ChecklistItemView => {
     const auto = !!signals[id];
-    return { id, ...SETUP_COPY[id], done: auto || !!ticked[id], ...(auto ? { auto: true } : {}) };
+    return { id, ...SETUP_COPY[id], done: auto || !!tickedAt(state.checklist, id, opts), ...(auto ? { auto: true } : {}) };
   });
   const done = items.filter((i) => i.done).length;
   return { items, done, total: items.length, complete: items.length > 0 && done === items.length };

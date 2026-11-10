@@ -177,6 +177,29 @@ describe("taking the tour", () => {
   });
 });
 
+describe("in a team workspace (0058)", () => {
+  it("the team's rhythm too: Waiting on, Pulse, Goals and a project's updates, each in its place; resumed by its id", () => {
+    const onNavigate = vi.fn();
+    render(<TourHost role="owner" onboarding={{ tour: { step: "waiting", done: false } }} onChange={vi.fn()} onNavigate={onNavigate} context={{ team: true, projectId: "p-studio" }} />);
+    expect(card()).toHaveAccessibleName("Step 7 of 11: Waiting on");
+    expect(onNavigate).toHaveBeenLastCalledWith({ view: "tasks", tab: "waiting" });
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    expect(card()).toHaveAccessibleName(/Step 8 of 11: Team Pulse/);
+    expect(onNavigate).toHaveBeenLastCalledWith({ view: "pulse" });
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    expect(card()).toHaveAccessibleName(/This quarter's goals/);
+    expect(onNavigate).toHaveBeenLastCalledWith({ view: "goals" });
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    expect(card()).toHaveAccessibleName(/Project updates/);
+    expect(onNavigate).toHaveBeenLastCalledWith({ view: "project", projectId: "p-studio", tab: "updates" });
+  });
+  it("a guest in a team: four reading steps, then the updates they read and reply to", () => {
+    render(<TourHost role="guest" onboarding={{ tour: { step: "updates", done: false } }} onChange={vi.fn()} context={{ team: true }} />);
+    expect(card()).toHaveAccessibleName(/Step 5 of 5: Project updates/);
+    expect(screen.getByText(/reply to it/)).toBeInTheDocument();
+  });
+});
+
 describe("pointing at the real UI", () => {
   it("rings the anchor and sits beside it (the sidebar's places → to its right)", () => {
     anchor("places", { top: 120, left: 10, width: 212, height: 180 });
