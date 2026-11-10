@@ -52,7 +52,7 @@ export function draftSectionsLocal(f: StatusFacts): UpdateSections {
   const out: UpdateSections = {};
   if (f.done7.length) {
     const names = f.done7.slice(0, 3).map((t) => clean(t.title));
-    out.highlights = f.done7.length > 3 ? `Finished ${list(names)}, and ${plural(f.done7.length - 3, "more task")}.` : `Finished ${list(names)}.`;
+    out.highlights = f.done7.length > 3 ? `Done this week: ${list(names)}, and ${plural(f.done7.length - 3, "more task")}.` : `Done this week: ${list(names)}.`;
   } else if (f.health === "complete") out.highlights = "Every task is done.";
   const risks: string[] = [];
   const blocked = f.blocked[0];

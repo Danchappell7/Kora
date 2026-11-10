@@ -236,7 +236,8 @@ describe("ProjectsView (the directory as a table)", () => {
     const box = screen.getByRole("textbox", { name: "Update" }) as HTMLTextAreaElement;
     expect(box.value).toMatch(/^Nothing finished this week; 0% done overall\. Overdue: Task t6\./);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Post update" })); });
-    expect(onPostUpdate).toHaveBeenCalledWith("p-infra", box.value, "off_track");   // half its work is overdue
+    // half its work is overdue (0054: Kanbo's draft puts that under Risks too)
+    expect(onPostUpdate).toHaveBeenCalledWith("p-infra", box.value, "off_track", { sections: { risks: "Overdue: Task t6." } });
     expect(onOpenProject).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "Update" })).not.toBeInTheDocument());
   });

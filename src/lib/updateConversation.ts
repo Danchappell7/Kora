@@ -88,7 +88,10 @@ export async function loadUpdateConversation(ids: readonly string[], force = fal
     for (const id of want) {
       loaded.add(id);
       const seed = DEMO_UPDATE_THREADS[id];
-      if (seed && !threads.has(id)) threads.set(id, { comments: seed.comments.map((c) => ({ ...c })), reactions: Object.fromEntries(Object.entries(seed.reactions).map(([k, v]) => [k, [...v]])), seenBy: [...seed.seenBy] });
+      if (threads.has(id)) continue;
+      threads.set(id, seed
+        ? { comments: seed.comments.map((c) => ({ ...c })), reactions: Object.fromEntries(Object.entries(seed.reactions).map(([k, v]) => [k, [...v]])), seenBy: [...seed.seenBy] }
+        : { comments: [], reactions: {}, seenBy: [] });
     }
     tell();
     return;

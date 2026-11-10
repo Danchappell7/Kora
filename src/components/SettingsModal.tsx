@@ -98,8 +98,9 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   // 0048: in-app pref "kudos" (the database checks it), email "kudos_email" (the notify function)
   { key: "kudos", label: "Kudos", hint: "A teammate thanks you for something you finished." },
   { key: "due", label: "Due-date reminders", hint: "Sent by email only." },
-  // 0053: email "update_email" (daily-reminders and notify); in-app it's the line on Today
-  { key: "update", label: "Project updates", hint: "Your project's update is due, or a lead asks for one. In the app it's on Today." },
+  // 0053: email "update_email" (daily-reminders and notify); 0054: in-app "update" (the database checks it for
+  // updates posted on your projects and replies on yours; an Ask that names you follows Mentions)
+  { key: "update", label: "Project updates", hint: "Updates on projects you own or work on, replies on yours, your update day and asks for one." },
 ];
 /** Once push can be offered, the morning reminder can push too (the In-app column stays "–"). */
 const notifHint = (r: { key: string; hint: string }): string =>
@@ -772,9 +773,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
                   <span className="kset-row-label">{r.label}</span>
                   <span className="kset-row-desc">{notifHint(r)}</span>
                 </th>
-                {/* due reminders come from the daily job (email, and push below once it's on), never in-app;
-                    update reminders show on Today, which has no switch */}
-                <td>{r.key === "due" || r.key === "update"
+                {/* due reminders come from the daily job (email, and push below once it's on), never in-app
+                    (0054: project updates have an Inbox switch: posted updates and replies) */}
+                <td>{r.key === "due"
                   ? <span className="kset-na"><span aria-hidden="true">–</span><span className="sr-only">Not available in the app</span></span>
                   : <PrefCheck checked={prefOn(r.key)} onChange={() => togglePref(r.key)} label={`${r.label} in-app`} disabled={!onSaveNotifyPrefs} />}</td>
                 <td><PrefCheck checked={prefOn(`${r.key}_email`)} onChange={() => togglePref(`${r.key}_email`)} label={`${r.label} email`} disabled={!onSaveNotifyPrefs} /></td>

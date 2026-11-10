@@ -1,0 +1,96 @@
+/* ============================================================
+   KANBO — the conversation on a project update (0054): its sections,
+   the "edited" mark, reactions, "Seen by", replies, and the editor an
+   author changes it in. Calm: one quiet line under the words, the
+   thread opens under it.
+   ============================================================ */
+
+/* ---------------- the composer: + sections, and who an Ask is for ---------------- */
+.kuc-sec-add {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin: -2px 0 0 -8px;
+  border: 0; border-radius: var(--r-sm, 6px); background: transparent; cursor: pointer;
+  font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3);
+}
+.kuc-sec-add:hover { background: var(--fill-1); color: var(--ink-2); }
+.kuc-sec-add > span { font-size: 15px; line-height: 1; }
+.kuc-sec { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.kuc-sec-legend { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0; margin-bottom: 2px;
+  font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kuc-sec-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: start; column-gap: 10px; margin: 0; }
+.kuc-sec-label { padding-top: 7px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kpj-composer textarea.kpj-field.kuc-sec-field { min-height: 32px; max-height: 180px; padding-top: 6px; padding-bottom: 6px; resize: vertical; font-size: 13px; line-height: 20px;
+  field-sizing: content; }
+.kuc-sec-who { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-left: 94px; }
+.kuc-sec-who-label { font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kuc-sec-who-note { flex-basis: 100%; font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kuc-chip {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border: 0; border-radius: 13px; cursor: pointer;
+  background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2);
+}
+.kuc-chip:hover { background: var(--fill-2); }
+.kuc-chip[aria-pressed="true"] { background: color-mix(in oklch, var(--accent) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 45%, transparent); color: var(--ink); }
+@media (max-width: 559px) {
+  .kuc-sec-row { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
+  .kuc-sec-label { padding-top: 0; }
+  .kuc-sec-who { padding-left: 0; }
+}
+
+/* ---------------- an update in the history ---------------- */
+.kuc-edited { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-4); }
+.kuc-more { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
+.kuc-secs { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 14px; row-gap: 6px; margin: 4px 0 0; }
+.kuc-secs dt { font: 600 12px/22px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kuc-secs dd { margin: 0; font: 400 14px/22px var(--font-ui, var(--font-display)); color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.kuc-secs dd[data-key="asks"] { color: var(--ink); }
+.kuc-for { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: 1px; }
+.kuc-for > span { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 10px; background: var(--fill-1);
+  box-shadow: inset 0 0 0 1px var(--hairline); font: 500 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-2); }
+.kuc-for > span[data-me] { background: color-mix(in oklch, var(--accent) 14%, transparent); color: var(--ink); }
+@media (max-width: 559px) {
+  .kuc-secs { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+  .kuc-secs dd + dt { margin-top: 6px; }
+}
+
+/* ---------------- reactions · seen by · replies ---------------- */
+.kuc-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 2px; }
+.kuc-reacts { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.kuc-react {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border: 0; border-radius: 13px; cursor: pointer;
+  background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-2);
+}
+.kuc-react:hover { background: var(--fill-2); }
+.kuc-react[aria-pressed="true"] { background: color-mix(in oklch, var(--accent) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 40%, transparent); color: var(--ink); }
+.kuc-react:disabled { cursor: default; }
+.kuc-react > span:last-child { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11px; }
+.kuc-pick { display: flex; gap: 2px; padding: 4px; }
+.kuc-pick > button { width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
+.kuc-pick > button:hover, .kuc-pick > button[aria-pressed="true"] { background: var(--fill-2); }
+.kuc-seen { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); cursor: default; }
+.kuc-replies { margin-left: auto; }
+@media (max-width: 559px) { .kuc-replies { margin-left: 0; } }
+
+.kuc-thread { display: flex; flex-direction: column; gap: 12px; margin: 6px 0 0; padding: 12px 0 0 14px; border-left: 2px solid var(--hairline); }
+.kuc-c { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 10px; }
+.kuc-c-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kuc-c-head > b { font-weight: 600; color: var(--ink-2); }
+.kuc-c-acts { margin-left: auto; display: inline-flex; gap: 2px; }
+.kuc-c-body { margin: 2px 0 0; font: 400 14px/22px var(--font-ui, var(--font-display)); color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.kuc-c-av { padding-top: 1px; }
+.kuc-c-initial { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--fill-2); font: 600 10px/1 var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kuc-reply { display: flex; flex-direction: column; gap: 8px; }
+.kuc-reply textarea.kpj-field { min-height: 40px; resize: vertical; font-size: 14px; line-height: 22px; }
+.kuc-reply-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.kuc-reply-note { margin-right: auto; font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kuc-err { margin: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--signal); }
+
+/* ---------------- an author's editor ---------------- */
+.kuc-edit { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--r-md, 8px); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); }
+.kuc-edit textarea.kpj-field { min-height: 72px; resize: vertical; }
+.kuc-edit-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------------- the Inbox: an update item's quote ---------------- */
+.kuc-inbox-tag { display: inline-flex; align-items: center; height: 18px; margin-left: 6px; padding: 0 6px; border-radius: 9px; vertical-align: 1px;
+  background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); font: 600 10px/16px var(--font-ui, var(--font-display)); letter-spacing: 0.02em; color: var(--ink-3); }
+
+@media print { .kuc-foot, .kuc-thread, .kuc-more { display: none !important; } }

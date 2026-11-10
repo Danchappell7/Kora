@@ -37,7 +37,7 @@ describe("sections", () => {
       blocked: [blocked], waitingOn: { t2: [tokens] }, overdue: [task("o1", "Record demo video", { dueDate: "2026-11-01" })],
       nextMilestone: task("m1", "Launch day", { isMilestone: true, dueDate: "2026-11-18" }), criticalPath: deck,
     }));
-    expect(s.highlights).toBe("Finished Approve budget and Pick launch date.");
+    expect(s.highlights).toBe("Done this week: Approve budget and Pick launch date.");
     expect(s.risks).toBe("Ship onboarding is blocked on Define tokens v2. Overdue: Record demo video.");
     expect(s.next).toBe("Launch day, Wed 18 Nov. Unblock the critical path: Finalise launch narrative deck.");
     expect(s.asks).toBeUndefined();

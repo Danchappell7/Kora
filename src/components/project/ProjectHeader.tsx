@@ -25,7 +25,9 @@ import { DraftInput } from "./DraftInput";
 import { SlackPostButton } from "../integrations";
 import { EditIdentitySheet, IdentityFields } from "./IdentityPicker";
 import { PresenceAvatars, useProjectPresence, type PresenceMe } from "../presence";
-import { UpdateDayField, UpdatePlanNote } from "../updates/UpdateDay";
+import { UpdateDayField } from "../updates/UpdateDay";
+import { UpdateCard, type UpdateEditPatch } from "../updates/UpdateCard";
+import { markUpdatesSeen, useUpdateConversation, threadOf } from "../../lib/updateConversation";
 import "./projects.css";
 
 export type { AiStatus, PostStatus } from "./StatusComposer";
@@ -311,8 +313,20 @@ export function ProjectNotice({ project, statusUpdates, risks, onOpenUpdates, on
 
 /* ============================ ProjectPanels ============================ */
 
+/** 0054: what the Updates tab needs for each update's conversation (who you are, whether you lead the
+ *  workspace, an author's edit and delete, and the update to open from the Inbox). */
+export interface UpdatesConversation {
+  me: string;
+  /** an owner or admin of the project's workspace: deletes any update, removes any reply */
+  lead: boolean;
+  onEdit?: (u: StatusUpdate, patch: UpdateEditPatch) => Promise<boolean>;
+  onDelete?: (u: StatusUpdate) => void;
+  /** open this update's replies (arriving from the Inbox) */
+  focusUpdateId?: string | null;
+}
+
 /** A project's non-task tabs: Updates · Requests · Rules · About. */
-export function ProjectPanels({ tab, project, tasks, statusUpdates, members, canManage, readOnly, onUpdate, onPostStatus, aiStatus, rules, forms }: {
+export function ProjectPanels({ tab, project, tasks, statusUpdates, members, canManage, readOnly, onUpdate, onPostStatus, aiStatus, rules, forms, conversation }: {
   tab: "updates" | "requests" | "rules" | "about";
   project: Project;
   tasks: Task[];
@@ -325,6 +339,7 @@ export function ProjectPanels({ tab, project, tasks, statusUpdates, members, can
   aiStatus?: AiStatus;
   rules: React.ComponentProps<typeof AutomationsView>;
   forms: React.ComponentProps<typeof FormsView>;
+  conversation?: UpdatesConversation;
 }): JSX.Element {
   if (tab === "rules") {
     if (readOnly) {
@@ -338,13 +353,15 @@ export function ProjectPanels({ tab, project, tasks, statusUpdates, members, can
   }
   if (tab === "requests") return <FormsView {...forms} projectId={project.id} readOnly={readOnly || forms.readOnly} />;
   if (tab === "about") return <AboutPanel project={project} tasks={tasks} statusUpdates={statusUpdates} members={members} canManage={canManage} readOnly={readOnly} onUpdate={onUpdate} />;
-  return <UpdatesPanel project={project} tasks={tasks} statusUpdates={statusUpdates} readOnly={readOnly} onPostStatus={onPostStatus} aiStatus={aiStatus} />;
+  return <UpdatesPanel project={project} tasks={tasks} statusUpdates={statusUpdates} readOnly={readOnly} onPostStatus={onPostStatus} aiStatus={aiStatus}
+    members={members} conversation={conversation} />;
 }
 
 const HISTORY_PAGE = 20;
 
-function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, aiStatus }: {
+function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, aiStatus, members = [], conversation }: {
   project: Project; tasks: Task[]; statusUpdates: StatusUpdate[]; readOnly: boolean; onPostStatus?: PostStatus; aiStatus?: AiStatus;
+  members?: { id: string; name: string }[]; conversation?: UpdatesConversation;
 }) {
   const canPost = !readOnly && !!onPostStatus;
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost: canPost ? onPostStatus : undefined, aiStatus });
@@ -352,6 +369,18 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
   useInPageComposer(project.id, textRef, canPost);
   const history = useMemo(() => projectUpdates(statusUpdates, project.id), [statusUpdates, project.id]);
   const [shown, setShown] = useState(HISTORY_PAGE);
+  // 0054: each shown update's reactions, seen by and replies; reading them here counts as seeing them
+  const me = conversation?.me ?? "";
+  const shownIds = useMemo(() => history.slice(0, shown).map((u) => u.id), [history, shown]);
+  const { threads, on: conversationOn } = useUpdateConversation(shownIds);
+  const ready = shownIds.every((id) => threads.has(id));
+  useEffect(() => {
+    if (!ready || !me || !conversationOn) return;
+    void markUpdatesSeen(shownIds, me, (id) => history.find((u) => u.id === id)?.authorId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, me, conversationOn, shownIds.join(",")]);
+  // who an Ask or a reply can be for: the project's people who can read it, not you
+  const people = useMemo(() => members.filter((m) => m.id !== me), [members, me]);
   // draft first: the composer opens on the on-device draft of this week (the AI one is a click away),
   // unless this project already has a draft in hand (yours, or one Kanbo is writing)
   const seeded = useRef<string | null>(null);
@@ -367,7 +396,7 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
       <div className="kpj-wrap kpj-readw kpj-panel">
         {canPost && (
           <section className="kpj-composer-card" aria-label="Post an update">
-            <ComposerPanel c={c} title="Post an update" textRef={textRef} />
+            <ComposerPanel c={c} title="Post an update" textRef={textRef} people={people} />
           </section>
         )}
         {history.length === 0 ? (
@@ -377,36 +406,19 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
           <section aria-label="Update history">
             <h2 className="kpj-panel-title">History <span className="kpj-count">{history.length}</span></h2>
             <ol className="kpj-history">
-              {history.slice(0, shown).map((u, i) => {
-                const meta = STATUS_KIND_META[u.status];
-                const age = relDay(u.createdAt);
-                const by = updateAuthor(u);
-                return (
-                  <li key={u.id}>
-                    <div className="kpj-history-meta">
-                      <Pill tone={STATUS_TONE[u.status] ?? "neutral"}>{meta?.label ?? u.status}</Pill>
-                      {by && (
-                        <span className="kpj-history-by" data-former={u.authorId && getMember(u.authorId) ? undefined : ""}>
-                          {u.authorId && getMember(u.authorId) && <Avatar id={u.authorId} size={18} />}
-                          {by}
-                        </span>
-                      )}
-                      <span className="kpj-mono" title={new Date(u.createdAt).toLocaleString("en-GB")}>{fmtShortDay(u.createdAt, KANBO_TODAY)}</span>
-                      {age.days < 14 && <span>· {age.label}</span>}
-                      {/* the latest update can go to the team's Slack channel (the button renders
-                          nothing in Personal, before Slack is connected, or for guests) */}
-                      {i === 0 && !readOnly && (
-                        <span className="kpj-history-act">
-                          <SlackPostButton workspaceId={project.workspaceId ?? null} kind="status" projectId={project.id} status={u.status}
-                            getText={() => u.summary} label="Share to Slack" variant="ghost" />
-                        </span>
-                      )}
-                    </div>
-                    <p className="kpj-history-text">{u.summary}</p>
-                    <UpdatePlanNote update={u} />
-                  </li>
-                );
-              })}
+              {history.slice(0, shown).map((u, i) => (
+                <li key={u.id} id={`update-${u.id}`}>
+                  <UpdateCard update={u} me={me} canWrite={!readOnly} lead={!!conversation?.lead} thread={threadOf(threads, u.id)}
+                    conversation={conversationOn && !!me} people={people} onEdit={conversation?.onEdit} onDelete={conversation?.onDelete}
+                    defaultOpen={conversation?.focusUpdateId === u.id}
+                    // the latest update can go to the team's Slack channel (the button renders
+                    // nothing in Personal, before Slack is connected, or for guests)
+                    actions={i === 0 && !readOnly ? (
+                      <SlackPostButton workspaceId={project.workspaceId ?? null} kind="status" projectId={project.id} status={u.status}
+                        getText={() => u.summary} label="Share to Slack" variant="ghost" />
+                    ) : undefined} />
+                </li>
+              ))}
             </ol>
             {history.length > shown && (
               <Button variant="ghost" size="sm" icon="chevronDown" onClick={() => setShown((n) => n + HISTORY_PAGE)}>

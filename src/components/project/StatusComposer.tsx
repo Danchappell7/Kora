@@ -9,22 +9,28 @@
    blocked work brings up one calm question (lib/honestStatus), never
    a block on posting; At risk and Off track take a "Plan to recover"
    and a new target date; On hold is a status of its own.
+   Sections (0054): optional Highlights / Risks / Asks / Next under the
+   words, which Kanbo's drafts fill (Asks are yours to write), and the
+   people an Ask is for, who get it under "Needs your reply".
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { AiMark, Button, DateChip, Provenance, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { KANBO_TODAY, todayISO } from "../../data/data";
-import type { Project, StatusKind, StatusUpdate, Task } from "../../data/types";
+import type { Project, StatusKind, StatusUpdate, Task, UpdateSections } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
 import { draftStatusLocal, factLines, statusFacts, statusFactsForAi, statusFromHealth, type StatusFacts } from "../../lib/statusDraft";
 import { honestQuestion } from "../../lib/honestStatus";
+import { draftSectionsLocal, hasSections, parseSections, SECTION_HINTS, SECTION_KEYS, SECTION_LABELS, SECTION_MAX, type SectionKey } from "../../lib/updateSections";
 import "./projects.css";
 import "../updates/updates.css";
+import "../updates/conversation.css";
 
-/** What an At risk or Off track update adds (0053): its plan to recover and a new target date. */
-export interface StatusExtras { recoveryPlan?: string; targetDate?: string }
+/** What an At risk or Off track update adds (0053): its plan to recover and a new target date;
+ *  and (0054) its sections and the people its Asks are for. */
+export interface StatusExtras { recoveryPlan?: string; targetDate?: string; sections?: UpdateSections; askUserIds?: string[] }
 export type PostStatus = (projectId: string, summary: string, status: StatusKind, extras?: StatusExtras) => Promise<boolean> | void;
-export type AiStatus = (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
+export type AiStatus = (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind; sections?: UpdateSections }>>;
 
 export const STATUS_OPTIONS: { value: StatusKind; label: string }[] = [
   { value: "on_track", label: "On track" },
@@ -58,9 +64,14 @@ interface Draft {
   target: string | null;
   /** you answered Kanbo's question ("Keep On track"), so it's not asked again for this draft */
   kept: boolean;
+  /** 0054: Highlights / Risks / Asks / Next ({} none), shown when open or filled */
+  sections: UpdateSections;
+  sectionsOpen: boolean;
+  /** the people the Asks are for */
+  asks: string[];
 }
 interface Entry { draft?: Draft; drafting?: { seq: number; typed: boolean }; posting?: boolean }
-const EMPTY: Draft = { text: "", kind: null, source: null, note: null, edited: false, plan: "", target: null, kept: false };
+const EMPTY: Draft = { text: "", kind: null, source: null, note: null, edited: false, plan: "", target: null, kept: false, sections: {}, sectionsOpen: false, asks: [] };
 const entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
 let draftSeq = 0;
@@ -145,6 +156,14 @@ export interface Composer {
   keep: () => void;
   /** "Add a plan to recover": the call Kanbo's read makes, with the plan field ready */
   addPlan: () => void;
+  /** 0054: the sections (shown once opened, or once a draft fills them) */
+  sections: UpdateSections;
+  setSection: (k: SectionKey, v: string) => void;
+  sectionsOpen: boolean;
+  setSectionsOpen: (open: boolean) => void;
+  /** who the Asks are for */
+  asks: string[];
+  toggleAsk: (id: string) => void;
 }
 
 /** Why the on-device draft stood in for Kanbo's (the interface never says "AI", §2.3). */
@@ -184,28 +203,36 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
   const draft = (how: "best" | "template" = "best") => {
     const pid = id;
     const local = draftStatusLocal(facts);
+    // Kanbo's sections come with its words (a redraft rewrites both); an Ask you wrote stays yours
+    const withSections = (keep: Draft, drafted: UpdateSections | undefined): UpdateSections => {
+      const out: UpdateSections = { ...(drafted ?? {}) };
+      if (keep.sections.asks?.trim()) out.asks = keep.sections.asks;
+      return out;
+    };
     if (!aiStatus || how === "template") {
       const keep = entries.get(pid)?.draft ?? EMPTY;
-      patchEntry(pid, { drafting: undefined, draft: { ...keep, text: local.summary, kind: local.status, source: "template", note: null, edited: false } });
+      patchEntry(pid, { drafting: undefined, draft: { ...keep, text: local.summary, kind: local.status, source: "template", note: null, edited: false,
+        sections: withSections(keep, draftSectionsLocal(facts)) } });
       return;
     }
     const seq = ++draftSeq;
     patchEntry(pid, { drafting: { seq, typed: false } });
     // the draft lands even if this composer has gone (it's shared), unless it was superseded
-    const settle = (out: AiOutcome<{ summary: string; status: StatusKind }> | null) => {
+    const settle = (out: AiOutcome<{ summary: string; status: StatusKind; sections?: UpdateSections }> | null) => {
       const pending = entries.get(pid)?.drafting;
       if (pending?.seq !== seq) return;
       patchEntry(pid, { drafting: undefined });
       if (pending.typed) return; // your words win over a late draft
       const summary = out?.source === "ai" ? out.data?.summary?.trim() : "";
+      const keep = entries.get(pid)?.draft ?? EMPTY;
       if (out?.source === "ai" && summary) {
         const k = KINDS.has(out.data.status) ? out.data.status : local.status;
-        writeDraft(pid, { text: summary, kind: k, source: "ai", note: null, edited: false });
+        writeDraft(pid, { text: summary, kind: k, source: "ai", note: null, edited: false, sections: withSections(keep, parseSections(out.data.sections) ?? draftSectionsLocal(facts)) });
       } else {
-        writeDraft(pid, { text: local.summary, kind: local.status, source: "template", note: why(out), edited: false });
+        writeDraft(pid, { text: local.summary, kind: local.status, source: "template", note: why(out), edited: false, sections: withSections(keep, draftSectionsLocal(facts)) });
       }
     };
-    let pending: Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
+    let pending: Promise<AiOutcome<{ summary: string; status: StatusKind; sections?: UpdateSections }>>;
     try { pending = aiStatus(statusFactsForAi(facts)); } catch { settle(null); return; }
     pending.then(settle, () => settle(null));
   };
@@ -223,9 +250,13 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
   };
 
   const plan = cur.plan.trim();
-  const extras: StatusExtras | undefined = takesPlan(kind) && (plan || cur.target)
-    ? { ...(plan ? { recoveryPlan: plan.slice(0, PLAN_MAX) } : {}), ...(cur.target ? { targetDate: cur.target } : {}) }
-    : undefined;
+  const sections = parseSections(cur.sections);
+  const asks = sections?.asks ? cur.asks : [];
+  const parts: StatusExtras = {
+    ...(takesPlan(kind) && plan ? { recoveryPlan: plan.slice(0, PLAN_MAX) } : {}), ...(takesPlan(kind) && cur.target ? { targetDate: cur.target } : {}),
+    ...(sections ? { sections } : {}), ...(asks.length ? { askUserIds: asks } : {}),
+  };
+  const extras: StatusExtras | undefined = Object.keys(parts).length ? parts : undefined;
   const question = cur.kept ? null : honestQuestion(kind, { health: facts.total ? facts.health : null, overdue: facts.overdue.length, blocked: facts.blocked.length });
 
   const post = () => {
@@ -274,6 +305,12 @@ export function useStatusComposer({ project, tasks, statusUpdates, onPost, aiSta
     question,
     keep: () => writeDraft(id, { kept: true }),
     addPlan: () => writeDraft(id, { kind: facts.health === "off_track" ? "off_track" : "at_risk" }),
+    sections: cur.sections,
+    setSection: (k, v) => writeDraft(id, { sections: { ...cur.sections, [k]: v }, ...(cur.source ? { edited: true } : {}) }),
+    sectionsOpen: cur.sectionsOpen || hasSections(cur.sections),
+    setSectionsOpen: (open) => writeDraft(id, open ? { sectionsOpen: true } : { sectionsOpen: false, sections: {}, asks: [] }),
+    asks: cur.asks,
+    toggleAsk: (pid) => writeDraft(id, { asks: cur.asks.includes(pid) ? cur.asks.filter((x) => x !== pid) : [...cur.asks, pid].slice(0, 20) }),
   };
 }
 
@@ -289,12 +326,14 @@ const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator
 const FOCUSABLE = 'button:not([disabled]),textarea:not([disabled]),input:not([disabled]),[href],[tabindex]:not([tabindex="-1"])';
 
 /** The composer's body: status, the words, and its buttons. */
-export function ComposerPanel({ c, onCancel, textRef, title }: {
+export function ComposerPanel({ c, onCancel, textRef, title, people }: {
   c: Composer;
   onCancel?: () => void;
   textRef?: RefObject<HTMLTextAreaElement>;
   /** a heading line (the popover names the project) */
   title?: string;
+  /** 0054: who an Ask can be for (people who can read the update; never you) */
+  people?: { id: string; name: string }[];
 }) {
   const { facts } = c;
   const empty = !c.text.trim();
@@ -352,6 +391,11 @@ export function ComposerPanel({ c, onCancel, textRef, title }: {
       {c.source === "template" && (
         <p className="kpj-composer-note">{c.note ?? `Drafted on this device from this week's ${changes}.`} Edit it before you post.</p>
       )}
+      {c.sectionsOpen ? <ComposerSections c={c} people={people} /> : (
+        <button type="button" className="kuc-sec-add" onClick={() => c.setSectionsOpen(true)}>
+          <span aria-hidden="true">+</span> Highlights, risks, asks and next
+        </button>
+      )}
       {withPlan && (
         <div className="kup-plan">
           <label className="kup-plan-label">
@@ -377,6 +421,40 @@ export function ComposerPanel({ c, onCancel, textRef, title }: {
         )}
       </div>
     </div>
+  );
+}
+
+/** The four optional sections under the words, and who the Asks are for. */
+function ComposerSections({ c, people }: { c: Composer; people?: { id: string; name: string }[] }) {
+  const others = (people ?? []).filter((p) => p.name.trim());
+  return (
+    <fieldset className="kuc-sec">
+      <legend className="kuc-sec-legend">
+        <span>Sections <span className="kup-opt">optional</span></span>
+        <Button variant="ghost" size="sm" onClick={() => c.setSectionsOpen(false)} aria-label="Remove the sections">Remove</Button>
+      </legend>
+      {SECTION_KEYS.map((k) => (
+        <label key={k} className="kuc-sec-row">
+          <span className="kuc-sec-label">{SECTION_LABELS[k]}</span>
+          <textarea className="kpj-field kuc-sec-field" rows={k === "asks" ? 2 : 1} maxLength={SECTION_MAX} value={c.sections[k] ?? ""}
+            placeholder={SECTION_HINTS[k]} onChange={(e) => c.setSection(k, e.target.value)} />
+        </label>
+      ))}
+      {others.length > 0 && (c.sections.asks?.trim() || c.asks.length > 0) && (
+        <div className="kuc-sec-who" role="group" aria-label="Who the asks are for">
+          <span className="kuc-sec-who-label">Ask</span>
+          {others.map((p) => {
+            const on = c.asks.includes(p.id);
+            return (
+              <button key={p.id} type="button" className="kuc-chip" aria-pressed={on} onClick={() => c.toggleAsk(p.id)}>
+                {p.name.split(/\s+/)[0]}
+              </button>
+            );
+          })}
+          <span className="kuc-sec-who-note">{c.asks.length ? "They'll see it under Needs your reply." : "Pick who it's for, and they'll see it under Needs your reply."}</span>
+        </div>
+      )}
+    </fieldset>
   );
 }
 
