@@ -31,25 +31,28 @@ const back = (today: Date, n: number) => { const d = new Date(today); d.setDate(
 
 export type ActivityAnswer = WorkspaceActivity | "off" | "failed";
 
-/** The demo's week: the first person in every day, then four of seven, two, and one who's gone quiet. */
+/** The demo's week: the first person in every day, then four of seven, two, and one who's gone quiet.
+ *  A workspace made `since` a day this week has nobody in it before then. */
 const DEMO_DAYS: readonly (readonly number[])[] = [[0, 1, 2, 3, 4, 5, 6], [0, 1, 3, 4, 6], [1, 4], [9]];
-export function demoActivity(userIds: readonly string[], today: Date = KANBO_TODAY): WorkspaceActivity {
+export function demoActivity(userIds: readonly string[], today: Date = KANBO_TODAY, since?: string): WorkspaceActivity {
+  const first = since && since > back(today, 30) ? since : null;
+  const seen = (i: number) => DEMO_DAYS[i % DEMO_DAYS.length].filter((n) => !first || back(today, n) >= first);
   const members = userIds.map((userId, i) => {
-    const ago = DEMO_DAYS[i % DEMO_DAYS.length];
-    const days = ago.filter((n) => n < 7).length;
-    return { userId, days, lastDay: back(today, Math.min(...ago)) };
+    const ago = seen(i);
+    return { userId, days: ago.filter((n) => n < 7).length, lastDay: ago.length ? back(today, Math.min(...ago)) : null };
   });
   const days = Array.from({ length: 7 }, (_, k) => {
     const n = 6 - k;
-    return { day: back(today, n), people: userIds.filter((_, i) => DEMO_DAYS[i % DEMO_DAYS.length].includes(n)).length };
+    return { day: back(today, n), people: userIds.filter((_, i) => seen(i).includes(n)).length };
   });
-  return { today: iso(today), members, days };
+  return { today: iso(today), ...(first ? { since: first } : {}), members, days };
 }
 
-/** Who's been active in a workspace this week, by day. The database answers its owners and admins only. */
-export async function loadWorkspaceActivity(workspaceId: string, members: readonly WorkspaceMember[] = []): Promise<ActivityAnswer> {
+/** Who's been active in a workspace this week, by day. The database answers its owners and admins only.
+ *  (`since`: the workspace's first day, for the demo's week.) */
+export async function loadWorkspaceActivity(workspaceId: string, members: readonly WorkspaceMember[] = [], since?: string): Promise<ActivityAnswer> {
   if (!supabase) {
-    return demoActivity(members.filter((m) => m.workspaceId === workspaceId && m.status === "active" && m.userId).map((m) => m.userId!));
+    return demoActivity(members.filter((m) => m.workspaceId === workspaceId && m.status === "active" && m.userId).map((m) => m.userId!), KANBO_TODAY, since);
   }
   try {
     const { data, error } = await supabase.rpc("workspace_activity", { p_ws: workspaceId });
@@ -59,6 +62,19 @@ export async function loadWorkspaceActivity(workspaceId: string, members: readon
 }
 
 /* ---------------- the platform console ---------------- */
+
+// Mail domains anyone can sign up with (0058 public_mail_domain, kept in step): pre-approving one would let anyone in.
+const PUBLIC_MAIL_PROVIDER = /^(gmail|googlemail|outlook|hotmail|live|windowslive|msn|yahoo|ymail|rocketmail|aol|aim|icloud|gmx|web|mail|email|yandex|ya|protonmail|proton|zoho|zohomail|tutanota|tuta|tutamail|fastmail|hushmail|mailbox|posteo|qq|163|126|yeah|sina|sohu|naver|daum|hanmail|rediffmail|t-online|freenet|orange|wanadoo|free|laposte|sfr|libero|virgilio|seznam|wp|o2|onet|interia|inbox|mail2world)\.([a-z]{2,6})(\.[a-z]{2,3})?$/;
+const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set(["me.com", "mac.com", "pm.me", "hey.com", "duck.com", "btinternet.com", "btopenworld.com",
+  "bt.com", "sky.com", "virginmedia.com", "virgin.net", "ntlworld.com", "blueyonder.co.uk", "talktalk.net", "tiscali.co.uk",
+  "plus.net", "plusnet.com", "aol.co.uk", "eclipse.co.uk", "zen.co.uk", "live.co.uk", "mail.ru", "bk.ru", "list.ru", "rambler.ru",
+  "comcast.net", "verizon.net", "att.net", "sbcglobal.net", "cox.net", "charter.net", "shaw.ca", "rogers.com", "bigpond.com",
+  "optusnet.com.au", "xtra.co.nz"]);
+/** A public mail provider's domain (gmail.com, outlook.co.uk, virginmedia.com…), not a business's own. */
+export function publicMailDomain(domain: string): boolean {
+  const d = domain.trim().toLowerCase();
+  return PUBLIC_MAIL_PROVIDER.test(d) || PUBLIC_MAIL_DOMAINS.has(d);
+}
 
 export interface ProvisionInput { name: string; ownerEmail: string; domain?: string | null; pack?: string | null }
 export interface Provisioned {
@@ -118,7 +134,7 @@ export interface AdoptionRow {
   createdAt: string;
   members: number;
   invited: number;
-  /** people active in the last 7 days */
+  /** people who worked there in the last 7 days (a task, a comment, an update) */
   weeklyActive: number;
   /** tasks done in the last 7 days */
   doneWeek: number;
@@ -162,8 +178,9 @@ export async function workspaceAdoption(workspaces: readonly Workspace[] = WORKS
     // (newest first, as the database lists them: what was provisioned in this visit leads)
     const made = [...demoHandovers].reverse().map(([id, h]) => ({ id, name: h.name }));
     return [...made, ...workspaces.filter((w) => w.id && !demoHandovers.has(w.id)).map((w) => ({ id: w.id!, name: w.name }))].map((w) => {
-      const d = DEMO_ADOPTION[w.id] ?? { members: 1, invited: 1, weeklyActive: 1, doneWeek: 0, daysAgo: 0 };
       const h = demoHandovers.get(w.id);
+      // (provisioned in this visit: only its owner-to-be's invite so far; the admin isn't counted)
+      const d = h ? { members: 0, invited: 1, weeklyActive: 0, doneWeek: 0, daysAgo: 0 } : DEMO_ADOPTION[w.id] ?? { members: 1, invited: 0, weeklyActive: 1, doneWeek: 0, daysAgo: 0 };
       return { id: w.id, name: w.name, createdAt: "", members: d.members, invited: d.invited, weeklyActive: d.weeklyActive, doneWeek: d.doneWeek,
         lastDay: h ? null : back(today, d.daysAgo), handover: h ? { email: h.email, done: false } : null, pack: h?.pack ?? null };
     });

@@ -15,7 +15,8 @@ import { buildPackPlan, defaultPick } from "./packPlan";
 import { applyPackPlan, type PackApplyDeps, type PackFeature } from "./packApply";
 import { saveProjectDoc } from "./docs";
 
-export interface ProvisionedPack { name: string; projects: number; goals: number; tasks: number; notYet: PackFeature[]; failed: string[] }
+/** what went in: `goals` are the objectives, `keyResults` the key results under them */
+export interface ProvisionedPack { name: string; projects: number; goals: number; keyResults: number; tasks: number; notYet: PackFeature[]; failed: string[] }
 
 const uuid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `doc-${Date.now()}-${Math.round(Math.random() * 1e9)}`);
 
@@ -38,5 +39,6 @@ export async function provisionPack(packId: string, workspaceId: string, me: str
   const ctx = { today, goalsV2: true, canSetGoals: true, canSetUpdateDay: true, businesses: [] as string[] };
   const plan = buildPackPlan(pack, defaultPick(pack, { today, businesses: [], mode: "workspace" }), ctx);
   const a = await applyPackPlan(plan, { workspaceId, me, rhythmBefore: null }, deps);
-  return { name: pack.name, projects: a.projects.length, goals: a.goals.length, tasks: a.tasks.length, notYet: a.notYet, failed: a.failed };
+  const goals = a.goals.filter((g) => !g.parentId).length;
+  return { name: pack.name, projects: a.projects.length, goals, keyResults: a.goals.length - goals, tasks: a.tasks.length, notYet: a.notYet, failed: a.failed };
 }

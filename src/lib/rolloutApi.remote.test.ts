@@ -7,7 +7,8 @@ vi.mock("./supabase", () => ({ supabase: { rpc: (...a: unknown[]) => rpc(...a) }
 // (signed in, provisioning never touches the demo store)
 vi.mock("../data/store", () => ({ store: {} }));
 
-import { loadWorkspaceActivity, provisionBusiness, ProvisionError, workspaceAdoption } from "./rolloutApi";
+import { loadWorkspaceActivity, provisionBusiness, ProvisionError, publicMailDomain, workspaceAdoption } from "./rolloutApi";
+import { noteRolloutSchema, resetRolloutSchema, rolloutOn } from "./rolloutPlan";
 
 const ME = { id: "u-admin", email: "admin@kanbo.app", name: "Admin" };
 const MISSING = { code: "PGRST202", message: "Could not find the function public.workspace_activity(p_ws) in the schema cache" };
@@ -52,5 +53,26 @@ describe("rolloutApi, signed in", () => {
     expect(await workspaceAdoption()).toBe("off");
     rpc.mockResolvedValue({ data: null, error: { code: "P0001", message: "not authorized" } });
     expect(await workspaceAdoption()).toBe("failed");
+  });
+});
+
+describe("the rollout plan, signed in", () => {
+  it("isn't offered until a read says 0058 is in (someone whose first load had no team workspace)", () => {
+    resetRolloutSchema();
+    expect(rolloutOn()).toBe(false);
+    noteRolloutSchema(true);
+    expect(rolloutOn()).toBe(true);
+    noteRolloutSchema(false);
+    expect(rolloutOn()).toBe(false);
+    resetRolloutSchema();
+  });
+});
+
+describe("public mail domains (as 0058's public_mail_domain)", () => {
+  it("the big providers under any country ending, and UK ISPs; never a business's own", () => {
+    for (const d of ["gmail.com", "outlook.co.uk", "yahoo.fr", "hotmail.fr", "gmx.de", "web.de", "ymail.com", "pm.me", "hey.com", "fastmail.com", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk"]) {
+      expect(publicMailDomain(d), d).toBe(true);
+    }
+    for (const d of ["harbourfit.co.uk", "mailchimp.com", "webflow.io", "outlookstudio.com", "kanbo.co.uk"]) expect(publicMailDomain(d), d).toBe(false);
   });
 });

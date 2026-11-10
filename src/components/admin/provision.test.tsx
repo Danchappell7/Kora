@@ -11,24 +11,35 @@ const ME = { id: "m-self", email: "daniel@kanbo.app", name: "Daniel Okai" };
 const field = (name: string) => screen.getByLabelText(new RegExp(`^${name}`)) as HTMLInputElement;
 
 describe("Provision a business", () => {
-  it("fills the company domain in from the owner's address, never a public mail provider's", () => {
+  it("offers the owner's company domain (never filling it in, never a public mail provider's)", () => {
     expect(companyDomainOf("nina@HarbourFit.co.uk")).toBe("harbourfit.co.uk");
     expect(companyDomainOf("nina@gmail.com")).toBe("");
+    expect(companyDomainOf("boss@virginmedia.com")).toBe("");
+    expect(companyDomainOf("boss@outlook.co.uk")).toBe("");
     expect(companyDomainOf("nope")).toBe("");
     render(<ProvisionBusiness me={ME} />);
     const go = screen.getByRole("button", { name: "Provision" });
     expect(go).toBeDisabled();
     fireEvent.change(field("Business name"), { target: { value: "Harbour Fitness" } });
     fireEvent.change(field("Owner's email"), { target: { value: "nina@harbourfit.co.uk" } });
+    // offered, not filled in: approving a domain lets everyone at it in
+    expect(field("Company domain")).toHaveValue("");
+    expect(screen.getByText(/Only add @harbourfit.co.uk if everyone with an address there works for the business/)).toBeInTheDocument();
+    expect(go).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Use @harbourfit.co.uk" }));
     expect(field("Company domain")).toHaveValue("harbourfit.co.uk");
     expect(screen.getByText(/Anyone signing up with an @harbourfit.co.uk address gets in without waiting/)).toBeInTheDocument();
-    expect(go).toBeEnabled();
-    fireEvent.change(field("Company domain"), { target: { value: "gmail.com" } });
-    expect(screen.getByText("@gmail.com is a public email provider: approving it would let anyone in.")).toBeInTheDocument();
-    expect(go).toBeDisabled();
+    for (const d of ["gmail.com", "yahoo.fr", "virginmedia.com"]) {
+      fireEvent.change(field("Company domain"), { target: { value: d } });
+      expect(screen.getByText(`@${d} is a public email provider: approving it would let anyone in.`)).toBeInTheDocument();
+      expect(go).toBeDisabled();
+    }
     fireEvent.change(field("Company domain"), { target: { value: "" } });
     expect(screen.getByText(/Without a domain/)).toBeInTheDocument();
     expect(go).toBeEnabled();
+    // a public provider's address offers nothing
+    fireEvent.change(field("Owner's email"), { target: { value: "boss@virginmedia.com" } });
+    expect(screen.queryByRole("button", { name: /^Use @/ })).toBeNull();
     fireEvent.change(field("Owner's email"), { target: { value: "not an email" } });
     expect(screen.getByText("That doesn't look like an email address.")).toBeInTheDocument();
     expect(go).toBeDisabled();
@@ -39,13 +50,16 @@ describe("Provision a business", () => {
     fireEvent.change(field("Business name"), { target: { value: "Harbour Fitness" } });
     fireEvent.change(screen.getByLabelText("Business pack"), { target: { value: "pack-fitness" } });
     fireEvent.change(field("Owner's email"), { target: { value: "nina@harbourfit.co.uk" } });
+    fireEvent.click(screen.getByRole("button", { name: "Use @harbourfit.co.uk" }));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Provision" })); });
     await waitFor(() => expect(screen.getByRole("button", { name: "Provision another" })).toBeInTheDocument(), { timeout: 8000 });
     const steps = within(screen.getByRole("list")).getAllByRole("listitem");
     expect(steps.map((s) => s.getAttribute("data-state"))).toEqual(["done", "done", "done", "done", "waiting"]);
     expect(steps[0]).toHaveTextContent("Make Harbour Fitness");
-    expect(steps[1]).toHaveTextContent(/Set up the Boutique fitness group pack5 projects, 9 goals, 34 tasks/);
-    expect(steps[2]).toHaveTextContent("Invite nina@harbourfit.co.uk as the owner");
+    // goals and their key results counted apart, as the pack's own summary does
+    expect(steps[1]).toHaveTextContent(/Set up the Boutique fitness group pack5 projects, 34 tasks, 3 goals, 6 key results/);
+    expect(steps[2]).toHaveTextContent("Invite nina@harbourfit.co.uk, the owner-to-be");
+    expect(steps[2]).toHaveTextContent(/as an admin\b.*they become the owner when they join/i);
     expect(steps[3]).toHaveTextContent("Approve @harbourfit.co.uk sign-ups");
     expect(steps[4]).toHaveTextContent(/When they join, they're the owner and what was set up is theirs/);
     expect(provisioned).toBe(1);
@@ -55,6 +69,12 @@ describe("Provision a business", () => {
     expect(b.members.find((m) => m.workspaceId === ws.id && m.status === "invited")).toMatchObject({ email: "nina@harbourfit.co.uk", role: "admin" });
     rerender(<><ProvisionBusiness me={ME} onProvisioned={() => { provisioned++; }} /><AdoptionPanel refreshKey={provisioned} /></>);
     expect(await screen.findByText("Waiting for nina@harbourfit.co.uk to join")).toBeInTheDocument();
+    // waiting for its owner: not started (the admin who set it up isn't counted), and last, not "quietest"
+    const row = screen.getByText("Waiting for nina@harbourfit.co.uk to join").closest("tr")!;
+    expect(row).toHaveTextContent("Not started");
+    expect(row.querySelector(".kadp-bar")).toBeNull();
+    const rows = within(screen.getByRole("table")).getAllByRole("row");
+    expect(rows[rows.length - 1]).toBe(row);
     fireEvent.click(screen.getByRole("button", { name: "Provision another" }));
     expect(field("Business name")).toHaveValue("");
   });

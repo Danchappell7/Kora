@@ -5,6 +5,9 @@
    still waiting, tasks done this week, the last day anyone worked
    there, and a handover still waiting for its owner. A bar shows the
    share active at a glance; the quietest businesses are easy to spot.
+   Active means worked there this week (a task, a comment, an update);
+   the admin who provisioned a business isn't one of its people, and a
+   business still waiting for its owner reads "Not started", last.
    Numbers only, never who did what or when in the day. Before 0058:
    "isn't switched on yet".
    ============================================================ */
@@ -27,9 +30,14 @@ export function AdoptionPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   useEffect(load, [load, refreshKey]);
   const today = isoToday();
   const share = (r: AdoptionRow) => (r.members ? r.weeklyActive / r.members : 0);
-  const list = Array.isArray(rows) ? [...rows].sort((a, b) => (sort === "quiet" ? share(a) - share(b) : share(b) - share(a)) || a.name.localeCompare(b.name)) : [];
-  const total = list.reduce((n, r) => n + r.weeklyActive, 0);
-  const people = list.reduce((n, r) => n + r.members, 0);
+  // (a business still waiting for its owner hasn't started: it isn't quiet or busy yet, so it goes last)
+  const waiting = (r: AdoptionRow) => !!r.handover && !r.handover.done;
+  const list = Array.isArray(rows)
+    ? [...rows].sort((a, b) => Number(waiting(a)) - Number(waiting(b)) || (sort === "quiet" ? share(a) - share(b) : share(b) - share(a)) || a.name.localeCompare(b.name))
+    : [];
+  const started = list.filter((r) => !waiting(r));
+  const total = started.reduce((n, r) => n + r.weeklyActive, 0);
+  const people = started.reduce((n, r) => n + r.members, 0);
   return (
     <section className="kadp" aria-labelledby={`kadp-${uid}`}>
       <div className="kadp-head">
@@ -70,10 +78,12 @@ export function AdoptionPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                       )}
                     </th>
                     <td>
-                      <span className="kadp-active">
-                        <span className="kadp-bar" aria-hidden="true"><span style={{ width: `${pct}%` }} data-low={pct < 50 || undefined} /></span>
-                        <span className="kadp-count">{r.weeklyActive} of {r.members}</span>
-                      </span>
+                      {waiting(r) ? <span className="kadp-wait">Not started</span> : (
+                        <span className="kadp-active">
+                          <span className="kadp-bar" aria-hidden="true"><span style={{ width: `${pct}%` }} data-low={pct < 50 || undefined} /></span>
+                          <span className="kadp-count">{r.weeklyActive} of {r.members}</span>
+                        </span>
+                      )}
                     </td>
                     <td className="kadp-num">{r.invited || "—"}</td>
                     <td className="kadp-num">{r.doneWeek || "—"}</td>
@@ -84,6 +94,7 @@ export function AdoptionPanel({ refreshKey = 0 }: { refreshKey?: number }) {
             </tbody>
           </table>
         )}
+      {Array.isArray(rows) && list.length > 0 && <p className="kadp-note">Active: changed a task, commented or posted an update there this week. Whoever provisioned a business isn't counted in it.</p>}
     </section>
   );
 }
