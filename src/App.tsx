@@ -235,8 +235,9 @@ export default function App() {
   // 0052's check-ins and links (null until it's run: owners, quarters and check-ins stay off)
   const [goalExtras, setGoalExtras] = useState<GoalExtras | null>(null);
   // the goal open in the goal panel (from a Goals row, a chip, the brief, Kanbo noticed, ⌘K); `checkin`: composer out
+  // (one panel at a time: a goal opened from a task's Serves chip, Search or Kanbo noticed takes the task panel's place)
   const [goalPanel, setGoalPanel] = useState<{ id: string; checkin?: boolean } | null>(null);
-  const openGoal = useCallback((id: string, opts?: { checkin?: boolean }) => setGoalPanel({ id, checkin: !!opts?.checkin }), []);
+  const openGoal = useCallback((id: string, opts?: { checkin?: boolean }) => { setDetailId(null); setGoalPanel({ id, checkin: !!opts?.checkin }); }, []);
   const closeGoal = useCallback(() => setGoalPanel(null), []);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [statusUpdates, setStatusUpdates] = useState<StatusUpdate[]>([]);
@@ -328,6 +329,8 @@ export default function App() {
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const gPrefixRef = useRef(false);
   const [detailId, setDetailId] = useState<string | null>(null);
+  // a task opened anywhere takes the goal panel's place (they share the right-hand side)
+  useEffect(() => { if (detailId) setGoalPanel(null); }, [detailId]);
   const [focusOpen, setFocusOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newTaskStatus, setNewTaskStatus] = useState<Status>("todo");
@@ -845,7 +848,8 @@ export default function App() {
     setWorkspaces(ws.workspaces); setReferenceData({ workspaces: ws.workspaces });
     setWsMembers(ws.members); setProfile((cur) => (!initial && b.partial?.profile ? cur : b.profile));
     setSections((cur) => keepTmp(b.sections, cur)); setCustomFields((cur) => keepTmp(b.customFields, cur)); setSavedSearches((cur) => keepTmp(b.savedSearches, cur));
-    setGoals((cur) => keepTmp(b.goals, cur)); setGoalExtras(b.goalExtras ?? null); setPortfolios((cur) => keepTmp(b.portfolios, cur)); setStatusUpdates(b.statusUpdates);
+    // (undefined: 0052's rows couldn't be read this time: keep what's on screen rather than switch goals off)
+    setGoals((cur) => keepTmp(b.goals, cur)); setGoalExtras((cur) => (b.goalExtras === undefined ? cur : b.goalExtras)); setPortfolios((cur) => keepTmp(b.portfolios, cur)); setStatusUpdates(b.statusUpdates);
     setAutomationRules((cur) => keepTmp(b.automationRules, cur)); setForms((cur) => keepTmp(b.forms, cur));
     return true;
   }, [mergeServerTasks, applyProjects, applyTags, noteSchemaBehind]);
@@ -2708,20 +2712,24 @@ export default function App() {
       })
       .catch((e) => { reportError(e, { op: "createGoal" }); setGoals((g) => g.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the goal: " + (e?.message || e)); });
   }, [denyGuest, settleTmp, toastError]);
+  // (the goal's own workspace decides, not the one that's open: the goal panel opens goals from every business)
+  const goalsRef = useRef(goals); goalsRef.current = goals;
+  const goalWs = useCallback((id: string) => { const g = goalsRef.current.find((x) => x.id === id); return g ? g.workspaceId ?? null : workspaceRef.current; }, []);
   const updateGoal = useCallback((id: string, patch: GoalPatch) => {
-    if (denyGuest([workspaceRef.current])) return;
+    if (denyGuest([goalWs(id)])) return;
     setGoals((g) => g.map((x) => x.id === id ? { ...x, ...patch } : x));
     if (deferTmp(id, patch)) return;
     store.updateGoal(id, patch).catch(saveFailed("updateGoal"));
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyGuest, goalWs, deferTmp, saveFailed]);
   const deleteGoal = useCallback((id: string) => {
-    if (denyGuest([workspaceRef.current])) return;
-    setGoals((g) => g.filter((x) => x.id !== id));
+    if (denyGuest([goalWs(id)])) return;
+    // its key results stay, as goals of their own (the database's SET NULL)
+    setGoals((g) => g.filter((x) => x.id !== id).map((x) => (x.parentId === id ? { ...x, parentId: undefined } : x)));
     if (deferTmp(id)) return;
     store.deleteGoal(id).catch(saveFailed("deleteGoal", "Couldn't delete the goal."));
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyGuest, goalWs, deferTmp, saveFailed]);
   // 0052: check-ins and links (components/goals/useGoalWrites)
-  const goalWrites = useGoalWrites({ store, setGoals, setExtras: setGoalExtras, userIdRef, denyGuest, saveFailed });
+  const goalWrites = useGoalWrites({ store, setGoals, setExtras: setGoalExtras, userIdRef, denyGuest, saveFailed, offerUndo: toastAction });
 
   // ---- portfolios ----
   const createPortfolio = useCallback((name: string) => {
@@ -4382,9 +4390,10 @@ export default function App() {
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
             <GoalPanelHost open={goalPanel} goals={goals} extras={goalExtras} projects={projects} tasks={acrossReportTasks} members={wsMembers} statusUpdates={statusUpdates}
               views={sv.views} me={currentUserId} roleIn={roleIn} docked={docked && !isMobile} onClose={closeGoal} onOpenGoal={openGoal}
-              onOpenGoals={(ws) => { if (ws !== workspace) setWorkspace(ws); setRoute({ view: "goals" }); }} onOpenTask={setDetailId}
-              onOpenProject={(id) => { const p = projects.find((x) => x.id === id); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId: id }); }}
-              onOpenView={(id) => { const v = getSavedView(id); if (v) setRoute(viewRoute(v)); }}
+              // following a link out of a sheet (or a phone's whole screen) closes it, or it would cover where you went; docked, it stays beside the page
+              onOpenGoals={(ws) => { if (ws !== workspace) setWorkspace(ws); setRoute({ view: "goals" }); if (!docked || isMobile) closeGoal(); }} onOpenTask={setDetailId}
+              onOpenProject={(id) => { const p = projects.find((x) => x.id === id); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId: id }); if (!docked || isMobile) closeGoal(); }}
+              onOpenView={(id) => { const v = getSavedView(id); if (v) { setRoute(viewRoute(v)); if (!docked || isMobile) closeGoal(); } }}
               onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} writes={goalWrites} />
           </Suspense>
         </ErrorBoundary>

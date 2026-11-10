@@ -43,7 +43,7 @@ export interface Bootstrap {
   customFields: CustomFieldDef[];
   savedSearches: SavedSearch[];
   goals: Goal[];
-  /** 0052's check-ins (newest first) and links; null until 0052 is run */
+  /** 0052's check-ins (newest first) and links; null until 0052 is run; undefined when they couldn't be read this time (keep what's on screen) */
   goalExtras?: GoalExtras | null;
   portfolios: Portfolio[];
   statusUpdates: StatusUpdate[];
@@ -550,10 +550,11 @@ const rowToGoal = (r: GoalRow): Goal => ({
     pace: (r.pace === "backloaded" || r.pace === "off" ? r.pace : "linear") as Goal["pace"], weight: numOrNull(r.weight),
   } : {}),
 });
-interface GoalCheckinRow { id: string; goal_id: string; workspace_id: string | null; author_id: string | null; value: number | string; confidence: number | null; note: string | null; created_at: string }
+interface GoalCheckinRow { id: string; goal_id: string; workspace_id: string | null; author_id: string | null; value: number | string; confidence: number | null; note: string | null; created_at: string; prev_value?: number | string | null }
 const rowToCheckin = (r: GoalCheckinRow): GoalCheckin => ({
   id: r.id, goalId: r.goal_id, workspaceId: r.workspace_id, authorId: r.author_id ?? null, value: numOrNull(r.value) ?? 0,
   confidence: r.confidence ?? null, ...(r.note ? { note: r.note } : {}), createdAt: r.created_at,
+  ...(r.prev_value != null ? { prevValue: numOrNull(r.prev_value) } : {}),
 });
 interface GoalLinkRow { id: string; goal_id: string; workspace_id: string | null; kind: string; target_id: string; created_at?: string }
 const rowToGoalLink = (r: GoalLinkRow): GoalLink => ({ id: r.id, goalId: r.goal_id, workspaceId: r.workspace_id, kind: r.kind as GoalLinkKind, targetId: r.target_id, ...(r.created_at ? { createdAt: r.created_at } : {}) });
@@ -1688,13 +1689,17 @@ export const store = {
     try {
       goals = (await loadAllRows<GoalRow>(supabase, "goals")).sort(goalOrder).map(rowToGoal);
     } catch { /* table not present yet */ }
-    // 0052's check-ins (newest first) and links: null while the tables aren't there
-    let goalExtras: GoalExtras | null = null;
+    // 0052's check-ins (newest first) and links: null while the tables aren't there; undefined when
+    // they couldn't be read this time (a blip): the app keeps what it has rather than switch goals off
+    let goalExtras: GoalExtras | null | undefined = null;
     try {
       const checkins = (await loadAllRows<GoalCheckinRow>(supabase, "goal_checkins")).sort((a, b) => byText(b.created_at, a.created_at) || byText(b.id, a.id)).map(rowToCheckin);
       const links = (await loadAllRows<GoalLinkRow>(supabase, "goal_links")).sort(createdOrder).map(rowToGoalLink);
       goalExtras = { checkins, links };
-    } catch { /* 0052 not run yet */ }
+    } catch (e) {
+      // (0052 not run yet: either table missing)
+      goalExtras = isMissingTable(e, "goal_checkins") || isMissingTable(e, "goal_links") ? null : undefined;
+    }
     try {
       portfolios = (await loadAllRows<PortfolioRow>(supabase, "portfolios")).sort(createdOrder).map(rowToPortfolio);
     } catch { /* table not present yet */ }

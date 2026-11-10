@@ -1077,6 +1077,26 @@ describe("store (supabase) — integration wiring", () => {
     expect(b.goalExtras?.links).toEqual([{ id: "l1", goalId: "g-new", workspaceId: "ws", kind: "project", targetId: "p1", createdAt: "2027-01-02T00:00:00Z" }]);
   });
 
+  it("a check-in carries the value from before it; a blip reading them leaves the extras unknown (kept on screen), not switched off", async () => {
+    const fake = makeFake();
+    fake.setHandler((c) => {
+      if (c.op !== "select") return undefined;
+      if (c.table === "goal_checkins") return { data: [{ id: "c1", goal_id: "g", workspace_id: "ws", author_id: "user-a", value: "7", confidence: null, note: null, created_at: "2027-01-10T10:00:00Z", prev_value: "8" }] };
+      if (c.table === "goal_links") return { data: [] };
+      return undefined;
+    });
+    const { store: s } = await loadStore(fake);
+    expect((await s.bootstrap({ id: "user-a" })).goalExtras?.checkins[0]).toMatchObject({ value: 7, prevValue: 8 });
+    vi.resetModules();
+
+    const blip = makeFake();
+    blip.setHandler((c) => (c.op === "select" && c.table === "goal_checkins" ? { error: { code: "500", message: "upstream timeout" } } : undefined));
+    const { store: s2 } = await loadStore(blip);
+    const b2 = await s2.bootstrap({ id: "user-a" });
+    expect(b2.goalExtras).toBeUndefined();
+    expect("goalExtras" in b2).toBe(true);
+  });
+
   it("writes 0052's goal fields only when they're asked for; a check-in and a link send only what the server doesn't set itself", async () => {
     const fake = makeFake();
     fake.setHandler((c) => {
