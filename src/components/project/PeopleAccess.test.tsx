@@ -66,7 +66,38 @@ describe("PeopleAccess", () => {
     expect(within(panel).queryByRole("combobox", { name: "Add someone to this project" })).toBeNull();
     expect(within(panel).getByText("Only its owner and editors can change who has access.")).toBeInTheDocument();
     expect(within(panel).getByRole("radio", { name: /^Private/ })).toBeDisabled();
-    expect(panel.textContent).toMatch(/An owner can let members make projects private\./);
+    // (a member who manages it: Private is out of reach until an owner allows it)
+    const c = ctx("me", [pm("me", "editor")]);
+    render(<PeopleAccess project={project({ visibility: "workspace" })} ctx={{ ...c, projects: [project({ visibility: "workspace" })] }} workspaceName="Foundrise" tasks={[]} nameOf={(id) => names[id] ?? id}
+      onSetVisibility={vi.fn()} onSetMember={vi.fn()} onRemoveMember={vi.fn()} />);
+    const mine = screen.getAllByRole("region", { name: "People & access" })[1];
+    expect(within(mine).getByRole("radio", { name: /^Private/ })).toBeDisabled();
+    expect(mine.textContent).toMatch(/An owner can let members make projects private\./);
+  });
+
+  it("a guest or a viewer is told what they can do, never that they'd lose access, and isn't talked to as a manager", () => {
+    const { panel } = setup(ctx("g", [pm("g", "commenter")]), project({ visibility: "workspace" }));
+    expect(panel.textContent).not.toMatch(/lose access|Ask an owner|if you add them|if you make it/);
+    expect(within(panel).getByText("You can view it and comment on its tasks.")).toBeInTheDocument();
+    expect(panel.textContent).toMatch(/Guests see it only if they're added\./);
+    expect(panel.textContent).toMatch(/Everyone here can edit a Whole workspace project\. Roles apply to guests\./);
+  });
+
+  it("a viewer on a Members only project reads 'You can view it' and no warning on the option it is", () => {
+    const { panel } = setup(ctx("m2", [pm("m2", "viewer")]));
+    expect(within(panel).getByText("You can view it.")).toBeInTheDocument();
+    expect(panel.textContent).not.toMatch(/lose access|couldn't edit/);
+  });
+
+  it("a manager is warned only on a choice that would take their own rights away, and told which", () => {
+    const base = ctx("a", []);
+    const c: AccessCtx = { ...base, wsMembers: [...base.wsMembers, wm("a", "admin", "Ari Admin")], members: [pm("a", "commenter")] };
+    render(<PeopleAccess project={project()} ctx={c} workspaceName="Foundrise" tasks={[]} nameOf={(id) => names[id] ?? id}
+      onSetVisibility={vi.fn()} onSetMember={vi.fn()} onRemoveMember={vi.fn()} />);
+    const panel = screen.getByRole("region", { name: "People & access" });
+    expect(within(panel).getByRole("radio", { name: /Members only/ }).closest("label")?.textContent).not.toMatch(/Ask an owner/);
+    expect(within(panel).getByRole("radio", { name: /^Private/ }).closest("label")?.textContent).toMatch(/You couldn't edit it any more yourself\. Ask an owner\./);
+    expect(within(panel).getByRole("radio", { name: /^Private/ })).toBeDisabled();
   });
 
   it("the question says nobody loses it when nobody does", () => {

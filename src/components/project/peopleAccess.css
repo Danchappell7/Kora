@@ -9,7 +9,10 @@
 }
 .kpax-option:hover { background: var(--kpj-hover); }
 .kpax-option[data-chosen] { box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--accent) 70%, transparent); background: color-mix(in oklch, var(--accent) 6%, transparent); }
-.kpax-option[data-off] { cursor: default; opacity: 0.7; }
+/* (a choice you can't make: the radio and its name dim; why stays readable) */
+.kpax-option[data-off] { cursor: default; }
+.kpax-option[data-off] > input, .kpax-option[data-off] .kpax-option-name { opacity: 0.6; }
+.kpax-option-why { color: var(--ink-2); }
 .kpax-option > input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
 .kpax-option-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .kpax-option-name { display: inline-flex; align-items: center; gap: 6px; font: 600 13px/20px var(--kpj-font, var(--font-ui)); color: var(--ink); }
@@ -40,3 +43,4 @@
   .kpax-add-row { width: 100%; }
   .kpax-add-row > .kpax-select { flex: 1 1 auto; min-width: 0; }
 }
+.kpax-yours { margin: -12px 0 20px; color: var(--ink-2); }

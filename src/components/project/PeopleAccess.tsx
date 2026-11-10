@@ -13,7 +13,7 @@ import { useId, useMemo, useState } from "react";
 import { Avatar, Button, Icon } from "../primitives";
 import type { Project, ProjectRole, ProjectVisibility, Task } from "../../data/types";
 import {
-  canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, memberRole, narrowingLoss, rankFor, roleOf, seesCount, visibilityOf,
+  canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, memberRole, narrowingLoss, rankFor, rankWith, roleOf, seesCount, visibilityOf,
   ROLE_LABEL, VISIBILITY_LABEL, type AccessCtx,
 } from "../../lib/projectAccess";
 import "./peopleAccess.css";
@@ -79,21 +79,27 @@ export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSet
   };
   const loss = asking ? narrowingLoss(project, asking, ctx, tasks, nameOf) : [];
 
+  // (said to its managers; someone who can only read it is told what is, not what they could do)
   const LINES: Record<ProjectVisibility, string> = {
-    workspace: `Everyone at ${workspaceName} can see and edit it. Guests see it only if you add them.`,
+    workspace: setVis ? `Everyone at ${workspaceName} can see and edit it. Guests see it only if you add them.`
+      : `Everyone at ${workspaceName} can see and edit it. Guests see it only if they're added.`,
     members: `Only the people below, plus ${workspaceName}'s owners and admins.`,
     private: `Only the people below, plus ${workspaceName}'s owner.`,
   };
+  const mine = rankFor(ctx, ctx.me, wsId, project.id);
+  const YOURS = ["", "You can view it.", "You can view it and comment on its tasks.", "You can see and edit it."];
 
   return (
     <section className="kpax" aria-labelledby={`${id}-t`}>
-      <h2 id={`${id}-t`} className="kpax-title">People &amp; access</h2>
+      <h2 id={`${id}-t`} className="kpax-title" tabIndex={-1}>People &amp; access</h2>
 
       <fieldset className="kpax-group" disabled={!setVis || busy}>
         <legend className="kpax-legend">Who can see it</legend>
         {ORDER.map((v) => {
-          const off = v === "private" && vis !== "private" && !privateOk;
-          const locked = !keepsEdit(project, v, ctx);
+          // (only for someone who could change it, and never on the one it is now)
+          const other = setVis && v !== vis;
+          const off = other && v === "private" && vis !== "private" && !privateOk;
+          const locked = other && !keepsEdit(project, v, ctx);
           const n = seesCount(project, ctx, v);
           return (
             <label key={v} className="kpax-option" data-chosen={v === vis || undefined} data-off={off || locked || undefined}>
@@ -101,13 +107,15 @@ export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSet
               <span className="kpax-option-text">
                 <span className="kpax-option-name">{v !== "workspace" && <Icon name="lock" size={12} sw={2} />}{VISIBILITY_LABEL[v]}</span>
                 <span className="kpax-option-line">{LINES[v]} <span className="kpax-count">{people(n)} can see it</span></span>
-                {off && <span className="kpax-option-line">An owner can let members make projects private.</span>}
-                {!off && locked && <span className="kpax-option-line">You'd lose access yourself. Ask an owner.</span>}
+                {off && <span className="kpax-option-line kpax-option-why">An owner can let members make projects private.</span>}
+                {!off && locked && <span className="kpax-option-line kpax-option-why">{rankWith(project, v, ctx) >= 1
+                  ? "You couldn't edit it any more yourself. Ask an owner." : "You'd lose access yourself. Ask an owner."}</span>}
               </span>
             </label>
           );
         })}
       </fieldset>
+      {!setVis && mine > 0 && <p className="kpax-note kpax-yours">{YOURS[mine]}</p>}
 
       {asking && (
         <div className="kpax-ask" role="alertdialog" aria-labelledby={`${id}-ask`}>
@@ -123,7 +131,9 @@ export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSet
 
       <div className="kpax-group">
         <h3 className="kpax-legend">People</h3>
-        {vis === "workspace" && <p className="kpax-note">Everyone here can edit a Whole workspace project. Roles apply to guests, and if you make it Members only or Private.</p>}
+        {vis === "workspace" && <p className="kpax-note">{manage
+          ? "Everyone here can edit a Whole workspace project. Roles apply to guests, and if you make it Members only or Private."
+          : "Everyone here can edit a Whole workspace project. Roles apply to guests."}</p>}
         <ul className="kpax-people">
           {ownerId && (
             <li className="kpax-person">
