@@ -85,11 +85,16 @@ describe("projectRank and taskRank", () => {
 });
 
 describe("who manages a project's people and visibility", () => {
-  it("switch off: today's writers (not guests); switch on: owner, project owner, editors, admins unless private", () => {
+  it("switch off: today's writers (not guests) on a Whole workspace project; switch on: owner, project owner, editors, admins unless private", () => {
     noteAccessSchema(true);
-    const pp = proj("pp", "private"), pm_ = proj("pm", "members"), pq = proj("pq", "private", "me");
-    expect(canManagePeople(pp, world(false, "m2"))).toBe(true);
-    expect(canManagePeople(pp, world(false, "gc"))).toBe(false);
+    const pp = proj("pp", "private"), pm_ = proj("pm", "members"), pq = proj("pq", "private", "me"), pw = proj("pw", "workspace");
+    expect(canManagePeople(pw, world(false, "m2"))).toBe(true);
+    expect(canManagePeople(pw, world(false, "gc"))).toBe(false);
+    // a Members only or Private project keeps the switch-on rule while it's off (0058: the rollback window)
+    expect(canManagePeople(pp, world(false, "m2"))).toBe(false);
+    expect(canManagePeople(pp, world(false, "me"))).toBe(true);    // its editor
+    expect(canManagePeople(pm_, world(false, "a"))).toBe(true);
+    expect(canManagePeople(pp, world(false, "a"))).toBe(false);
     expect(canManagePeople(pp, world(true, "m2"))).toBe(false);
     expect(canManagePeople(pp, world(true, "me"))).toBe(true);     // editor
     expect(canManagePeople(pq, world(true, "me"))).toBe(true);     // its owner
@@ -131,7 +136,33 @@ describe("people, projects and previews", () => {
     noteAccessSchema(true);
     const prev = turnOnPreview(W, world(false, "o"));
     expect(prev.counts).toEqual({ workspace: 1, members: 1, private: 2 });
-    expect(prev.guests).toEqual([{ userId: "gc", name: "GC", projects: ["pw", "pm"] }, { userId: "g2", name: "G2", projects: [] }]);
+    expect(prev.guests).toEqual([{ userId: "gc", name: "GC", projects: ["pw", "pm"], lost: [] }, { userId: "g2", name: "G2", projects: [], lost: [] }]);
+    // already Members only or Private: who'd lose sight once it's on (members and admins; guests are above)
+    expect(prev.closed.map((c) => [c.projectId, c.losing.map((l) => l.userId)])).toEqual([
+      ["pm", ["m2"]], ["pp", ["a", "mv", "m2"]], ["pq", ["a", "mv", "m2"]]]);
+  });
+  it("turnOnPreview names a guest's open tasks they'd stop seeing (assigned or collaborating, in projects they're not on)", () => {
+    noteAccessSchema(true);
+    const tasks = [
+      { workspaceId: W, projectId: "pp", assigneeId: "g2", status: "todo" as const },
+      { workspaceId: W, projectId: "pp", assigneeId: "o", status: "todo" as const, collaborators: ["g2"] },
+      { workspaceId: W, projectId: "p-personal", assigneeId: "g2", status: "todo" as const },
+      { workspaceId: W, projectId: "pw", assigneeId: "gc", status: "todo" as const },      // (on it)
+      { workspaceId: W, projectId: "pm", assigneeId: "g2", status: "done" as const },      // (done)
+      { workspaceId: W, projectId: "pp", assigneeId: "m2", status: "todo" as const },
+    ];
+    const prev = turnOnPreview(W, world(false, "o"), undefined, tasks);
+    expect(prev.guests.find((g) => g.userId === "g2")?.lost).toEqual([{ project: "pp", openTasks: 2 }, { project: "no project", openTasks: 1 }]);
+    expect(prev.guests.find((g) => g.userId === "gc")?.lost).toEqual([]);
+    expect(prev.closed.find((c) => c.projectId === "pp")?.losing.find((l) => l.userId === "m2")?.openTasks).toBe(1);
+  });
+  it("roleOf: the workspace's owner is its owner even without their own row (as ws_role)", () => {
+    noteAccessSchema(true);
+    const c = world(false, "o");
+    const noRow = { ...c, wsMembers: c.wsMembers.filter((m) => m.userId !== "o") };
+    expect(projectRank("pp", noRow)).toBe(3);
+    expect(projectRank("pp", { ...world(true, "o"), wsMembers: [] })).toBe(3);
+    expect(projectRank("pp", { ...world(false, "m2"), wsMembers: [] })).toBe(0);
   });
   it("narrowingLoss says who'd lose sight of it and their open tasks there", () => {
     noteAccessSchema(true);

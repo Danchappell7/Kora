@@ -53,4 +53,34 @@ describe("ProjectAccessPanel", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Turn on project access" }));
     expect(screen.getByRole("alertdialog").textContent).toMatch(/^Turn off project access\? Everyone at Reco HQ, guests included, will see every project again\./);
   });
+
+  it("off: a project already set Members only or Private names who'd lose it, and the question says so too", () => {
+    render(<ProjectAccessPanel workspace={ws(false)} ctx={ctx("me", false)} onChange={vi.fn()} />);
+    expect(screen.queryByText(/nothing changes until a project is Members only or Private/)).toBeNull();
+    expect(screen.getByText("Already set: 1 private · 0 members only.")).toBeInTheDocument();
+    expect(screen.getByText("Growth is Private: Ada won't see it.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "Turn on project access" }));
+    expect(screen.getByRole("alertdialog").textContent).toMatch(/Guests will only see the projects they're on\. 1 member won't see the Members only or Private projects they're not on\./);
+  });
+
+  it("off: a guest's own open tasks in projects they're not on are named before they go out of sight", () => {
+    const tasks = [
+      { workspaceId: W, projectId: "p1", assigneeId: "ana", status: "todo" as const },
+      { workspaceId: W, projectId: "p1", assigneeId: "x", status: "todo" as const, collaborators: ["ana"] },
+      { workspaceId: W, projectId: "p1", assigneeId: "ana", status: "done" as const },
+      { workspaceId: W, projectId: "p1", assigneeId: "leah", status: "todo" as const },   // (Leah is on it)
+    ];
+    render(<ProjectAccessPanel workspace={ws(false)} ctx={ctx("me", false)} tasks={tasks} onChange={vi.fn()} />);
+    expect(screen.getByText("Ana Ruiz has 2 open tasks in Customer Onboarding. Add them to it first, or they won't see them.")).toBeInTheDocument();
+    expect(screen.queryByText(/Leah Price has/)).toBeNull();
+    fireEvent.click(screen.getByRole("switch", { name: "Turn on project access" }));
+    expect(screen.getByRole("alertdialog").textContent).toMatch(/1 guest won't see some of their own open tasks\./);
+  });
+
+  it("off, every project Whole workspace: members and admins lose nothing", () => {
+    const c = ctx("me", false);
+    render(<ProjectAccessPanel workspace={ws(false)} ctx={{ ...c, projects: c.projects.map((p) => ({ ...p, visibility: "workspace" as const })) }} onChange={vi.fn()} />);
+    expect(screen.getByText("Members and admins: nothing changes until a project is Members only or Private.")).toBeInTheDocument();
+    expect(screen.queryByText(/Already set/)).toBeNull();
+  });
 });

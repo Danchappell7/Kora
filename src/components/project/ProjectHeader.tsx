@@ -29,7 +29,7 @@ import { UpdateDayField } from "../updates/UpdateDay";
 import { UpdateCard, type UpdateEditPatch } from "../updates/UpdateCard";
 import { markUpdatesSeen, useUpdateConversation, threadOf } from "../../lib/updateConversation";
 import { PeopleAccess, accessSummary, type PeopleAccessProps } from "./PeopleAccess";
-import { accessOn, canManagePeople, memberRole, roleOf } from "../../lib/projectAccess";
+import { accessOn, canManagePeople, memberRole, roleOf, visibilityOf, VISIBILITY_LABEL } from "../../lib/projectAccess";
 import "./projects.css";
 
 export type { AiStatus, PostStatus } from "./StatusComposer";
@@ -475,6 +475,15 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
   const accessIsOn = !!access && accessOn(access.ctx.workspaces.find((w) => w.id === project.workspaceId));
   const [peopleOpen, setPeopleOpen] = useState(!!access?.open);
   useEffect(() => { if (access?.open) setPeopleOpen(true); }, [access?.open, project.id]);
+  // (opened from the header's lock chip: brought into view, on a phone below the fold, with focus on its heading)
+  const peopleRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!access?.open || !peopleOpen) return;
+    const el = peopleRef.current;
+    if (!el) return;
+    el.scrollIntoView?.({ block: "start" });
+    el.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
+  }, [access?.open, peopleOpen, project.id]);
   const dated = mine.map((t) => t.dueDate).filter((d): d is string => !!d).sort();
   const age = oldestTaskAge(mine, project.id, KANBO_TODAY);
   const stale = isStale(facts, age);
@@ -578,7 +587,15 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
                 <Button size="sm" variant="ghost" aria-expanded={peopleOpen} onClick={() => setPeopleOpen((v) => !v)}>{peopleOpen ? "Done" : canManagePeople(project, access.ctx) ? "Manage" : "See who's on it"}</Button>
               </>
             ) : access ? (
-              <ContributorsChecklist project={project} access={access} nameOf={nameOf} canManage={canManage} />
+              <>
+                <ContributorsChecklist project={project} access={access} nameOf={nameOf} canManage={canManage} />
+                {/* (set while it was on, or the default for new projects: it applies again the moment it's on) */}
+                {visibilityOf(project) !== "workspace" && (
+                  <span className="kpj-card-meta" style={{ display: "block", marginTop: 6 }}>
+                    Set to {VISIBILITY_LABEL[visibilityOf(project)]}. It applies once project access is on; until then everyone here sees it.
+                  </span>
+                )}
+              </>
             ) : canManage ? (
               members.filter((m) => m.id !== ownerId).length === 0
                 ? <span className="kpj-muted">Invite teammates to add contributors.</span>
@@ -621,7 +638,7 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
           </dd>
         </dl>
         {access && accessIsOn && peopleOpen && (
-          <PeopleAccess {...access} project={project} tasks={tasks} nameOf={nameOf} />
+          <div ref={peopleRef}><PeopleAccess {...access} project={project} tasks={tasks} nameOf={nameOf} /></div>
         )}
       </div>
     </div>

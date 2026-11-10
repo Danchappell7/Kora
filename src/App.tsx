@@ -3753,7 +3753,7 @@ export default function App() {
   // (a Personal portfolio can hold any business's projects: every workspace's tasks, archived projects' too)
   const acrossReportTasks = useMemo(() => (tasks ?? []).filter((t) => !t.archivedAt), [tasks]);
   // goals for the rest of the app: the chips, the brief, Kanbo noticed, Ask (components/goals/useGoalFlow)
-  const goalFlow = useGoalFlow({ goals, extras: goalExtras, tasks: acrossReportTasks, me: currentUserId, roleIn, members: wsMembers, today: KANBO_TODAY });
+  const goalFlow = useGoalFlow({ goals, extras: goalExtras, tasks: acrossReportTasks, me: currentUserId, roleIn, members: wsMembers, today: KANBO_TODAY, projects, workspaces });
   const allSeen = useMemo(() => (tasksSeen === tasks ? allTasks : inWorkspace(tasksSeen ?? [])), [tasksSeen, tasks, allTasks, inWorkspace]);
   // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
   // sidebar's Team badge, Today's brief and each project's notice line
@@ -4823,7 +4823,7 @@ export default function App() {
             {/* 0053: the day project updates are due here (before the workspace's own details, which end with Close workspace) */}
             <UpdateRhythmPanel workspace={workspaces.find((w) => w.id === workspace)} onChange={updateWorkspaceRhythm} />
             {/* 0058: Project access (the workspace's owner only; nothing before 0058) */}
-            <ProjectAccessPanel workspace={workspaces.find((w) => w.id === workspace)} ctx={accessCtx} onChange={setWorkspaceAccess}
+            <ProjectAccessPanel workspace={workspaces.find((w) => w.id === workspace)} ctx={accessCtx} onChange={setWorkspaceAccess} tasks={tasks ?? []}
               nameOf={(id) => getMember(id)?.name || wsMembers.find((m) => m.userId === id)?.name} />
             <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
               onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />

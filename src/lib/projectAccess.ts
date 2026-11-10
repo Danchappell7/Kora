@@ -63,10 +63,12 @@ export interface AccessCtx {
   members: ProjectMember[] | null;
 }
 
-/** someone's role in a workspace (active only); null for Personal or nobody */
-export function roleOf(ctx: Pick<AccessCtx, "wsMembers">, wsId: string | null | undefined, userId: string): Role | null {
+/** someone's role in a workspace (active only); null for Personal or nobody. As the database's
+ *  ws_role, the workspace's owner is its owner even when their own row isn't there (or wasn't read). */
+export function roleOf(ctx: Pick<AccessCtx, "wsMembers"> & Partial<Pick<AccessCtx, "workspaces">>, wsId: string | null | undefined, userId: string): Role | null {
   if (!wsId) return null;
-  return ctx.wsMembers.find((m) => m.workspaceId === wsId && m.userId === userId && m.status === "active")?.role ?? null;
+  return ctx.wsMembers.find((m) => m.workspaceId === wsId && m.userId === userId && m.status === "active")?.role
+    ?? (userId && ctx.workspaces?.some((w) => w.id === wsId && w.ownerId === userId) ? "owner" : null);
 }
 const wsOf = (ctx: Pick<AccessCtx, "workspaces">, id: string | null | undefined) => (id ? ctx.workspaces.find((w) => w.id === id) : undefined);
 /** someone's stored role on a project (null: not on it) */
@@ -94,16 +96,17 @@ export function taskRank(task: Pick<Task, "workspaceId" | "projectId">, ctx: Acc
   return rankFor(ctx, ctx.me, ws, task.projectId);
 }
 
-/** Who may change a project's people (D12): with the switch off, today's writers (owners, admins
- *  and members); with it on, the workspace's owner, the project's owner, its editors who aren't
- *  guests, and admins on projects that aren't Private. `onRule` asks the switch-on rule whatever
- *  the switch says (visibility always follows it). */
+/** Who may change a project's people (D12): with the switch off, on a Whole workspace project,
+ *  today's writers (owners, admins and members); with it on, or on a Members only or Private
+ *  project whatever the switch says, the workspace's owner, the project's owner, its editors who
+ *  aren't guests, and admins on projects that aren't Private. `onRule` asks the switch-on rule
+ *  whatever the switch says (visibility always follows it). */
 export function canManagePeople(project: Project, ctx: AccessCtx, onRule = false): boolean {
   const wsId = project.workspaceId ?? null;
   if (!wsId) return true;
   const role = roleOf(ctx, wsId, ctx.me);
   if (!role) return false;
-  if (!onRule && !accessOn(wsOf(ctx, wsId))) return role !== "guest";
+  if (!onRule && !accessOn(wsOf(ctx, wsId)) && visibilityOf(project) === "workspace") return role !== "guest";
   if (role === "owner") return true;
   if (role === "guest") return false;
   if (project.ownerId === ctx.me || memberRole(ctx, project.id, ctx.me) === "editor") return true;
@@ -117,13 +120,18 @@ export function mayMakePrivate(wsId: string | null | undefined, ctx: AccessCtx):
   const role = roleOf(ctx, wsId, ctx.me);
   return role === "owner" || role === "admin" || (role === "member" && wsOf(ctx, wsId)?.projectAccess?.membersMayMakePrivate === true);
 }
+/** Your rank on this project if it had that visibility. */
+export function rankWith(project: Project, to: ProjectVisibility, ctx: AccessCtx): Rank {
+  const wsId = project.workspaceId ?? null;
+  if (!wsId) return 3;
+  return rankCore(accessOn(wsOf(ctx, wsId)), roleOf(ctx, wsId, ctx.me), to, project.ownerId === ctx.me, memberRole(ctx, project.id, ctx.me));
+}
 /** Would you keep edit rights on this project with that visibility? (The workspace's owner always does.) */
 export function keepsEdit(project: Project, to: ProjectVisibility, ctx: AccessCtx): boolean {
   const wsId = project.workspaceId ?? null;
   if (!wsId) return true;
-  const role = roleOf(ctx, wsId, ctx.me);
-  if (role === "owner") return true;
-  return rankCore(accessOn(wsOf(ctx, wsId)), role, to, project.ownerId === ctx.me, memberRole(ctx, project.id, ctx.me)) >= 3;
+  if (roleOf(ctx, wsId, ctx.me) === "owner") return true;
+  return rankWith(project, to, ctx) >= 3;
 }
 
 /** Active people of a project's workspace who can see it (rank ≥ `min`): who can be assigned,
@@ -142,21 +150,49 @@ export function editableProjects(wsId: string | null, ctx: AccessCtx): Project[]
 
 const displayName = (m: WorkspaceMember | undefined, id: string, names?: (id: string) => string | undefined) => names?.(id) || m?.name || m?.email || "Someone";
 
-/** What turning the switch on would do (Settings › Workspace › Project access): each guest and the
- *  projects they're on, and how many projects are Whole workspace, Members only and Private. */
-export function turnOnPreview(wsId: string, ctx: AccessCtx, names?: (id: string) => string | undefined): {
-  guests: { userId: string; name: string; projects: string[] }[];
+type PreviewTask = Pick<Task, "workspaceId" | "projectId" | "assigneeId" | "status" | "archivedAt"> & { collaborators?: string[] };
+const isOpen = (t: PreviewTask) => t.status !== "done" && !t.archivedAt;
+
+/** What turning the switch on would do (Settings › Workspace › Project access): each guest, the
+ *  projects they're on and the open tasks of theirs they'd stop seeing (assigned or collaborating,
+ *  in a project they're not on); how many projects are Whole workspace, Members only and Private;
+ *  and, for each Members only or Private one already set, who'd lose sight of it. */
+export function turnOnPreview(wsId: string, ctx: AccessCtx, names?: (id: string) => string | undefined, tasks: PreviewTask[] = []): {
+  guests: { userId: string; name: string; projects: string[]; lost: { project: string; openTasks: number }[] }[];
   counts: Record<ProjectVisibility, number>;
+  closed: { projectId: string; name: string; visibility: ProjectVisibility; losing: { userId: string; name: string; openTasks: number }[] }[];
 } {
   const projects = ctx.projects.filter((p) => p.workspaceId === wsId && !p.archivedAt);
   const counts: Record<ProjectVisibility, number> = { workspace: 0, members: 0, private: 0 };
   projects.forEach((p) => { counts[visibilityOf(p)]++; });
-  const guests = ctx.wsMembers.filter((m) => m.workspaceId === wsId && m.status === "active" && m.role === "guest" && !!m.userId).map((m) => ({
-    userId: m.userId!,
-    name: displayName(m, m.userId!, names),
-    projects: projects.filter((p) => memberRole(ctx, p.id, m.userId!) !== null).map((p) => p.name),
+  const real = new Map(ctx.projects.filter((p) => p.workspaceId === wsId).map((p) => [p.id, p]));
+  const wsTasks = tasks.filter((t) => isOpen(t) && (t.workspaceId ?? real.get(t.projectId)?.workspaceId ?? null) === wsId);
+  const guests = ctx.wsMembers.filter((m) => m.workspaceId === wsId && m.status === "active" && m.role === "guest" && !!m.userId).map((m) => {
+    const uid = m.userId!;
+    const lostBy = new Map<string, number>();
+    for (const t of wsTasks) {
+      if (t.assigneeId !== uid && !(t.collaborators ?? []).includes(uid)) continue;
+      const p = real.get(t.projectId);
+      if (p && memberRole(ctx, p.id, uid) !== null) continue;
+      const label = p?.name ?? "no project";
+      lostBy.set(label, (lostBy.get(label) ?? 0) + 1);
+    }
+    return {
+      userId: uid,
+      name: displayName(m, uid, names),
+      projects: projects.filter((p) => memberRole(ctx, p.id, uid) !== null).map((p) => p.name),
+      lost: [...lostBy].map(([project, openTasks]) => ({ project, openTasks })),
+    };
+  });
+  const closed = projects.filter((p) => visibilityOf(p) !== "workspace").map((p) => ({
+    projectId: p.id, name: p.name, visibility: visibilityOf(p),
+    losing: ctx.wsMembers.filter((m) => m.workspaceId === wsId && m.status === "active" && !!m.userId && m.role !== "guest"
+      && rankCore(true, m.role, visibilityOf(p), p.ownerId === m.userId, memberRole(ctx, p.id, m.userId!)) < 1).map((m) => ({
+      userId: m.userId!, name: displayName(m, m.userId!, names),
+      openTasks: wsTasks.filter((t) => t.projectId === p.id && t.assigneeId === m.userId).length,
+    })),
   }));
-  return { guests, counts };
+  return { guests, counts, closed };
 }
 
 /** Who'd lose sight of a project if it became `to`, with their open tasks there. */

@@ -12,3 +12,5 @@
 .kpas-preview-head { margin: 0 0 6px; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
 .kpas-preview-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
 .kpas-guest { color: var(--ink); }
+/* (what turning it on would take from someone: said plainly, in ink, not dimmed) */
+.kpas-warn { color: var(--ink); }
