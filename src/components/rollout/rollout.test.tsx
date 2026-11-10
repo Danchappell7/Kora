@@ -215,9 +215,34 @@ describe("Workspace health", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Give to project owners" }));
     expect(p.onGiveToOwners).toHaveBeenCalledWith(["t1"]);
   });
-  it("opened from Kanbo noticed's Assign now: the sheet's already open", () => {
-    render(<WorkspaceHealthCard {...healthProps({ focus: { fix: "assign", at: 1 } })} />);
+  it("opened from Kanbo noticed's Assign now: the sheet's already open, and the host is told it's been used", () => {
+    const onFocusUsed = vi.fn();
+    render(<WorkspaceHealthCard {...healthProps({ focus: { fix: "assign", at: 1 }, onFocusUsed })} />);
     expect(screen.getByRole("dialog", { name: "Tasks with no owner or date" })).toBeInTheDocument();
+    expect(onFocusUsed).toHaveBeenCalledTimes(1);
+  });
+  it("before asking for an update works (0053), a missing update has no Ask button", () => {
+    render(<WorkspaceHealthCard {...healthProps({ asks: false })} />);
+    expect(screen.getByText("1 project missing an update")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Ask for/ })).toBeNull();
+  });
+  it("on a phone it starts folded to its heading (People is under it), until it's been opened there", () => {
+    try { localStorage.removeItem("kanbo-health-folded"); } catch { /* none */ }
+    const was = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q.includes("max-width"), media: q, addEventListener: () => {}, removeEventListener: () => {} })) as unknown as typeof window.matchMedia;
+    try {
+      const { unmount } = render(<WorkspaceHealthCard {...healthProps()} />);
+      const fold = screen.getByRole("button", { name: "Workspace health" });
+      expect(fold).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByText("3 things to look at")).toBeInTheDocument();
+      fireEvent.click(fold);
+      unmount();
+      render(<WorkspaceHealthCard {...healthProps()} />);
+      expect(screen.getByRole("button", { name: "Workspace health" })).toHaveAttribute("aria-expanded", "true");
+    } finally {
+      window.matchMedia = was;
+      try { localStorage.removeItem("kanbo-health-folded"); } catch { /* none */ }
+    }
   });
   it("the rollout plan: a champion, a pilot group and a go-live date, from the team's members", () => {
     const p = healthProps();

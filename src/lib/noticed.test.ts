@@ -130,6 +130,13 @@ describe("Kanbo noticed: leading a rollout (0057)", () => {
     expect(items).toHaveLength(3);
     expect(items.some((x) => x.kind === "rollout")).toBe(false);
   });
+  it("a Radar risk on your own work keeps its place ahead of it (your work first)", () => {
+    const mine = task({ id: "tok", title: "Design tokens", status: "review" });
+    const slipping = task({ id: "inv", title: "Investor update", dueDate: day(6), originalDueDate: day(-2) });
+    const risk: Risk = { id: "late", kind: "blocked", severity: "warn", title: "Investor update is at risk", reason: "Waiting", taskIds: ["inv"], fixes: [] };
+    const items = noticed([mine, slipping, task({ assigneeId: "maya", status: "blocked", dependencies: ["tok"] })], { risks: [risk], rollout: [nudge] });
+    expect(items.map((x) => x.kind)).toEqual(["waiting", "slipped", "risk"]);
+  });
 });
 
 describe("Kanbo noticed: wave 2 and wave 3 together", () => {

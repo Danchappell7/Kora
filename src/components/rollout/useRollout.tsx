@@ -8,8 +8,10 @@
    · "Welcome to <workspace>" on Today, for someone who joined lately;
    · Team › People › Workspace health for owners and admins (activity
      loads only while it's on screen), its fixes, and the rollout plan;
-   · Kanbo noticed's one next fix for a rollout's leads, and running it
-     from Today (Resend all and Ask for updates happen in place);
+   · Kanbo noticed's one next fix for a rollout's leads (only while the
+     workspace is being rolled out: made lately, or a plan under way),
+     and running it from Today (Resend all and Ask for updates happen
+     in place; Ask only once update asks are in, 0053);
    · the "Get set up" facts for a team's owners (packs, import, update
      day, first update).
    ============================================================ */
@@ -23,7 +25,7 @@ import type { AskForUpdate } from "../../lib/updateAsks";
 import type { GoalRead } from "../../lib/goalFlow";
 import { quarterOf } from "../../lib/goalPeriods";
 import { rolloutOn } from "../../lib/rolloutPlan";
-import { healthNudge, shouldWelcome, welcomeContent, welcomedNow, workspaceHealth, type TeamKind, type WorkspaceActivity } from "../../lib/rollout";
+import { healthNudge, leadingRollout, madeLately, shouldWelcome, welcomeContent, welcomedNow, workspaceHealth, type TeamKind, type WorkspaceActivity } from "../../lib/rollout";
 import { tickSetupItem, tickedAt, TEAM_SETUP_ITEMS, type SetupFacts } from "../../lib/onboarding";
 import { rhythmOn } from "../../lib/updateRhythm";
 import type { SetupItemId } from "../../data/types";
@@ -82,10 +84,16 @@ export interface RolloutAppHost {
 
 const nameOf = (m: WorkspaceMember) => (m.userId ? getMember(m.userId)?.name?.trim() : "") || m.name?.trim() || m.email;
 const lead = (r: Role | null | undefined) => r === "owner" || r === "admin";
-/** a team's "Get set up" rollout list is for a workspace this new (an established one isn't being set up) */
-export const SETUP_FRESH_DAYS = 60;
 /** the team owner's list before 0057 (the company domain was a site admin's only) */
 const OLD_OWNER_ITEMS: readonly SetupItemId[] = ["invite_team", "connect_calendar", "connect_slack"];
+const oldListDone = (ob: OnboardingState) => OLD_OWNER_ITEMS.every((id) => !!ob.checklist?.done?.[id]);
+/** Is a team's "Get set up" rollout list for this workspace? One being set up: made lately (since rollouts came in;
+ *  an older one, however young, was already going), or one whose list was started. In one that's long been going it
+ *  takes the old owner's list's place only while that wasn't finished (a finished card never comes back). */
+function settingUp(w: Workspace | undefined, ob: OnboardingState, today: Date): boolean {
+  if (!w?.id) return false;
+  return madeLately(w, today) || !!ob.checklist?.teams?.[w.id] || !oldListDone(ob);
+}
 const pad = (n: number) => String(n).padStart(2, "0");
 const localDay = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? undefined : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 /** the first run's import goes into a project of its own, never into a pack's (Court maintenance, say) */
@@ -105,6 +113,10 @@ export function useRollout(h: RolloutAppHost) {
     if (!workspaceId) return;
     const cur = obRef.current;
     if (tickedAt(cur.checklist, id, { workspaceId })) return;
+    // only where the list is (a pack or an import in a business that's long been going doesn't start one there);
+    // a workspace not loaded yet is one just made
+    const w = ref.current.workspaces.find((x) => x.id === workspaceId);
+    if (w && !settingUp(w, cur, ref.current.today)) return;
     const next = tickSetupItem(cur, id, true, new Date(), { workspaceId });
     obRef.current = next;
     ref.current.changeOnboarding(next);
@@ -253,7 +265,7 @@ export function useRollout(h: RolloutAppHost) {
   const askUpdates = useCallback(async () => {
     const cur = ref.current;
     const missing = health?.missing ?? [];
-    if (!cur.askForUpdate) return { asked: 0, note: "Asking for updates isn't switched on yet." };
+    if (!cur.askForUpdate || !rhythmOn()) return { asked: 0, note: "Asking for updates isn't switched on yet." };
     let asked = 0; const yours: string[] = [];
     for (const p of missing) {
       if (p.ownerId === cur.me) { yours.push(p.name); continue; }
@@ -286,7 +298,11 @@ export function useRollout(h: RolloutAppHost) {
     });
   }, []);
 
+  // a fix from Kanbo noticed opens the card on it once (the card says when it has), never again on the next visit
   const [focus, setFocus] = useState<{ fix: string; at: number } | null>(null);
+  const focusUsed = useCallback(() => setFocus(null), []);
+  // asking owners for their update works (0053's update asks; read on every render, as the load decides)
+  const asks = !!h.askForUpdate && rhythmOn();
   const healthSlot = showHealth && health && wsRow ? ({ openInvite }: { openInvite?: () => void } = {}): ReactNode => (
     <Suspense fallback={null}>
       <WorkspaceHealthCard workspaceName={wsRow.name} health={health} activity={activity?.ws === ws ? activity.state : "loading"} onInvite={openInvite}
@@ -294,12 +310,15 @@ export function useRollout(h: RolloutAppHost) {
         projects={h.projects.filter((p) => p.workspaceId === ws && !p.archivedAt)}
         rollout={wsRow.rollout ?? null} rolloutOn={rolloutOn()} onSaveRollout={saveRollout}
         onResendAll={resendAll} onAskUpdates={askUpdates} onOpenGoals={() => h.setRoute({ view: "goals" })}
-        onPatchTask={h.patchTask} onGiveToOwners={giveToOwners} focus={focus} />
+        onPatchTask={h.patchTask} onGiveToOwners={giveToOwners} focus={focus} onFocusUsed={focusUsed} asks={asks} />
     </Suspense>
   ) : null;
 
   /* ---------------- Kanbo noticed: the one next fix ---------------- */
-  const nudge = useMemo(() => (!health || !wsRow ? null : healthNudge(health, { workspaceId: wsRow.id!, workspaceName: wsRow.name, memberName: nameOf, today: h.today })), [health, wsRow, h.today]);
+  // (only while the workspace is being rolled out: a business long going isn't nagged about its loose ends daily)
+  const rollingOut = isLead && leadingRollout(wsRow, h.today);
+  const nudge = useMemo(() => (!rollingOut || !health || !wsRow ? null
+    : healthNudge(health, { workspaceId: wsRow.id!, workspaceName: wsRow.name, memberName: nameOf, today: h.today, asks })), [rollingOut, health, wsRow, h.today, asks]);
   const onFix = useCallback((fix: string) => {
     const cur = ref.current;
     if (fix === "resend") {
@@ -316,12 +335,8 @@ export function useRollout(h: RolloutAppHost) {
   }, [resendAll, askUpdates]);
 
   /* ---------------- "Get set up" for a team's owners ---------------- */
-  // the rollout list is for a workspace being set up: one made lately, or one whose list was started. In one that's long
-  // been going it takes the old owner's list's place only while that wasn't finished (a finished card never comes back).
-  // Update days need 0053.
-  const oldDone = OLD_OWNER_ITEMS.every((id) => !!h.onboarding.checklist?.done?.[id]);
-  const fresh = !!wsRow && ((!!wsRow.createdAt && h.today.getTime() - Date.parse(wsRow.createdAt) < SETUP_FRESH_DAYS * 86_400_000)
-    || !!(ws && h.onboarding.checklist?.teams?.[ws]) || !oldDone);
+  // the rollout list is for a workspace being set up (settingUp). Update days need 0053.
+  const fresh = settingUp(wsRow, h.onboarding, h.today);
   // (read on every render: the sign-in read says whether update days are in only once it's back)
   const rhythm = rhythmOn();
   const setupHidden = useMemo<SetupItemId[]>(() => ws === null ? [] : !fresh ? [...TEAM_SETUP_ITEMS] : rhythm ? [] : ["set_update_day"], [ws, fresh, rhythm]);

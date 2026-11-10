@@ -117,3 +117,93 @@ describe("the first run's import", () => {
     expect(result.current.importInto).toBe("p-ours");
   });
 });
+
+describe("Kanbo noticed's rollout card: only where a rollout's under way", () => {
+  const DAY = 86_400_000;
+  const ago = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
+  const est: Workspace = { id: "ws-est", name: "Wellverse", kind: "team", ownerId: "me", createdAt: ago(200) };
+  const young: Workspace = { id: "ws-young", name: "The Standing", kind: "team", ownerId: "me", createdAt: ago(45) };
+  const teammate = (ws: string): WorkspaceMember => ({ id: `wm-${ws}-maya`, workspaceId: ws, userId: "maya", email: "maya@acme.co", name: "Maya Lin", role: "member", status: "active" });
+  const proj = (ws: string): Project => ({ id: `p-${ws}`, name: "Ops", emoji: "⚙️", color: "#36f", workspaceId: ws, ownerId: "maya" } as Project);
+  const loose = (ws: string, n: number) => Array.from({ length: n }, (_, i) => ({ id: `${ws}-t${i}`, title: `Task ${i}`, status: "todo", priority: "medium", projectId: `p-${ws}`,
+    workspaceId: ws, assigneeId: "", dueDate: "2026-11-20", createdAt: ago(100), tags: [], dependencies: [], subtasks: [], comments: 0 })) as never[];
+  const at = (w: Workspace, over: Partial<RolloutAppHost> = {}) => hostOf({
+    workspace: w.id, workspaces: [{ id: null, name: "Personal", kind: "personal" }, w], members: [owner(w.id!), teammate(w.id!)], projects: [proj(w.id!)],
+    tasks: loose(w.id!, 6), onboarding: { checklist: { done: { invite_team: "2026-01-01", connect_calendar: "2026-01-01", connect_slack: "2026-01-02" } } }, ...over,
+  });
+
+  it("a business that's long been going (made before rollouts came in, however young) gets no daily card", () => {
+    for (const w of [est, young]) {
+      const { result } = renderHook(() => useRollout(at(w)));
+      expect(result.current.today).toBeUndefined();
+      // (and no new Get set up list there either: its owner finished the old one)
+      expect(new Set(result.current.setupHidden)).toEqual(TEAM_SETUP_ITEMS);
+    }
+  });
+  it("one with a rollout plan under way gets it (until a month after go-live); a new one gets it", () => {
+    const planned = renderHook(() => useRollout(at({ ...est, rollout: { champion: "maya", goLive: "2026-11-20" } })));
+    expect(planned.result.current.today?.noticed[0]).toMatchObject({ id: "rollout:owner:ws-est", title: "6 tasks in Wellverse have no owner" });
+    const over = renderHook(() => useRollout(at({ ...est, rollout: { champion: "maya", goLive: "2026-09-01" } })));
+    expect(over.result.current.today).toBeUndefined();
+    const made = { ...fresh, id: "ws-new" };
+    expect(renderHook(() => useRollout(at(made))).result.current.today?.noticed[0].id).toBe("rollout:owner:ws-new");
+  });
+  it("its id stays the same as the count moves, so Not now holds for the day", () => {
+    const { result, rerender } = renderHook((h: RolloutAppHost) => useRollout(h), { initialProps: at(fresh) });
+    const before = result.current.today?.noticed[0].id;
+    rerender(at(fresh, { tasks: loose("ws-new", 5) }));
+    expect(result.current.today?.noticed[0].id).toBe(before);
+  });
+  it("never offers Ask for updates before asking works (0053): no update asks, or no update days", () => {
+    // every task owned and dated, no update ever: the project's update is missing
+    const owned = loose("ws-new", 2).map((t: { assigneeId: string }) => ({ ...t, assigneeId: "maya" })) as never[];
+    const ask = { canAsk: () => true, asked: () => undefined, ask: vi.fn(async () => ({}) as never) };
+    noteRhythmSchema(false);
+    const none = renderHook(() => useRollout(at(fresh, { tasks: owned })));
+    expect(none.result.current.today).toBeUndefined();
+    const noAsks = renderHook(() => useRollout(at(fresh, { tasks: owned, askForUpdate: ask })));
+    expect(noAsks.result.current.today).toBeUndefined();
+    noteRhythmSchema(true);
+    const on = renderHook(() => useRollout(at(fresh, { tasks: owned, askForUpdate: ask, view: "team" })));
+    expect(on.result.current.today?.noticed[0].actions[0]).toMatchObject({ fix: "ask" });
+  });
+  it("a pack set up in a business long going doesn't start a Get set up list there", async () => {
+    const changeOnboarding = vi.fn();
+    const { result } = renderHook(() => useRollout(at(est, { changeOnboarding })));
+    const packs: PackHost = { context: { mode: "project", today: NOW, goalsV2: true, canSetGoals: true, canSetUpdateDay: true },
+      apply: vi.fn(async () => ({ workspaceId: "ws-est", applied: { projects: [{ id: "p1" }] } }) as never), undo: vi.fn(), printPoster: vi.fn() };
+    await act(async () => { await result.current.wrapPacks(packs).apply!({ id: "pack-venue", name: "Padel or sports venue" } as never, {} as never); });
+    expect(changeOnboarding).not.toHaveBeenCalled();
+  });
+});
+
+describe("a fix opened from Kanbo noticed opens the card on it once", () => {
+  it("Assign now opens the sheet; back on People later, it stays shut", async () => {
+    const { render, screen, fireEvent } = await import("@testing-library/react");
+    // (this file's afterEach restores every mock, the set-up's matchMedia with them: the card's sheet reads it)
+    vi.spyOn(window, "matchMedia").mockImplementation((q: string) => ({ matches: false, media: q, addEventListener: () => {}, removeEventListener: () => {} }) as never);
+    const DAY = 86_400_000;
+    const made: Workspace = { ...fresh };
+    const host = (view: RolloutAppHost["view"]) => hostOf({
+      view, workspaces: [{ id: null, name: "Personal", kind: "personal" }, made],
+      members: [owner("ws-new"), { id: "wm-maya", workspaceId: "ws-new", userId: "maya", email: "maya@acme.co", name: "Maya Lin", role: "member", status: "active" }],
+      projects: [{ id: "p1", name: "Ops", emoji: "⚙️", color: "#36f", workspaceId: "ws-new", ownerId: "maya" } as Project],
+      tasks: [{ id: "t1", title: "Order springs", status: "todo", priority: "medium", projectId: "p1", workspaceId: "ws-new", assigneeId: "", dueDate: "2026-11-20",
+        createdAt: new Date(NOW.getTime() - DAY).toISOString(), tags: [], dependencies: [], subtasks: [], comments: 0 }] as never[],
+    });
+    const { result, rerender } = renderHook((h: RolloutAppHost) => useRollout(h), { initialProps: host("plan") });
+    expect(result.current.today?.noticed[0].actions[0]).toMatchObject({ fix: "assign" });
+    act(() => result.current.today!.onFix("assign"));
+    rerender(host("team"));
+    const first = render(<>{result.current.healthSlot!()}</>);
+    expect(await screen.findByRole("dialog", { name: "Tasks with no owner or date" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    first.unmount();
+    // Today, then People again: the card mounts afresh
+    rerender(host("plan"));
+    rerender(host("team"));
+    render(<>{result.current.healthSlot!()}</>);
+    expect(await screen.findByRole("region", { name: "Workspace health" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Tasks with no owner or date" })).toBeNull();
+  });
+});

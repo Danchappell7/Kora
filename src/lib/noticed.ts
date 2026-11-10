@@ -187,8 +187,9 @@ export function noticedToday({ tasks, allTasks, events, nowMin, today, me, membe
     }, 2.5);
   }
 
-  // 6. leading a rollout: the one fix that helps the team most (lib/rollout healthNudge), after your own work
-  for (const n of rollout.slice(0, 1)) push(n, 4.5);
+  // 6. leading a rollout: the one fix that helps the team most (lib/rollout healthNudge), after your own work,
+  //    Radar's risks on it included
+  for (const n of rollout.slice(0, 1)) push(n, 5.5);
 
   return out.sort((a, b) => a.rank - b.rank).slice(0, max).map(({ rank: _r, ...n }) => n);
 }

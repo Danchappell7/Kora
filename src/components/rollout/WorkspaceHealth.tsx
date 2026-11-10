@@ -42,8 +42,11 @@ export interface WorkspaceHealthProps {
   onPatchTask: (taskId: string, patch: Partial<Task>) => void;
   /** every unowned task to its project's owner (with Undo, the host's): how many moved */
   onGiveToOwners: (taskIds: string[]) => number;
-  /** opened from Kanbo noticed: scroll here, and open this fix's sheet */
+  /** opened from Kanbo noticed: scroll here, and open this fix's sheet (once: `onFocusUsed` says it's been) */
   focus?: { fix: string; at: number } | null;
+  onFocusUsed?: () => void;
+  /** asking owners for their update works here (0053's update asks): without it the row has no Ask */
+  asks?: boolean;
   /** Team › People's invite sheet (the first line's fix while it's only you) */
   onInvite?: () => void;
 }
@@ -53,9 +56,14 @@ const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? o
 const dayOf = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d); };
 /** a line's state: fine, needs a look, or nothing there yet (never "all good" for an empty workspace) */
 type RowState = "ok" | "todo" | "empty";
-/** folded to its heading, on this device (it's tall, and People is under it) */
+/** folded to its heading, on this device (it's tall, and People is under it). Until it's been folded or opened
+ *  here, a phone starts it folded: unfolded it fills the first screen, and People is under it. */
 const FOLD_KEY = "kanbo-health-folded";
-const readFolded = () => { try { return localStorage.getItem(FOLD_KEY) === "1"; } catch { return false; } };
+const narrow = () => { try { return !!window.matchMedia?.("(max-width: 859px)")?.matches; } catch { return false; } };
+const readFolded = () => {
+  try { const v = localStorage.getItem(FOLD_KEY); if (v === "1" || v === "0") return v === "1"; } catch { /* private mode */ }
+  return narrow();
+};
 
 export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
   const { health: h, activity, workspaceName } = props;
@@ -68,13 +76,16 @@ export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
   const fold = (v: boolean) => { setFolded(v); try { localStorage.setItem(FOLD_KEY, v ? "1" : "0"); } catch { /* private mode */ } };
   const rowsId = headId + "-rows";
 
-  // opened from a nudge: bring the card into view (open), and its sheet when the fix has one
+  // opened from a nudge: bring the card into view (open), and its sheet when the fix has one. Once: the host
+  // forgets it, so coming back to People later doesn't open it all again
+  const { onFocusUsed } = props;
   useEffect(() => {
     if (!props.focus) return;
     setFolded(false);
     cardRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
     if (props.focus.fix === "assign") setTidyOpen(true);
-  }, [props.focus]);
+    onFocusUsed?.();
+  }, [props.focus, onFocusUsed]);
 
   const resend = async () => {
     setBusy("resend"); setNote(null);
@@ -159,7 +170,7 @@ export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
           title={updates === "empty" ? "No projects yet" : updates === "ok" ? "No project updates missing" : `${plural(h.missing.length, "project")} missing an update`}
           detail={updates === "empty" ? "Each project's owner posts a short update on the update day." : updates === "ok" ? undefined : namesLine(h.missing.map((p) => p.name))}
           note={note?.row === "updates" ? note.text : undefined}
-          fix={updates === "todo" ? <Button size="sm" variant="secondary" loading={busy === "ask"} onClick={() => void ask()}>{h.missing.length === 1 ? "Ask for it" : "Ask for updates"}</Button> : null} />
+          fix={updates === "todo" && props.asks !== false ? <Button size="sm" variant="secondary" loading={busy === "ask"} onClick={() => void ask()}>{h.missing.length === 1 ? "Ask for it" : "Ask for updates"}</Button> : null} />
 
         {h.quietGoals && (
           <Row id="goals" icon="target" state={goals}

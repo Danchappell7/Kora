@@ -39,9 +39,15 @@ No functions to deploy, no new secrets and no new schedule.
 - **Workspace health** (Team › People, owners and admins only): invites not
   accepted yet (Resend all), who was active this week (by day), open tasks
   with no owner or no date (Sort them out), projects whose update is missing
-  (Ask for updates), goals with no check-in for 14 days, and the rollout plan.
-  A new workspace says "Just getting started", never "All good". Kanbo
-  noticed on Today offers one of these fixes at a time, after your own work.
+  (Ask for updates, once 0053's update asks are in), goals with no check-in
+  for 14 days, and the rollout plan. A new workspace says "Just getting
+  started", never "All good". Kanbo noticed on Today offers one of these
+  fixes at a time, after your own work (Radar's risks on it included), and
+  only while a workspace is being rolled out: one made since 10 Nov 2026 in
+  the last 60 days, or one with a rollout plan whose go-live is ahead or was
+  in the last 30 days. A business that was already going gets no daily card.
+  The "Get set up" list is the same: a workspace made before 10 Nov 2026
+  gets it only if its owner never finished the old list.
 - **Welcome to …** on Today, for someone who joined lately: their projects,
   their people (with "Off today" from 0055), the team's goal for the
   quarter, who to ask and one or two tasks to start with. Shown once.

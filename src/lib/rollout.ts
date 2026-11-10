@@ -193,14 +193,46 @@ export function workspaceHealth(input: HealthInput): WorkspaceHealth {
   };
 }
 
+/* ================================ a workspace being rolled out ================================ */
+
+/** A team's "Get set up" list is for a workspace this new (an established one isn't being set up). */
+export const SETUP_FRESH_DAYS = 60;
+/** The day rollouts came in (this release): a workspace made before it was already going, however young, so its
+ *  age never makes it one that's being set up. */
+export const ROLLOUT_FROM = "2026-11-10";
+/** a rollout plan stays live this long after its go-live day */
+export const ROLLOUT_AFTER_DAYS = 30;
+
+/** Made since rollouts came in, and lately: a workspace that's being set up by its age. */
+export function madeLately(w: Pick<Workspace, "createdAt"> | undefined, today: Date): boolean {
+  const at = w?.createdAt ? Date.parse(w.createdAt) : NaN;
+  return Number.isFinite(at) && at >= Date.parse(ROLLOUT_FROM) && today.getTime() - at < SETUP_FRESH_DAYS * DAY;
+}
+
+/** A rollout plan that's under way: something's planned (0057), and its go-live, if it has one, is ahead or was in
+ *  the last ROLLOUT_AFTER_DAYS. */
+export function rolloutUnderWay(plan: RolloutPlan | null | undefined, today: Date): boolean {
+  if (!plan || (!plan.champion && !plan.pilot?.length && !plan.goLive)) return false;
+  return !plan.goLive || daysSince(plan.goLive, today) <= ROLLOUT_AFTER_DAYS;
+}
+
+/** Is Kanbo noticed's rollout card for this workspace? Only while it's being rolled out: made lately, or a plan
+ *  under way. A business that's long been going isn't nagged about its loose ends every day. */
+export function leadingRollout(w: Pick<Workspace, "createdAt" | "rollout"> | undefined, today: Date): boolean {
+  return madeLately(w, today) || rolloutUnderWay(w?.rollout, today);
+}
+
 /** The fixes the card and the nudge offer. */
 export type HealthFix = "resend" | "assign" | "ask" | "goals";
 
 /** an invite is worth a nudge once it's had this long to be answered */
 export const INVITE_NUDGE_DAYS = 2;
 
-/** Kanbo noticed, for a team's owners and admins: the one fix that helps most right now (none: nothing). */
-export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; workspaceName: string; memberName: (m: WorkspaceMember) => string; today: Date }): Noticed | null {
+/** Kanbo noticed, for a team's owners and admins: the one fix that helps most right now (none: nothing).
+ *  `asks`: asking an owner for their update works here (0053's update_asks; the host's AskForUpdate): without
+ *  it, a missing update isn't a nudge (its only fix couldn't work). Each card's id is the kind of fix and the
+ *  workspace, never a count, so "Not now" holds for the day while the number moves. */
+export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; workspaceName: string; memberName: (m: WorkspaceMember) => string; today: Date; asks: boolean }): Noticed | null {
   const ws = ctx.workspaceName;
   // (an invite that's just gone out isn't late yet; one with no date is from before it was kept)
   const waiting = h.invited.filter((m) => !m.invitedAt || daysSince(m.invitedAt, ctx.today) >= INVITE_NUDGE_DAYS);
@@ -210,7 +242,7 @@ export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; work
     const named = waiting.every((m) => !!m.name?.trim());
     const names = namesLine(waiting.map((m) => firstName(ctx.memberName(m))));
     return {
-      id: `rollout:invited:${ctx.workspaceId}:${n}`, kind: "rollout", tone: "accent", icon: "users",
+      id: `rollout:invited:${ctx.workspaceId}`, kind: "rollout", tone: "accent", icon: "users",
       title: n === 1 && named ? `${names} hasn't joined ${ws} yet` : `${plural(n, "person", "people")} ${n === 1 ? "hasn't" : "haven't"} joined ${ws}`,
       body: named
         ? `${names} ${n === 1 ? "was" : "were"} invited but ${n === 1 ? "hasn't" : "haven't"} signed in yet. A fresh invite often does it.`
@@ -222,16 +254,16 @@ export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; work
   if (h.loose.noOwner > 0 && h.counts.workers > 1) {
     const n = h.loose.noOwner;
     return {
-      id: `rollout:owner:${ctx.workspaceId}:${n}`, kind: "rollout", tone: "warn", icon: "user",
+      id: `rollout:owner:${ctx.workspaceId}`, kind: "rollout", tone: "warn", icon: "user",
       title: `${plural(n, "task")} in ${ws} ${n === 1 ? "has" : "have"} no owner`,
       body: n === 1 ? "Work nobody owns tends to wait. Give it to someone, or to its project's owner." : "Work nobody owns tends to wait. Give each one to someone, or to its project's owner.",
       actions: [{ kind: "fix", label: "Assign now", fix: "assign" }],
     };
   }
-  if (h.missing.length) {
+  if (h.missing.length && ctx.asks) {
     const n = h.missing.length;
     return {
-      id: `rollout:updates:${ctx.workspaceId}:${n}`, kind: "rollout", tone: "warn", icon: "message",
+      id: `rollout:updates:${ctx.workspaceId}`, kind: "rollout", tone: "warn", icon: "message",
       title: n === 1 ? `${h.missing[0].name} has no update` : `${n} projects have no update`,
       body: n === 1 ? "Its update is missing. Ask its owner for one: they'll find Kanbo's draft waiting." : `Their updates are missing. Ask their owners: each will find Kanbo's draft waiting.`,
       actions: [{ kind: "fix", label: n === 1 ? "Ask for it" : "Ask for updates", fix: "ask" }],
@@ -240,7 +272,7 @@ export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; work
   if (h.loose.noDate > 0) {
     const n = h.loose.noDate;
     return {
-      id: `rollout:date:${ctx.workspaceId}:${n}`, kind: "rollout", tone: "accent", icon: "calendar",
+      id: `rollout:date:${ctx.workspaceId}`, kind: "rollout", tone: "accent", icon: "calendar",
       title: `${plural(n, "task")} in ${ws} ${n === 1 ? "has" : "have"} no date`,
       body: "Undated work never reaches anyone's day. A rough date is better than none.",
       actions: [{ kind: "fix", label: "Add dates", fix: "assign" }],
@@ -249,7 +281,7 @@ export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; work
   if (h.quietGoals?.length) {
     const n = h.quietGoals.length;
     return {
-      id: `rollout:goals:${ctx.workspaceId}:${n}`, kind: "rollout", tone: "accent", icon: "target",
+      id: `rollout:goals:${ctx.workspaceId}`, kind: "rollout", tone: "accent", icon: "target",
       title: n === 1 ? `${h.quietGoals[0].name} hasn't had a check-in` : `${n} goals haven't had a check-in`,
       body: `Nothing's been checked in for two weeks or more, so nobody knows if ${n === 1 ? "it's" : "they're"} on track.`,
       actions: [{ kind: "fix", label: "Open goals", fix: "goals" }],

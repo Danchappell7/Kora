@@ -62,7 +62,7 @@ describe("Workspace health", () => {
     expect(h.quietGoals).toBeNull();   // goals 2.0 not in: no check-in line
     expect(h.active).toBeNull();       // activity not loaded
     expect(h.issues).toBe(0);
-    expect(healthNudge(h, { workspaceId: "ws", workspaceName: "Acme", memberName: (m) => m.name, today: TODAY })).toBeNull();
+    expect(healthNudge(h, { workspaceId: "ws", workspaceName: "Acme", memberName: (m) => m.name, today: TODAY, asks: true })).toBeNull();
   });
   it("finds who hasn't joined, loose work, missing updates and quiet goals", () => {
     const activity: WorkspaceActivity = {
@@ -116,7 +116,7 @@ describe("Workspace health for a workspace that's only just started", () => {
     // a pack's routines are nobody's yet: on your own there's nobody else to give them to, so no nudge about it
     const alone = workspaceHealth(base({ members: [member("dan", "owner")], tasks: [task("r1", { assigneeId: "" })] }));
     expect(alone.loose.noOwner).toBe(1);
-    expect(healthNudge(alone, { workspaceId: "ws", workspaceName: "Acme", memberName: (m) => m.name, today: TODAY })).toBeNull();
+    expect(healthNudge(alone, { workspaceId: "ws", workspaceName: "Acme", memberName: (m) => m.name, today: TODAY, asks: true })).toBeNull();
     expect(h.started).toBe(false);
   });
   it("someone invited, or a teammate, and a project: under way", () => {
@@ -134,7 +134,7 @@ describe("Workspace health for a workspace that's only just started", () => {
 });
 
 describe("Kanbo noticed: one fix at a time", () => {
-  const ctx = { workspaceId: "ws", workspaceName: "Acme", memberName: (m: WorkspaceMember) => m.name || m.email, today: TODAY };
+  const ctx = { workspaceId: "ws", workspaceName: "Acme", memberName: (m: WorkspaceMember) => m.name || m.email, today: TODAY, asks: true };
   it("invites that have had two days come first (named people by name; a bare address isn't a name)", () => {
     const h = workspaceHealth(base({ members: [...base().members, invitee("priya@acme.co", { name: "Priya Shah", invitedAt: daysAgo(7) }), invitee("jonas@acme.co", { name: "Jonas Berg", invitedAt: daysAgo(3) })] }));
     const n = healthNudge(h, ctx)!;
@@ -157,6 +157,21 @@ describe("Kanbo noticed: one fix at a time", () => {
     expect(healthNudge(undated, ctx)).toMatchObject({ title: "1 task in Acme has no date", actions: [{ fix: "assign" }] });
     const goals = workspaceHealth(base({ goals: [{ id: "g1", name: "Grow", status: "on_track", workspaceId: "ws", createdAt: daysAgo(30) } as Goal], checkins: [] }));
     expect(healthNudge(goals, ctx)).toMatchObject({ title: "Grow hasn't had a check-in", actions: [{ fix: "goals" }] });
+  });
+  it("before asking for an update works here (0053), a missing update isn't a nudge: its only fix couldn't work", () => {
+    // no update day, no updates ever, work older than 14 days: every project reads as missing
+    const missing = workspaceHealth(base({ tasks: [task("t1", { createdAt: daysAgo(30) })], statusUpdates: [] }));
+    expect(missing.missing).toHaveLength(1);
+    expect(healthNudge(missing, { ...ctx, asks: false })).toBeNull();
+    // (the next fix down still comes)
+    const andUndated = workspaceHealth(base({ tasks: [task("t1", { createdAt: daysAgo(30), dueDate: undefined })], statusUpdates: [] }));
+    expect(healthNudge(andUndated, { ...ctx, asks: false })).toMatchObject({ title: "1 task in Acme has no date", actions: [{ fix: "assign" }] });
+  });
+  it("each card's id is its kind and its workspace, never a count: Not now holds while the number moves", () => {
+    const two = workspaceHealth(base({ tasks: [task("t1", { assigneeId: "" }), task("t2", { assigneeId: "" })] }));
+    const one = workspaceHealth(base({ tasks: [task("t1", { assigneeId: "" }), task("t2")] }));
+    expect(healthNudge(two, ctx)!.id).toBe("rollout:owner:ws");
+    expect(healthNudge(one, ctx)!.id).toBe(healthNudge(two, ctx)!.id);
   });
 });
 
