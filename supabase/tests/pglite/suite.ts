@@ -1724,6 +1724,21 @@ async function goalsSuite(w: World) {
     eq(await count(w.alice, "goal_checkins", "goal_id = $1::uuid", [g1]), n - 1, "gone");
   });
 
+  await test("0052 attack: a personal goal's check-ins and links are its creator's alone", async () => {
+    const mine = await mkGoal(w.bob, { user_id: w.bob, workspace_id: null, name: "Bob's 10k", target: 10, current: 0 });
+    const c = (await asPerson<{ id: string; author_id: string }>(w.pg, w.bob, `insert into public.goal_checkins (goal_id, value, note) values ($1::uuid, 4, 'First run') returning id::text as id, author_id::text as author_id`, [mine]))[0];
+    eq(c.author_id, w.bob, "his");
+    eq((await goal(mine)).current, 4, "his number moved");
+    for (const who of [w.alice, w.gus, w.carol]) {
+      eq(await count(who, "goal_checkins", "goal_id = $1::uuid", [mine]), 0, "nobody else reads it");
+      await raises(asPerson(w.pg, who, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 99)`, [mine]), RLS);
+      eq((await asPerson(w.pg, who, `delete from public.goal_checkins where id = $1::uuid returning id`, [c.id])).length, 0, "nor takes it back");
+    }
+    // his goal links his own work only (alice's personal task isn't his; the team's project isn't personal)
+    await raises(asPerson(w.pg, w.bob, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'task', $2)`, [mine, w.aliceSecret]), /its own workspace/);
+    await raises(asPerson(w.pg, w.bob, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'project', $2)`, [mine, w.launch]), /its own workspace/);
+  });
+
   await test("0052 attack: guests and outsiders read no team goals, check-ins or links, by any query", async () => {
     await asPerson(w.pg, w.alice, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 1600000)`, [g1]);
     await asPerson(w.pg, w.alice, `insert into public.goal_links (goal_id, kind, target_id) values ($1::uuid, 'task', $2)`, [g1, w.aliceTask]);
@@ -1814,6 +1829,19 @@ async function goalsSuite(w: World) {
     eq(await one(`select created_by from public.goal_links where id = $1::uuid`, [l]), { created_by: null }, "the link stays");
     eq(await count(w.bob, "goal_checkins", "id = $1::uuid", [c]), 1, "the team still reads it");
     eq((await asPerson(w.pg, erin, `update public.goals set owner_id = $1::uuid where id = $2::uuid returning id`, [dan, g])).length, 1, "an admin gives it a new owner");
+  });
+
+  await test("0052: a platform admin deleting an account from the app (signed in) is never stopped by a goal it owned, helped on or checked in on", async () => {
+    const gil = await person("gil@example.org", "member");
+    const g = await mkGoal(w.alice, { user_id: w.alice, workspace_id: w.w1, name: "Gil's goal", owner_id: gil, contributors: `{${dan}}` });
+    const k = await mkGoal(gil, { user_id: gil, workspace_id: w.w1, name: "Gil's key result", parent_id: g });
+    await asPerson(w.pg, gil, `insert into public.goal_checkins (goal_id, value) values ($1::uuid, 1)`, [g]);
+    await w.pg.query(`update public.profiles set is_admin = true where id = $1::uuid`, [erin]);
+    await asPerson(w.pg, erin, `select public.admin_delete_user($1::uuid)`, [gil]);
+    await w.pg.query(`update public.profiles set is_admin = false where id = $1::uuid`, [erin]);
+    eq((await goal(g)).owner, null, "the goal stays, with no owner");
+    eq((await goal(k)).owner, null, "his key result too (kept by the workspace's owner)");
+    eq(await count(w.alice, "goal_checkins", "goal_id = $1::uuid and author_id is null", [g]), 1, "his check-in stays");
   });
 
   if (await one<{ on: boolean }>(`select to_regprocedure('public.api_scope_ok(uuid)') is not null as "on"`).then((r) => r.on)) {
