@@ -10,8 +10,8 @@
    Everything comes from what's already loaded for the person starting
    it (lib/pulse, lib/radar, lib/group), so nothing is shown that they
    couldn't open themselves. A team meeting never carries a
-   leadership-only goal or anyone's reason for being off. Pure: no
-   React, no I/O.
+   leadership-only goal (nor its key results, nor theirs) or anyone's
+   reason for being off. Pure: no React, no I/O.
    ============================================================ */
 import type { Goal, Project, Role, StatusUpdate, Task, Workspace, WorkspaceEvent, WorkspaceMember } from "../../data/types";
 import { getMember, toLocalISO } from "../../data/data";
@@ -19,6 +19,7 @@ import { buildPulse, pulseSentenceParts, type PulsePerson, type SentencePart } f
 import { computeRisks } from "../radar";
 import { businessDigest } from "../group";
 import { groupGoalPace } from "../goalPace";
+import { goalLookup } from "../goalRules";
 import { fmtDayMonth, localDay } from "../weekMath";
 import { meetingDay } from "./types";
 import type {
@@ -136,8 +137,24 @@ const roleOf = (members: readonly WorkspaceMember[], me: string, ws: string): Ro
   members.find((m) => m.workspaceId === ws && m.userId === me && m.status === "active")?.role ?? null;
 
 /** Every section of the agenda, worked out once (lib/pulse, lib/radar, lib/group). */
+/** Is a goal leadership-only, or under one (its key results, theirs…)? A goal above it that isn't loaded counts
+ *  too: whoever starts the meeting couldn't read it, so it isn't the team's to see. */
+function underLeadership(g: Goal, byId: (id: string) => Goal | undefined): boolean {
+  if (g.visibility === "leadership") return true;
+  const seen = new Set<string>([g.id]);
+  for (let cur = g.parentId; cur; ) {
+    if (seen.has(cur)) return true;   // (a loop: never the team's)
+    seen.add(cur);
+    const up = byId(cur);
+    if (!up || up.visibility === "leadership") return true;
+    cur = up.parentId;
+  }
+  return false;
+}
+
 export function agendaFacts(input: AgendaInput): AgendaFacts {
   const { preset, members, today } = input;
+  const byGoalId = goalLookup(input.goals);
   const todayISO = toLocalISO(today);
   const covered = input.workspaces.filter((w): w is Workspace & { id: string } => !!w.id);
   const ids = new Set(covered.map((w) => w.id));
@@ -214,8 +231,10 @@ export function agendaFacts(input: AgendaInput): AgendaFacts {
           ...(r.memberId ? { memberId: r.memberId } : {}), taskIds: r.taskIds.slice(0, 8), workspaceId: w.id });
       }
     } catch { /* a malformed task never stops the meeting */ }
-    // a team meeting never shows a leadership-only goal (its members can't read them)
-    const wsGoals = input.goals.filter((g) => (g.workspaceId ?? null) === w.id && (preset === "leadership" || g.visibility !== "leadership"));
+    // a team meeting never shows a leadership-only goal, nor anything under one (its key results, theirs…):
+    // every member reads the agenda, and members can't read those (0052's goal_readable). No exemption for
+    // whoever starts it being on one: the readers are everyone.
+    const wsGoals = input.goals.filter((g) => (g.workspaceId ?? null) === w.id && (preset === "leadership" || !underLeadership(g, byGoalId)));
     const digest = businessDigest(w, roleOf(members, input.me, w.id) ?? "member", {
       workspaces: input.workspaces, members, me: input.me, tasks: here, goalTasks: input.goalTasks, projects: input.projects,
       goals: wsGoals, statusUpdates: input.statusUpdates, approvals: [], today, pace: groupGoalPace,

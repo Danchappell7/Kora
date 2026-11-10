@@ -92,6 +92,25 @@ describe("the agenda", () => {
     expect(agendaFacts(input()).goals.map((g) => g.id)).toEqual(["g-team"]);
     expect(agendaFacts(input({ preset: "leadership" })).goals.map((g) => g.id).sort()).toEqual(["g-lead", "g-team"]);
   });
+  it("nor anything under one: its key results (marked 'everyone', as they're made) and theirs stay out of a team meeting", () => {
+    // a leadership-only objective that's on track, a key result under it at risk, and one two levels down overdue
+    const goals = [
+      goal({ id: "g-team", name: "Grow members", status: "at_risk" }),
+      goal({ id: "g-sell", name: "Sell the company to Acme", status: "on_track", visibility: "leadership" }),
+      goal({ id: "kr-term", name: "Close Acme term sheet by Dec", status: "off_track", parentId: "g-sell", visibility: "everyone", ownerId: "me" }),
+      goal({ id: "kr-mid", name: "Mid KR fine", status: "on_track", parentId: "g-sell" }),
+      goal({ id: "kr-deep", name: "Data room ready", status: "at_risk", parentId: "kr-mid", due: "2026-11-01" }),
+      // (a key result whose goal the starter can't read: not the team's either)
+      goal({ id: "kr-orphan", name: "Under a goal nobody here loaded", status: "off_track", parentId: "g-unseen" }),
+    ];
+    const team = agendaFacts(input({ goals }));
+    expect(team.goals.map((g) => g.id)).toEqual(["g-team"]);
+    const stored = JSON.stringify(assembleAgenda(team, ["goals"]));
+    for (const secret of ["Sell the company", "Close Acme term sheet", "Mid KR fine", "Data room ready", "Under a goal nobody"]) expect(stored).not.toContain(secret);
+    // a leadership meeting has them
+    const lead = agendaFacts(input({ preset: "leadership", goals }));
+    expect(JSON.stringify(lead.goals)).toContain("Close Acme term sheet");
+  });
   it("a Group meeting covers each business it's for (not the others), each row marked with its business", () => {
     const f = agendaFacts(input({ preset: "leadership", workspaces: WS }));
     expect(f.people).toEqual([]);   // one business at a time
