@@ -100,6 +100,11 @@ describe("other resources", () => {
       status: null, ownerId: "u1", contributorIds: [], createdBy: "u1", archived: false, archivedAt: null,
       createdAt: "2026-10-05T18:04:38.317Z", url: "https://www.kanbo.co.uk/p/p1" });
   });
+  it("project visibility (0058): there once 0058 is in, never anything else", () => {
+    const row = { id: "p1", name: "P2", user_id: "u1", owner_id: "u1", workspace_id: W, contributor_ids: [] };
+    for (const v of ["workspace", "members", "private"]) expect(serialiseProject({ ...row, visibility: v }).visibility).toBe(v);
+    for (const v of [null, undefined, "", "secret"]) expect("visibility" in serialiseProject({ ...row, visibility: v })).toBe(false);
+  });
   it("section, comment, member, workspace", () => {
     expect(serialiseSection({ id: "s", project_id: "p", workspace_id: null, name: "Doing", position: "2", created_at: null }))
       .toEqual({ object: "section", id: "s", projectId: "p", workspaceId: null, name: "Doing", position: 2, createdAt: null });

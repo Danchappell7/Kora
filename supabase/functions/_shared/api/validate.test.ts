@@ -150,6 +150,14 @@ describe("project, section and comment bodies", () => {
     expect(fieldsOf(checkProjectPatch({ workspaceId: U }))).toHaveProperty("workspaceId");
     expect(fieldsOf(checkProjectPatch({ name: null }))).toHaveProperty("name");
   });
+  it("a new project's visibility (0058): one of the three, on create only", () => {
+    for (const v of ["workspace", "members", "private"] as const) {
+      expect(checkProjectCreate({ name: "Pay", workspaceId: U, visibility: v })).toEqual({ ok: true, value: { name: "Pay", workspaceId: U, visibility: v } });
+    }
+    expect(fieldsOf(checkProjectCreate({ name: "Pay", visibility: "secret" }))).toEqual({ visibility: "Use one of workspace, members, private." });
+    expect(fieldsOf(checkProjectCreate({ name: "Pay", visibility: null }))).toHaveProperty("visibility");
+    expect(fieldsOf(checkProjectPatch({ visibility: "private" }))).toHaveProperty("visibility");   // changed only in Kanbo itself
+  });
   it("sections", () => {
     expect(checkSectionCreate({ projectId: U, name: " Doing " })).toEqual({ ok: true, value: { projectId: U, name: "Doing" } });
     expect(Object.keys(fieldsOf(checkSectionCreate({})))).toEqual(["projectId", "name"]);

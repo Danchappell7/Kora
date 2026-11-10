@@ -44,6 +44,9 @@ export const API_LIMITS = {
 
 export const PROJECT_STATUSES = ["on_track", "at_risk", "off_track", "on_hold"] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+/** Who can see a project (0058): the whole workspace, its people (plus owners and admins), or its people (plus owners). */
+export const PROJECT_VISIBILITIES = ["workspace", "members", "private"] as const;
+export type ProjectVisibility = (typeof PROJECT_VISIBILITIES)[number];
 
 export type FieldErrors = Record<string, string>;
 export type Checked<T> = { ok: true; value: T } | { ok: false; fields: FieldErrors };
@@ -521,9 +524,11 @@ export interface ProjectInput {
   description?: string | null;
   status?: ProjectStatus | null;
   archived?: boolean;
+  /** create only (0058): left out, the workspace's default for new projects */
+  visibility?: ProjectVisibility;
 }
 
-export const PROJECT_CREATE_FIELDS = ["name", "workspaceId", "emoji", "color", "description", "status"] as const;
+export const PROJECT_CREATE_FIELDS = ["name", "workspaceId", "emoji", "color", "description", "status", "visibility"] as const;
 export const PROJECT_PATCH_FIELDS = ["name", "emoji", "color", "description", "status", "archived"] as const;
 
 function projectFields(body: Body, fields: FieldErrors, create: boolean): ProjectInput {
@@ -549,6 +554,9 @@ function projectFields(body: Body, fields: FieldErrors, create: boolean): Projec
   if (!create) {
     const archived = boolField(body, "archived", fields);
     if (archived !== undefined) out.archived = archived;
+  } else {
+    const visibility = oneOf(body, "visibility", PROJECT_VISIBILITIES, fields);
+    if (visibility) out.visibility = visibility;
   }
   return out;
 }

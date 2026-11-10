@@ -17,6 +17,17 @@
 // 404 for things they can't see, 403 for things they can see but not
 // change, 422 naming the field. RLS stays the last word either way.
 //
+// Project access (0058): RLS already keeps a Members only or Private project
+// to its people. On top, for clear answers: writing into a project (a task,
+// a section, a move, the project itself) needs edit rights on it (403 "You
+// can see this project but can't change it."); a viewer or a guest who isn't
+// a commenter can't comment (403); and an assignee, a rule's assignee and the
+// people kept on a moved task must be able to see the project it's in (an
+// assignee who can't: 422 on assigneeId; on a move they're replaced by you).
+// Every check is made as the key's user inside their transaction, and only
+// once 0058 is in (accessInstalled asks to_regprocedure, which never fails),
+// so before 0058 nothing here changes.
+//
 // Like the app: project automation rules run on create / status change /
 // completion (automationRules.ts, each value checked), and moving a task
 // out of a workspace is for its makers or that workspace's owners and
@@ -47,6 +58,7 @@ import {
 import type { RouteContext } from "./router.ts";
 import type { Tx } from "./types.ts";
 import { slackPermalinkOf } from "../slackPermalink.ts";
+import { accessInstalled, myProjectRank, personRankSql } from "../projectAccess.ts";
 
 type Row = Record<string, unknown>;
 const s = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
@@ -64,7 +76,7 @@ export const TASK_COLS = `t.id::text as id, t.user_id::text as user_id, t.title,
 
 const PROJECT_COLS = `p.id::text as id, p.user_id::text as user_id, p.workspace_id::text as workspace_id, p.name, p.emoji,
   p.color, p.description, p.status, p.owner_id::text as owner_id, p.contributor_ids::text[] as contributor_ids,
-  p.archived_at, p.created_at`;
+  p.archived_at, p.created_at, (to_jsonb(p) ->> 'visibility') as visibility`;
 
 const SECTION_COLS = `s.id::text as id, s.project_id, s.workspace_id::text as workspace_id, s.name, s.position, s.created_at`;
 
@@ -93,6 +105,28 @@ function requireWriter(role: string) {
   if (WRITER_ROLES.includes(role)) return;
   if (role === "guest") throw forbidden(GUEST_READ_ONLY);
   throw notFound("Workspace");
+}
+
+/** Is 0058 in? Asked once per transaction (as the key's user). */
+const installed = new WeakMap<Tx, Promise<boolean>>();
+function accessOn(tx: Tx): Promise<boolean> {
+  if (!installed.has(tx)) installed.set(tx, accessInstalled(tx));
+  return installed.get(tx)!;
+}
+
+const CANT_CHANGE_PROJECT = "You can see this project but can't change it.";
+
+/** Writing into a team project (a task, a section, a move, the project itself) needs edit rights on it (0058). */
+async function requireProjectEditor(tx: Tx, ws: string, project: string): Promise<void> {
+  if (!(await accessOn(tx))) return;
+  if ((await myProjectRank(tx, ws, project)) < 3) throw forbidden(CANT_CHANGE_PROJECT);
+}
+
+/** Can this person see `project` (tasks.project_id) in `ws`? Always, before 0058. */
+async function seesProject(tx: Tx, ws: string, user: string, project: string): Promise<boolean> {
+  if (!(await accessOn(tx))) return true;
+  const rs = await tx.query<{ r: number }>(`select ${personRankSql("$1::text", "$2::uuid", "$3::text")} as r`, [user, ws, project]);
+  return Number(rs[0]?.r ?? 0) >= 1;
 }
 
 async function workspaceVisible(tx: Tx, ws: string): Promise<boolean> {
@@ -141,8 +175,8 @@ export async function serialiseTasks(ctx: RouteContext, tx: Tx, rows: Row[]) {
   return rows.map((r) => serialiseTask(r, { appUrl: ctx.appUrl, tags }));
 }
 
-/** Can this person be on a task in `ws` (null = Personal: only you)? */
-async function canBeOnTask(tx: Tx, ws: string | null, user: string, me: string): Promise<boolean> {
+/** Is this person in `ws` (null = Personal: only you)? */
+async function inTaskWorkspace(tx: Tx, ws: string | null, user: string, me: string): Promise<boolean> {
   if (user === me) return true;
   if (!ws || !isUuid(user)) return false;
   const rs = await tx.query<{ ok: boolean }>(
@@ -152,21 +186,36 @@ async function canBeOnTask(tx: Tx, ws: string | null, user: string, me: string):
   return rs[0]?.ok === true;
 }
 
-/** assigneeId input → the tasks.assignee_id value ('' = unassigned). */
-async function resolveAssignee(tx: Tx, input: string | null, ws: string | null, me: string): Promise<string> {
-  if (input === null) return "";
-  const user = input === "me" ? me : input;
-  if (await canBeOnTask(tx, ws, user, me)) return user;
-  throw invalid({ assigneeId: ws ? "That person isn't an active member of this task's workspace." : "Tasks in your Personal list can only be assigned to you." });
+/** Can this person be on a task in `ws` (null = Personal: only you), in `project` (0058: they must be able to see it)? */
+async function canBeOnTask(tx: Tx, ws: string | null, user: string, me: string, project?: string): Promise<boolean> {
+  if (!(await inTaskWorkspace(tx, ws, user, me))) return false;
+  return user === me || !ws || project === undefined || seesProject(tx, ws, user, project);
 }
 
-/** SQL: is the person in `col` (a user id as text) allowed on a task in `ws`? Mirrors the app's retarget(). */
-function visibleSql(q: Sql, col: string, ws: string | null, me: string): string {
+/** assigneeId input → the tasks.assignee_id value ('' = unassigned), for a task in `project`. */
+async function resolveAssignee(tx: Tx, input: string | null, ws: string | null, me: string, project?: string): Promise<string> {
+  if (input === null) return "";
+  const user = input === "me" ? me : input;
+  if (!(await inTaskWorkspace(tx, ws, user, me))) {
+    throw invalid({ assigneeId: ws ? "That person isn't an active member of this task's workspace." : "Tasks in your Personal list can only be assigned to you." });
+  }
+  if (ws && user !== me && project !== undefined && !(await seesProject(tx, ws, user, project))) {
+    throw invalid({ assigneeId: "That person can't see this project." });
+  }
+  return user;
+}
+
+/** SQL: is the person in `col` (a user id as text) allowed on a task in `ws`? Mirrors the app's retarget(). With
+ *  `project` (only once 0058 is in): they must be able to see that project too. */
+function visibleSql(q: Sql, col: string, ws: string | null, me: string, project: string | null = null): string {
   if (!ws) return `(${col} = '' or ${col} = ${q.p(me)})`;
   const w = q.p(ws);
+  const member = `exists (select 1 from public.workspace_members m where m.workspace_id = ${w}::uuid and m.status = 'active' and m.user_id::text = ${col})
+    or exists (select 1 from public.workspaces w2 where w2.id = ${w}::uuid and w2.owner_id::text = ${col})`;
+  if (project === null) return `(${col} = '' or ${col} = ${q.p(me)}
+    or ${member})`;
   return `(${col} = '' or ${col} = ${q.p(me)}
-    or exists (select 1 from public.workspace_members m where m.workspace_id = ${w}::uuid and m.status = 'active' and m.user_id::text = ${col})
-    or exists (select 1 from public.workspaces w2 where w2.id = ${w}::uuid and w2.owner_id::text = ${col}))`;
+    or ((${member}) and ${personRankSql(col, `${w}::uuid`, `${q.p(project)}::text`)} >= 1))`;
 }
 
 /** Tag ids or labels → tag ids for a task in `ws`: built-ins, existing tags, or new ones (labels). */
@@ -248,7 +297,7 @@ async function ruleEffect(tx: Tx, triggers: RuleTrigger[], project: string, ws: 
   if (plan.priority && (API_PRIORITIES as readonly string[]).includes(plan.priority)) out.priority = plan.priority;
   if (plan.assigneeId) {
     const who = plan.assigneeId.toLowerCase();
-    if (isUuid(who) && await canBeOnTask(tx, ws, who, me)) out.assigneeId = who;
+    if (isUuid(who) && await canBeOnTask(tx, ws, who, me, project)) out.assigneeId = who;
   }
   if (plan.sectionId && isUuid(plan.sectionId)) {
     const sec = await tx.query<{ id: string }>(`select s.id::text as id from public.sections s where s.id = $1::uuid and s.project_id = $2`,
@@ -380,12 +429,22 @@ export async function createProject(ctx: RouteContext): Promise<Response> {
   assertInScope(p, ws);
   const row = await asUser(ctx, async (tx) => {
     if (ws) requireWriter(await wsRole(tx, ws));
+    // who can see it (0058): left out, the workspace's default for new projects (the database fills it in)
+    if (v.visibility !== undefined) {
+      if (!ws) throw invalid({ visibility: "A Personal project is only ever yours: leave visibility out." });
+      if (!(await accessOn(tx))) throw invalid({ visibility: "Project access isn't available yet, so leave visibility out." });
+      if (v.visibility === "private") {
+        const [may] = await tx.query<{ ok: boolean }>(`select public.pa_may_make_private($1::uuid) as ok`, [ws]);
+        if (may?.ok !== true) throw forbidden("You can't make private projects in this workspace.");
+      }
+    }
     const q = new Sql();
     const me = q.p(p.userId);
+    const vis = v.visibility !== undefined ? { col: ", visibility", val: `, ${q.p(v.visibility)}` } : { col: "", val: "" };
     const made = await tx.query<{ id: string }>(
-      `insert into public.projects (user_id, owner_id, name, workspace_id, emoji, color, description, status)
+      `insert into public.projects (user_id, owner_id, name, workspace_id, emoji, color, description, status${vis.col})
        values (${me}::uuid, ${me}::uuid, ${q.p(v.name)}, ${q.p(ws)}::uuid, coalesce(${q.p(v.emoji ?? null)}, '📁'),
-               coalesce(${q.p(v.color ?? null)}, 'oklch(0.74 0.14 230)'), ${q.p(v.description ?? null)}, ${q.p(v.status ?? null)})
+               coalesce(${q.p(v.color ?? null)}, 'oklch(0.74 0.14 230)'), ${q.p(v.description ?? null)}, ${q.p(v.status ?? null)}${vis.val})
        returning id::text as id`, q.params);
     return loadProject(tx, made[0].id, keyWorkspace(p));
   });
@@ -401,12 +460,14 @@ export async function updateProject(ctx: RouteContext): Promise<Response> {
   const v = c.value;
   const kws = keyWorkspace(ctx.principal);
   const row = await asUser(ctx, async (tx) => {
+    // a team project: owners, admins and members; with Project access (0058), edit rights on this project
+    const team = (await accessOn(tx)) ? "public.can_write(p.workspace_id) and public.pa_rank(p.workspace_id, p.id::text) >= 3" : "public.can_write(p.workspace_id)";
     const rs = await tx.query<{ can_edit: boolean }>(
       `select case when p.workspace_id is null then p.user_id = auth.uid() and public.can_act()
-                   else public.can_write(p.workspace_id) end as can_edit
+                   else ${team} end as can_edit
          from public.projects p where p.id = $1::uuid and ${inKeyWs("p.workspace_id", 2)}`, [id, kws]);
     if (!rs[0]) throw notFound("Project");
-    if (!rs[0].can_edit) throw forbidden("You can see this project but can't change it.");
+    if (!rs[0].can_edit) throw forbidden(CANT_CHANGE_PROJECT);
     const ifMatch = ctx.req.headers.get("if-match");
     if (ifMatch !== null) {
       // held until this transaction ends: nobody changes it between the check and the write
@@ -464,6 +525,7 @@ export async function createSection(ctx: RouteContext): Promise<Response> {
     const ws = s(proj.workspace_id);
     assertInScope(ctx.principal, ws);
     if (ws) requireWriter(await wsRole(tx, ws));
+    if (ws) await requireProjectEditor(tx, ws, v.projectId);
     const rs = await tx.query(
       `insert into public.sections (user_id, workspace_id, project_id, name, position)
        values ($1::uuid, $2::uuid, $3, $4, extract(epoch from clock_timestamp()) * 1000)
@@ -594,8 +656,9 @@ export async function createTaskWith(ctx: RouteContext, extras: TaskCreateExtras
     }
     assertInScope(p, ws);
     if (ws) requireWriter(await wsRole(tx, ws));
+    if (ws) await requireProjectEditor(tx, ws, target);
 
-    const assignee = v.assigneeId === undefined ? "" : await resolveAssignee(tx, v.assigneeId, ws, me);
+    const assignee = v.assigneeId === undefined ? "" : await resolveAssignee(tx, v.assigneeId, ws, me, target);
     if (v.sectionId) {
       const sec = await tx.query(`select 1 from public.sections s where s.id = $1::uuid and s.project_id = $2`, [v.sectionId, target]);
       if (!sec.length) throw invalid({ sectionId: "That section isn't in this task's project." });
@@ -712,6 +775,8 @@ export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras
           const proj = await loadProject(tx, want, keyWorkspace(p));
           if (!proj) throw invalid({ projectId: "There's no project with that id (or you can't see it)." });
           ws = s(proj.workspace_id);
+          // into a project you can't edit (0058: a viewer, a commenter): no
+          if (ws) await requireProjectEditor(tx, ws, want);
         }
         assertInScope(p, ws);
         moved = ws !== curWs;
@@ -750,13 +815,17 @@ export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras
     }
 
     // ---- people ----
-    if (v.assigneeId !== undefined) assignee = await resolveAssignee(tx, v.assigneeId, ws, me);
-    else if (moved && cur.assignee_id && !(await canBeOnTask(tx, ws, String(cur.assignee_id), me))) {
+    // with Project access (0058), anyone kept on it must be able to see its project: checked on every move
+    const access = await accessOn(tx);
+    const recheck = moved || (projectChanged && access);
+    const seen = access ? project : undefined;
+    if (v.assigneeId !== undefined) assignee = await resolveAssignee(tx, v.assigneeId, ws, me, seen);
+    else if (recheck && cur.assignee_id && !(await canBeOnTask(tx, ws, String(cur.assignee_id), me, seen))) {
       assignee = me; // as the app does: they can't see it there, so it comes to you
     }
-    if (moved) {
-      sets.push(`followers = array(select x from unnest(t.followers) x where ${visibleSql(q, "x", ws, me)})`);
-      sets.push(`collaborators = array(select x from unnest(t.collaborators) x where ${visibleSql(q, "x", ws, me)})`);
+    if (recheck) {
+      sets.push(`followers = array(select x from unnest(t.followers) x where ${visibleSql(q, "x", ws, me, seen ?? null)})`);
+      sets.push(`collaborators = array(select x from unnest(t.collaborators) x where ${visibleSql(q, "x", ws, me, seen ?? null)})`);
     }
 
     // ---- fields ----
@@ -822,13 +891,14 @@ export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras
       // workspaces, people who can't see them there are dropped, as the app's retarget() does
       const m = new Sql();
       const root = m.p(id);
-      const people = moved ? `,
-          plan_today = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.plan_today else false end,
-          scheduled = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.scheduled else null end,
-          my_section_id = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.my_section_id else null end,
-          assignee_id = case when ${visibleSql(m, "t.assignee_id", ws, me)} then t.assignee_id else ${m.p(me)} end,
-          followers = array(select x from unnest(t.followers) x where ${visibleSql(m, "x", ws, me)}),
-          collaborators = array(select x from unnest(t.collaborators) x where ${visibleSql(m, "x", ws, me)})` : "";
+      const sp = seen ?? null;
+      const people = recheck ? `,
+          plan_today = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.plan_today else false end,
+          scheduled = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.scheduled else null end,
+          my_section_id = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.my_section_id else null end,
+          assignee_id = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.assignee_id else ${m.p(me)} end,
+          followers = array(select x from unnest(t.followers) x where ${visibleSql(m, "x", ws, me, sp)}),
+          collaborators = array(select x from unnest(t.collaborators) x where ${visibleSql(m, "x", ws, me, sp)})` : "";
       await tx.query(`with recursive d(id) as (
           select c.id from public.tasks c where c.parent_id = ${root}::uuid
           union select c.id from public.tasks c join d on c.parent_id = d.id)
@@ -1031,8 +1101,8 @@ export function createComment(ctx: RouteContext): Promise<Response> {
   return createCommentWith(ctx);
 }
 
-/** What the MCP server's add_comment adds: who the text mentions, and anything to tell the caller. */
-export type CommentMentions = (tx: Tx, body: string, workspaceId: string | null) => Promise<{ ids: string[]; answer: Record<string, unknown> }>;
+/** What the MCP server's add_comment adds: who the text mentions (people who can see the task's project), and anything to tell the caller. */
+export type CommentMentions = (tx: Tx, body: string, workspaceId: string | null, projectId: string | null) => Promise<{ ids: string[]; answer: Record<string, unknown> }>;
 
 /** POST /tasks/:id/comments, for the API and for Kanbo's own MCP server. */
 export async function createCommentWith(ctx: RouteContext, mentions?: CommentMentions): Promise<Response> {
@@ -1042,14 +1112,19 @@ export async function createCommentWith(ctx: RouteContext, mentions?: CommentMen
   const v = c.value;
   let extra: Record<string, unknown> = {};
   const row = await asUser(ctx, async (tx) => {
-    const seen = await tx.query<{ workspace_id: string | null }>(
-      `select t.workspace_id::text as workspace_id from public.tasks t where t.id = $1::uuid and ${inKeyWs("t.workspace_id", 2)}`, [id, keyWorkspace(ctx.principal)]);
+    const seen = await tx.query<{ workspace_id: string | null; project_id: string | null }>(
+      `select t.workspace_id::text as workspace_id, t.project_id from public.tasks t where t.id = $1::uuid and ${inKeyWs("t.workspace_id", 2)}`, [id, keyWorkspace(ctx.principal)]);
     if (!seen[0]) throw notFound("Task");
+    // a viewer reads but doesn't comment (0058; guests comment on what they're on)
+    if (seen[0].workspace_id && (await accessOn(tx))) {
+      const [c] = await tx.query<{ ok: boolean }>(`select public.can_comment_task($1::uuid) as ok`, [id]);
+      if (c?.ok !== true) throw forbidden("You can see this task but can't comment on it.");
+    }
     if (v.parentId) {
       const par = await tx.query(`select 1 from public.comments c where c.id = $1::uuid and c.task_id = $2::uuid`, [v.parentId, id]);
       if (!par.length) throw invalid({ parentId: "That comment isn't on this task." });
     }
-    const read = mentions ? await mentions(tx, v.body, seen[0].workspace_id) : null;
+    const read = mentions ? await mentions(tx, v.body, seen[0].workspace_id, seen[0].project_id) : null;
     extra = read?.answer ?? {};
     // guests may comment (RLS: comment as yourself on a task you can see)
     const rs = await tx.query(`insert into public.comments as c (task_id, user_id, body, parent_id, mentions)

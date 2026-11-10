@@ -256,6 +256,7 @@ const SCHEMAS: Record<string, unknown> = {
       createdBy: nullable("string", { format: "uuid" }), archived: { type: "boolean" },
       archivedAt: nullable("string", { format: "date-time" }), createdAt: nullable("string", { format: "date-time" }),
       url: nullable("string", { format: "uri" }),
+      visibility: { type: "string", enum: ["workspace", "members", "private"], description: "Who can see it (once Project access is in): workspace (everyone in the workspace), members (its people, plus the workspace's owners and admins) or private (its people, plus the workspace's owners). It only applies where an owner has switched Project access on." },
     },
   },
   ProjectCreate: {
@@ -266,6 +267,7 @@ const SCHEMAS: Record<string, unknown> = {
       emoji: { type: ["string", "null"] }, color: { type: ["string", "null"], description: "A CSS colour: oklch(), rgb(), hsl() or #hex." },
       description: { type: ["string", "null"], maxLength: 5000 },
       status: { type: ["string", "null"], enum: ["on_track", "at_risk", "off_track", "on_hold", null] },
+      visibility: { type: "string", enum: ["workspace", "members", "private"], description: "Who can see it. Leave out: the workspace's default for new projects. private needs an owner or admin, or a workspace that lets members make private projects." },
     },
   },
   ProjectUpdate: {

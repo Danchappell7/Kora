@@ -33,6 +33,7 @@ import { API_LIMITS, escapeLike, isUuid, oneLine, parseLimit, text, unknownParam
 import { dateInZone, DEFAULT_TIMEZONE, isTimeZone, MY_DAY_CAPS, planMyDay, type MyDayApproval, type MyDayCounts, type MyDayTask } from "./myDay.ts";
 import { readMentions, type Named } from "./names.ts";
 import { CUT_COPY_REFUSAL, isCutCopy } from "./text.ts";
+import { accessInstalled, personRankSql } from "../projectAccess.ts";
 
 type Row = Record<string, unknown>;
 
@@ -174,17 +175,19 @@ async function updateTaskForTool(ctx: RouteContext): Promise<Response> {
   });
 }
 
-/** Who a comment's @names mean: the task's workspace's active people, exactly. */
-const mentionsFromText: CommentMentions = async (tx, body, workspaceId) => {
+/** Who a comment's @names mean: the task's workspace's active people, exactly; with Project access (0058),
+ *  only those who can see the task's project (the Inbox would tell nobody else, so the answer never claims it). */
+const mentionsFromText: CommentMentions = async (tx, body, workspaceId, projectId) => {
   const nothing = { ids: [], answer: { mentioned: [], notes: [] } };
   if (!/(^|[\s(\[,;:])@\p{L}/u.test(body)) return nothing;
   let people: Named[] = [];
   if (workspaceId) {
+    const sees = projectId !== null && (await accessInstalled(tx)) ? `and ${personRankSql("m.user_id::text", "$1::uuid", "$2::text")} >= 1` : "";
     people = (await tx.query<{ id: string; name: string }>(
       `select m.user_id::text as id,
               coalesce(nullif(btrim(coalesce(pr.first_name, '') || ' ' || coalesce(pr.last_name, '')), ''), nullif(m.name, ''), m.email) as name
          from public.workspace_members m left join public.profiles pr on pr.id = m.user_id
-        where m.workspace_id = $1::uuid and m.status = 'active' and m.user_id is not null limit 2000`, [workspaceId]));
+        where m.workspace_id = $1::uuid and m.status = 'active' and m.user_id is not null ${sees} limit 2000`, sees ? [workspaceId, projectId] : [workspaceId]));
   }
   const read = readMentions(body, people);
   return { ids: read.people.map((m) => m.id), answer: { mentioned: read.people.map((m) => m.name), notes: read.notes } };

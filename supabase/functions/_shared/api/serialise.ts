@@ -90,6 +90,8 @@ export interface ApiProject {
   archivedAt: string | null;
   createdAt: string | null;
   url: string | null;
+  /** who can see it (0058); absent before 0058 */
+  visibility?: "workspace" | "members" | "private";
 }
 
 export interface ApiSection {
@@ -387,9 +389,12 @@ export function serialiseTask(row: Row, ctx?: SerialiseCtx): ApiTask {
   return out;
 }
 
+const PROJECT_VISIBILITY = ["workspace", "members", "private"] as const;
+
 export function serialiseProject(row: Row, ctx?: SerialiseCtx): ApiProject {
   const id = String(row.id);
   const archivedAt = isoTime(row.archived_at);
+  const visibility = (PROJECT_VISIBILITY as readonly unknown[]).includes(row.visibility) ? row.visibility as ApiProject["visibility"] : undefined;
   return {
     object: "project",
     id,
@@ -406,6 +411,7 @@ export function serialiseProject(row: Row, ctx?: SerialiseCtx): ApiProject {
     archivedAt,
     createdAt: isoTime(row.created_at),
     url: projectUrl(id, ctx),
+    ...(visibility ? { visibility } : {}),
   };
 }
 
