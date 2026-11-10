@@ -101,7 +101,8 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   // 0053: email "update_email" (daily-reminders and notify); 0054: in-app "update" (the database checks it for
   // updates posted on your projects and replies on yours; an Ask that names you follows Mentions). Someone else's
   // update on your project is in the Inbox and the daily digest only: email and push are for what needs you.
-  { key: "update", label: "Project updates", hint: "Your update day and asks for one by email and push. Updates on your projects and replies on yours in the Inbox." },
+  // 0056: a meeting's recap follows it too (end_meeting checks "update"; the digest's email switch is update_email).
+  { key: "update", label: "Project updates", hint: "Your update day and asks for one by email and push. Updates on your projects, replies on yours and meeting recaps in the Inbox." },
 ];
 /** Once push can be offered, the morning reminder can push too (the In-app column stays "–"). */
 const notifHint = (r: { key: string; hint: string }): string =>
