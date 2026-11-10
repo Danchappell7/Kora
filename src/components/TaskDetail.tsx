@@ -44,6 +44,7 @@ import { PresenceAvatars, TypingIndicator, presenceKey, presenceMeFrom, usePrese
 import { CoverPicker } from "./tasks/CoverPicker";
 import { demoAwareBoardSettings, demoCoverAttachments } from "./board/boardDemo";
 import { SlackSourceChip } from "./slack/SlackSourceChip";
+import { OffTag } from "./availability/OffChip";
 
 // 0046: Notion pages on a task, loaded when a task first opens (it renders nothing until it knows there's something to show)
 // (if its code can't be fetched, the task simply shows no Notion section)
@@ -618,8 +619,11 @@ function ActionsMenu({ actions, open, setOpen }: { actions: MenuAction[]; open: 
 /* ---------- people ---------- */
 interface Person { id: string; name: string }
 
-function AssigneeMenu({ anchorRef, onClose, people, currentUserId, assigneeId, collaborators, onAssign, onToggleCollaborator }: {
+function AssigneeMenu({ anchorRef, onClose, people, currentUserId, assigneeId, collaborators, onAssign, onToggleCollaborator, workspaceId, due }: {
   anchorRef: RefObject<HTMLButtonElement>;
+  /** (0055) the task's workspace and due date: "Off Thu" beside anyone away that day */
+  workspaceId?: string | null;
+  due?: string | null;
   onClose: () => void;
   people: Person[];
   currentUserId: string;
@@ -649,6 +653,7 @@ function AssigneeMenu({ anchorRef, onClose, people, currentUserId, assigneeId, c
             <button key={p.id} type="button" role="option" aria-selected={p.id === assigneeId} className="ktd-mi"
               onClick={() => { if (p.id !== assigneeId) onAssign(p.id); onClose(); }}>
               <Avatar id={p.id} size={20} /><span className="ktd-mi-name">{nameOf(p)}</span>
+              <OffTag userId={p.id} workspaceId={workspaceId} due={due} />
               {p.id === assigneeId && <Icon name="check" size={16} sw={2} className="ktd-mi-check" />}
             </button>
           ))}
@@ -1877,7 +1882,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
                   </button>
                   {assigneeOpen && (
                     <AssigneeMenu anchorRef={assigneeBtnRef} onClose={() => setAssigneeOpen(false)} people={assignable} currentUserId={currentUserId}
-                      assigneeId={task.assigneeId} collaborators={chosenCollaborators}
+                      assigneeId={task.assigneeId} collaborators={chosenCollaborators} workspaceId={task.workspaceId ?? null} due={task.status === "done" ? null : task.dueDate}
                       onAssign={(id) => onPatch(task.id, { assigneeId: id })}
                       onToggleCollaborator={onToggleCollaborator && assignable.length > 1 ? (id) => onToggleCollaborator(task.id, id) : undefined} />
                   )}

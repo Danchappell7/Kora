@@ -77,6 +77,8 @@ import {
 import type { SampleHost } from "./tourSampleHost";
 import { useSavedViews, getSavedView, viewRoute, canShareViews } from "./lib/views";
 import type { MoveDeps } from "./lib/dropMoves";
+import { useAvailability, useAvailabilitySync } from "./components/availability/useAvailability";
+import { useAwayNoticed } from "./components/availability/useAwayNoticed";
 import type { AppliedTemplatePlan } from "./lib/templatePlan";
 import type { BoardSettingsChange } from "./components/tasks/otherViewsLogic";
 import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummaries";
@@ -3603,14 +3605,16 @@ export default function App() {
   const allSeen = useMemo(() => (tasksSeen === tasks ? allTasks : inWorkspace(tasksSeen ?? [])), [tasksSeen, tasks, allTasks, inWorkspace]);
   // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
   // sidebar's Team badge, Today's brief and each project's notice line
+  // (0055: capacities are the team's shared weeks once they load: Radar reads them again then)
+  const availability = useAvailability();
   const risks = useMemo(() => {
     if (tasks === null || workspace === null) return [];
     const members = wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active" && m.userId)
       // (guests' work shows, but they carry no team capacity)
       .map((m) => ({ id: m.userId!, name: getMember(m.userId!)?.name || m.name || m.email, ...(m.role === "guest" ? { guest: true } : {}) }));
-    return computeRisks({ tasks: allTasks, members, capacities: readCapacities(), today: dayKey });
+    return computeRisks({ tasks: allTasks, members, capacities: readCapacities(workspace), today: dayKey });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allTasks, wsMembers, workspace, dayKey]);
+  }, [allTasks, wsMembers, workspace, dayKey, availability]);
   const signalRisks = risks.filter((r) => r.severity === "signal").length;
   /* ---- 0048 saved views (lib/views): the Sidebar's Views, My tasks' links, ?view= and /search/list/:id ---- */
   // (off until the real account is known: before bootstrap the id is the "m-self" placeholder)
@@ -3682,6 +3686,13 @@ export default function App() {
   const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview: myApprovals.toReview, workspaces, members: wsMembers,
     workspace, me: currentUserId, today: dayKey, allChosen: !!onboarding.businesses?.all });
   allBizRef.current = biz.all;
+
+  /* ---- 0055 (components/availability): everyone's shared week, time off and rates, and the
+     away cards on Today (work due while someone's off, with "Move to <the day they're back>") ---- */
+  useAvailabilitySync({ me: currentUserId, workspace, members: wsMembers, today: dayKey,
+    enabled: tasks !== null && (!store.configured || currentUserId !== "m-self"),
+    onShared: (n) => toastInfo(`${n === 1 ? "A capacity saved on this device is" : `${n} capacities saved on this device are`} now shared with your team`) });
+  const awayNudge = useAwayNoticed({ tasks: biz.all ? biz.liveSeen : allTasks, today: dayKey, moveDeps: roleIn(workspace) === "guest" ? undefined : moveDeps });
 
   /* ---- 0053 project updates: Ask for an update (owners and admins), and yours on Today ---- */
   // (never of a guest owner: a guest can't post an update)
@@ -4143,7 +4154,7 @@ export default function App() {
         // 0052: one goal line in the brief, and your key results behind pace in Kanbo noticed
         goalFor={goalFlow.briefGoal} goalsBehind={biz.all ? goalFlow.behind() : goalFlow.behind(workspace)} onOpenGoal={openGoal}
         // 0053: your project update is due (or a lead asked for it): a line under the brief, a nudge, Kanbo's draft ready
-        updates={todayUpdates}
+        updates={todayUpdates} away={awayNudge}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
         setupSlot={showSetup ? (fold) => (
@@ -4184,7 +4195,8 @@ export default function App() {
         }}
         onOpenPerson={() => setRoute({ view: "team" })}
         views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
-      case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
+      case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)}
+        workspaceId={workspace} moveDeps={activeReadOnly ? undefined : moveDeps} />;
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
         statusUpdates={statusUpdates} onOpenGoal={openGoal} openGoalId={goalPanel?.id ?? null}
