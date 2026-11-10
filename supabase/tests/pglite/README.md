@@ -14,8 +14,8 @@ were all broken. Test data is still set up with PGlite directly.
 export PATH="$HOME/.kora-tools/node-v20.18.1-darwin-arm64/bin:$PATH"
 cd ~/Downloads/kora-app
 node supabase/tests/pglite/run.mjs         # both migration sets
-node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050 + 0051 only (no 0048, no 0049)
-node supabase/tests/pglite/run.mjs 0049    # 0001..0051 (everything)
+node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050 + 0051 + 0053 + 0054 (no 0048, no 0049)
+node supabase/tests/pglite/run.mjs 0049    # every migration
 ```
 
 It takes a few seconds and exits non-zero if anything fails. Each set applies 0050 twice.
@@ -45,3 +45,14 @@ deleted, and re-running 0051 or 0041 keeps the lock.
 
 vitest doesn't pick these files up (none is named `*.test.*`). `metadata.test.ts` checks the
 harness opens transactions exactly as the live `db.ts` does.
+
+0054 (project updates people reply to, portfolio pages): only an update's author edits it, and only
+the author or the workspace's owners and admins delete it (an owner, an admin, another member, a
+guest and an outsider all try); a team update can't be about another workspace's project; sections
+and Asks keep their shape, and an Ask names only people who can read the update; posting and
+commenting tell exactly the owner, contributors, the asked and the mentioned; comments, reactions
+and "seen by" follow who can read the update (a guest comments and reacts, an outsider reads
+nothing, a forged author or reaction is refused or ignored, and only the function records a view);
+webhooks get status_update.posted; a portfolio's owner and followers come from its members, and
+portfolio updates are for members only. Then 0054 twice, 0041 again (the authors-only rules come
+back) and 0048 again (a webhook subscribed to status_update.posted keeps working).

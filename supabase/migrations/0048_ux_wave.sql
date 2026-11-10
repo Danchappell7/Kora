@@ -1031,11 +1031,13 @@ revoke execute on function public.adopt_saved_searches() from public, anon;
 grant execute on function public.adopt_saved_searches() to authenticated;
 
 -- ---------- 11. webhooks: kudos.given ----------
+-- ('status_update.posted' arrives with 0054, project updates: it's listed here too, so running
+--  this file again after 0054 keeps the webhooks that subscribe to it valid)
 create or replace function public.webhook_event_names()
 returns text[] language sql immutable as $$
   select array['task.created','task.updated','task.completed','task.deleted',
                'comment.created','project.created','project.updated','member.joined',
-               'approval.requested','approval.decided','kudos.given']::text[];
+               'approval.requested','approval.decided','kudos.given','status_update.posted']::text[];
 $$;
 grant execute on function public.webhook_event_names() to public;
 alter table public.webhooks drop constraint if exists webhooks_shape;

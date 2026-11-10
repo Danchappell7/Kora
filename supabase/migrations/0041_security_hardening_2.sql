@@ -322,3 +322,14 @@ begin
     perform public.guest_lock_restore();
   end if;
 end $guestlock$;
+
+-- ---------- 10. 0054's authors-only rules on status updates survive a re-run of this file ----------
+-- Section 4 drops 0054's restrictive "updates: …" policies on status_updates too
+-- (authors edit their own; authors or leads delete; about a project in its own
+-- workspace). When 0054 is in, put them back.
+do $updates$
+begin
+  if to_regprocedure('public.update_conversation_restore()') is not null then
+    perform public.update_conversation_restore();
+  end if;
+end $updates$;

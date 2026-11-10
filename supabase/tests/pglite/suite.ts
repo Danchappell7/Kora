@@ -1541,11 +1541,12 @@ async function guestLockSuite(w: World) {
       `insert into public.status_updates (user_id, workspace_id, project_id, summary, status, author_id) values ($1::uuid, $2::uuid, $3, 'Bob says on track', 'on_track', $4::uuid) returning id::text as id, author_id::text as author_id`,
       [w.bob, w.w1, w.launch, w.alice]))[0];
     eq(row.author_id, w.bob, "a forged author_id is ignored");
-    await asPerson(w.pg, w.alice, `update public.status_updates set author_id = $1::uuid, summary = 'edited' where id = $2::uuid`, [w.alice, row.id]);
+    // (bob edits his own: since 0054 nobody else may)
+    await asPerson(w.pg, w.bob, `update public.status_updates set author_id = $1::uuid, summary = 'edited' where id = $2::uuid`, [w.alice, row.id]);
     const after = (await w.pg.query<{ author_id: string; summary: string }>(`select author_id::text as author_id, summary from public.status_updates where id = $1::uuid`, [row.id])).rows[0];
     eq(after, { author_id: w.bob, summary: "edited" }, "the author can't be re-pointed");
     // nor blanked, to make it read "Former member" while bob is still here
-    eq((await asPerson(w.pg, w.alice, `update public.status_updates set author_id = null, summary = 'disowned' where id = $1::uuid returning id`, [row.id])).length, 1, "the update itself goes through");
+    eq((await asPerson(w.pg, w.bob, `update public.status_updates set author_id = null, summary = 'disowned' where id = $1::uuid returning id`, [row.id])).length, 1, "the update itself goes through");
     eq((await w.pg.query<{ author_id: string | null }>(`select author_id::text as author_id from public.status_updates where id = $1::uuid`, [row.id])).rows[0].author_id, w.bob, "the author can't be emptied by an edit");
     const seeded = (await w.pg.query<{ author_id: string }>(`select author_id::text as author_id from public.status_updates where summary like 'Margins%'`)).rows[0];
     eq(seeded.author_id, w.alice, "a server-side insert takes the keeper");
@@ -1734,14 +1735,251 @@ async function updateRhythmSuite(w: World) {
   });
 }
 
+/* ============================================================ 0054: updates people reply to, portfolio pages */
+
+/** Authors edit their own updates (marked) and only they, or the workspace's owners and admins, delete
+ *  one; a team update is about a project in its own workspace; sections and Asks keep their shape and
+ *  name only people who can read the update. Posting and commenting tell the right people (and only
+ *  them); comments, reactions and "seen by" follow who can read the update (guests comment, outsiders
+ *  read nothing, nobody writes as someone else); webhooks hear status_update.posted. Portfolio pages:
+ *  an owner and followers from the team, and portfolio updates for members only. Then migrating twice,
+ *  and re-running 0041 (and 0048). */
+async function updateConversationSuite(w: World) {
+  const has0054 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0054') as "on"`)).rows[0].on;
+  if (!has0054) return;
+  const has0048 = (await w.pg.query<{ on: boolean }>(`select to_regclass('public.notify_queue') is not null as "on"`)).rows[0].on;
+  const one = async <T>(p: Promise<T[]>) => (await p)[0];
+  const n = async (sql: string, params: unknown[] = []) => (await w.pg.query<{ n: number }>(sql, params)).rows[0].n;
+  const ada = await makeUser(w.pg, "ada54@example.org", "Ada");
+  await w.pg.query(`update public.profiles set approved = true where id = $1::uuid`, [ada]);
+  await w.pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'ada54@example.org', 'ada', 'admin', 'active')`, [w.w1, ada]);
+  // the launch: alice owns it, bob and gus work on it (a guest can be a contributor: they read its updates)
+  await w.pg.query(`update public.projects set contributor_ids = array[$2::uuid, $3::uuid] where id = $1::uuid`, [w.launch, w.bob, w.gus]);
+  await w.pg.query(`delete from public.activity where kind = 'update'`);
+  const post = (u: string, extra: Record<string, unknown> = {}) => one(asPerson<{ id: string; ask_user_ids: string[]; edited_at: string | null }>(w.pg, u,
+    `insert into public.status_updates (user_id, workspace_id, project_id, summary, status, sections, ask_user_ids)
+     values ($1::uuid, $2::uuid, $3, $4, 'at_risk', $5::jsonb, $6::uuid[]) returning id::text as id, ask_user_ids::text[] as ask_user_ids, edited_at::text as edited_at`,
+    [u, "ws" in extra ? extra.ws : w.w1, extra.project ?? w.launch, extra.summary ?? "Two weeks behind on the deck.", extra.sections === undefined ? null : JSON.stringify(extra.sections), extra.asks ?? []]));
+  const notices = (u: string) => w.pg.query<{ detail: string; meta: Record<string, unknown> }>(
+    `select detail, meta from public.activity where user_id = $1::uuid and kind = 'update' order by created_at, id`, [u]).then((r) => r.rows);
+
+  let bobs = "";
+  await test("0054: a member posts an update with sections and an Ask; it names only people who can read it, never its author", async () => {
+    const u = await post(w.bob, { sections: { highlights: "Pricing page shipped.", risks: "The deck slips.", asks: "@Ada can you sign off the budget?", next: "Rehearsal on Friday." },
+      asks: [ada, w.carol, w.bob, w.gus, ada] });
+    bobs = u.id;
+    eq([...u.ask_user_ids].sort(), [ada, w.gus].sort(), "carol (an outsider) and bob (the author) are dropped, ada once");
+    eq(u.edited_at, null, "not edited");
+  });
+  await test("0054: posting tells the owner and contributors (FYI) and the people an Ask names (Needs your reply); nobody else", async () => {
+    const a = await notices(w.alice);
+    eq(a.length, 1, "alice, the owner");
+    const m = a[0].meta;
+    eq([m.status_update_id, m.project_id, m.update_event, m.update_status, m.ask], [bobs, w.launch, "posted", "at_risk", false], "an FYI");
+    eq(a[0].detail, (await w.pg.query<{ n: string }>(`select public.kanbo_person_name($1::uuid) as n`, [w.bob])).rows[0].n, "from bob, by name");
+    eq((await notices(ada)).map((x) => x.meta.ask), [true], "ada was asked");
+    eq((await notices(w.gus)).map((x) => x.meta.ask), [true], "gus, a contributor the Ask names: one item, asked");
+    eq((await notices(w.bob)).length, 0, "not the author");
+    eq((await notices(w.carol)).length, 0, "not an outsider");
+  });
+  await test("0054: an update's author edits it (marked edited); who, where and when can't be changed", async () => {
+    const r = await one(asPerson<{ id: string; edited_at: string | null; project_id: string; workspace_id: string }>(w.pg, w.bob,
+      `update public.status_updates set summary = 'Three weeks behind.', project_id = $2, workspace_id = $3::uuid, created_at = now() - interval '1 year'
+        where id = $1::uuid returning id::text as id, edited_at::text as edited_at, project_id, workspace_id::text as workspace_id`, [bobs, w.w2Project, w.w2]));
+    ok(r.edited_at, "edited_at set");
+    eq([r.project_id, r.workspace_id], [w.launch, w.w1], "still the launch's, in w1");
+    ok(await n(`select count(*)::int as n from public.status_updates where id = $1::uuid and created_at > now() - interval '1 day'`, [bobs]) === 1, "posted when it was");
+    // naming someone new in an edit tells them
+    await asPerson(w.pg, w.bob, `update public.status_updates set ask_user_ids = array[$2::uuid, $3::uuid, $4::uuid] where id = $1::uuid`, [bobs, ada, w.gus, w.alice]);
+    eq((await notices(w.alice)).map((x) => [x.meta.update_event, x.meta.ask]), [["posted", false], ["asked", true]], "alice hears she's asked");
+    eq((await notices(ada)).length, 1, "ada isn't told twice");
+  });
+  await test("0054 attack: nobody but the author edits an update: not the owner, an admin, another member, a guest or an outsider", async () => {
+    for (const [who, u] of [["alice (owner)", w.alice], ["ada (admin)", ada], ["gus (guest)", w.gus], ["carol (outsider)", w.carol]] as const) {
+      eq((await asPerson(w.pg, u, `update public.status_updates set summary = 'rewritten' where id = $1::uuid returning id`, [bobs])).length, 0, who);
+    }
+    eq(await n(`select count(*)::int as n from public.status_updates where summary = 'rewritten'`), 0, "nothing rewritten");
+  });
+  await test("0054 attack: a team update must be about a project in its own workspace, and a guest or outsider can't post one", async () => {
+    await raises(post(w.bob, { project: w.w2Project }), /row-level security|policy/i);
+    await raises(post(w.bob, { project: "not-a-project" }), /row-level security|policy/i);
+    await raises(post(w.bob, { ws: w.w2, project: w.w2Project }), /row-level security|policy/i);
+    await raises(post(w.gus), /row-level security|policy/i);
+    await raises(post(w.carol), /row-level security|policy/i);
+    // a personal one is its creator's alone (any project of theirs, the Personal list included)
+    const p = await post(w.bob, { ws: null, project: "p-personal", asks: [w.alice] });
+    eq(p.ask_user_ids, [], "nobody to ask in Personal");
+    eq((await asPerson(w.pg, w.alice, `select id from public.status_updates where id = $1::uuid`, [p.id])).length, 0, "alice can't read bob's personal update");
+  });
+  await test("0054 attack: sections and Asks keep their shape", async () => {
+    await raises(post(w.bob, { sections: { highlights: "ok", gossip: "no" } }), /status_updates_sections_shape/);
+    await raises(post(w.bob, { sections: { risks: "x".repeat(2001) } }), /status_updates_sections_shape/);
+    await raises(post(w.bob, { sections: { next: 3 } }), /status_updates_sections_shape/);
+    await raises(post(w.bob, { sections: ["highlights"] }), /status_updates_sections_shape/);
+  });
+
+  await test("0054: anyone who reads an update comments on it, a guest too; the author and the @mentioned hear", async () => {
+    await w.pg.query(`delete from public.activity where kind = 'update'`);
+    const c = await one(asPerson<{ id: string; user_id: string; author_name: string; mentions: string[]; workspace_id: string }>(w.pg, w.gus,
+      `insert into public.status_update_comments (update_id, user_id, author_name, body, mentions) values ($1::uuid, $2::uuid, 'The CEO', '  What do you need from us, @ada?  ', array[$3::uuid, $4::uuid])
+       returning id::text as id, user_id::text as user_id, author_name, mentions::text[] as mentions, workspace_id::text as workspace_id`, [bobs, w.alice, ada, w.carol]));
+    eq([c.user_id, c.author_name, c.workspace_id], [w.gus, "gus", w.w1], "the guest wrote it, by their own name, in w1 (a forged author and name are ignored)");
+    eq(c.mentions, [ada], "only people who can read it are mentioned");
+    eq((await notices(w.bob)).map((x) => [x.meta.update_event, x.meta.ask, x.detail]), [["comment", false, "gus"]], "bob, the update's author");
+    eq((await notices(ada)).map((x) => [x.meta.update_event, x.meta.ask]), [["comment", true]], "ada, mentioned");
+    eq((await notices(w.carol)).length, 0, "carol, an outsider");
+    eq((await asPerson(w.pg, w.bob, `select body from public.status_update_comments where update_id = $1::uuid`, [bobs])).map((r) => (r as { body: string }).body), ["What do you need from us, @ada?"]);
+  });
+  await test("0054 attack: an outsider can't read or comment; nobody comments on what they can't read", async () => {
+    eq((await asPerson(w.pg, w.carol, `select id from public.status_update_comments`)).length, 0, "carol reads none");
+    await raises(asPerson(w.pg, w.carol, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'hello')`, [bobs, w.carol]), /row-level security|policy/i);
+    const personal = (await w.pg.query<{ id: string }>(`select id::text as id from public.status_updates where workspace_id is null and user_id = $1::uuid limit 1`, [w.bob])).rows[0].id;
+    await raises(asPerson(w.pg, w.alice, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'peek')`, [personal, w.alice]), /row-level security|policy/i);
+    await raises(asPerson(w.pg, w.bob, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, '   ')`, [bobs, w.bob]), /status_update_comments_shape/);
+  });
+  await test("0054: you edit your own comment (marked) and nobody else's; you delete yours; an owner or admin removes any; a member can't", async () => {
+    const mine = await one(asPerson<{ id: string }>(w.pg, w.bob, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'The budget, please') returning id::text as id`, [bobs, w.bob]));
+    const gusc = (await w.pg.query<{ id: string }>(`select id::text as id from public.status_update_comments where user_id = $1::uuid`, [w.gus])).rows[0].id;
+    const e = await one(asPerson<{ edited_at: string | null; user_id: string; update_id: string }>(w.pg, w.bob,
+      `update public.status_update_comments set body = 'The budget sign-off, please', user_id = $2::uuid, update_id = gen_random_uuid() where id = $1::uuid returning edited_at::text as edited_at, user_id::text as user_id, update_id::text as update_id`, [mine.id, w.alice]));
+    ok(e.edited_at, "marked edited");
+    eq([e.user_id, e.update_id], [w.bob, bobs], "still bob's, on the same update");
+    eq((await asPerson(w.pg, w.bob, `update public.status_update_comments set body = 'hijacked' where id = $1::uuid returning id`, [gusc])).length, 0, "bob can't edit gus's");
+    eq((await asPerson(w.pg, w.alice, `update public.status_update_comments set body = 'hijacked' where id = $1::uuid returning id`, [gusc])).length, 0, "nor can the owner");
+    eq((await asPerson(w.pg, w.bob, `delete from public.status_update_comments where id = $1::uuid returning id`, [gusc])).length, 0, "a member can't delete someone else's");
+    eq((await asPerson(w.pg, w.carol, `delete from public.status_update_comments where id = $1::uuid returning id`, [gusc])).length, 0, "an outsider can't");
+    eq((await asPerson(w.pg, ada, `delete from public.status_update_comments where id = $1::uuid returning id`, [gusc])).length, 1, "an admin removes it");
+    eq((await asPerson(w.pg, w.bob, `delete from public.status_update_comments where id = $1::uuid returning id`, [mine.id])).length, 1, "bob deletes his own");
+  });
+
+  await test("0054: reactions: anyone who reads the update adds their own (a guest too) and takes back only their own", async () => {
+    await asPerson(w.pg, w.gus, `insert into public.status_update_reactions (update_id, user_id, emoji) values ($1::uuid, $2::uuid, '👀')`, [bobs, w.gus]);
+    await asPerson(w.pg, w.alice, `insert into public.status_update_reactions (update_id, user_id, emoji) values ($1::uuid, $2::uuid, '👍')`, [bobs, w.alice]);
+    eq((await asPerson(w.pg, w.bob, `select emoji from public.status_update_reactions where update_id = $1::uuid order by emoji`, [bobs])).length, 2, "bob sees both");
+    eq((await asPerson(w.pg, w.bob, `delete from public.status_update_reactions where update_id = $1::uuid returning emoji`, [bobs])).length, 0, "bob can't take theirs back");
+    eq((await asPerson(w.pg, w.gus, `delete from public.status_update_reactions where update_id = $1::uuid returning emoji`, [bobs])).length, 1, "gus takes back his own");
+  });
+  await test("0054 attack: a reaction can't be forged as someone else, made by an outsider, or be any emoji", async () => {
+    await raises(asPerson(w.pg, w.bob, `insert into public.status_update_reactions (update_id, user_id, emoji) values ($1::uuid, $2::uuid, '🎉')`, [bobs, w.alice]), /row-level security|policy/i);
+    await raises(asPerson(w.pg, w.carol, `insert into public.status_update_reactions (update_id, user_id, emoji) values ($1::uuid, $2::uuid, '🎉')`, [bobs, w.carol]), /row-level security|policy/i);
+    await raises(asPerson(w.pg, w.bob, `insert into public.status_update_reactions (update_id, user_id, emoji) values ($1::uuid, $2::uuid, '💩')`, [bobs, w.bob]), /status_update_reactions_emoji/);
+    eq((await asPerson(w.pg, w.carol, `select emoji from public.status_update_reactions`)).length, 0, "an outsider reads none");
+    // nobody changes one, not even their own (take it back instead)
+    await raises(asPerson(w.pg, w.alice, `update public.status_update_reactions set emoji = '🚀' returning emoji`), /permission denied/);
+  });
+  await test("0054: seen by: marked through the function only, for updates you can read, never by their author", async () => {
+    const seen = (u: string) => one(asPerson<{ n: number }>(w.pg, u, `select public.mark_status_updates_seen(array[$1::uuid, $1::uuid]) as n`, [bobs]));
+    eq((await seen(w.gus)).n, 1, "gus has seen it");
+    eq((await seen(w.gus)).n, 0, "once");
+    eq((await seen(w.bob)).n, 0, "not its author");
+    eq((await seen(w.carol)).n, 0, "carol can't see it");
+    eq((await asPerson(w.pg, w.alice, `select user_id::text as u from public.status_update_views where update_id = $1::uuid`, [bobs])).map((r) => (r as { u: string }).u), [w.gus], "alice reads who saw it");
+    eq((await asPerson(w.pg, w.carol, `select user_id from public.status_update_views`)).length, 0, "an outsider reads nothing");
+    await raises(asPerson(w.pg, w.bob, `insert into public.status_update_views (update_id, user_id) values ($1::uuid, $2::uuid)`, [bobs, w.alice]), /permission denied/);
+  });
+
+  await test("0054: webhooks hear status_update.posted (with the project), and a webhook can subscribe to it", async () => {
+    eq((await w.pg.query<{ ok: boolean }>(`select 'status_update.posted' = any (public.webhook_event_names()) as ok`)).rows[0].ok, true, "a known event");
+    await w.pg.query(`insert into public.webhooks (workspace_id, created_by, url, events, secret) values ($1::uuid, $2::uuid, 'https://hooks.example.org/kanbo', array['status_update.posted'], $3)`,
+      [w.w1, w.alice, "whsec_" + "a".repeat(43)]);
+    const u = await post(w.alice, { summary: "Back on track." });
+    const out = (await w.pg.query<{ payload: { status_update: { id: string }; project: { name: string }; author_name: string } }>(
+      `select payload from public.webhook_outbox where event = 'status_update.posted' and resource_id = $1`, [u.id])).rows;
+    eq(out.length, 1, "queued once");
+    eq([out[0].payload.status_update.id, out[0].payload.project.name, out[0].payload.author_name], [u.id, "Launch", "alice"], "the update, its project and who");
+    await w.pg.query(`delete from public.webhooks`);
+  });
+  await test("0054: the author deletes their own; an owner or admin removes any (and its Inbox items go too); a member, guest or outsider can't", async () => {
+    const theirs = await post(w.alice, { summary: "Alice's update", asks: [w.bob] });
+    ok((await notices(w.bob)).some((x) => x.meta.status_update_id === theirs.id), "bob was told");
+    for (const [who, u] of [["bob (member)", w.bob], ["gus (guest)", w.gus], ["carol (outsider)", w.carol]] as const) {
+      eq((await asPerson(w.pg, u, `delete from public.status_updates where id = $1::uuid returning id`, [theirs.id])).length, 0, who);
+    }
+    eq((await asPerson(w.pg, w.alice, `delete from public.status_updates where id = $1::uuid returning id`, [theirs.id])).length, 1, "alice deletes her own");
+    eq((await notices(w.bob)).filter((x) => x.meta.status_update_id === theirs.id).length, 0, "its Inbox items went with it");
+    const mod = await post(w.bob, { summary: "Something to moderate" });
+    eq((await asPerson(w.pg, ada, `delete from public.status_updates where id = $1::uuid returning id`, [mod.id])).length, 1, "an admin moderates");
+  });
+  await test("0054: switching the update pref off keeps the FYI out of the Inbox (an Ask still lands, as a mention does)", async () => {
+    await w.pg.query(`delete from public.activity where kind = 'update'`);
+    await w.pg.query(`update public.profiles set notify_prefs = notify_prefs || '{"update": false}'::jsonb where id = $1::uuid`, [w.alice]);
+    await post(w.bob, { summary: "Quiet one" });
+    eq((await notices(w.alice)).length, 0, "no FYI");
+    await post(w.bob, { summary: "Asks alice", asks: [w.alice] });
+    eq((await notices(w.alice)).map((x) => x.meta.ask), [true], "the Ask lands");
+    await w.pg.query(`update public.profiles set notify_prefs = notify_prefs - 'update' where id = $1::uuid`, [w.alice]);
+  });
+
+  /* ---------- portfolio pages ---------- */
+  const pf = (await w.pg.query<{ id: string }>(`insert into public.portfolios (user_id, workspace_id, name, project_ids) values ($1::uuid, $2::uuid, 'Openings', array[$3]) returning id::text as id`, [w.alice, w.w1, w.launch])).rows[0].id;
+  await test("0054: a portfolio gets an owner, description, date, identity and followers from the team (members and above)", async () => {
+    const r = await one(asPerson<{ owner_id: string; follower_ids: string[] }>(w.pg, w.bob,
+      `update public.portfolios set owner_id = $2::uuid, description = 'Every site opening this quarter', target_date = '2026-12-18', color = 'oklch(0.7 0.1 200)', emoji = '🏁',
+        follower_ids = array[$3::uuid, $4::uuid, $5::uuid, $3::uuid] where id = $1::uuid returning owner_id::text as owner_id, follower_ids::text[] as follower_ids`, [pf, w.bob, ada, w.gus, w.carol]));
+    eq(r.owner_id, w.bob, "a member owns it");
+    eq(r.follower_ids, [ada], "a guest and an outsider can't follow it (they can't read it)");
+  });
+  await test("0054 attack: a guest or outsider can't own a team portfolio, and a guest still can't read or change one", async () => {
+    await raises(asPerson(w.pg, w.alice, `update public.portfolios set owner_id = $2::uuid where id = $1::uuid`, [pf, w.gus]), /invalid portfolio owner/);
+    await raises(asPerson(w.pg, w.alice, `update public.portfolios set owner_id = $2::uuid where id = $1::uuid`, [pf, w.carol]), /invalid portfolio owner/);
+    eq((await asPerson(w.pg, w.gus, `update public.portfolios set description = 'guest was here' where id = $1::uuid returning id`, [pf])).length, 0, "guest");
+    eq((await asPerson(w.pg, w.carol, `update public.portfolios set description = 'outsider' where id = $1::uuid returning id`, [pf])).length, 0, "outsider");
+  });
+  await test("0054: a member posts a portfolio update; its owner and followers hear; the author edits it (marked)", async () => {
+    await w.pg.query(`delete from public.activity where kind = 'update'`);
+    const u = await one(asPerson<{ id: string; author_id: string; workspace_id: string }>(w.pg, ada,
+      `insert into public.portfolio_updates (portfolio_id, author_id, workspace_id, summary, status, sections) values ($1::uuid, $2::uuid, $3::uuid, '1 of 1 on track.', 'on_track', '{"highlights":"The launch is moving."}')
+       returning id::text as id, author_id::text as author_id, workspace_id::text as workspace_id`, [pf, w.alice, w.w2]));
+    eq([u.author_id, u.workspace_id], [ada, w.w1], "a forged author and workspace are ignored");
+    eq((await notices(w.bob)).map((x) => x.meta.update_event), ["portfolio"], "bob, the owner");
+    eq((await notices(ada)).length, 0, "not its author (a follower)");
+    const e = await one(asPerson<{ edited_at: string | null }>(w.pg, ada, `update public.portfolio_updates set summary = 'All on track.' where id = $1::uuid returning edited_at::text as edited_at`, [u.id]));
+    ok(e.edited_at, "edited");
+    eq((await asPerson(w.pg, w.bob, `update public.portfolio_updates set summary = 'x' where id = $1::uuid returning id`, [u.id])).length, 0, "bob can't edit ada's");
+    eq((await asPerson(w.pg, w.bob, `delete from public.portfolio_updates where id = $1::uuid returning id`, [u.id])).length, 0, "nor delete it");
+    eq((await asPerson(w.pg, w.alice, `delete from public.portfolio_updates where id = $1::uuid returning id`, [u.id])).length, 1, "the owner moderates");
+  });
+  await test("0054 attack: a guest or outsider can't read or post a portfolio update", async () => {
+    await asPerson(w.pg, w.bob, `insert into public.portfolio_updates (portfolio_id, summary) values ($1::uuid, 'Members only')`, [pf]);
+    eq((await asPerson(w.pg, w.gus, `select id from public.portfolio_updates`)).length, 0, "guest reads none");
+    eq((await asPerson(w.pg, w.carol, `select id from public.portfolio_updates`)).length, 0, "outsider reads none");
+    await raises(asPerson(w.pg, w.gus, `insert into public.portfolio_updates (portfolio_id, summary) values ($1::uuid, 'guest')`, [pf]), /row-level security|policy/i);
+    await raises(asPerson(w.pg, w.carol, `insert into public.portfolio_updates (portfolio_id, summary) values ($1::uuid, 'outsider')`, [pf]), /row-level security|policy/i);
+    await raises(asPerson(w.pg, w.bob, `insert into public.portfolio_updates (portfolio_id, summary, status) values ($1::uuid, 'x', 'great')`, [pf]), /portfolio_updates_shape/);
+  });
+
+  await test("0054: migrating twice keeps everything; re-running 0041 puts the authors-only rules back" + (has0048 ? " (and 0048, then this file)" : ""), async () => {
+    const counts = async () => [await n(`select count(*)::int as n from public.status_update_comments`), await n(`select count(*)::int as n from public.status_update_reactions`),
+      await n(`select count(*)::int as n from public.status_update_views`), await n(`select count(*)::int as n from public.portfolio_updates`),
+      await n(`select count(*)::int as n from public.status_updates where sections is not null`)];
+    const before = await counts();
+    await applyFile(w.pg, "0054_update_conversation.sql");
+    await applyFile(w.pg, "0041_security_hardening_2.sql");
+    eq((await w.pg.query<{ ok: boolean }>(`select public.update_conversation_intact() as ok`)).rows[0].ok, true, "intact after 0041");
+    eq((await asPerson(w.pg, w.alice, `update public.status_updates set summary = 'rewritten' where id = $1::uuid returning id`, [bobs])).length, 0, "the owner still can't edit bob's");
+    eq((await asPerson(w.pg, w.bob, `delete from public.status_updates where id = $1::uuid returning id`, [
+      (await post(w.alice, { summary: "Alice's again" })).id])).length, 0, "a member still can't delete someone else's");
+    if (has0048) {
+      await w.pg.query(`insert into public.webhooks (workspace_id, created_by, url, events, secret) values ($1::uuid, $2::uuid, 'https://hooks.example.org/kanbo', array['status_update.posted'], $3)`,
+        [w.w1, w.alice, "whsec_" + "b".repeat(43)]);
+      await applyFile(w.pg, "0048_ux_wave.sql");
+      await applyFile(w.pg, "0054_update_conversation.sql");
+      eq(await n(`select count(*)::int as n from public.webhooks where 'status_update.posted' = any (events)`), 1, "the subscription survives a 0048 re-run");
+      await w.pg.query(`delete from public.webhooks`);
+    }
+    eq(await counts(), before, "comments, reactions, views, portfolio updates, sections");
+    eq(await n(`select count(*)::int as n from public.schema_migrations where version = '0054'`), 1, "recorded once");
+  });
+}
+
 /* ============================================================ run */
 
 export async function main(argv: string[]): Promise<number> {
   const all = migrationFiles();
-  // 0051 and 0053 need only 0041/0042: they run in the set without 0048/0049 too
-  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || f.startsWith("0050") || f.startsWith("0051") || f.startsWith("0053"));
+  // 0051, 0053 and 0054 need only 0041/0042/0046: they run in the set without 0048/0049 too
+  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || f.startsWith("0050") || f.startsWith("0051") || f.startsWith("0053") || f.startsWith("0054"));
   const setAll = all;
-  const sets: [string, string[]][] = [["0001..0047+0050+0051+0053", set47], ["0001..0053", setAll]];
+  const sets: [string, string[]][] = [["0001..0047+0050+0051+0053+0054", set47], ["0001..0054", setAll]];
   const only = argv[0];
   for (const [name, files] of sets) {
     if (only === "0047" && name !== sets[0][0]) continue;
@@ -1767,6 +2005,7 @@ export async function main(argv: string[]): Promise<number> {
     await strangerSuite(w);
     await guestLockSuite(w);
     await updateRhythmSuite(w);
+    await updateConversationSuite(w);
     console.log(`${name}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     await w.closeDriver();
     await w.pg.close();
