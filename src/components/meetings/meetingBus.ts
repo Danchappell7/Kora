@@ -60,7 +60,7 @@ async function refresh(): Promise<void> {
 
 function want(id: number, ids: string[]): () => void {
   wants.set(id, ids);
-  if (!unsub) unsub = subscribeLiveMeetings(() => { void refresh(); });
+  if (!unsub) unsub = subscribeLiveMeetings(() => { void refresh(); }, () => new Map(live.map((m) => [m.id, m.status])));
   if (ids.some((x) => !watched.includes(x))) void refresh();
   return () => {
     wants.delete(id);

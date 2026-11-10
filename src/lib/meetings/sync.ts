@@ -56,7 +56,7 @@ export function isMissingSchema(e: unknown): boolean {
 /** What a refused change says, in the app's words. */
 export function meetingErrorText(e: unknown): string {
   const msg = String((e as { message?: unknown })?.message ?? e ?? "");
-  if (isMissingSchema(e)) return "Shared meetings aren't switched on yet. Ask the workspace owner to run the 0056 update.";
+  if (isMissingSchema(e)) return "Shared meetings aren't switched on yet, so this one runs on your screen only.";
   if (/already running/.test(msg)) return "A meeting like this is already running here. Join it instead.";
   if (/not the presenter/.test(msg)) return "Only the presenter moves the agenda. Present from here to take over.";
   if (/need to be in the meeting/.test(msg)) return "They need to have joined the meeting first.";
@@ -195,6 +195,13 @@ export function memAct(id: string, by: string, act: { place?: number; presenterI
 
 /* ---------- reads ---------- */
 
+/** A meeting left live this long was forgotten: the next start closes it (0056), and nothing offers to join it. */
+export const STALE_MS = 12 * 3600000;
+export const isStale = (m: Pick<Meeting, "status" | "startedAt">, now = Date.now()): boolean =>
+  m.status === "live" && now - new Date(m.startedAt).getTime() > STALE_MS;
+/** The same businesses (a Group meeting is the one over the same set, whichever of them hosts it). */
+export const sameBusinesses = (a: readonly string[], b: readonly string[]): boolean => [...a].sort().join(",") === [...b].sort().join(",");
+
 /** One meeting (null when it's gone, or you can't read it). */
 export async function getMeeting(id: string): Promise<Meeting | null> {
   if (mode === "unknown") await probeMeetings();
@@ -227,39 +234,54 @@ export async function listAttendees(meetingId: string): Promise<MeetingAttendee[
   return clone(memDb().attendees.get(meetingId) ?? []);
 }
 
-/** The live meetings you can read in these businesses (Pulse's and the Group page's "Live now"). */
+/** The live meetings you can read hosted by these businesses (Pulse's and the Group page's "Live now"). One
+ *  started over 12 hours ago was left running: it isn't offered (the next start closes it). */
 export async function liveMeetings(workspaceIds: readonly string[]): Promise<Meeting[]> {
   const ids = workspaceIds.filter(Boolean);
   if (!ids.length) return [];
   if (mode === "unknown") await probeMeetings();
   if (shared()) {
     const { data, error } = await supabase!.from("meetings").select("*").eq("status", "live").in("workspace_id", ids)
+      .gt("started_at", new Date(Date.now() - STALE_MS).toISOString())
       .order("started_at", { ascending: false }).limit(20);
     if (error) { if (isMissingSchema(error)) markOff(); return []; }
-    return ((data as MeetingRow[] | null) ?? []).map(rowToMeeting);
+    return ((data as MeetingRow[] | null) ?? []).map(rowToMeeting).filter((m) => !isStale(m));
   }
-  return [...memDb().meetings.values()].filter((m) => m.status === "live" && ids.includes(m.workspaceId)).map(clone);
+  return [...memDb().meetings.values()].filter((m) => m.status === "live" && !isStale(m) && ids.includes(m.workspaceId)).map(clone);
 }
 
-/** The last ended meeting of this kind here (over the same businesses), with its items: its actions open the next. */
+/** The last ended meeting of this kind over these businesses, with its items: its actions open the next. (A
+ *  Group meeting's host can be any of them: the set decides, not the host.) */
 export async function lastMeeting(workspaceId: string, preset: MeetingPreset, workspaceIds: readonly string[]): Promise<{ meeting: Meeting; items: MeetingItem[] } | null> {
-  const same = (m: Pick<Meeting, "workspaceIds">) => [...m.workspaceIds].sort().join(",") === [...workspaceIds].sort().join(",");
+  const wss = [...new Set([workspaceId, ...workspaceIds])];
+  const same = (m: Pick<Meeting, "workspaceIds">) => sameBusinesses(m.workspaceIds, wss);
   if (mode === "unknown") await probeMeetings();
   if (shared()) {
-    const { data, error } = await supabase!.from("meetings").select("*").eq("workspace_id", workspaceId).eq("preset", preset).eq("status", "ended")
-      .order("ended_at", { ascending: false }).limit(10);
+    const { data, error } = await supabase!.from("meetings").select("*").in("workspace_id", wss).eq("preset", preset).eq("status", "ended")
+      .order("ended_at", { ascending: false }).limit(20);
     if (error) { if (isMissingSchema(error)) markOff(); return null; }
     const m = ((data as MeetingRow[] | null) ?? []).map(rowToMeeting).find(same);
     if (!m) return null;
     try { return { meeting: m, items: await listItems(m.id) }; } catch { return { meeting: m, items: [] }; }
   }
   const db = memDb();
-  const m = [...db.meetings.values()].filter((x) => x.workspaceId === workspaceId && x.preset === preset && x.status === "ended" && same(x))
+  const m = [...db.meetings.values()].filter((x) => x.preset === preset && x.status === "ended" && same(x))
     .sort((a, b) => (b.endedAt ?? "").localeCompare(a.endedAt ?? ""))[0];
   return m ? { meeting: clone(m), items: clone(db.items.get(m.id) ?? []) } : null;
 }
 
 /* ---------- live ---------- */
+
+/**
+ * A realtime UPDATE of a meeting row, as the meeting. The agenda is a big value that never changes once the
+ * meeting starts, and realtime leaves out a big value that didn't change (Postgres stores it apart, "TOAST"):
+ * so a row without one keeps the agenda already known. Null when there's none to keep (read the row again).
+ */
+export function meetingFromUpdate(row: Record<string, unknown>, known: Meeting | null): Meeting | null {
+  const next = rowToMeeting(row as unknown as MeetingRow);
+  if ("agenda" in row && row.agenda != null) return next;
+  return known && known.id === next.id ? { ...next, agenda: known.agenda } : null;
+}
 
 let channelSeq = 0;
 /** One open meeting's changes: its row (the presenter's place), its items, who's joined. Returns unsubscribe. */
@@ -268,12 +290,19 @@ export function subscribeMeeting(id: string, onChange: (c: MeetingChange) => voi
     const client = supabase!;
     let channel: RealtimeChannel | null = null;
     let off = false;
+    let known: Meeting | null = null;
     const items = () => { void listItems(id).then((xs) => { if (!off) onChange({ items: xs }); }).catch(() => undefined); };
     const people = () => { void listAttendees(id).then((xs) => { if (!off) onChange({ attendees: xs }); }).catch(() => undefined); };
+    const row = (p: { new?: Record<string, unknown> }) => {
+      if (off || !p.new) return;
+      const m = meetingFromUpdate(p.new, known);
+      if (m) { known = m; onChange({ meeting: m }); return; }
+      // (no agenda came, and none is known yet: the row, read again, has it)
+      void getMeeting(id).then((full) => { if (!off && full) { known = full; onChange({ meeting: full }); } }).catch(() => undefined);
+    };
     try {
       channel = client.channel(`kanbo-meeting-${id}-${++channelSeq}`)
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "meetings", filter: `id=eq.${id}` },
-          (p: { new?: Record<string, unknown> }) => { if (!off && p.new) onChange({ meeting: rowToMeeting(p.new as unknown as MeetingRow) }); })
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "meetings", filter: `id=eq.${id}` }, row)
         .on("postgres_changes", { event: "*", schema: "public", table: "meeting_items", filter: `meeting_id=eq.${id}` }, items)
         // (a delete can't be filtered by meeting: it carries only the id, so any delete reads the list again)
         .on("postgres_changes", { event: "DELETE", schema: "public", table: "meeting_items" }, items)
@@ -289,17 +318,31 @@ export function subscribeMeeting(id: string, onChange: (c: MeetingChange) => voi
   return () => { set.delete(onChange); };
 }
 
-/** A meeting started, moved on or ended somewhere you can read (for "Live now"). Returns unsubscribe. */
-export function subscribeLiveMeetings(onChange: () => void): () => void {
+/** Is a meeting row's UPDATE news for "Live now"? Only an end (or one we hadn't seen): realtime sends no "old"
+ *  row (no replica identity), so `seen` is each meeting's last-known status. */
+export function liveNews(row: Record<string, unknown> | undefined, seen: ReadonlyMap<string, string>): boolean {
+  const id = typeof row?.id === "string" ? row.id : null;
+  if (!id) return false;
+  const was = seen.get(id);
+  return was === undefined || (typeof row?.status === "string" && row.status !== was);
+}
+
+/** A meeting started or ended somewhere you can read (for "Live now"). `seen` (each meeting's last-known
+ *  status) keeps the presenter's moves from asking again. Returns unsubscribe. */
+export function subscribeLiveMeetings(onChange: () => void, seen: () => ReadonlyMap<string, string> = () => new Map()): () => void {
   if (shared()) {
     const client = supabase!;
     let channel: RealtimeChannel | null = null;
+    // (every row heard of, so a meeting elsewhere moving on asks once, not at every step)
+    const heard = new Map<string, string>();
     try {
       channel = client.channel(`kanbo-meetings-live-${++channelSeq}`)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "meetings" }, () => onChange())
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "meetings" }, (p: { new?: Record<string, unknown>; old?: Record<string, unknown> }) => {
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "meetings" }, (p: { new?: Record<string, unknown> }) => {
           // (the presenter moving on isn't news here: only a start or an end)
-          if (!p.old || p.new?.status !== p.old.status) onChange();
+          const news = liveNews(p.new, new Map([...seen(), ...heard]));
+          if (typeof p.new?.id === "string" && typeof p.new?.status === "string") heard.set(p.new.id, p.new.status);
+          if (news) onChange();
         })
         .subscribe();
     } catch (e) { reportError(e, { op: "meetings-live-realtime" }); }
@@ -342,8 +385,11 @@ export async function startMeeting(input: StartInput): Promise<Result<Meeting>> 
   }
   const db = memDb();
   const wss = [...new Set([input.workspaceId, ...input.workspaceIds])].sort();
-  const running = [...db.meetings.values()].find((m) => m.status === "live" && m.workspaceId === input.workspaceId && m.preset === input.preset
-    && [...m.workspaceIds].sort().join(",") === wss.join(","));
+  // (one of a kind over the same businesses, whichever hosts it; one left running for 12 hours is closed)
+  for (const m of db.meetings.values()) {
+    if (isStale(m) && m.preset === input.preset && sameBusinesses(m.workspaceIds, wss)) db.meetings.set(m.id, { ...m, status: "ended", endedAt: new Date().toISOString() });
+  }
+  const running = [...db.meetings.values()].find((m) => m.status === "live" && m.preset === input.preset && sameBusinesses(m.workspaceIds, wss));
   if (running) return { ok: false, message: meetingErrorText(new Error("already running")) };
   const now = new Date().toISOString();
   const m: Meeting = {

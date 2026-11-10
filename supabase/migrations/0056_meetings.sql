@@ -18,8 +18,10 @@
 --      they see (which everyone who reads the meeting can see anyway);
 --      `place` is the presenter's place in it, streamed so everyone
 --      watching follows. The presenter hands over to someone in the room, or
---      anyone in it takes over. One live meeting of a kind per host (and set
---      of businesses) at a time; one left running for 12 hours is closed.
+--      anyone in it takes over. One live meeting of a kind over the same
+--      businesses at a time, whichever of them hosts it (and the meeting
+--      before is found the same way); one left running for 12 hours is
+--      closed.
 --   2. meeting_attendees: who was asked (the starter picks from those who
 --      may read it) and who joined.
 --   3. meeting_items: the notes, decisions and actions logged in it (on an
@@ -243,15 +245,18 @@ begin
   if (select count(*) from public.meetings m where m.started_by = me and m.started_at > now() - interval '1 day') >= 40 then
     raise exception 'too many meetings';
   end if;
-  -- one live meeting of a kind (over the same businesses) at a time; one left running for 12 hours is closed, without a recap
-  perform pg_advisory_xact_lock(hashtext('kanbo.meeting:' || p_ws::text || ':' || p_preset));
+  -- one live meeting of a kind over the same businesses at a time, whichever of them hosts it (a Group
+  -- meeting's host can differ week to week); one left running for 12 hours is closed, without a recap
+  perform pg_advisory_xact_lock(hashtext('kanbo.meeting:' || array_to_string(wss, ',') || ':' || p_preset));
   update public.meetings set status = 'ended', ended_at = now(), updated_at = now()
-   where workspace_id = p_ws and preset = p_preset and status = 'live' and started_at < now() - interval '12 hours';
-  if exists (select 1 from public.meetings m where m.workspace_id = p_ws and m.preset = p_preset and m.status = 'live' and m.workspace_ids = wss) then
+   where workspace_id = any (wss) and workspace_ids = wss and preset = p_preset and status = 'live' and started_at < now() - interval '12 hours';
+  if exists (select 1 from public.meetings m
+              where m.workspace_id = any (wss) and m.workspace_ids = wss and m.preset = p_preset and m.status = 'live') then
     raise exception 'already running';
   end if;
+  -- the meeting before: the last of this kind over the same businesses (its actions open this one)
   select m.id into prev from public.meetings m
-   where m.id = p_previous and m.workspace_id = p_ws and m.preset = p_preset and m.workspace_ids = wss and m.status = 'ended';
+   where m.id = p_previous and m.workspace_id = any (wss) and m.workspace_ids = wss and m.preset = p_preset and m.status = 'ended';
   insert into public.meetings (workspace_id, workspace_ids, preset, title, agenda, presenter_id, started_by, previous_id, doc_project_id)
     values (p_ws, wss, p_preset, t, p_agenda, me, me, prev, p_doc_project)
     returning * into r;

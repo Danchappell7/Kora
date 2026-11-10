@@ -49,6 +49,25 @@ describe("the demo's copy", () => {
     // a leadership meeting alongside is fine
     expect((await start({ preset: "leadership" })).ok).toBe(true);
   });
+  it("a Group meeting is the one over the same businesses, whichever hosts it: one live at a time, and the next finds the last", async () => {
+    const group = { preset: "leadership" as const, workspaceIds: ["ws-foundrise", "ws-reco"] };
+    const a = await start({ ...group, workspaceId: "ws-foundrise" });
+    expect(a.ok).toBe(true);
+    expect(await start({ ...group, workspaceId: "ws-reco" })).toEqual({ ok: false, message: "A meeting like this is already running here. Join it instead." });
+    if (!a.ok) return;
+    await endMeeting(a.data.id, "m-self");
+    expect((await lastMeeting("ws-reco", "leadership", ["ws-reco", "ws-foundrise"]))?.meeting.id).toBe(a.data.id);
+  });
+  it("a meeting left live over 12 hours isn't offered, and the next start closes it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 9, 18));
+    const old = await start();
+    vi.setSystemTime(new Date(2026, 10, 10, 9));
+    expect(await liveMeetings(["ws-foundrise"])).toEqual([]);
+    const fresh = await start();
+    expect(fresh.ok).toBe(true);
+    if (old.ok) expect((await getMeeting(old.data.id))?.status).toBe("ended");
+  });
   it("only the presenter moves the agenda; anyone in it takes over; the presenter hands over to someone there", async () => {
     const r = await start();
     if (!r.ok) throw new Error("no meeting");
@@ -98,7 +117,8 @@ describe("the demo's copy", () => {
     const r = await start();
     if (!r.ok) throw new Error("no meeting");
     await vi.advanceTimersByTimeAsync(DEMO_JOIN_MS[1] + 50);
-    expect((await listAttendees(r.data.id)).filter((a) => a.joinedAt).map((a) => a.userId).sort()).toEqual(["m-1", "m-2", "m-self"]);
+    // (Maya and Sana: Theo's off today in the demo)
+    expect((await listAttendees(r.data.id)).filter((a) => a.joinedAt).map((a) => a.userId).sort()).toEqual(["m-1", "m-3", "m-self"]);
     await handMeeting(r.data.id, "m-1", "m-self");
     await vi.advanceTimersByTimeAsync(DEMO_STEP_MS + 50);
     expect((await getMeeting(r.data.id))?.place).toBe(1);
@@ -114,7 +134,7 @@ describe("the demo's copy", () => {
 
 describe("words for a refusal", () => {
   it("says what happened, in the app's words", () => {
-    expect(meetingErrorText({ code: "PGRST202", message: "Could not find the function public.start_meeting" })).toMatch(/0056/);
+    expect(meetingErrorText({ code: "PGRST202", message: "Could not find the function public.start_meeting" })).toBe("Shared meetings aren't switched on yet, so this one runs on your screen only.");
     expect(meetingErrorText(new Error("not allowed: an action's owner must be on the team"))).toBe("An action's owner has to be on the team (not a guest).");
     expect(meetingErrorText(new Error("meeting closed"))).toBe("This meeting has ended.");
     expect(meetingErrorText(new Error("not authorized"))).toBe("You can't do that here.");

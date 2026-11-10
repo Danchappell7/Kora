@@ -286,6 +286,7 @@ export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, pace, signals, avail],
   );
+  const groupHost = workspaces.find((w) => !!w.id && digests.some((d) => d.workspace.id === w.id))?.id;
   return (
     <div className="kpj-page">
       <style>{BUSINESS_CSS}</style>
@@ -298,9 +299,10 @@ export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks
           <>
             <div className="kgrp-intro">
               <p>Every business you run, side by side: what's behind, what's waiting for you and what got done. Tap or click anything to open it in its business.</p>
-              {/* 0056: one leadership meeting over them all (hosted by the business that needs you most) */}
-              {runMeetings && <RunMeetingButton label="Run group meeting"
-                scope={{ workspaceId: digests[0].workspace.id!, workspaceIds: digests.map((d) => d.workspace.id!).filter(Boolean), preset: "leadership", canLead: true }} />}
+              {/* 0056: one leadership meeting over them all (hosted by the first of them in the switcher's order, so
+                  the host stays the same week to week; it's found by its businesses, whichever hosts it) */}
+              {runMeetings && groupHost && <RunMeetingButton label="Run group meeting"
+                scope={{ workspaceId: groupHost, workspaceIds: digests.map((d) => d.workspace.id!).filter(Boolean), preset: "leadership", canLead: true }} />}
             </div>
             <div className="kgrp-list">
               {digests.map((d) => <BusinessSection key={d.workspace.id} d={d} onOpen={onOpen} asks={asks} runMeetings={runMeetings} />)}
