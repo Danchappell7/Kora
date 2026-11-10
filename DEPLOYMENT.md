@@ -962,7 +962,9 @@ steps; nothing breaks while you wait.
    `update public.workspaces set project_access = false where id = '<workspace id>';`
    (or `… where project_access;` for every business). The full undo, only if
    0058 itself is broken, is `supabase/rollback/0058_project_access_undo.sql`
-   (its VERIFY block too); it keeps the data.
+   (its VERIFY block too); it keeps the data. Running 0058 again after it puts
+   everything back; anyone added to a Members only or Private project while it
+   was out is added again in About › People & access.
 
 If 0025, 0041, 0042, 0043, 0046, 0047 or 0048 is ever run again, nothing more
 is needed: each puts project access back itself (0052 to 0056 too).
