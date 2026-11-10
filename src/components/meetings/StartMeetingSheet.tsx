@@ -7,7 +7,7 @@
    one); the business's last choice comes back next time. Before 0056
    is run it says the meeting will run on this screen only.
    ============================================================ */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Avatar, Button, Icon, Segmented, Sheet, spectrumColor } from "../primitives";
 import type { WorkspaceEvent } from "../../data/types";
 import type { NewProject } from "../../data/store";
@@ -41,6 +41,7 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
   const wss = useMemo(() => [...new Set([host, ...(scope.workspaceIds ?? [])])], [host, scope.workspaceIds]);
   const covered = useMemo(() => workspaces.filter((w) => w.id && wss.includes(w.id)), [workspaces, wss]);
   const mode = useMeetingsMode();
+  const uid = useId();
   const canTeam = !group && mayRun("team", host, wss, me, members, workspaces);
   const canLead = mayRun("leadership", host, wss, me, members, workspaces);
   const [preset, setPreset] = useState<MeetingPreset>(group || !canTeam ? "leadership" : scope.preset === "leadership" && canLead ? "leadership" : "team");
@@ -200,10 +201,11 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
           {preset === "leadership" && <p className="kmtg-hint">Leadership meetings are for {group ? "people who run every one of these businesses" : "owners and admins"}. Guests never see them.</p>}
         </fieldset>
 
-        <label className="kmtg-field">
-          <span className="kmtg-label">Notes doc goes in</span>
+        <div className="kmtg-field">
+          <label className="kmtg-label" htmlFor={`${uid}-doc`}>Notes doc goes in</label>
           <span className="kmtg-row">
-            <select className="kmtg-select" value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={making}>
+            <select id={`${uid}-doc`} className="kmtg-select" value={projectId} onChange={(e) => setProjectId(e.target.value)} disabled={making}
+              aria-describedby={guestsHere && projectId ? `${uid}-guests` : undefined}>
               {!hostProjects.length && <option value="">No project yet</option>}
               {hostProjects.map((p) => <option key={p.id} value={p.id}>{p.emoji ? `${p.emoji} ` : ""}{p.name}</option>)}
             </select>
@@ -211,8 +213,8 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
               <Button size="sm" variant="ghost" icon="plus" onClick={makeLeadership} loading={making}>New Leadership project</Button>
             )}
           </span>
-          {guestsHere && projectId && <span className="kmtg-hint">Guests at this business can read the docs in its projects.</span>}
-        </label>
+          {guestsHere && projectId && <span className="kmtg-hint" id={`${uid}-guests`}>Guests at this business can read the docs in its projects.</span>}
+        </div>
 
         {mode === "local" && !isDemoMeetings() && (
           <p className="kmtg-note" role="note"><Icon name="alert" size={14} /> Shared meetings aren't switched on yet, so this one runs on your screen only: nobody else can follow it and no recap is sent. The notes doc still saves. Ask the workspace owner to run the 0056 update.</p>
