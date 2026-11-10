@@ -143,7 +143,7 @@ export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSet
             <li className="kpax-person">
               <Avatar id={ownerId} size={24} />
               <span className="kpax-name">{nameOf(ownerId)}</span>
-              <span className="kpax-role-fixed">Owner</span>
+              <span className="kpax-role-fixed">{guest(ownerId) ? "Owner · can comment" : "Owner"}</span>
             </li>
           )}
           {onList.map((m) => {

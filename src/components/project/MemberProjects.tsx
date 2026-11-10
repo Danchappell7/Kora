@@ -21,7 +21,7 @@ export function MemberProjects({ name, guest, pending, rows, addable, onSet, onR
   guest: boolean;
   /** a pending invite: these are the projects it brings when it's claimed */
   pending: boolean;
-  /** the projects they're on (their own projects read "Owner") */
+  /** the projects they're on (their own projects read "Owner": a guest who owns one comments on it) */
   rows: MemberProjectRow[];
   /** the projects you could add them to */
   addable: { id: string; name: string }[];
@@ -51,7 +51,7 @@ export function MemberProjects({ name, guest, pending, rows, addable, onSet, onR
           {rows.map((r) => (
             <li key={r.projectId} className="kmprj-row">
               <span className="kmprj-name">{r.name}</span>
-              {r.role === "owner" ? <span className="kmprj-fixed">Owner</span> : (
+              {r.role === "owner" ? <span className="kmprj-fixed">{guest ? "Owner · can comment" : "Owner"}</span> : (
                 <>
                   <select className="kmprj-select" aria-label={`${first}'s role on ${r.name}`} value={r.role} disabled={busy}
                     onChange={(e) => void run(() => onSet(r.projectId, e.target.value as ProjectRole))}>

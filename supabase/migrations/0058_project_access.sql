@@ -12,7 +12,8 @@
 --   2. project_members: a project's people (editor, commenter, viewer).
 --      The project's owner is always an editor and never has a row.
 --      Guests are never more than commenters, and see only the projects
---      they're on, and only those projects' people.
+--      they're on (or own: someone made a guest after making projects keeps
+--      them, as a commenter), and only those projects' people.
 --   3. One rank per (person, project): 0 none, 1 view, 2 comment, 3 edit,
 --      from pa_rank_core() (the single table; src/lib/projectAccessMatrix.json
 --      holds the same 320 rows for the app's own tests). Read = 1, comment
@@ -182,6 +183,7 @@ returns integer language sql immutable parallel safe set search_path = pg_catalo
     when not coalesce(p_on, false) then case p_ws_role when 'guest' then 2 else 3 end        -- switch off: as before
     when p_ws_role = 'owner' then 3                                                          -- owners see everything
     when p_visibility is null then case p_ws_role when 'guest' then 0 else 3 end             -- loose: the whole workspace's
+    when p_ws_role = 'guest' and coalesce(p_is_owner, false) then 2                          -- a guest who owns it (made a guest later): theirs, comment at most
     when p_ws_role = 'guest' then least(public.pa_member_rank(p_member), 2)                  -- guests: their projects, comment at most
     when coalesce(p_is_owner, false) then 3                                                  -- the project's owner
     when p_visibility = 'workspace' then 3                                                   -- everyone here edits it
@@ -386,7 +388,7 @@ returns boolean language sql security definer stable set search_path = public as
 $$;
 
 -- 2f. the people a guest sees (D16): themselves; the workspace's owners; and, on each project they're
--- on, its owner, its people and its tasks' assignees, creators, collaborators and comment authors
+-- on (or own), its owner, its people and its tasks' assignees, creators, collaborators and comment authors
 create or replace function public.pa_guest_sees(p_ws uuid, p_target uuid)
 returns boolean language sql security definer stable set search_path = public as $$
   select p_target is not null and (
@@ -395,9 +397,11 @@ returns boolean language sql security definer stable set search_path = public as
     or exists (select 1 from public.workspace_members m
                 where m.workspace_id = p_ws and m.user_id = p_target and m.status = 'active' and m.role = 'owner')
     or exists (
-      select 1 from public.project_members mine
-        join public.projects p on p.id = mine.project_id and p.workspace_id = p_ws
-       where mine.user_id = auth.uid() and mine.workspace_id = p_ws
+      select 1 from public.projects p
+       where p.workspace_id = p_ws
+         and (p.owner_id = auth.uid()
+              or exists (select 1 from public.project_members mine
+                          where mine.project_id = p.id and mine.user_id = auth.uid() and mine.workspace_id = p_ws))
          and (p.owner_id = p_target
            or exists (select 1 from public.project_members o where o.project_id = p.id and o.user_id = p_target)
            or exists (select 1 from public.tasks t
@@ -415,7 +419,8 @@ returns text[] language sql security definer stable set search_path = public as 
     select pm.project_id, pm.workspace_id as ws from public.project_members pm
       join g on g.ws = pm.workspace_id
       join public.projects p on p.id = pm.project_id and p.workspace_id = pm.workspace_id
-     where pm.user_id = auth.uid()),
+     where pm.user_id = auth.uid()
+    union select p.id, p.workspace_id from public.projects p join g on g.ws = p.workspace_id where p.owner_id = auth.uid()),
   ptasks as (
     select mine.ws, t.id, t.user_id, t.assignee_id, t.collaborators from mine
       join public.tasks t on t.workspace_id = mine.ws and t.project_id = mine.project_id::text),

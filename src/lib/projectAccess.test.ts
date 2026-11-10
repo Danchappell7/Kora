@@ -156,6 +156,17 @@ describe("people, projects and previews", () => {
     expect(prev.guests.find((g) => g.userId === "gc")?.lost).toEqual([]);
     expect(prev.closed.find((c) => c.projectId === "pp")?.losing.find((l) => l.userId === "m2")?.openTasks).toBe(1);
   });
+  it("a guest who owns a project (made a guest after making it) keeps it once the switch is on, as a commenter", () => {
+    noteAccessSchema(true);
+    const own = (c: AccessCtx): AccessCtx => ({ ...c, projects: [...c.projects, proj("pg", "private", "g2")] });
+    const tasks = [{ workspaceId: W, projectId: "pg", assigneeId: "g2", status: "todo" as const }];
+    const prev = turnOnPreview(W, own(world(false, "o")), undefined, tasks);
+    expect(prev.guests.find((g) => g.userId === "g2")).toEqual({ userId: "g2", name: "G2", projects: ["pg"], lost: [] });
+    expect(projectRank("pg", own(world(true, "g2")))).toBe(2);
+    expect(seesCount(proj("pg", "private", "g2"), own(world(true, "o")))).toBe(2);   // Oona, and Gil
+    expect(peopleFor("pg", own(world(true, "o"))).map((m) => m.userId)).toEqual(["o", "g2"]);
+    expect(canManagePeople(proj("pg", "private", "g2"), own(world(true, "g2")))).toBe(false);
+  });
   it("roleOf: the workspace's owner is its owner even without their own row (as ws_role)", () => {
     noteAccessSchema(true);
     const c = world(false, "o");

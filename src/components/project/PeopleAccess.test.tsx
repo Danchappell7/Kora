@@ -36,6 +36,14 @@ describe("PeopleAccess", () => {
     expect([...within(panel).getByRole("combobox", { name: "Ana Ruiz's role" }).querySelectorAll("option")].map((o) => o.value)).toEqual(["commenter", "viewer"]);
   });
 
+  it("a guest who owns it (made a guest after making it) is its owner and can comment, and is counted among who can see it", () => {
+    const p = project({ ownerId: "g", visibility: "private" });
+    const { panel } = setup({ ...ctx("o", [pm("me", "editor")]), projects: [p] }, p);
+    expect(within(panel).getByText("Owner · can comment")).toBeInTheDocument();
+    // Olive (the workspace's owner), Mo (on it) and Ana (its owner)
+    expect(within(panel).getByRole("radio", { name: /^Private/ }).closest("label")?.textContent).toMatch(/3 people can see it/);
+  });
+
   it("widening goes straight through; narrowing asks first, naming who'd lose it", async () => {
     const { panel, props } = setup(ctx("o", [pm("me", "editor")]), project({ visibility: "workspace" }));
     fireEvent.click(within(panel).getByRole("radio", { name: /^Private/ }));

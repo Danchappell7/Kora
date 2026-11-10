@@ -1233,6 +1233,35 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq([got.row.assignee_id, got.row.collaborators], [w.id.M2, []], "Moe keeps it; Gail, who can't see it there, drops off");
   });
 
+  await test("0058, switch on: a guest who owns a project (made a guest after making it) keeps it as a commenter, and sees its people", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const gp = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Gil', $2::uuid, 'private') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+      await run(w.id.O, `select public.set_project_member($1::uuid, $2::uuid, 'viewer')`, [gp, w.id.ME]);
+      // (the shape a member's own project has after they're made a guest)
+      await run(null, `update public.projects set owner_id = $2::uuid where id = $1::uuid`, [gp, w.id.G2]);
+      const task = await tryRun(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra Gil task', $2, $3, $4::uuid) returning id::text as id`, [w.id.O, gp, w.id.G2, w.ws]);
+      const tid = "rows" in task ? task.rows[0].id as string : null;
+      return {
+        task: errOf(task),
+        reads: (await run(w.id.G2, `select 1 from public.projects where id = $1::uuid`, [gp])).length,
+        readsTask: tid ? (await run(w.id.G2, `select 1 from public.tasks where id = $1::uuid`, [tid])).length : -1,
+        comments: tid ? okOf(await tryRun(w.id.G2, `insert into public.comments (task_id, user_id, body) values ($1::uuid, $2::uuid, 'mine') returning id`, [tid, w.id.G2])) : false,
+        edits: tid ? (await run(w.id.G2, `update public.tasks set title = 'x' where id = $1::uuid returning id`, [tid])).length : -1,
+        seesMeg: (await run(w.id.G2, `select public.pa_person_visible($1::uuid) as v`, [w.id.ME]))[0].v,
+        seesMoe: (await run(w.id.G2, `select public.pa_person_visible($1::uuid) as v`, [w.id.M2]))[0].v,
+        m2: (await run(w.id.M2, `select 1 from public.projects where id = $1::uuid`, [gp])).length,
+        asMember: (await run(w.id.O, `select public.set_project_member($1::uuid, $2::uuid, 'editor') as r`, [gp, w.id.G2]))[0].r,
+        manages: errOf(await tryRun(w.id.G2, `select public.set_project_visibility($1::uuid, 'workspace')`, [gp])),
+      };
+    });
+    eq(got.task, "", "Gil can be assigned there");
+    eq([got.reads, got.readsTask, got.comments, got.edits], [1, 1, true, 0], "Gil reads it and comments, and can't edit");
+    eq([got.seesMeg, got.seesMoe], [true, false], "Gil sees its people (Meg), not the rest (Moe)");
+    eq(got.m2, 0, "it's still Private to everyone else");
+    eq(got.asMember, "owner", "Gil stays its owner");
+    ok(/not authorized/.test(got.manages), `Gil can't change who sees it: ${got.manages || "changed"}`);
+  });
+
   // ---------------------------------------------------------------- 14. what the database queues: the Inbox, held notices, webhooks
   await test("0058, switch on: the Inbox only tells people who can see the work (mentions, followers, update notices; a recap loses its private notes doc)", async () => {
     const mark = (await one<{ t: string }>(`select now()::text as t`)).t;

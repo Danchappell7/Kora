@@ -46,6 +46,7 @@ export function rankCore(on: boolean, wsRole: string | null | undefined, visibil
   if (!on) return wsRole === "guest" ? 2 : 3;
   if (wsRole === "owner") return 3;
   if (visibility === null) return wsRole === "guest" ? 0 : 3;
+  if (wsRole === "guest" && isOwner) return 2; // a guest who owns it (made a guest later): theirs, comment at most
   if (wsRole === "guest") return Math.min(memberRank(member), 2) as Rank;
   if (isOwner) return 3;
   if (visibility === "workspace") return 3;
@@ -154,9 +155,9 @@ type PreviewTask = Pick<Task, "workspaceId" | "projectId" | "assigneeId" | "stat
 const isOpen = (t: PreviewTask) => t.status !== "done" && !t.archivedAt;
 
 /** What turning the switch on would do (Settings › Workspace › Project access): each guest, the
- *  projects they're on and the open tasks of theirs they'd stop seeing (assigned or collaborating,
- *  in a project they're not on); how many projects are Whole workspace, Members only and Private;
- *  and, for each Members only or Private one already set, who'd lose sight of it. */
+ *  projects they're on (or own) and the open tasks of theirs they'd stop seeing (assigned or
+ *  collaborating, in a project they're not on); how many projects are Whole workspace, Members only
+ *  and Private; and, for each Members only or Private one already set, who'd lose sight of it. */
 export function turnOnPreview(wsId: string, ctx: AccessCtx, names?: (id: string) => string | undefined, tasks: PreviewTask[] = []): {
   guests: { userId: string; name: string; projects: string[]; lost: { project: string; openTasks: number }[] }[];
   counts: Record<ProjectVisibility, number>;
@@ -173,14 +174,14 @@ export function turnOnPreview(wsId: string, ctx: AccessCtx, names?: (id: string)
     for (const t of wsTasks) {
       if (t.assigneeId !== uid && !(t.collaborators ?? []).includes(uid)) continue;
       const p = real.get(t.projectId);
-      if (p && memberRole(ctx, p.id, uid) !== null) continue;
+      if (p && (p.ownerId === uid || memberRole(ctx, p.id, uid) !== null)) continue;
       const label = p?.name ?? "no project";
       lostBy.set(label, (lostBy.get(label) ?? 0) + 1);
     }
     return {
       userId: uid,
       name: displayName(m, uid, names),
-      projects: projects.filter((p) => memberRole(ctx, p.id, uid) !== null).map((p) => p.name),
+      projects: projects.filter((p) => p.ownerId === uid || memberRole(ctx, p.id, uid) !== null).map((p) => p.name),
       lost: [...lostBy].map(([project, openTasks]) => ({ project, openTasks })),
     };
   });

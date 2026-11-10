@@ -21,11 +21,11 @@ describe("projectAccessMatrix.json", () => {
       expect(r.rank).toBe(r.wsRole === "none" ? 0 : r.wsRole === "guest" ? 2 : 3);
     }
   });
-  it("switch on: owners always edit, outsiders never see, guests never edit or see loose work", () => {
+  it("switch on: owners always edit, outsiders never see, guests never edit or see loose work (a guest who owns a project comments on it)", () => {
     const on = rows.filter((x) => x.on);
     expect(on.filter((r) => r.wsRole === "owner").every((r) => r.rank === 3)).toBe(true);
     expect(on.filter((r) => r.wsRole === "none").every((r) => r.rank === 0)).toBe(true);
-    for (const r of on.filter((x) => x.wsRole === "guest")) expect(r.rank).toBe(r.visibility === null ? 0 : Math.min(memberRank(r), 2));
+    for (const r of on.filter((x) => x.wsRole === "guest")) expect(r.rank).toBe(r.visibility === null ? 0 : r.isOwner ? 2 : Math.min(memberRank(r), 2));
   });
   it("switch on: members keep Whole workspace and loose work, a project's owner edits it, admins edit Members only", () => {
     const on = rows.filter((x) => x.on);

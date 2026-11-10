@@ -13,7 +13,8 @@ describe("MemberProjects", () => {
     render(<MemberProjects name="Ana Ruiz" guest pending={false} rows={rows} addable={addable} onSet={onSet} onRemove={onRemove} />);
     const sec = screen.getByRole("region", { name: "Projects" });
     expect(within(sec).getByText("Ana sees only these projects here.")).toBeInTheDocument();
-    expect(within(sec).getByText("Owner")).toBeInTheDocument();
+    // (a guest who owns a project, made a guest after making it, keeps it as a commenter)
+    expect(within(sec).getByText("Owner · can comment")).toBeInTheDocument();
     const role = within(sec).getByRole("combobox", { name: "Ana's role on Brand Refresh" });
     expect([...role.querySelectorAll("option")].map((o) => o.value)).toEqual(["commenter", "viewer"]);
     fireEvent.change(role, { target: { value: "viewer" } });
