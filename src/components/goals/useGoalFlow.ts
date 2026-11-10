@@ -44,8 +44,19 @@ export function useGoalFlow({ goals, extras, tasks, me, roleIn, members, today }
   const brief = useMemo(() => briefGoalLookup(me, seen, links, reads), [me, seen, links, reads]);
   const forProject = useCallback((pid: string) => goalsForProject(pid, seen, links), [seen, links]);
   const forTask = useCallback((t: Pick<Task, "id" | "projectId" | "parentId">) => goalsForTask(t, seen, links), [seen, links]);
-  const behind = useCallback((ws?: string | null) => goalsBehindForMe(me, ws === undefined ? seen : seen.filter((g) => (g.workspaceId ?? null) === ws), reads, checkins, today),
-    [me, seen, reads, checkins, today]);
+  // (the same array back while nothing's changed: Today's noticed list doesn't redo itself on every render)
+  const behindAll = useMemo(() => goalsBehindForMe(me, seen, reads, checkins, today), [me, seen, reads, checkins, today]);
+  const behindIn = useMemo(() => new Map<string, GoalBehind[]>(), [behindAll]);
+  const behind = useCallback((ws?: string | null) => {
+    if (ws === undefined) return behindAll;
+    let hit = behindIn.get(ws ?? "");
+    if (!hit) {
+      const here = new Set(seen.filter((g) => (g.workspaceId ?? null) === ws).map((g) => g.id));
+      hit = behindAll.filter((b) => here.has(b.goalId));
+      behindIn.set(ws ?? "", hit);
+    }
+    return hit;
+  }, [behindAll, behindIn, seen]);
   const nameOf = useCallback((id: string | null | undefined) => (id ? getMember(id)?.name ?? members.find((m) => m.userId === id)?.name ?? "" : ""), [members]);
   const ask = useCallback((ws: string | null) => askGoals(seen.filter((g) => (g.workspaceId ?? null) === ws), links, reads, today, nameOf), [seen, links, reads, today, nameOf]);
   return useMemo(() => ({ goals: seen, reads, forProject, forTask, briefGoal: brief, behind, ask }), [seen, reads, forProject, forTask, brief, behind, ask]);

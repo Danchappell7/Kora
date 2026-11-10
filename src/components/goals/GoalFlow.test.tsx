@@ -122,6 +122,7 @@ describe("useGoalFlow: goals for the rest of the app", () => {
     expect(result.current.briefGoal(tasks[1])).toEqual({ goalId: "kr", name: "Win back 120", behind: true });
     expect(result.current.behind().map((b) => b.goalId)).toEqual(["kr"]);
     expect(result.current.behind("other")).toEqual([]);
+    expect(result.current.behind("ws")).toBe(result.current.behind("ws"));   // the same array while nothing's changed
     expect(result.current.ask("ws").map((a) => a.id)).toEqual(expect.arrayContaining(["g", "kr"]));
   });
 });
