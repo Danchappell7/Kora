@@ -37,6 +37,17 @@ const updates: StatusUpdate[] = [
 describe("statusFacts", () => {
   const f = statusFacts(P, ALL, updates, TODAY);
 
+  it("0058: what a blocked task waits on is named only when it's in this project (the update's readers may not see another one)", () => {
+    expect(f.waitingOn.onb.map((t) => t.title)).toEqual(["a task in another project"]);
+    const own = task({ id: "own-dep", title: "Sign off the copy", status: "progress" });
+    const held = task({ id: "held", title: "Print the flyers", status: "blocked", dependencies: ["own-dep", "tokens"] });
+    const g = statusFacts(P, [own, held, tokens], [], TODAY);
+    expect(g.waitingOn.held.map((t) => t.title)).toEqual(["Sign off the copy", "a task in another project"]);
+    const text = JSON.stringify([draftStatusLocal(g), statusFactsForAi(g)]);
+    expect(text).not.toContain("Define design tokens v2");
+    expect(text).toContain("Print the flyers is blocked on Sign off the copy");
+  });
+
   it("reads only this project's live tasks", () => {
     expect(f.project).toEqual({ id: P.id, name: P.name });
     expect(f.blocked.map((t) => t.id)).toEqual(["onb"]);          // not the archived one, not another project's
@@ -84,7 +95,8 @@ describe("draftStatusLocal", () => {
     const { summary, status } = draftStatusLocal(statusFacts(P, ALL, updates, TODAY));
     expect(summary).toMatch(/^Finished 2 tasks this week; 38% done overall\./);
     expect(summary).toContain("Finalise Q3 launch narrative deck is the critical path, due Wed 30 Sep.");
-    expect(summary).toContain("Ship onboarding redesign to staging is blocked on Define design tokens v2.");
+    // (tokens is in p-brand: another project's task isn't named, 0058)
+    expect(summary).toContain("Ship onboarding redesign to staging is blocked on a task in another project.");
     expect(summary).toContain("Overdue: Write press release and A sub-task.");
     expect(summary).toContain("Next milestone: Launch day, Thu 8 Oct.");
     expect(status).toBe("at_risk");
@@ -94,7 +106,7 @@ describe("draftStatusLocal", () => {
     const onb = { ...onboarding, id: "onb2", dependencies: ["tokens"] };
     const ms = { ...launch, id: "ms2", dependencies: ["onb2"] };
     const { summary, status } = draftStatusLocal(statusFacts(P, [onb, ms, tokens], [], TODAY));
-    expect(summary).toContain("Ship onboarding redesign to staging is the critical path, due Thu 1 Oct, and it's blocked on Define design tokens v2.");
+    expect(summary).toContain("Ship onboarding redesign to staging is the critical path, due Thu 1 Oct, and it's blocked on a task in another project.");
     expect(summary).not.toMatch(/\. Ship onboarding redesign to staging is blocked/);
     expect(status).toBe("at_risk");
   });
@@ -145,7 +157,7 @@ describe("statusFactsForAi", () => {
       project: "Q3 Product Launch", today: "2026-09-30", progressPct: 38,
       criticalPath: { title: "Finalise Q3 launch narrative deck", due: day(0) },
       nextMilestone: { title: "Launch day", due: day(8) },
-      blocked: [{ title: "Ship onboarding redesign to staging", waitingOn: ["Define design tokens v2"] }],
+      blocked: [{ title: "Ship onboarding redesign to staging", waitingOn: ["a task in another project"] }],
       lastUpdate: { daysAgo: 9, status: "at_risk" },
     });
     expect(out.finishedThisWeek.sort()).toEqual(["Approve budget", "Pick launch date"]);

@@ -120,11 +120,16 @@ export function indexTasks(tasks: Task[]): TaskIndex {
   return { byId, byProject, dependents };
 }
 
+/** What a blocked task waits on, when that's in another project: the update is read by this
+ *  project's people, who may not see that one (it may be Members only or Private, 0058). */
+export const OTHER_PROJECT_TASK = "a task in another project";
+
 /**
  * The facts a status update is written from. `tasks` may be every task you
  * can see: the project's own are picked out here, and the rest are only used
- * to name what a blocked task is waiting on. Pass `idx` (indexTasks(tasks))
- * when reading many projects from the same list.
+ * to tell that a blocked task is waiting on work elsewhere (never by name:
+ * OTHER_PROJECT_TASK). Pass `idx` (indexTasks(tasks)) when reading many
+ * projects from the same list.
  */
 export function statusFacts(project: Project, tasks: Task[], statusUpdates: StatusUpdate[], today: Date, idx?: TaskIndex): StatusFacts {
   const { byId, byProject, dependents } = idx ?? indexTasks(tasks);
@@ -143,7 +148,8 @@ export function statusFacts(project: Project, tasks: Task[], statusUpdates: Stat
 
   const waitingOn: Record<string, Task[]> = {};
   for (const b of blocked) {
-    waitingOn[b.id] = (b.dependencies ?? []).map((id) => byId.get(id)).filter((x): x is Task => !!x && x.status !== "done");
+    waitingOn[b.id] = (b.dependencies ?? []).map((id) => byId.get(id)).filter((x): x is Task => !!x && x.status !== "done")
+      .map((x) => (x.projectId === project.id ? x : { ...x, title: OTHER_PROJECT_TASK }));
   }
 
   const nextMilestone = open

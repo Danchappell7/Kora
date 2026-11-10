@@ -109,6 +109,24 @@ describe("the update sheet Today opens", () => {
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Post update/ })); });
     expect(onPost).toHaveBeenCalledWith("p1", expect.any(String), expect.any(String), expect.objectContaining({ askUserIds: ["sana"] }));
   });
+  it("0058: Today hands it every task you can see; a blocker in another project (it may be Private) is never named in what's drafted or posted, or sent to Kanbo's AI", async () => {
+    clearStatusDrafts();
+    const onPost = vi.fn(async () => true);
+    const aiStatus = vi.fn(async () => ({ data: null, source: "unavailable" as const }));
+    const tasks = [
+      task("t-secret", "p-deal", { title: "Sign Foo Ltd acquisition SPA", status: "progress" }),
+      task("t-copy", "p1", { title: "Write the hero copy", status: "progress" }),
+      task("t-launch", "p1", { title: "Launch new site", status: "blocked", dependencies: ["t-secret"] }),
+      task("t-press", "p1", { title: "Send the press kit", status: "blocked", dependencies: ["t-copy"] }),
+    ];
+    render(<UpdateSheet project={proj("p1", { visibility: "workspace" })} tasks={tasks} statusUpdates={[]} onPost={onPost} aiStatus={aiStatus} open onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Update" })).not.toHaveValue(""));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Post update/ })); });
+    const sent = JSON.stringify([onPost.mock.calls, aiStatus.mock.calls]);
+    expect(sent).not.toContain("Sign Foo");
+    expect(sent).toContain("a task in another project");
+    expect(sent).toContain("Write the hero copy");     // (a blocker in the same project is still named)
+  });
 });
 
 describe("one merged pill", () => {
