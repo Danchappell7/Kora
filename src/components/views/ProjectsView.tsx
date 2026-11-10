@@ -50,7 +50,8 @@ const SCOPES: { value: Scope; label: string }[] = [
 ];
 const COL_W: Record<Col, string> = {
   name: "minmax(180px, 1fr)", status: "88px", progress: "96px", owner: "44px", open: "44px",
-  overdue: "60px", milestone: "minmax(112px, 176px)", update: "96px", risks: "44px",
+  // (Last update fits "Update missing" on one line)
+  overdue: "60px", milestone: "minmax(112px, 176px)", update: "112px", risks: "44px",
 };
 const COL_LABEL: Record<Col, string> = {
   name: "Project", status: "Status", progress: "Progress", owner: "Owner", open: "Open",

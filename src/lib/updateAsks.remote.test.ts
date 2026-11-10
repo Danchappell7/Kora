@@ -1,0 +1,67 @@
+/* lib/updateAsks against a (mocked) real backend: the asks you can read, ask_for_update and its refusals, the
+   notify call, and before 0053 (no table, no function): nothing offered. */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+
+const { rpc, invoke, from } = vi.hoisted(() => ({ rpc: vi.fn(), invoke: vi.fn(async () => ({ data: null, error: null })), from: vi.fn() }));
+vi.mock("./supabase", () => ({
+  supabase: { rpc: (...a: unknown[]) => rpc(...a), functions: { invoke: (...a: unknown[]) => invoke(...(a as [])) }, from: (...a: unknown[]) => from(...a) },
+  isSupabaseConfigured: true,
+}));
+
+import { askForUpdate, asksOn, loadUpdateAsks, resetUpdateAsks, useAskForUpdate, AskError } from "./updateAsks";
+
+const ROW = { id: "a1", project_id: "p1", workspace_id: "w", asked_by: "me", owner_id: "sana", created_at: "2026-11-13T09:00:00Z" };
+/** a select chain that answers `result` */
+const reads = (result: { data?: unknown; error?: unknown }) => {
+  const chain: Record<string, unknown> = {};
+  for (const k of ["select", "gte", "order"]) chain[k] = () => chain;
+  chain.limit = async () => ({ data: result.data ?? null, error: result.error ?? null });
+  return chain;
+};
+const project = { id: "p1", workspaceId: "w", ownerId: "sana", name: "Launch", emoji: "", color: "" };
+
+beforeEach(() => { rpc.mockReset(); invoke.mockClear(); from.mockReset(); resetUpdateAsks(); });
+
+describe("update asks, signed in", () => {
+  it("reads the last week's asks once per person, and again for someone else", async () => {
+    from.mockReturnValue(reads({ data: [ROW, { bogus: true }] }));
+    expect(await loadUpdateAsks("me")).toEqual([{ id: "a1", projectId: "p1", workspaceId: "w", askedBy: "me", ownerId: "sana", createdAt: "2026-11-13T09:00:00Z" }]);
+    await loadUpdateAsks("me");
+    expect(from).toHaveBeenCalledTimes(1);
+    from.mockReturnValue(reads({ data: [] }));
+    expect(await loadUpdateAsks("theo")).toEqual([]);
+    expect(from).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks through ask_for_update, then has notify tell the owner", async () => {
+    rpc.mockResolvedValue({ data: ROW, error: null });
+    const a = await askForUpdate(project, "me");
+    expect(rpc).toHaveBeenCalledWith("ask_for_update", { p_project: "p1" });
+    expect(a).toMatchObject({ id: "a1", ownerId: "sana" });
+    expect(invoke).toHaveBeenCalledWith("notify", { body: { kind: "update_ask", askId: "a1" } });
+  });
+
+  it("says why when the database refuses", async () => {
+    const cases: [string, string][] = [
+      ["already asked recently", "recent"], ["too many asks today", "recent"], ["not authorized", "not_allowed"],
+      ["not allowed: the owner has left", "not_allowed"], ["connection reset", "failed"],
+    ];
+    for (const [message, reason] of cases) {
+      rpc.mockResolvedValueOnce({ data: null, error: { code: "P0001", message } });
+      await expect(askForUpdate(project, "me")).rejects.toMatchObject({ reason });
+    }
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("before 0053 (no table, no function): nothing to offer, and an ask says it isn't switched on yet", async () => {
+    from.mockReturnValue(reads({ error: { code: "PGRST205", message: "Could not find the table 'public.update_asks' in the schema cache" } }));
+    const { result } = renderHook(() => useAskForUpdate("me", () => "owner"));
+    await waitFor(() => expect(asksOn()).toBe(false));
+    await waitFor(() => expect(result.current).toBeUndefined());
+    const err = await askForUpdate(project, "me").catch((e) => e);
+    expect(err).toBeInstanceOf(AskError);
+    expect(err).toMatchObject({ reason: "unavailable" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+});

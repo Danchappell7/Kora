@@ -37,6 +37,8 @@ export function parseAsk(r: unknown): UpdateAsk | null {
 
 let rows: UpdateAsk[] = [];
 let loaded: "no" | "loading" | "yes" = "no";
+/** whose asks are loaded (another sign-in reads its own) */
+let loadedFor: string | null = null;
 let missing = false;
 let seq = 0;
 const listeners = new Set<() => void>();
@@ -51,10 +53,11 @@ const isMissing = (e: unknown) => {
   return code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205" || /could not find|does not exist|schema cache/i.test(errText(e));
 };
 
-/** Read the last week's asks (once a session; again after `force`). */
-export async function loadUpdateAsks(force = false): Promise<UpdateAsk[]> {
+/** Read the last week's asks for `me` (once per person; again after `force`). */
+export async function loadUpdateAsks(me: string, force = false): Promise<UpdateAsk[]> {
   if (!supabase) { loaded = "yes"; return rows; }
-  if (missing || (loaded !== "no" && !force)) return rows;
+  if (!me || missing || (loaded !== "no" && loadedFor === me && !force)) return rows;
+  if (loadedFor !== me) { rows = []; loadedFor = me; }
   loaded = "loading";
   const since = new Date(Date.now() - ASK_SHOWN_DAYS * 24 * HOUR).toISOString();
   const { data, error } = await supabase.from("update_asks").select(ASK_COLUMNS).gte("created_at", since).order("created_at", { ascending: false }).limit(500);
@@ -69,10 +72,10 @@ export async function loadUpdateAsks(force = false): Promise<UpdateAsk[]> {
   return rows;
 }
 
-/** Every ask you can read, kept current; loads on first use. */
-export function useUpdateAsks(): UpdateAsk[] {
+/** Every ask you (`me`) can read, kept current; loads once you're signed in, and again for someone else. */
+export function useUpdateAsks(me: string): UpdateAsk[] {
   const list = useSyncExternalStore(subscribe, () => rows, () => rows);
-  useEffect(() => { if (loaded === "no") void loadUpdateAsks(); }, []);
+  useEffect(() => { if (me) void loadUpdateAsks(me); }, [me]);
   return list;
 }
 
@@ -148,7 +151,7 @@ export interface AskForUpdate {
 
 /** The rows' AskForUpdate for the signed-in person (`roleIn`: their role in a workspace). */
 export function useAskForUpdate(me: string, roleIn: (workspaceId: string | null | undefined) => Role | null): AskForUpdate | undefined {
-  const asks = useUpdateAsks();
+  const asks = useUpdateAsks(me);
   if (!asksOn()) return undefined;
   return {
     canAsk: (p) => canAskFor(p, me, roleIn(p.workspaceId)),
@@ -159,5 +162,5 @@ export function useAskForUpdate(me: string, roleIn: (workspaceId: string | null 
 
 /** Tests: start again. */
 export function resetUpdateAsks(seed: UpdateAsk[] = []): void {
-  rows = seed; loaded = "no"; missing = false; seq = 0; tell();
+  rows = seed; loaded = "no"; loadedFor = null; missing = false; seq = 0; tell();
 }

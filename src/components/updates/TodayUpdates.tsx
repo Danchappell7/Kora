@@ -47,7 +47,7 @@ export function useTodayUpdates({ me, projects, tasks, statusUpdates, onPost, ai
   aiStatus?: AiStatus;
   readOnly?: boolean;
 }): TodayUpdates {
-  const asks = useUpdateAsks();
+  const asks = useUpdateAsks(me);
   const today = todayISO();
   const workspaces = WORKSPACES;
   const items = useMemo(() => (readOnly || !onPost ? [] : dueUpdatesFor({ me, projects, tasks, statusUpdates, asks, today: KANBO_TODAY, workspaces })),
