@@ -58,7 +58,7 @@ import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject,
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, peopleFor as accessPeople, projectRank, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, mayMakePrivate as mayMakePrivateHere, peopleFor as accessPeople, projectRank, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -904,7 +904,7 @@ export default function App() {
     // here after the reload started, and — when a best-effort query came back short —
     // ones the rest of the snapshot still vouches for. Everything else follows the server.
     const justMade = unseenCreates(recentCreatesRef.current, seq);
-    applyProjects(reloadProjects(b.projects, projectsRef.current, b.tasks, justMade)); applyTags({ ...b.tags, ...tmpTags });
+    applyProjects(reloadProjects(b.projects, projectsRef.current, b.tasks, justMade, !b.workspaces.some((w) => accessOn(w)))); applyTags({ ...b.tags, ...tmpTags });
     const ws = reloadWorkspaces(b.workspaces, workspacesRef.current, b.members, wsMembersRef.current, b.currentUserId, justMade);
     setWorkspaces(ws.workspaces); setReferenceData({ workspaces: ws.workspaces });
     setWsMembers(ws.members); setProfile((cur) => (!initial && b.partial?.profile ? cur : b.profile));
@@ -2511,12 +2511,19 @@ export default function App() {
     if (denyGuest([wsId])) return;
     if (projectId.startsWith("tmp-")) { toastInfo("That project is still saving — try again in a moment."); return; }
     const me = userIdRef.current;
+    // 0058: a copy keeps who can see it (in its own insert) and its people, so a private project's
+    // tasks never land in a Whole workspace copy
+    const gated = accessOn(workspacesRef.current.find((w) => w.id === wsId));
+    const vis = gated ? visibilityOf(src) : undefined;
+    if (vis === "private" && !mayMakePrivateHere(wsId, accessNow())) { toastInfo("You can't make private projects here. Ask an owner."); return; }
+    const people = accessSchema() && projectMembersRef.current ? projectMembersRef.current.filter((m) => m.projectId === projectId).map((m) => m.userId) : undefined;
     try {
-      const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId }, me);
+      const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId, ...(vis ? { visibility: vis } : {}), ...(people?.length ? { memberIds: people } : {}) }, me);
       noteCreated(np.id); // a reload already under way doesn't know about it yet
       applyProjects([...projectsRef.current, np]);
-      if (src.description || src.status || (src.contributorIds?.length ?? 0)) {
-        store.updateProject(np.id, { description: src.description, status: src.status, contributorIds: src.contributorIds }).catch(reportError);
+      if (people?.length) reloadProjectMembers();
+      if (src.description || src.status || (!people && (src.contributorIds?.length ?? 0))) {
+        store.updateProject(np.id, { description: src.description, status: src.status, ...(!people ? { contributorIds: src.contributorIds } : {}) }).catch(reportError);
       }
       // clone sections, keeping an old→new id map
       const secMap = new Map<string, string>();

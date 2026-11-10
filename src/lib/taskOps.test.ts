@@ -222,6 +222,13 @@ describe("reload snapshots", () => {
     expect(reloadProjects([P("p-personal")], prev, [{ projectId: "p-personal" }], new Set()).map((p) => p.id)).toEqual(["p-personal"]);
   });
 
+  it("reloadProjects believes a short list where project access is on (0058: access lost, not a failed query)", () => {
+    const prev = [P("p-personal"), P("a"), P("b")];
+    expect(reloadProjects([P("p-personal")], prev, [{ projectId: "a" }], new Set(), false).map((p) => p.id)).toEqual(["p-personal"]);
+    // something made here meanwhile is still kept
+    expect(reloadProjects([P("p-personal")], prev, [], new Set(["b"]), false).map((p) => p.id)).toEqual(["p-personal", "b"]);
+  });
+
   it("reloadWorkspaces keeps a workspace my membership still vouches for (the workspaces query failed)", () => {
     const prev = [W(null, "Personal"), W("ws1"), W("ws2")];
     const r = reloadWorkspaces([W(null, "Personal")], prev, [M("m1", "ws1", "me")], [], "me", new Set());

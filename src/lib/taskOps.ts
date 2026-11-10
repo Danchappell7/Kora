@@ -113,12 +113,14 @@ export function unseenCreates(recent: Map<string, { seq: number; until: number }
   return out;
 }
 
-/** The project list to show after a reload (optimistic tmp-* rows still saving are kept too). */
-export function reloadProjects<P extends Pick<Project, "id">>(snapshot: P[], prev: P[], snapshotTasks: Pick<Task, "projectId">[], justMade: Set<string>): P[] {
+/** The project list to show after a reload (optimistic tmp-* rows still saving are kept too).
+ *  `carryShort` false (0058: a workspace has project access on): a list that came back short is
+ *  believed, since a project you've just lost access to must go, not be carried. */
+export function reloadProjects<P extends Pick<Project, "id">>(snapshot: P[], prev: P[], snapshotTasks: Pick<Task, "projectId">[], justMade: Set<string>, carryShort = true): P[] {
   const base = keepTmp(snapshot, prev);
   const have = new Set(base.map((p) => p.id));
   // only Personal came back, yet tasks still point at projects we had: the projects query failed
-  const short = snapshot.every((p) => p.id === "p-personal")
+  const short = carryShort && snapshot.every((p) => p.id === "p-personal")
     && snapshotTasks.some((t) => t.projectId !== "p-personal" && !have.has(t.projectId) && prev.some((p) => p.id === t.projectId));
   const carry = prev.filter((p) => !have.has(p.id) && (justMade.has(p.id) || short));
   return carry.length ? [...base, ...carry] : base;

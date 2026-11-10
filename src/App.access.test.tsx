@@ -70,6 +70,14 @@ describe("App · project access on (Foundrise)", () => {
     expect(within(panel).getByRole("radio", { name: /Whole workspace/ })).toBeChecked();
   });
 
+  it("a private project's copy is private too, with its people", async () => {
+    inWs("ws-foundrise", "/p/p-payroll");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "Project actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Duplicate/ }));
+    await waitFor(() => expect(within(sidebarProjects()).getByRole("button", { name: /Payroll & contracts \(copy\)\s*, private/ })).toBeInTheDocument());
+  });
+
   it("New project asks who can see it", async () => {
     inWs("ws-foundrise", "/projects");
     await boot();
