@@ -840,9 +840,12 @@ export interface TaskDetailProps {
   readOnly?: boolean;
   /** 0058: false for a viewer (project access): no composer, replies or reactions, only Follow */
   canComment?: boolean;
-  /** 0058: who can see this task's project (user ids): the only people offered as assignee, collaborator,
-   *  @mention or reviewer. Omit: everyone in its workspace (as before). */
+  /** 0058: who can see this task's project (user ids): the only people offered as assignee, collaborator
+   *  or @mention. Omit: everyone in its workspace (as before). */
   people?: string[];
+  /** 0058: who can comment on it (user ids): the only people offered as an approval's reviewers (a viewer
+   *  can't review). Omit: `people`. */
+  reviewers?: string[];
   /** 0058: the quiet line by the composer on a Members only or Private project ("Only people on X can see this.") */
   audienceNote?: string;
   /** ≥ 1280px: the panel sits beside the content (no scrim, no focus trap,
@@ -931,7 +934,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, people: canSee, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, people: canSee, reviewers, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -1238,7 +1241,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
   const nameOf = (id: string) => assignable.find((p) => p.id === id)?.name ?? getMember(id)?.name;
   // 0047 Approval: the reviewer picker's people (this workspace's active members, you included), guests labelled
-  const approvalPeople: Member[] = activeMembers.map((m) => {
+  const approvalPeople: Member[] = activeMembers.filter((m) => !reviewers || reviewers.includes(m.userId!)).map((m) => {
     const known = getMember(m.userId!);
     return { id: m.userId!, name: known?.name || m.name || m.email, email: m.email, type: m.role === "guest" ? "external" : known?.type === "self" ? "self" : "team", color: known?.color ?? "var(--accent)" };
   });

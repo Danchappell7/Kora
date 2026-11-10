@@ -3,12 +3,13 @@
    has it on with Daniel a viewer on Fee review, and Daniel is a guest at Northlight. Locks, People &
    access, New project's "Who can see this?", view-only pages, the owner's switch with its preview,
    and the guest's view. Everywhere it's off, nothing of it shows. */
-import { describe, it, expect, afterEach, beforeAll } from "vitest";
+import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import App from "./App";
 import { loadAllChunks } from "./lib/lazyLoad";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
+import { store } from "./data/store";
 
 beforeAll(loadAllChunks, 60_000);
 
@@ -24,7 +25,9 @@ const openWorkspaceSettings = async () => {
   return dialog;
 };
 
-afterEach(() => { localStorage.clear(); window.history.replaceState(null, "", "/"); });
+const spies: { mockRestore: () => void }[] = [];
+const spy = <T extends { mockRestore: () => void }>(s: T): T => { spies.push(s); return s; };
+afterEach(() => { localStorage.clear(); window.history.replaceState(null, "", "/"); spies.splice(0).forEach((s) => s.mockRestore()); });
 
 describe("App · project access on (Foundrise)", () => {
   it("locks Members only and Private projects in the sidebar, and nothing else", async () => {
@@ -68,6 +71,17 @@ describe("App · project access on (Foundrise)", () => {
     expect(ask.querySelector("p")?.textContent).toMatch(/^Make Brand Refresh private\? Theo Vance will lose access\./);
     fireEvent.click(within(ask).getByRole("button", { name: "Cancel" }));
     expect(within(panel).getByRole("radio", { name: /Whole workspace/ })).toBeChecked();
+  });
+
+  it("copying someone else's project keeps its owner on the copy (an owner has no row of their own)", async () => {
+    // (the copy itself isn't made: only what it would be made with matters, and the demo's state carries over)
+    const create = spy(vi.spyOn(store, "createProject").mockRejectedValue(new Error("offline")));
+    inWs("ws-foundrise", "/p/p-brand");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "Project actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Duplicate/ }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0].memberIds).toEqual(expect.arrayContaining(["m-3"]));   // Sana, Brand Refresh's owner
   });
 
   it("a private project's copy is private too, with its people", async () => {
@@ -164,6 +178,18 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     const panel = await screen.findByRole("dialog", { name: /Compare partner fee bands/ });
     expect(within(panel).getByText("View only")).toBeInTheDocument();
     expect(within(panel).queryByRole("textbox", { name: "Add a comment" })).toBeNull();
+  });
+  it("quick capture on its page files into a project you can change, not this one", async () => {
+    const create = spy(vi.spyOn(store, "createTask"));
+    inWs("ws-harbour", "/p/p-hb-fees");
+    await boot();
+    expect(await screen.findByRole("heading", { name: "Fee review" })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "q" });
+    const input = await screen.findByLabelText("Quick capture a task");
+    fireEvent.change(input, { target: { value: "Ask Sana about the fee bands" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).toMatchObject({ title: "Ask Sana about the fee bands", projectId: "p-northwind" });
   });
   it("Projects › Requests shows its form, but it can't be filled in, changed or deleted there", async () => {
     inWs("ws-harbour", "/projects/requests");

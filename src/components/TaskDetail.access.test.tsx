@@ -1,7 +1,8 @@
 /* The task panel and project access (0058): a viewer reads (View only, no composer, no replies or
-   reactions), and only the people who can see the project are offered as assignees. */
+   reactions), only the people who can see the project are offered as assignees, and only those who can
+   comment as an approval's reviewers. */
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { TaskDetail } from "./TaskDetail";
 import type { Task, WorkspaceMember } from "../data/types";
 
@@ -26,5 +27,14 @@ describe("TaskDetail · project access", () => {
     expect(screen.getByText("View and comment")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Add a comment" })).toBeInTheDocument();
     expect(screen.getByText("Only people on Fee review can see this.")).toBeInTheDocument();
+  });
+  it("an approval's reviewers are the people who can comment: a viewer isn't offered (the server refuses them)", async () => {
+    // Daniel edits; Theo can only view; Sana owns the workspace
+    render(<TaskDetail {...base} currentUserId="m-self" people={["m-3", "m-self", "m-2"]} reviewers={["m-3", "m-self"]} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Request approval" }));
+    const picker = await screen.findByRole("dialog", { name: "Choose reviewers" });
+    const options = within(picker).getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveAccessibleName("Sana Rao");
   });
 });

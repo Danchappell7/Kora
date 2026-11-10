@@ -59,7 +59,7 @@ import { MemberProjects, type MemberProjectRow } from "./components/project/Memb
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -2398,10 +2398,15 @@ export default function App() {
     const ps = projectsRef.current;
     const usable = (id?: string) => { const p = id ? ps.find((x) => x.id === id) : undefined; return p && !p.archivedAt && !p.id.startsWith("tmp-") ? p.id : undefined; };
     // the project you asked for, else the one you're looking at, else the first
-    // open project in this workspace — never an archived one (it would vanish)
+    // open project in this workspace — never an archived one (it would vanish), and
+    // (0058) one you can change first (with none, the first: the save says why it can't)
+    const ctx = accessNow();
+    const firstOpen = (list: Project[]) => list.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id;
     const projectId = usable(partial.projectId)
+      || (r.view === "project" && projectRank(r.projectId, ctx) >= 3 ? usable(r.projectId) : undefined)
+      || firstOpen(editableProjects(wsId, ctx))
       || (r.view === "project" ? usable(r.projectId) : undefined)
-      || ps.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id
+      || firstOpen(ps)
       || "p-personal";
     const focusMin = partial.focusMin ?? 30;
     const assigneeId = partial.assigneeId || me;
@@ -2420,7 +2425,7 @@ export default function App() {
       position: partial.position ?? Date.now(),
     };
     return { ...base, energy: partial.energy ?? energyOf(base) };
-  }, []);
+  }, [accessNow]);
 
   /** A task's plan is its assignee's: a new task that ends up with someone else
    *  (as asked, or by a rule) starts off their day, whatever the page it came from. */
@@ -2454,7 +2459,9 @@ export default function App() {
     const wsId = workspaceRef.current;
     let projectId = t.projectId;
     if (wsId !== null && projectWs(projectId) !== wsId) {
-      projectId = projectsRef.current.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id ?? projectId;
+      // (one you can change first, 0058; with none, the first: the save says why it can't)
+      const open = (list: Project[]) => list.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id;
+      projectId = open(editableProjects(wsId, accessNow())) ?? open(projectsRef.current) ?? projectId;
     }
     if (denyEdit([projectId])) return;
     // (someone named who isn't in the workspace it's saved in couldn't see it: it stays with you)
@@ -2467,7 +2474,7 @@ export default function App() {
       ...t, id: newTaskId(), projectId, assigneeId, planToday: t.planToday ?? true,
     })));
     noteElsewhere([projectId]);
-  }, [denyEdit, persistTask, applyAutomation, noteElsewhere, unplanIfTheirs, toastInfo]);
+  }, [denyEdit, persistTask, applyAutomation, noteElsewhere, unplanIfTheirs, toastInfo, accessNow]);
 
   /* ---- optimistic tmp-* rows (projects, sections, goals, rules…) ----
      Edits or deletes made before the create returns its real id are queued and
@@ -2580,7 +2587,11 @@ export default function App() {
     const gated = accessOn(workspacesRef.current.find((w) => w.id === wsId));
     const vis = gated ? visibilityOf(src) : undefined;
     if (vis === "private" && !mayMakePrivateHere(wsId, accessNow())) { toastInfo("You can't make private projects here. Ask an owner."); return; }
-    const people = accessSchema() && projectMembersRef.current ? projectMembersRef.current.filter((m) => m.projectId === projectId).map((m) => m.userId) : undefined;
+    // (its owner too, when the copy is someone else's: an owner has no row of their own, and would lose a closed copy)
+    const people = accessSchema() && projectMembersRef.current
+      ? [...new Set([...projectMembersRef.current.filter((m) => m.projectId === projectId).map((m) => m.userId),
+          ...(src.ownerId && src.ownerId !== me && accessRoleOf(accessNow(), wsId, src.ownerId) ? [src.ownerId] : [])])]
+      : undefined;
     try {
       const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId, ...(vis ? { visibility: vis } : {}), ...(people?.length ? { memberIds: people } : {}) }, me);
       noteCreated(np.id); // a reload already under way doesn't know about it yet
@@ -3639,8 +3650,11 @@ export default function App() {
   }, [toastError]);
   const dropOnProject = useCallback((ids: string[], projectId: string) => {
     const p = projectsRef.current.find((x) => x.id === projectId);
-    if (p) dropMoves((m) => m.moveTasksToProject(ids, p, moveDeps()));
-  }, [moveDeps, dropMoves]);
+    // (0058: only into a project you can change, and only tasks you can change)
+    const rows = (tasksRef.current ?? []).filter((t) => ids.includes(t.id));
+    if (!p || denyEdit([projectId, ...rows])) return;
+    dropMoves((m) => m.moveTasksToProject(ids, p, moveDeps()));
+  }, [moveDeps, dropMoves, denyEdit]);
   const dropOnPerson = useCallback((ids: string[], userId: string) => {
     const name = getMember(userId)?.name || wsMembersRef.current.find((m) => m.userId === userId)?.name || "them";
     dropMoves((m) => m.reassignTasks(ids, { id: userId, name }, moveDeps()));
@@ -4172,6 +4186,8 @@ export default function App() {
   const detailProject = detailTask ? projects.find((p) => p.id === detailTask.projectId) : undefined;
   const detailGated = !!detailTask?.workspaceId && accessOn(workspaces.find((w) => w.id === detailTask.workspaceId));
   const detailPeople = detailTask && detailGated && detailProject ? accessPeople(detailProject.id, accessCtx).map((m) => m.userId!) : undefined;
+  // (an approval's reviewers comment on it: never a viewer, D10)
+  const detailReviewers = detailTask && detailGated && detailProject ? accessPeople(detailProject.id, accessCtx, 2).map((m) => m.userId!) : undefined;
   const detailAudience = detailGated && detailProject && visibilityOf(detailProject) !== "workspace" ? `Only people on ${detailProject.name} can see this.` : undefined;
 
   // scope tasks by route: "My tasks" stays within the workspace you're viewing — your
@@ -4250,6 +4266,8 @@ export default function App() {
   if (viewOnlyRef.current.key !== viewOnlyIds.join(",")) viewOnlyRef.current = { key: viewOnlyIds.join(","), set: new Set(viewOnlyIds) };
   const viewOnlyProjects = viewOnlyRef.current.set;
   const planProjectId = wsEditable.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
+  // quick capture's default: the project you're on, if you can change it
+  const captureDefault = routeRef.current.view === "project" && wsEditable.some((p) => p.id === routeRef.current.projectId) ? routeRef.current.projectId : undefined;
   const askProjects = wsProjects.map((p) => ({ id: p.id, name: p.name }));
   const askGoals = goalExtras || goals.length ? goalFlow.ask(workspace) : [];
   const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects, askGoals]);
@@ -4706,7 +4724,7 @@ export default function App() {
       // 0048: the Views group (pinned saved views, live counts); tasks dropped on a project row move there, on Today plan it
       // (until the counts' code is here the Views group counts them itself: it brings the same code with it)
       views={sv.views} viewCounts={countsLib ? savedViewCounts : undefined}
-      onDropTasksOnProject={activeReadOnly ? undefined : dropOnProject} onDropTasksOnToday={activeReadOnly ? undefined : dropOnToday}
+      onDropTasksOnProject={activeReadOnly ? undefined : dropOnProject} onDropTasksOnToday={activeReadOnly ? undefined : dropOnToday} viewOnlyProjects={viewOnlyProjects}
       help={(
         <Suspense fallback={null}>
           <HelpMenu onStartTour={() => startTourNow()} onOpenShortcuts={() => openSettings("shortcuts")}
@@ -4879,7 +4897,7 @@ export default function App() {
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
           <TaskDetail taskId={detailId} ai={aiOn} onApprovalsChange={onApprovalsChange} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
-            readOnly={detailReadOnly} canComment={detailRank >= 2} people={detailPeople} audienceNote={detailAudience}
+            readOnly={detailReadOnly} canComment={detailRank >= 2} people={detailPeople} reviewers={detailReviewers} audienceNote={detailAudience}
             docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })}
             onSaveAsTemplate={(id) => setSaveTemplateFor(id)}
             goalRow={(t) => <GoalServesRow goals={goalFlow.forTask(t)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />} />
@@ -4980,16 +4998,16 @@ export default function App() {
         billing={{ enabled: BILLING_ENABLED, subscription, onUpgrade: () => setUpgradeOpen(true), onManageBilling: manageBilling }}
         // (Settings closes itself first, so the import dialog isn't underneath)
         onImport={activeReadOnly ? undefined : () => openImport()} /></Deferred>
-      <Deferred when={quickCaptureOpen}><QuickCapture open={quickCaptureOpen} onClose={() => setQuickCaptureOpen(false)} projects={wsProjects} members={assignees}
-        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined} onCreate={quickAddTask} tags={tags}
+      <Deferred when={quickCaptureOpen}><QuickCapture open={quickCaptureOpen} onClose={() => setQuickCaptureOpen(false)} projects={wsEditable} members={assignees}
+        defaultProjectId={captureDefault} onCreate={quickAddTask} tags={tags}
         onPasteNotes={(text) => openExtract(text)} onImportRows={(rows) => importTasks(rows)}
         // 0048: "/" picks a template; its whole plan goes through App's create paths
         onApplyTemplate={applyTemplatePlan} currentUserId={currentUserId}
         // a paste longer than Quick capture takes goes to Import tasks, with the text in
         onOpenImport={(text) => { setQuickCaptureOpen(false); openImport(text); }} /></Deferred>
       {/* 0048 phone: the phone bar's + (live NL highlighting, recent projects); the same create path as Quick capture */}
-      <Deferred when={quickAddOpen}><QuickAddSheet open={quickAddOpen} onClose={() => setQuickAddOpen(false)} projects={wsProjects} members={assignees} currentUserId={currentUserId}
-        defaultProjectId={routeRef.current.view === "project" ? routeRef.current.projectId : undefined}
+      <Deferred when={quickAddOpen}><QuickAddSheet open={quickAddOpen} onClose={() => setQuickAddOpen(false)} projects={wsEditable} members={assignees} currentUserId={currentUserId}
+        defaultProjectId={captureDefault}
         recentProjectIds={quickRecent}
         onCreate={quickAddTask}
         // "/" (or "From a template") picks a template, as Quick capture's field does; the same create path

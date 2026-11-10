@@ -49,7 +49,7 @@ const TASKS = [
   task("tokens", { status: "review", tags: ["design"], projectId: "p-brand" }),
 ];
 
-type Opts = { route?: Route; myRole?: Role; currentUserId?: string; viewCounts?: Record<string, number | null>; onDropTasksOnProject?: (ids: string[], pid: string) => void; onEditView?: (v: SavedView) => void };
+type Opts = { route?: Route; myRole?: Role; currentUserId?: string; viewCounts?: Record<string, number | null>; onDropTasksOnProject?: (ids: string[], pid: string) => void; onEditView?: (v: SavedView) => void; viewOnlyProjects?: ReadonlySet<string> };
 function Harness({ o, setRoute }: { o: Opts; setRoute: (r: Route) => void }) {
   const uid = o.currentUserId ?? "m-self";
   const { views } = useSavedViews("ws-foundrise", uid);
@@ -57,7 +57,8 @@ function Harness({ o, setRoute }: { o: Opts; setRoute: (r: Route) => void }) {
     <Sidebar route={o.route ?? { view: "plan" }} setRoute={setRoute} workspace="ws-foundrise" setWorkspace={vi.fn()} workspaces={WORKSPACES}
       focus={focus} openFocus={vi.fn()} tasks={TASKS} projects={PROJECTS} inboxCount={0} currentUserId={uid}
       onNewProject={vi.fn()} onDeleteProject={vi.fn()} onNewWorkspace={vi.fn()} onUpgrade={vi.fn()} onManageBilling={vi.fn()}
-      myRole={o.myRole ?? "owner"} guardRoute={false} views={views} viewCounts={o.viewCounts} onDropTasksOnProject={o.onDropTasksOnProject} onEditView={o.onEditView} />
+      myRole={o.myRole ?? "owner"} guardRoute={false} views={views} viewCounts={o.viewCounts} onDropTasksOnProject={o.onDropTasksOnProject} onEditView={o.onEditView}
+      viewOnlyProjects={o.viewOnlyProjects} />
   );
 }
 async function renderViews(o: Opts = {}) {
@@ -335,5 +336,12 @@ describe("Sidebar › project rows take dropped tasks", () => {
     targets.length = 0;
     await renderViews({});
     expect(targets.filter((t) => t.target.kind === "project").every((t) => t.disabled)).toBe(true);
+  });
+
+  it("a project you can only view (0058) takes nothing; the rest still do", async () => {
+    await renderViews({ myRole: "member", onDropTasksOnProject: vi.fn(), viewOnlyProjects: new Set(["p-launch"]) });
+    const last = (id: string) => targets.filter((t) => t.target.kind === "project" && t.target.id === id).slice(-1)[0]!;
+    expect(last("p-launch").disabled).toBe(true);
+    expect(last("p-brand").disabled).toBe(false);
   });
 });

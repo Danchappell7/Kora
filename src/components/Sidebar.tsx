@@ -448,7 +448,7 @@ function FocusPill({ focus, onOpen, taskTitle }: { focus: FocusTimer; onOpen: ()
 const PLACE_ICON: Partial<Record<NavItem["id"], IconName>> = { projects: "kanbo" };
 
 export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, savedSearches = [], savedSearchCounts, onDeleteSavedSearch, myRole, guardRoute = true, theme, onToggleTheme, teamBadge, onOpenSearch, onOpenShortcuts,
-  views, viewCounts, onOpenView, onEditView, onReorderViews, onDropTasksOnProject, onDropTasksOnToday, help, wsSignals }: {
+  views, viewCounts, onOpenView, onEditView, onReorderViews, onDropTasksOnProject, onDropTasksOnToday, help, wsSignals, viewOnlyProjects }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -512,6 +512,8 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   /** tasks dropped on a project row (lib/dnd): move them (lib/dropActions moveTasksToProject).
    *  Without it, or for guests, the rows take no drops. */
   onDropTasksOnProject?: (taskIds: string[], projectId: string) => void;
+  /** 0058: projects you can view but not change (project access on): their rows take no drops */
+  viewOnlyProjects?: ReadonlySet<string>;
   /** tasks dropped on Today (lib/dnd, pointer only; T in a list is the keyboard way): on today's list, no
    *  time. Holding one over Today opens it (spring-loading), so it can land on a time. */
   onDropTasksOnToday?: (taskIds: string[]) => void;
@@ -870,7 +872,7 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
                   isPinned={pinned.has(p.id)} archivable={!!onArchiveProject && canArchive(p)} deletable={canDelete(p)}
                   onOpen={() => setRoute({ view: "project", projectId: p.id })} onTogglePin={() => togglePin(p.id)}
                   onArchive={() => onArchiveProject?.(p.id)} onDelete={() => onDeleteProject(p.id)}
-                  onDropTasks={!guest && onDropTasksOnProject ? onDropTasksOnProject : null} />
+                  onDropTasks={!guest && onDropTasksOnProject && !viewOnlyProjects?.has(p.id) ? onDropTasksOnProject : null} />
               ))}
             </div>
           )}
