@@ -2,25 +2,31 @@
    KANBO — Projects › All: the workspace's project directory.
    Gallery (the default): one card per project wearing its identity
    (its cover, its tile), with its status, progress, open and
-   overdue work, how fresh its last update is, Kanbo's one-line
-   read and its people. Table: the dense view, one row per project
+   overdue work, where its update stands against its update day
+   (0053: "Update missing", "Due today", or how fresh the last one
+   is), Kanbo's one-line read and its people. Table: the dense view, one row per project
    with owner, next milestone and risks as well. Draft or post an
    update from either. Phones, touch screens (no hover to reveal a
    row's buttons) and narrow columns always get the gallery, with
-   each card's buttons shown.
+   each card's buttons shown. A workspace's owners and admins can
+   ask a project's owner for its update from its row.
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { AiMark, Avatar, AvatarStack, Button, EmptyState, Icon, IconButton, Meter, Pill, ProgressRing, ProjectCover, ProjectTile, Segmented, projectIdentity } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { getMember, KANBO_TODAY, todayISO } from "../../data/data";
+import { getMember, KANBO_TODAY, todayISO, WORKSPACES } from "../../data/data";
 import type { Task, Project, StatusUpdate, StatusKind } from "../../data/types";
 import type { AiOutcome } from "../../lib/askTypes";
 import { pathOf } from "../../lib/nav";
 import { fmtAge, fmtShortDay, indexTasks, isStale, kanbosRead, oldestTaskAge, statusFacts, type StatusFacts } from "../../lib/statusDraft";
 import { projectPeople, projectStatusPill } from "../project/ProjectHeader";
 import { ComposerPopover, POP_STYLE, useStatusComposer, type AiStatus, type PostStatus } from "../project/StatusComposer";
+import { projectRhythmState, updateFreshness, type UpdateFreshness } from "../../lib/updateRhythm";
+import type { AskForUpdate } from "../../lib/updateAsks";
+import { AskForUpdateButton, useAskAction } from "../updates/AskForUpdate";
 import "../project/projects.css";
+import "../updates/updates.css";
 
 type Scope = "all" | "mine" | "risk";
 type Layout = "gallery" | "table";
@@ -44,7 +50,8 @@ const SCOPES: { value: Scope; label: string }[] = [
 ];
 const COL_W: Record<Col, string> = {
   name: "minmax(180px, 1fr)", status: "88px", progress: "96px", owner: "44px", open: "44px",
-  overdue: "60px", milestone: "minmax(112px, 176px)", update: "96px", risks: "44px",
+  // (Last update fits "Update missing" on one line)
+  overdue: "60px", milestone: "minmax(112px, 176px)", update: "112px", risks: "44px",
 };
 const COL_LABEL: Record<Col, string> = {
   name: "Project", status: "Status", progress: "Progress", owner: "Owner", open: "Open",
@@ -82,12 +89,14 @@ interface Row {
   pill: ReturnType<typeof projectStatusPill>;
   read: string;
   stale: boolean;
+  /** where its update stands against its update day (0053), or the 14-day rule before it */
+  fresh: UpdateFreshness;
   risks: number;
   mine: boolean;
   atRisk: boolean;
 }
 
-export function ProjectsView({ projects, tasks, statusUpdates, members: _members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject, goalChip }: {
+export function ProjectsView({ projects, tasks, statusUpdates, members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject, goalChip, asks }: {
   projects: Project[];
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -103,9 +112,13 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
   risksByProject?: Record<string, number>;
   /** 0052: the goal a project serves ("Serves: Q4 · Grow weekly actives"), on its card and its row */
   goalChip?: (projectId: string) => ReactNode;
+  /** 0053: "Ask for an update" on projects someone else owns (the workspace's owners and admins) */
+  asks?: AskForUpdate;
 }) {
   // the built-in Personal project is where loose tasks live, not a project anyone runs
   const real = useMemo(() => projects.filter((p) => p.id !== "p-personal"), [projects]);
+  // who an Ask in an update can be for: this workspace's people, never you
+  const askPeople = useMemo(() => members.filter((m) => m.id !== currentUserId), [members, currentUserId]);
   const phone = useMediaQuery("(max-width: 859px)");
   // no hover (a tablet): a table row's Draft and Post update could never be revealed, so cards
   const touch = useMediaQuery("(hover: none)");
@@ -144,8 +157,12 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     const mine = p.ownerId === currentUserId || (p.contributorIds ?? []).includes(currentUserId)
       || own.some((t) => t.assigneeId === currentUserId && t.status !== "done");
     const atRisk = pill.tone === "warn" || pill.tone === "signal" || facts.health === "at_risk" || facts.health === "off_track" || risks > 0;
-    return { p, facts, pill, read: kanbosRead(facts, { withUpdate: false }), stale: isStale(facts, oldestTaskAge(own, p.id, KANBO_TODAY)), risks, mine, atRisk };
-  }), [real, tasks, idx, statusUpdates, risksByProject, currentUserId, today]);
+    const stale = isStale(facts, oldestTaskAge(own, p.id, KANBO_TODAY));
+    const fresh = updateFreshness(projectRhythmState(p, own, facts.latest, KANBO_TODAY), facts.lastUpdateDays, stale, today);
+    return { p, facts, pill, read: kanbosRead(facts, { withUpdate: false }), stale, fresh, risks, mine, atRisk };
+    // (each project's update day is its workspace's unless it chose one: WORKSPACES changes when one does)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [real, tasks, idx, statusUpdates, risksByProject, currentUserId, today, WORKSPACES]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -154,7 +171,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     const byName = (a: Row, b: Row) => a.p.name.localeCompare(b.p.name, "en-GB", { sensitivity: "base" });
     const cmp: Record<SortKey, (a: Row, b: Row) => number> = {
       name: byName,
-      status: (a, b) => TONE_RANK[a.pill.tone] - TONE_RANK[b.pill.tone] || Number(b.stale) - Number(a.stale) || byName(a, b),
+      status: (a, b) => TONE_RANK[a.pill.tone] - TONE_RANK[b.pill.tone] || a.fresh.rank - b.fresh.rank || byName(a, b),
       progress: (a, b) => b.facts.pct - a.facts.pct || byName(a, b),
       update: (a, b) => (a.facts.lastUpdateDays ?? Infinity) - (b.facts.lastUpdateDays ?? Infinity) || byName(a, b),
     };
@@ -184,7 +201,10 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
     // once the menu has handed focus back to the ⋯, the composer opens from it
     if (id) window.setTimeout(() => openComposerAt(at, id, mode), 0);
   };
-  const cardMenuName = cardMenu ? real.find((p) => p.id === cardMenu)?.name ?? "" : "";
+  const cardMenuProject = cardMenu ? real.find((p) => p.id === cardMenu) : undefined;
+  const cardMenuName = cardMenuProject?.name ?? "";
+  // (a leader's ⋯ also asks the owner, when the update's due or missing)
+  const menuAsk = useAskAction(cardMenuProject, asks);
   const composerProject = composer ? real.find((p) => p.id === composer.id) : undefined;
 
   const openRow = (id: string) => {
@@ -237,9 +257,14 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
       </>
     );
   };
-  const rowActions = (r: Row) => canPost ? (
+  const canAsk = (r: Row) => !!asks?.canAsk(r.p);
+  // on a card, asking is offered where the update's due or missing (the table's row offers it always)
+  const askOnCard = (r: Row) => canAsk(r) && (r.fresh.kind === "missing" || r.fresh.kind === "due");
+  const rowActions = (r: Row) => canPost || canAsk(r) ? (
     <div className="kpj-rowacts" data-open={composer?.open && composer.id === r.p.id ? "true" : undefined} onClick={(e) => e.stopPropagation()}>
-      {updateButtons(r)}
+      {/* (a leader asks whoever owns it; Ask stays put once asked, so it reads "Asked") */}
+      <AskForUpdateButton project={r.p} asks={asks} compact />
+      {canPost && updateButtons(r)}
     </div>
   ) : null;
 
@@ -276,7 +301,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
           <span className="kpj-ms-date">{fmtShortDay(f.nextMilestone.dueDate, KANBO_TODAY)}</span>
         </span>
       ) : <Dash sr="No milestone" />;
-      case "update": return <UpdateAge facts={f} stale={r.stale} />;
+      case "update": return <UpdateAge facts={f} fresh={r.fresh} />;
       case "risks": return r.risks ? <span className="kpj-signal">{r.risks}</span> : <Dash sr="No risks" />;
     }
   };
@@ -340,7 +365,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
                       <span className="kpj-gcard-meta">
                         {r.facts.openAll} open
                         {r.facts.overdue.length > 0 && <> · <span className="kpj-signal">{r.facts.overdue.length} overdue</span></>}
-                        {" · "}<UpdateAge facts={r.facts} stale={r.stale} long />
+                        {" · "}<UpdateAge facts={r.facts} fresh={r.fresh} long />
                       </span>
                       {people.length > 0 && (
                         <span className="kpj-gcard-people" role="img" aria-label={`People: ${names}`} title={names}>
@@ -350,13 +375,13 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
                       )}
                     </div>
                   </div>
-                  {canPost && (touch ? (
+                  {(canPost || askOnCard(r)) && (touch ? (
                     <div className="kpj-gcard-more">
                       <IconButton icon="more" size="sm" label={`Update ${r.p.name}`} aria-haspopup="menu"
                         aria-expanded={cardMenu === r.p.id || (!!composer?.open && composer.id === r.p.id)}
                         onClick={(e) => { e.stopPropagation(); cardMenuRef.current = e.currentTarget; setCardMenu((m) => (m === r.p.id ? null : r.p.id)); }} />
                     </div>
-                  ) : <div className="kpj-gcard-acts">{updateButtons(r)}</div>)}
+                  ) : <div className="kpj-gcard-acts">{askOnCard(r) && <AskForUpdateButton project={r.p} asks={asks} compact />}{canPost && updateButtons(r)}</div>)}
                 </li>
               );
             })}
@@ -387,32 +412,49 @@ export function ProjectsView({ projects, tasks, statusUpdates, members: _members
       </div>
       <Popover open={!!cardMenu} anchorRef={cardMenuRef} onClose={() => setCardMenu(null)} role="menu" label={`Update ${cardMenuName}`}
         align="end" minWidth={200} className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
-        <button type="button" role="menuitem" className="kpj-menu-item" onClick={() => pickFromCardMenu("draft")}>
-          <AiMark size={16} />Draft update
-        </button>
-        <button type="button" role="menuitem" className="kpj-menu-item" onClick={() => pickFromCardMenu("post")}>
-          <Icon name="send" size={16} sw={1.75} />Post update
-        </button>
+        {canPost && <>
+          <button type="button" role="menuitem" className="kpj-menu-item" onClick={() => pickFromCardMenu("draft")}>
+            <AiMark size={16} />Draft update
+          </button>
+          <button type="button" role="menuitem" className="kpj-menu-item" onClick={() => pickFromCardMenu("post")}>
+            <Icon name="send" size={16} sw={1.75} />Post update
+          </button>
+        </>}
+        {menuAsk.can && (
+          <button type="button" role="menuitem" className="kpj-menu-item" disabled={!!menuAsk.asked} aria-label={menuAsk.asked ? "Asked for an update" : menuAsk.label}
+            onClick={() => { setCardMenu(null); void menuAsk.ask(); }}>
+            <Icon name={menuAsk.asked ? "check" : "bell"} size={16} sw={1.75} />{menuAsk.asked ? "Asked for an update" : "Ask for an update"}
+          </button>
+        )}
       </Popover>
       {composer && composerProject && (
         <RowComposer project={composerProject} tasks={tasks} statusUpdates={statusUpdates} onPost={onPostUpdate} aiStatus={aiStatus}
-          request={composer} anchorRef={anchorRef} onClose={() => setComposer((c) => (c ? { ...c, open: false } : c))} />
+          request={composer} anchorRef={anchorRef} onClose={() => setComposer((c) => (c ? { ...c, open: false } : c))}
+          people={askPeople} />
       )}
     </div>
   );
 }
 
-/** "2d" · "today" · "16d · stale" (warn) · "none · stale" (warn); `long` reads as a
- *  sentence for cards, and there the age itself warns: amber after a week, red after two. */
-function UpdateAge({ facts, stale, long }: { facts: StatusFacts; stale: boolean; long?: boolean }) {
+/** With an update day (0053): "Update missing" (warn) · "Due today" · "2d" · "today" · "none";
+ *  `long` reads as a sentence for cards. Before 0053, and in Personal: "16d · stale" (warn) ·
+ *  "none · stale" (warn), and on cards the age itself warns, amber after a week, red after two. */
+function UpdateAge({ facts, fresh, long }: { facts: StatusFacts; fresh: UpdateFreshness; long?: boolean }) {
   const d = facts.lastUpdateDays;
+  const age = d == null ? "" : fmtAge(d);
+  const text = d == null ? "" : long ? (d === 0 ? "Updated today" : `Updated ${age} ago`) : age;
+  if (fresh.byDay) {
+    if (fresh.kind === "missing") return <span className="kpj-warn" title={fresh.title}>{fresh.text}</span>;
+    if (fresh.kind === "due") return <span className="kup-fresh" data-kind="due" title={fresh.title}>{long ? fresh.text : fresh.short}</span>;
+    if (d == null) return <span className="kpj-muted" title={fresh.title}>{long ? "No update yet" : "none"}</span>;
+    return <span title={fresh.title}>{text}</span>;
+  }
+  const stale = fresh.kind === "missing";
   if (d == null) {
     return stale
       ? <span className="kpj-warn" title="No status update posted yet">{long ? "No update yet" : "none · stale"}</span>
       : <span className="kpj-muted" title="No status update posted yet">{long ? "No update yet" : "none"}</span>;
   }
-  const age = fmtAge(d);
-  const text = long ? (d === 0 ? "Updated today" : `Updated ${age} ago`) : age;
   const title = d === 0 ? "Last update today" : `Last update ${d} ${d === 1 ? "day" : "days"} ago`;
   if (long) {
     const tone = d > 14 ? "kpj-signal" : d > 7 ? "kpj-warn" : undefined;
@@ -424,7 +466,7 @@ function UpdateAge({ facts, stale, long }: { facts: StatusFacts; stale: boolean;
 }
 
 /** The directory's composer: "Draft update" has Kanbo write it, "Post update" opens an empty field. */
-function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request, anchorRef, onClose }: {
+function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request, anchorRef, onClose, people }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -433,6 +475,8 @@ function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request,
   request: { id: string; open: boolean; mode: "draft" | "post"; seq: number };
   anchorRef: React.RefObject<HTMLElement>;
   onClose: () => void;
+  /** who an Ask can be for */
+  people?: { id: string; name: string }[];
 }) {
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost, aiStatus, onPosted: onClose });
   useEffect(() => {
@@ -440,5 +484,5 @@ function RowComposer({ project, tasks, statusUpdates, onPost, aiStatus, request,
     if (request.mode === "draft") c.ensureDraft(); else c.startFresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request.seq]);
-  return <ComposerPopover open={request.open} anchorRef={anchorRef} onClose={onClose} c={c} />;
+  return <ComposerPopover open={request.open} anchorRef={anchorRef} onClose={onClose} c={c} people={people} />;
 }

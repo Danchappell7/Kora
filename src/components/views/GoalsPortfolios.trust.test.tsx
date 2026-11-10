@@ -130,8 +130,9 @@ describe("PortfoliosView — the numbers and who said it", () => {
       { id: "u2", projectId: "p2", status: "on_track", summary: "Palette shipped", createdAt: "2026-11-08T11:00:00Z", authorId: null },
     ];
     render(<PortfoliosView {...base} statusUpdates={updates} />);
-    expect(screen.getByText("Update: At risk").closest("[title]")?.getAttribute("title")).toContain(`, ${maya.name}): Deck is late`);
-    expect(screen.getByText("Update: On track").closest("[title]")?.getAttribute("title")).toContain(", Former member): Palette shipped");
+    // one pill per project: the lead's call, with who said what on hover and focus (and to a screen reader)
+    expect(screen.getByRole("img", { name: /^At risk\. Lead says At risk/ }).getAttribute("data-tip")).toContain(`, ${maya.name}): Deck is late`);
+    expect(screen.getByRole("img", { name: /^On track\. Lead says On track/ }).getAttribute("data-tip")).toContain(", Former member): Palette shipped");
   });
 
   it("an archived project keeps its % in the portfolio, as on the goal linked to it, and says it's archived", () => {
@@ -180,7 +181,7 @@ describe("PortfoliosView — the numbers and who said it", () => {
     const { container } = render(<PortfoliosView {...base} readOnly />);
     expect(screen.getByRole("heading", { name: "Q3" })).toBeInTheDocument();
     expect(container.querySelectorAll("input")).toHaveLength(0);
-    expect(screen.queryByRole("button", { name: /New portfolio|Add a project|Delete portfolio|Remove Launch/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /New portfolio|Add a project|Add projects|Delete portfolio|Remove Launch/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Open project Launch" })).toBeInTheDocument();
   });
   it("a guest with nothing to read is told who portfolios are for", () => {

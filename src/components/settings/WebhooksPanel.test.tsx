@@ -195,6 +195,7 @@ describe("wording", () => {
   it("events read as a summary", () => {
     expect(eventsSummary(["task.created", "task.completed"], false)).toBe("Task created, Task completed");
     expect(eventsSummary(["task.created", "task.updated", "task.deleted"], false)).toBe("3 events");
-    expect(eventsSummary(["task.created", "task.updated", "task.completed", "task.deleted", "comment.created", "project.created", "project.updated"], true)).toBe("All events");
+    // (0054: a personal endpoint hears your own project updates too)
+    expect(eventsSummary(["task.created", "task.updated", "task.completed", "task.deleted", "comment.created", "project.created", "project.updated", "status_update.posted"], true)).toBe("All events");
   });
 });

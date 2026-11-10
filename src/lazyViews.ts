@@ -54,6 +54,7 @@ export const SearchView = lazyComponent(search, (m) => m.SearchView, "SearchView
 export const ProjectsView = lazyComponent(projectsView, (m) => m.ProjectsView, "ProjectsView");
 export const GoalsView = lazyComponent(goals, (m) => m.GoalsView, "GoalsView");
 export const PortfoliosView = lazyComponent(goals, (m) => m.PortfoliosView, "PortfoliosView");
+export const PortfolioPage = lazyComponent(goals, (m) => m.PortfolioPage, "PortfolioPage");
 export const GroupView = lazyComponent(group, (m) => m.GroupView, "GroupView");
 export const AutomationsView = lazyComponent(rules, (m) => m.AutomationsView, "AutomationsView");
 export const FormsView = lazyComponent(rules, (m) => m.FormsView, "FormsView");

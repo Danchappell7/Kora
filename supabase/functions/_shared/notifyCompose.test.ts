@@ -1,6 +1,9 @@
 // What a notification says: lone notices, bundles, the due list and the digest.
 import { describe, expect, it } from "vitest";
-import { composeBundle, digestEmail, digestThreads, dueEmail, eventEmail, filterDigestItems, kudosEmail, kudosPush, noticeLine, peopleList, type ComposeRow, type DigestItem } from "./notifyCompose";
+import {
+  composeBundle, digestEmail, digestThreads, dueEmail, eventEmail, filterDigestItems, kudosEmail, kudosPush, noticeLine, peopleList,
+  postedLine, statusWord, updateAskEmail, updateAskPush, updateDueEmail, updateDuePush, updatePostedEmail, updatePostedPush, type ComposeRow, type DigestItem,
+} from "./notifyCompose";
 
 const T = "22222222-2222-4222-8222-222222222222";
 const row = (kind: string, actor: string, at: string, title = "Launch deck"): ComposeRow => ({
@@ -123,5 +126,85 @@ describe("kudos notices (0048: notify { kind: 'kudos' })", () => {
     expect(m.html).toContain("Q3 &amp; launch");
     expect(m.html).toContain('href="https://kanbo.test/?task=t-1"');
     expect(kudosEmail("Sana", "🎉", "", "Deck", "").html).not.toContain("Open in Kanbo");
+  });
+});
+
+describe("project updates (0053: the update-day reminder and Ask for an update)", () => {
+  const P = "33333333-3333-4333-8333-333333333333";
+  it("the reminder: one project says when it's due, several list themselves; it opens Today", () => {
+    const one = updateDuePush([{ projectId: P, name: "Q3 launch", when: "today", followUp: 0 }]);
+    expect(one).toMatchObject({ title: "Your Q3 launch update is due today", url: "/today", tag: "kanbo-updates", kind: "update" });
+    expect(updateDuePush([{ projectId: P, name: "Q3 launch", when: "Fri 6 Nov", followUp: 1 }]).title).toBe("Your Q3 launch update was due Fri 6 Nov");
+    const many = updateDuePush([{ projectId: P, name: "Q3 launch", when: "today", followUp: 0 }, { projectId: T, name: "Brand", when: "today", followUp: 0 }]);
+    expect(many).toMatchObject({ title: "2 project updates are waiting on you", body: "Q3 launch and Brand. Kanbo has drafts ready." });
+  });
+  it("its email links each project's Updates tab, escaped, and says nothing posts on its own", () => {
+    const m = updateDueEmail([{ projectId: P, name: "<b>Q3</b> launch", when: "today", followUp: 0 }], "https://www.kanbo.co.uk");
+    expect(m.subject).toBe("Your <b>Q3</b> launch update is due today");
+    expect(m.html).toContain("&lt;b&gt;Q3&lt;/b&gt;");
+    expect(m.html).not.toContain("<b>Q3</b>");
+    expect(m.html).toContain(`https://www.kanbo.co.uk/p/${P}/updates`);
+    expect(m.text).toMatch(/Check it, change what you like, and post/);
+    expect(m.text).toMatch(/at most twice more/);
+  });
+  it("an ask names who asked and opens the project's updates", () => {
+    expect(updateAskPush("Theo Vance", "Winter League", P)).toMatchObject({ title: "Theo Vance asked for an update", body: "On Winter League. Kanbo has a draft ready.", url: `/p/${P}/updates`, kind: "update" });
+    expect(updateAskEmail("Theo Vance", "Winter League", "https://x.example/p/1/updates").subject).toBe("Theo Vance asked for an update on Winter League");
+    expect(noticeLine("update", "Theo Vance")).toBe("Theo Vance asked for an update");
+  });
+  it("two held asks on one project go as one, opening the project rather than the Inbox", () => {
+    const ask = (actor: string, at: string): ComposeRow => ({ kind: "update", actor_name: actor, title: "Winter League", task_id: null, created_at: `2026-10-09T09:0${at}:00Z`,
+      payload: { v: 1, line: noticeLine("update", actor), url: `/p/${P}/updates` } });
+    const b = composeBundle([ask("Theo Vance", "1"), ask("Ada Lovelace", "2")], "https://www.kanbo.co.uk");
+    expect(b.push?.url).toBe(`/p/${P}/updates`);
+    expect(b.email?.html).toContain("Theo Vance asked for an update");
+  });
+  it("the digest carries your project updates, and an update alone is worth a digest", () => {
+    const m = digestEmail([], [], "2026-10-09", "https://www.kanbo.co.uk", { updates: [{ projectId: P, name: "Q3 launch", line: "due today" }] })!;
+    expect(m.subject).toBe("Your Kanbo digest: your project update");
+    expect(m.html).toContain(`/p/${P}/updates`);
+    expect(m.text).toMatch(/Kanbo has a draft ready on Today/);
+  });
+});
+
+describe("a posted update (0054)", () => {
+  const u = { actorName: "Sana Rao", projectName: "Brand <Refresh>", projectId: "p-1", status: "at_risk", summary: "Hero waits on copy.", ask: "Daniel, approve the hero by Thursday?" };
+  it("the people its Ask names: a push and an email that lead with the ask", () => {
+    const p = updatePostedPush(u);
+    expect(p).toMatchObject({ title: "Sana Rao asked you something", url: "/p/p-1/updates", kind: "update" });
+    expect(p.body).toBe("Brand <Refresh>: Daniel, approve the hero by Thursday?");
+    const m = updatePostedEmail(u, true, "https://www.kanbo.co.uk/p/p-1/updates");
+    expect(m.subject).toBe("Sana Rao asked you something in the Brand <Refresh> update");
+    expect(m.html).toContain("Daniel, approve the hero by Thursday?");
+    expect(m.html).toContain("Brand &lt;Refresh&gt;");
+    expect(postedLine(u, true)).toBe("Sana Rao asked you something in an update");
+  });
+  it("everyone else: an FYI email with the call and the words", () => {
+    const m = updatePostedEmail({ ...u, ask: null }, false, "");
+    expect(m.subject).toBe("Sana Rao posted an update on Brand <Refresh>: At risk");
+    expect(m.html).toContain("Hero waits on copy.");
+    expect(postedLine(u, false)).toBe("Sana Rao posted an update");
+    expect(statusWord("on_hold")).toBe("On hold");
+    expect(statusWord("great")).toBe("");
+  });
+  it("the digest: an Ask for you, replies on yours, and what was posted, under the project", () => {
+    const it = (id: string, meta: Record<string, unknown>, who = "Sana Rao"): DigestItem =>
+      ({ id, task_id: null, task_title: "Brand Refresh", kind: "update", detail: who, created_at: `2026-11-10T09:0${id}:00Z`, meta });
+    const [t] = digestThreads([it("1", { update_event: "posted", ask: true, status_update_id: "su" })]);
+    expect(t).toMatchObject({ title: "Brand Refresh", lines: ["Sana asked you something in an update"] });
+    const [r] = digestThreads([it("2", { update_event: "comment", ask: false }, "Maya Lin")]);
+    expect(r.lines).toEqual(["1 reply on your update from Maya"]);
+    const [f] = digestThreads([it("3", { update_event: "posted", ask: false })]);
+    expect(f.lines).toEqual(["Sana posted an update"]);
+  });
+  it("the digest: a busy update is one thread for its project, not a line per reply", () => {
+    const reply = (id: string, who: string, project = "p-1"): DigestItem =>
+      ({ id, task_id: null, task_title: project === "p-1" ? "Brand Refresh" : "Launch", kind: "update", detail: who, created_at: `2026-11-10T09:0${id}:00Z`,
+        meta: { update_event: "comment", ask: false, project_id: project, status_update_id: "su" } });
+    const threads = digestThreads([reply("1", "Maya Lin"), reply("2", "Theo Vance"), reply("3", "Maya Lin"), reply("4", "Sana Rao", "p-2")]);
+    expect(threads.map((t) => [t.title, t.lines])).toEqual([
+      ["Launch", ["1 reply on your update from Sana"]],
+      ["Brand Refresh", ["3 replies on your update from Maya and Theo"]],
+    ]);
   });
 });

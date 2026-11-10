@@ -31,6 +31,7 @@ import type { BusinessLead } from "../../lib/businesses";
 import { BusinessLeadLine, useGuestRow } from "../businesses/Businesses";
 import { readBig3 } from "../../lib/rituals";
 import { durOf, fmtDuration, fmtTime, isPlaced, ghostPrefsKey, readGhostPrefs, writeGhostPrefs, todaysEvents, type GhostPrefs } from "./planCanvas";
+import type { TodayUpdates } from "../updates/TodayUpdates";
 
 export interface TodayViewProps {
   tasks: Task[];
@@ -96,6 +97,9 @@ export interface TodayViewProps {
   goalsBehind?: NoticedInput["goalsBehind"];
   /** open a goal in the goal panel (`checkin`: with the composer out) */
   onOpenGoal?: (id: string, opts?: { checkin?: boolean }) => void;
+  /* ---- 0053 (Today works without) ---- */
+  /** your project updates due today or asked for: a line under the brief, a "Kanbo noticed" nudge, and the sheet they open */
+  updates?: TodayUpdates;
 }
 
 /** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
@@ -291,7 +295,7 @@ function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
-  setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false, goalFor, goalsBehind, onOpenGoal,
+  setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false, goalFor, goalsBehind, onOpenGoal, updates,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -516,8 +520,9 @@ function TodayDay({
   /* ----- Kanbo noticed ----- */
   const [dismissed, setDismissed] = useState<string[]>(() => readDismissed(me, day));
   useEffect(() => { setDismissed(readDismissed(me, day)); }, [me, day]);
-  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, goalsBehind: onOpenGoal ? goalsBehind : undefined, dismissed }),
-    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, goalsBehind, onOpenGoal, dismissed]);
+  const updateNudge = updates?.noticed;
+  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, goalsBehind: onOpenGoal ? goalsBehind : undefined, dismissed, updates: updateNudge }),
+    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, goalsBehind, onOpenGoal, dismissed, updateNudge]);
   const dismiss = (n: Noticed) => {
     const next = [...dismissed.filter((x) => x !== n.id), n.id];
     setDismissed(next); writeDismissed(me, day, next);
@@ -534,7 +539,8 @@ function TodayDay({
       onOpenGoal?.(a.goalId, { checkin: true });
       const next = [...dismissed.filter((x) => x !== n.id), n.id];
       setDismissed(next); writeDismissed(me, day, next);
-    } else {
+    } else if (a.kind === "update") updates?.open(a.projectId);
+    else {
       const t = tasks.find((x) => x.id === a.taskId) ?? allTasks.find((x) => x.id === a.taskId);
       if (!t) return;
       const before = { planToday: !!t.planToday, scheduled: t.scheduled ?? null };
@@ -596,7 +602,12 @@ function TodayDay({
       <style>{BRIEF_CSS}</style>
       <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks} onOpenGoal={onOpenGoal}
         hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk}
-        lead={businessLead && <BusinessLeadLine lead={businessLead.lead} mode={businessLead.mode} focusTaskId={brief.focusTaskId} onOpen={onOpen} onShowAll={businessLead.onShowAll} />} />
+        lead={(businessLead || updates?.line) && <>
+          {businessLead && <BusinessLeadLine lead={businessLead.lead} mode={businessLead.mode} focusTaskId={brief.focusTaskId} onOpen={onOpen} onShowAll={businessLead.onShowAll} />}
+          {/* 0053: your project update is due (or a lead asked for it), Kanbo's draft ready */}
+          {updates?.line}
+        </>} />
+      {updates?.sheet}
       <div className="ktoday-actions">
         {/* data-plan-beam: the beam's row takes a dragged task too (PlanView binds it as a drop target) */}
         <div className="ktoday-beam" data-plan-beam="">

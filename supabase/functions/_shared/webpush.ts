@@ -43,7 +43,7 @@ export interface VapidKeys {
   subject: string;
 }
 
-export type PushMessageKind = "assigned" | "mention" | "comment" | "due" | "test" | "approval" | "kudos";
+export type PushMessageKind = "assigned" | "mention" | "comment" | "due" | "test" | "approval" | "kudos" | "update";
 
 export interface PushMessage {
   title: string;

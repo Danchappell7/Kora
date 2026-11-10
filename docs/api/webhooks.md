@@ -214,6 +214,7 @@ Kanbo keeps 14 days of delivery history.
 | `approval.requested` | Someone asks for approval on a task. | Team endpoints only. `data` is the request with its reviewers and task; `decision` is null. |
 | `approval.decided` | A reviewer approves or asks for changes, or the request is cancelled. | Team endpoints only. `decision.decision`: `approved`, `changes_requested` or `cancelled`. |
 | `kudos.given` | Someone thanks a teammate for a finished task. | Team endpoints only. `data`: who thanked whom, the emoji, an optional note, and the task. |
+| `status_update.posted` | Someone posts a project update. | Team and personal endpoints. `data`: the update (its call, words, optional Highlights / Risks / Asks / Next, the people its Asks name, a plan to recover) and its project. Needs database update 0054. |
 | `ping` | You sent a test. | Never subscribed to; never retried. |
 
 A task moved from one workspace to another is `task.deleted`
@@ -575,6 +576,42 @@ someone:
       "workspaceId": "3f2b8c1e-5a7d-4e90-b6c4-2d8e1f0a9b77",
       "status": "done",
       "url": "https://www.kanbo.co.uk/?task=610f3019-387f-44ec-9c9e-50613b791fe6"
+    }
+  }
+}
+```
+
+### `status_update.posted`
+
+```json
+{
+  "id": "evt_4831",
+  "type": "status_update.posted",
+  "createdAt": "2026-11-10T16:05:00.000Z",
+  "workspaceId": "3f2b8c1e-5a7d-4e90-b6c4-2d8e1f0a9b77",
+  "data": {
+    "object": "status_update",
+    "id": "8d6c2a51-4b7e-4f0a-9c3d-1e2f3a4b5c6d",
+    "projectId": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20",
+    "workspaceId": "3f2b8c1e-5a7d-4e90-b6c4-2d8e1f0a9b77",
+    "authorId": "a89a2412-b64a-49e4-bb75-10dc9466bba2",
+    "authorName": "Sana Rao",
+    "status": "at_risk",
+    "summary": "Tokens v2 are in review; the homepage hero waits on final copy.",
+    "sections": {
+      "highlights": "The new colour palette is live across the web app.",
+      "risks": "The homepage hero waits on final copy.",
+      "asks": "Daniel, can you approve the hero direction by Thursday?"
+    },
+    "askUserIds": ["56709045-a8fa-42c1-8c2b-80f424fe596e"],
+    "recoveryPlan": null,
+    "targetDate": null,
+    "createdAt": "2026-11-10T16:05:00.000Z",
+    "project": {
+      "id": "fe601abf-a2e0-4f29-ac9a-49eacd1b4f20",
+      "name": "Brand Refresh",
+      "workspaceId": "3f2b8c1e-5a7d-4e90-b6c4-2d8e1f0a9b77",
+      "url": "https://www.kanbo.co.uk/p/fe601abf-a2e0-4f29-ac9a-49eacd1b4f20"
     }
   }
 }

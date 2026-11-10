@@ -98,6 +98,10 @@ const NOTIF_ROWS: { key: string; label: string; hint: string }[] = [
   // 0048: in-app pref "kudos" (the database checks it), email "kudos_email" (the notify function)
   { key: "kudos", label: "Kudos", hint: "A teammate thanks you for something you finished." },
   { key: "due", label: "Due-date reminders", hint: "Sent by email only." },
+  // 0053: email "update_email" (daily-reminders and notify); 0054: in-app "update" (the database checks it for
+  // updates posted on your projects and replies on yours; an Ask that names you follows Mentions). Someone else's
+  // update on your project is in the Inbox and the daily digest only: email and push are for what needs you.
+  { key: "update", label: "Project updates", hint: "Your update day and asks for one by email and push. Updates on your projects and replies on yours in the Inbox." },
 ];
 /** Once push can be offered, the morning reminder can push too (the In-app column stays "–"). */
 const notifHint = (r: { key: string; hint: string }): string =>
@@ -770,7 +774,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
                   <span className="kset-row-label">{r.label}</span>
                   <span className="kset-row-desc">{notifHint(r)}</span>
                 </th>
-                {/* due reminders come from the daily job (email, and push below once it's on), never in-app */}
+                {/* due reminders come from the daily job (email, and push below once it's on), never in-app
+                    (0054: project updates have an Inbox switch: posted updates and replies) */}
                 <td>{r.key === "due"
                   ? <span className="kset-na"><span aria-hidden="true">–</span><span className="sr-only">Not available in the app</span></span>
                   : <PrefCheck checked={prefOn(r.key)} onChange={() => togglePref(r.key)} label={`${r.label} in-app`} disabled={!onSaveNotifyPrefs} />}</td>

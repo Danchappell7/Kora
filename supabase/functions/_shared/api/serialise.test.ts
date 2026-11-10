@@ -153,6 +153,27 @@ describe("webhook events", () => {
     // a payload missing its pieces still serialises (never throws)
     expect(serialiseEvent({ ...OUTBOX_KUDOS, payload: {} }).data).toMatchObject({ object: "kudos", id: "", emoji: "🎉", note: null, task: { id: "", status: null, url: null } });
   });
+  it("status_update.posted (0054): the update, its sections and Asks, who posted it and its project", () => {
+    const o: OutboxEvent = { outbox_id: 9, event: "status_update.posted", created_at: "2026-11-10T09:00:00.000Z", workspace_id: "ws-1", payload: {
+      author_name: "Sana Rao",
+      project: { id: "11111111-1111-4111-8111-111111111111", name: "Brand Refresh", workspace_id: "ws-1" },
+      status_update: { id: "su-1", project_id: "11111111-1111-4111-8111-111111111111", workspace_id: "ws-1", user_id: "u-sana", author_id: "u-sana",
+        summary: "Hero waits on copy.", status: "at_risk", sections: { risks: "Copy late", asks: "Approve the hero", gossip: "x" }, ask_user_ids: ["u-dan"],
+        recovery_plan: "Maya writes it", target_date: "2026-11-20", created_at: "2026-11-10T09:00:00+00:00", edited_at: null },
+    } };
+    const e = serialiseEvent(o, APP);
+    expect(e).toMatchObject({ id: "evt_9", type: "status_update.posted", workspaceId: "ws-1" });
+    expect(e.data).toEqual({
+      object: "status_update", id: "su-1", projectId: "11111111-1111-4111-8111-111111111111", workspaceId: "ws-1", authorId: "u-sana", authorName: "Sana Rao",
+      status: "at_risk", summary: "Hero waits on copy.", sections: { risks: "Copy late", asks: "Approve the hero" }, askUserIds: ["u-dan"],
+      recoveryPlan: "Maya writes it", targetDate: "2026-11-20", createdAt: "2026-11-10T09:00:00.000Z",
+      project: { id: "11111111-1111-4111-8111-111111111111", name: "Brand Refresh", workspaceId: "ws-1", url: "https://www.kanbo.co.uk/p/11111111-1111-4111-8111-111111111111" },
+    });
+    // a personal one (no project to name) and a payload missing its pieces still serialise
+    expect(serialiseEvent({ ...o, payload: { status_update: { id: "su-2", project_id: "p-personal", status: "on_hold", summary: "Paused" }, project: null } }).data)
+      .toMatchObject({ id: "su-2", status: "on_hold", sections: null, askUserIds: [], project: null });
+    expect(serialiseEvent({ ...o, payload: {} }).data).toMatchObject({ object: "status_update", id: "", status: "on_track", project: null });
+  });
   it("approval.decided: the request (status after it), its reviews, its task and the decision", () => {
     const e = serialiseEvent(OUTBOX_APPROVAL_DECIDED, APP);
     const p = OUTBOX_APPROVAL_DECIDED.payload as Record<string, Record<string, unknown>>;

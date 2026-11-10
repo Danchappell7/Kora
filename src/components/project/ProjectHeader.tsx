@@ -17,6 +17,7 @@ import type { Task, Project, Status, StatusUpdate, StatusKind, IconName } from "
 import type { ProjectTab } from "../../app-types";
 import type { Risk } from "../../lib/radar";
 import { fmtShortDay, isStale, kanbosRead, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, updateAuthor } from "../../lib/statusDraft";
+import { projectRhythm } from "../../lib/updateRhythm";
 import { progressOf } from "../../lib/countRules";
 import { storeProjectTemplate, projectBlueprint } from "../../lib/templates";
 import { ComposerPanel, ComposerPopover, POP_STYLE, focusInPageComposer, useHasInPageComposer, useInPageComposer, useStatusComposer, type AiStatus, type PostStatus } from "./StatusComposer";
@@ -24,11 +25,16 @@ import { DraftInput } from "./DraftInput";
 import { SlackPostButton } from "../integrations";
 import { EditIdentitySheet, IdentityFields } from "./IdentityPicker";
 import { PresenceAvatars, useProjectPresence, type PresenceMe } from "../presence";
+import { UpdateDayField } from "../updates/UpdateDay";
+import { UpdateCard, type UpdateEditPatch } from "../updates/UpdateCard";
+import { markUpdatesSeen, useUpdateConversation, threadOf } from "../../lib/updateConversation";
 import "./projects.css";
 
 export type { AiStatus, PostStatus } from "./StatusComposer";
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** does this project read its updates by an update day (0053) rather than the 14-day rule? */
+const rhythmOnFor = (p: Project) => !!projectRhythm(p);
 
 const PROJECT_STATUSES: { v: string; label: string; color: string }[] = [
   { v: "on_track", label: "On track", color: "var(--st-done)" },
@@ -55,11 +61,13 @@ export function relDay(iso: string): { label: string; days: number } {
 }
 
 type Tone = "neutral" | "accent" | "ok" | "warn" | "signal";
-export const STATUS_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", off_track: "signal" };
+export const STATUS_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", off_track: "signal", on_hold: "neutral" };
 
 /** A project's status pill: its latest update's call; without one, the status
- *  set by hand in About; otherwise "No update". */
+ *  set by hand in About; otherwise "No update". On hold set by hand stays,
+ *  whatever's posted meanwhile, until it's taken off in About. */
 export function projectStatusPill(project: Project, latest?: StatusUpdate): { tone: Tone; label: string; title: string } {
+  if (project.status === "on_hold") return { tone: "neutral", label: "On hold", title: latest ? "Put on hold by hand (take it off in About)" : "Set by hand; no update posted yet" };
   if (latest && STATUS_KIND_META[latest.status]) {
     const age = relDay(latest.createdAt);
     return { tone: STATUS_TONE[latest.status], label: STATUS_KIND_META[latest.status].label, title: `Latest update, ${age.label}` };
@@ -150,7 +158,7 @@ interface MenuItem { id: string; label: string; icon: IconName; run: () => void;
 
 /** The page header's actions: Draft update (Kanbo writes it) · Post update (an empty field) ·
  *  ⋯ Project actions. Both buttons open the same composer, on the project's one shared draft. */
-export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate, onEditIdentity, onPlanTasks }: {
+export function ProjectActions({ project, tasks, statusUpdates, canManage, readOnly, onPostStatus, aiStatus, onTab, onDuplicate, onArchive, onDelete, onSaveTemplate, onEditIdentity, onPlanTasks, people }: {
   project: Project;
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -167,6 +175,8 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
   onEditIdentity?: (patch: { emoji: string; color: string }) => void;
   /** 0047: "Add tasks with Kanbo" (the AI planner, adding to this project) */
   onPlanTasks?: () => void;
+  /** 0054: who an Ask in the update can be for (people who can read it; never you) */
+  people?: { id: string; name: string }[];
 }): JSX.Element {
   const canPost = !readOnly && !!onPostStatus;
   const [identityOpen, setIdentityOpen] = useState(false);
@@ -244,7 +254,7 @@ export function ProjectActions({ project, tasks, statusUpdates, canManage, readO
       )}
       <IconButton ref={moreRef} icon="more" label="Project actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen}
         onClick={() => setMenuOpen((v) => !v)} />
-      {canPost && <ComposerPopover open={open !== null && !inPage} anchorRef={open === "draft" ? draftRef : postRef} onClose={() => setOpen(null)} c={c} />}
+      {canPost && <ComposerPopover open={open !== null && !inPage} anchorRef={open === "draft" ? draftRef : postRef} onClose={() => setOpen(null)} c={c} people={people} />}
       <Popover open={menuOpen} anchorRef={moreRef} onClose={() => { setMenuOpen(false); setSaved(null); }} role="menu" label={`Actions for ${project.name}`}
         align="end" minWidth={208} className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
         {items.flatMap((it) => [
@@ -305,8 +315,20 @@ export function ProjectNotice({ project, statusUpdates, risks, onOpenUpdates, on
 
 /* ============================ ProjectPanels ============================ */
 
+/** 0054: what the Updates tab needs for each update's conversation (who you are, whether you lead the
+ *  workspace, an author's edit and delete, and the update to open from the Inbox). */
+export interface UpdatesConversation {
+  me: string;
+  /** an owner or admin of the project's workspace: deletes any update, removes any reply */
+  lead: boolean;
+  onEdit?: (u: StatusUpdate, patch: UpdateEditPatch) => Promise<boolean>;
+  onDelete?: (u: StatusUpdate) => void;
+  /** open this update's replies (arriving from the Inbox) */
+  focusUpdateId?: string | null;
+}
+
 /** A project's non-task tabs: Updates · Requests · Rules · About. */
-export function ProjectPanels({ tab, project, tasks, statusUpdates, members, canManage, readOnly, onUpdate, onPostStatus, aiStatus, rules, forms }: {
+export function ProjectPanels({ tab, project, tasks, statusUpdates, members, canManage, readOnly, onUpdate, onPostStatus, aiStatus, rules, forms, conversation }: {
   tab: "updates" | "requests" | "rules" | "about";
   project: Project;
   tasks: Task[];
@@ -319,6 +341,7 @@ export function ProjectPanels({ tab, project, tasks, statusUpdates, members, can
   aiStatus?: AiStatus;
   rules: React.ComponentProps<typeof AutomationsView>;
   forms: React.ComponentProps<typeof FormsView>;
+  conversation?: UpdatesConversation;
 }): JSX.Element {
   if (tab === "rules") {
     if (readOnly) {
@@ -332,13 +355,15 @@ export function ProjectPanels({ tab, project, tasks, statusUpdates, members, can
   }
   if (tab === "requests") return <FormsView {...forms} projectId={project.id} readOnly={readOnly || forms.readOnly} />;
   if (tab === "about") return <AboutPanel project={project} tasks={tasks} statusUpdates={statusUpdates} members={members} canManage={canManage} readOnly={readOnly} onUpdate={onUpdate} />;
-  return <UpdatesPanel project={project} tasks={tasks} statusUpdates={statusUpdates} readOnly={readOnly} onPostStatus={onPostStatus} aiStatus={aiStatus} />;
+  return <UpdatesPanel project={project} tasks={tasks} statusUpdates={statusUpdates} readOnly={readOnly} onPostStatus={onPostStatus} aiStatus={aiStatus}
+    members={members} conversation={conversation} />;
 }
 
 const HISTORY_PAGE = 20;
 
-function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, aiStatus }: {
+function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, aiStatus, members = [], conversation }: {
   project: Project; tasks: Task[]; statusUpdates: StatusUpdate[]; readOnly: boolean; onPostStatus?: PostStatus; aiStatus?: AiStatus;
+  members?: { id: string; name: string }[]; conversation?: UpdatesConversation;
 }) {
   const canPost = !readOnly && !!onPostStatus;
   const c = useStatusComposer({ project, tasks, statusUpdates, onPost: canPost ? onPostStatus : undefined, aiStatus });
@@ -346,13 +371,27 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
   useInPageComposer(project.id, textRef, canPost);
   const history = useMemo(() => projectUpdates(statusUpdates, project.id), [statusUpdates, project.id]);
   const [shown, setShown] = useState(HISTORY_PAGE);
+  // 0054: each shown update's reactions, seen by and replies; reading them here counts as seeing them
+  const me = conversation?.me ?? "";
+  const shownIds = useMemo(() => history.slice(0, shown).map((u) => u.id), [history, shown]);
+  const { threads, on: conversationOn } = useUpdateConversation(shownIds);
+  const ready = shownIds.every((id) => threads.has(id));
+  useEffect(() => {
+    if (!ready || !me || !conversationOn) return;
+    void markUpdatesSeen(shownIds, me, (id) => history.find((u) => u.id === id)?.authorId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, me, conversationOn, shownIds.join(",")]);
+  // who an Ask or a reply can be for: the project's people who can read it, not you
+  const people = useMemo(() => members.filter((m) => m.id !== me), [members, me]);
   // draft first: the composer opens on the on-device draft of this week (the AI one is a click away),
-  // unless this project already has a draft in hand (yours, or one Kanbo is writing)
+  // unless this project already has a draft in hand (yours, or one Kanbo is writing). Someone arriving
+  // from the Inbox to answer an update on a project they don't own came to reply, not to write one.
+  const arriving = !!conversation?.focusUpdateId && history.some((u) => u.id === conversation.focusUpdateId) && project.ownerId !== me;
   const seeded = useRef<string | null>(null);
   useEffect(() => {
     if (!canPost || seeded.current === project.id) return;
     seeded.current = project.id;
-    if (!c.text.trim() && !c.drafting) c.draft("template");
+    if (!c.text.trim() && !c.drafting && !arriving) c.draft("template");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPost, project.id]);
 
@@ -361,7 +400,7 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
       <div className="kpj-wrap kpj-readw kpj-panel">
         {canPost && (
           <section className="kpj-composer-card" aria-label="Post an update">
-            <ComposerPanel c={c} title="Post an update" textRef={textRef} />
+            <ComposerPanel c={c} title="Post an update" textRef={textRef} people={people} />
           </section>
         )}
         {history.length === 0 ? (
@@ -371,35 +410,19 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
           <section aria-label="Update history">
             <h2 className="kpj-panel-title">History <span className="kpj-count">{history.length}</span></h2>
             <ol className="kpj-history">
-              {history.slice(0, shown).map((u, i) => {
-                const meta = STATUS_KIND_META[u.status];
-                const age = relDay(u.createdAt);
-                const by = updateAuthor(u);
-                return (
-                  <li key={u.id}>
-                    <div className="kpj-history-meta">
-                      <Pill tone={STATUS_TONE[u.status] ?? "neutral"}>{meta?.label ?? u.status}</Pill>
-                      {by && (
-                        <span className="kpj-history-by" data-former={u.authorId && getMember(u.authorId) ? undefined : ""}>
-                          {u.authorId && getMember(u.authorId) && <Avatar id={u.authorId} size={18} />}
-                          {by}
-                        </span>
-                      )}
-                      <span className="kpj-mono" title={new Date(u.createdAt).toLocaleString("en-GB")}>{fmtShortDay(u.createdAt, KANBO_TODAY)}</span>
-                      {age.days < 14 && <span>· {age.label}</span>}
-                      {/* the latest update can go to the team's Slack channel (the button renders
-                          nothing in Personal, before Slack is connected, or for guests) */}
-                      {i === 0 && !readOnly && (
-                        <span className="kpj-history-act">
-                          <SlackPostButton workspaceId={project.workspaceId ?? null} kind="status" projectId={project.id} status={u.status}
-                            getText={() => u.summary} label="Share to Slack" variant="ghost" />
-                        </span>
-                      )}
-                    </div>
-                    <p className="kpj-history-text">{u.summary}</p>
-                  </li>
-                );
-              })}
+              {history.slice(0, shown).map((u, i) => (
+                <li key={u.id} id={`update-${u.id}`}>
+                  <UpdateCard update={u} me={me} canWrite={!readOnly} lead={!!conversation?.lead} thread={threadOf(threads, u.id)}
+                    conversation={conversationOn && !!me} people={people} onEdit={conversation?.onEdit} onDelete={conversation?.onDelete}
+                    defaultOpen={conversation?.focusUpdateId === u.id}
+                    // the latest update can go to the team's Slack channel (the button renders
+                    // nothing in Personal, before Slack is connected, or for guests)
+                    actions={i === 0 && !readOnly ? (
+                      <SlackPostButton workspaceId={project.workspaceId ?? null} kind="status" projectId={project.id} status={u.status}
+                        getText={() => u.summary} label="Share to Slack" variant="ghost" />
+                    ) : undefined} />
+                </li>
+              ))}
             </ol>
             {history.length > shown && (
               <Button variant="ghost" size="sm" icon="chevronDown" onClick={() => setShown((n) => n + HISTORY_PAGE)}>
@@ -489,8 +512,8 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
           <dt>Status</dt>
           <dd>
             {(() => { const p = projectStatusPill(project, facts.latest); return <Pill tone={p.tone} title={p.title}>{p.label}</Pill>; })()}
-            {/* (how fresh the update is, only when the pill and the stale note don't say it already) */}
-            <span className="kpj-card-meta">{kanbosRead(facts, { withUpdate: !stale && !!facts.latest })}</span>
+            {/* (how fresh the update is, only when the pill, the stale note and the update day don't say it already) */}
+            <span className="kpj-card-meta">{kanbosRead(facts, { withUpdate: !stale && !!facts.latest && !rhythmOnFor(project) })}</span>
             {editable && !facts.latest && (
               <select className="kpj-field" data-size="sm" value={project.status ?? ""} aria-label="Status set by hand"
                 onChange={(e) => onUpdate(project.id, { status: e.target.value })}>
@@ -498,8 +521,22 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
                 {PROJECT_STATUSES.map((s) => <option key={s.v} value={s.v}>{s.label}</option>)}
               </select>
             )}
-            {stale && <span className="kpj-card-meta kpj-warn">{facts.lastUpdateDays == null ? "No update yet" : `No update in ${facts.lastUpdateDays} days`}</span>}
+            {/* once updates are posting, the call is theirs; putting it on hold by hand still stays put. On hold
+                because the latest update says so: it comes off with the next update, so this says that */}
+            {editable && facts.latest && (project.status !== "on_hold" && facts.latest.status === "on_hold" ? (
+              <span className="kpj-card-meta">On hold from the latest update. Post an update to take it off hold.</span>
+            ) : (
+              <select className="kpj-field" data-size="sm" value={project.status === "on_hold" ? "on_hold" : ""} aria-label="On hold"
+                onChange={(e) => onUpdate(project.id, { status: e.target.value })}>
+                <option value="">Active</option>
+                <option value="on_hold">On hold</option>
+              </select>
+            ))}
+            {stale && !rhythmOnFor(project) && <span className="kpj-card-meta kpj-warn">{facts.lastUpdateDays == null ? "No update yet" : `No update in ${facts.lastUpdateDays} days`}</span>}
           </dd>
+
+          {/* 0053: when its updates are due (the team's day, or its own), and where this one stands */}
+          <UpdateDayField project={project} tasks={mine} latest={facts.latest} lastUpdateDays={facts.lastUpdateDays} canManage={canManage} onUpdate={onUpdate} />
 
           <dt>Owner</dt>
           <dd>

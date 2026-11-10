@@ -8,6 +8,7 @@
    My tasks   /tasks · /tasks/waiting · /tasks/done  (?due=today|overdue|week)
    Search     /search · /search/list/:id
    Projects   /projects · /projects/portfolios · /projects/goals
+              /projects/portfolios/:id · /projects/portfolios/:id/updates
               /projects/group (owners and admins of two or more workspaces)
               /projects/rules · /projects/requests · /projects/bin
               /p/:id · /p/:id/:tab · /p/:id/docs/:docId
@@ -228,6 +229,9 @@ export function pathOf(route: Route): string {
     }
     case "search":
       return route.list ? `/search/list/${encodeURIComponent(route.list)}` : "/search";
+    case "portfolios":
+      // 0054: one portfolio's page (its Table, or its Updates)
+      return route.portfolioId ? `/projects/portfolios/${encodeURIComponent(route.portfolioId)}${route.tab === "updates" ? "/updates" : ""}` : "/projects/portfolios";
     case "project": {
       if (!route.projectId) return "/projects";
       const tab = isOneOf(PROJECT_TABS, route.tab) ? `/${route.tab}` : "";
@@ -261,6 +265,9 @@ export function routeOf(pathname: string, search = ""): Route | null {
     if (seg[2] === "docs" && seg[3]) return { ...route, tab: "docs", docId: decode(seg[3]) };
     const r: Route = isOneOf(PROJECT_TABS, seg[2]) ? { ...route, tab: seg[2] } : route;
     return savedViewId && r.tab !== "docs" ? { ...r, savedViewId } : r;
+  }
+  if (seg[0] === "projects" && (seg[1] === "portfolios" || seg[1] === "portfolio") && seg[2]) {
+    return { view: "portfolios", portfolioId: decode(seg[2]), ...(seg[3] === "updates" ? { tab: "updates" } : {}) };
   }
   if (seg[0] === "search") {
     return seg[1] === "list" && seg[2] ? { view: "search", list: decode(seg[2]) } : { view: "search" };

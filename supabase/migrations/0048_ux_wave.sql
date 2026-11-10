@@ -714,9 +714,11 @@ create index if not exists notify_queue_due_idx on public.notify_queue (deliver_
 create index if not exists notify_queue_bundle_idx on public.notify_queue (user_id, bundle_key, created_at desc);
 create index if not exists notify_queue_sent_idx on public.notify_queue (sent_at) where sent_at is not null;
 alter table public.notify_queue drop constraint if exists notify_queue_shape;
+-- ('update' arrives with 0053, the update reminders and asks: it's listed here too, so running
+--  this file again after 0053 keeps their queued notices valid)
 alter table public.notify_queue add constraint notify_queue_shape check (
   channel in ('push', 'email')
-  and kind in ('assigned', 'mention', 'comment', 'approval', 'kudos', 'due', 'digest')
+  and kind in ('assigned', 'mention', 'comment', 'approval', 'kudos', 'due', 'digest', 'update')
   and char_length(event_key) between 1 and 200 and char_length(bundle_key) between 1 and 200
   and char_length(actor_name) <= 200 and char_length(title) <= 500
   and jsonb_typeof(payload) = 'object' and pg_column_size(payload) <= 8192
@@ -1029,11 +1031,13 @@ revoke execute on function public.adopt_saved_searches() from public, anon;
 grant execute on function public.adopt_saved_searches() to authenticated;
 
 -- ---------- 11. webhooks: kudos.given ----------
+-- ('status_update.posted' arrives with 0054, project updates: it's listed here too, so running
+--  this file again after 0054 keeps the webhooks that subscribe to it valid)
 create or replace function public.webhook_event_names()
 returns text[] language sql immutable as $$
   select array['task.created','task.updated','task.completed','task.deleted',
                'comment.created','project.created','project.updated','member.joined',
-               'approval.requested','approval.decided','kudos.given']::text[];
+               'approval.requested','approval.decided','kudos.given','status_update.posted']::text[];
 $$;
 grant execute on function public.webhook_event_names() to public;
 alter table public.webhooks drop constraint if exists webhooks_shape;

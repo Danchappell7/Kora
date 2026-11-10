@@ -195,16 +195,24 @@ const clean = (title: string) => title.trim().replace(/[.!?;:,\s]+$/, "");
 const list = (titles: string[]) => titles.length <= 1 ? titles.join("") : `${titles.slice(0, -1).join(", ")} and ${titles[titles.length - 1]}`;
 
 /** An update written on this device from the facts: 2–4 short sentences, and a status from the health. */
-export function draftStatusLocal(f: StatusFacts): { summary: string; status: StatusKind } {
+export function draftStatusLocal(f: StatusFacts, { brief = false }: {
+  /** just the headline (progress, and the critical path): its sections carry what's blocked, late and next (0054) */
+  brief?: boolean;
+} = {}): { summary: string; status: StatusKind } {
   const today = localDay(f.today) ?? new Date();
   const s: string[] = [];
   if (f.total === 0) s.push("No tasks in this project yet.");
   else if (f.health === "complete") s.push(`Every task is done${f.done7.length ? `, ${plural(f.done7.length, "task")} of them this week` : ""}.`);
   else if (f.done7.length) s.push(`Finished ${plural(f.done7.length, "task")} this week; ${f.pct}% done overall.`);
   else s.push(`Nothing finished this week; ${f.pct}% done overall.`);
+  const status: StatusKind = f.total === 0 ? "on_track" : statusFromHealth(f.health);
 
   const blocked = [...f.blocked];
   const cp = f.criticalPath;
+  if (brief) {
+    if (cp) s.push(`${clean(cp.title)} is the critical path${cp.dueDate ? `, due ${fmtShortDay(cp.dueDate, today)}` : ""}.`);
+    return { summary: s.join(" "), status };
+  }
   if (cp) {
     const due = cp.dueDate ? `, due ${fmtShortDay(cp.dueDate, today)}` : "";
     const on = cp.status === "blocked" ? (f.waitingOn[cp.id] ?? [])[0] : undefined;
@@ -230,7 +238,7 @@ export function draftStatusLocal(f: StatusFacts): { summary: string; status: Sta
   if (f.nextMilestone) s.push(`Next milestone: ${clean(f.nextMilestone.title)}, ${fmtShortDay(f.nextMilestone.dueDate, today)}.`);
   else if (f.slipped.length && s.length < 4) s.push(`${plural(f.slipped.length, "due date has", "due dates have")} moved later than first planned.`);
 
-  return { summary: s.join(" "), status: f.total === 0 ? "on_track" : statusFromHealth(f.health) };
+  return { summary: s.join(" "), status };
 }
 
 // the doing-word a task title usually starts with; a one-line read names the thing, not the chore

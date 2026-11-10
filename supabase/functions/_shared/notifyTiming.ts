@@ -20,10 +20,11 @@
 //   • a snoozed thread (notification_snoozes.until > now) sends nothing.
 // ============================================================
 
-export type NotifyKind = "assigned" | "mention" | "comment" | "approval" | "kudos" | "due";
+/** "update" (0053): your project update is due, or a lead asked for one */
+export type NotifyKind = "assigned" | "mention" | "comment" | "approval" | "kudos" | "due" | "update";
 export type NotifyChannel = "push" | "email";
 
-export const NOTIFY_KINDS: readonly NotifyKind[] = ["assigned", "mention", "comment", "approval", "kudos", "due"];
+export const NOTIFY_KINDS: readonly NotifyKind[] = ["assigned", "mention", "comment", "approval", "kudos", "due", "update"];
 /** per task per recipient */
 export const NOTIFY_BUNDLE_WINDOW_SEC = 120;
 export const DEFAULT_TIMEZONE = "Europe/London";

@@ -6,7 +6,7 @@
 import type {
   Member, Workspace, Project, TagDef, Task, CalEvent,
   Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta, Recurrence,
-  Activity, Goal, GoalCheckin, GoalLink, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
+  Activity, Goal, GoalCheckin, GoalLink, Portfolio, PortfolioUpdate, StatusUpdate, UpdateComment, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
@@ -151,16 +151,29 @@ const demoLogo = (letter: string, from: string, to: string, mark = ""): string =
   + `<rect width="64" height="64" rx="14" fill="url(#g)"/>${mark}`
   + `<text x="32" y="44" text-anchor="middle" font-family="Inter,Helvetica,Arial,sans-serif" font-size="34" font-weight="700" fill="#fff">${letter}</text></svg>`);
 
+/* The demo's update days (0053), set from today so there's always something to show:
+   Foundrise's falls today (your launch update is due, and Platform Infra, which has never
+   posted, reads "Update missing"); Courtside Padel's was five days ago (the clubhouse
+   fit-out's update is missing). A weekend reads as Friday. Reco HQ keeps the default. */
+const demoUpdateDay = (offset: number): number => {
+  const d = new Date(KANBO_TODAY);
+  d.setDate(d.getDate() + offset);
+  const iso = d.getDay() === 0 ? 7 : d.getDay();
+  return iso > 5 ? 5 : iso;
+};
+
 /* The demo person runs three businesses (owner of Foundrise and Reco HQ, admin of
    Courtside Padel), helps out at a fourth (a member of Harbour Advisory) and is a guest
    at a fifth (Northlight Studio), so the Group page, All businesses, the switcher's dots
    and a guest's view all have real work to show. */
 export let WORKSPACES: Workspace[] = [
   { id: null, name: "Personal", kind: "personal" },
-  { id: "ws-foundrise", name: "Foundrise", kind: "team", ownerId: "m-self", logoUrl: demoLogo("F", "#3b6fe0", "#1d3f9a") },
+  { id: "ws-foundrise", name: "Foundrise", kind: "team", ownerId: "m-self", logoUrl: demoLogo("F", "#3b6fe0", "#1d3f9a"),
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(0) } },
   { id: "ws-reco", name: "Reco HQ", kind: "team", ownerId: "m-self", logoUrl: demoLogo("R", "#f08a3c", "#c4532a") },
   { id: "ws-courtside", name: "Courtside Padel", kind: "team", ownerId: "m-2",
-    logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`) },
+    logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`),
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) } },
   { id: "ws-harbour", name: "Harbour Advisory", kind: "team", ownerId: "m-3", logoUrl: demoLogo("H", "#4a4f8f", "#262a5c") },
   // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't)
   { id: "ws-northlight", name: "Northlight Studio", kind: "team", ownerId: "m-4", logoUrl: demoLogo("N", "#d4677a", "#9c3550") },
@@ -173,12 +186,16 @@ export let PROJECTS: Project[] = [
   { id: "p-personal", name: "Personal", emoji: "📌", color: spectrumColor("iris"), workspaceId: null },
   { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: spectrumColor("sky"), workspaceId: "ws-foundrise", ownerId: "m-self", contributorIds: ["m-1", "m-2", "m-3"] },
   { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1"] },
-  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"] },
+  // (infra reports on its own day, 0053: five days ago, so with nothing ever posted its update reads "Update missing")
+  { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"],
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) } },
   { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-1"] },
   { id: "p-onboard", name: "Customer Onboarding", emoji: "🤝", color: spectrumColor("lagoon"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-2"] },
   { id: "p-clubhouse", name: "Clubhouse Fit-out", emoji: "🏗️", color: spectrumColor("amber"), workspaceId: "ws-courtside", ownerId: "m-2", contributorIds: ["m-self"] },
   { id: "p-league", name: "Winter League", emoji: "🎾", color: spectrumColor("citron"), workspaceId: "ws-courtside", ownerId: "m-self", contributorIds: ["m-2"] },
-  { id: "p-northwind", name: "Northwind Review", emoji: "🧭", color: spectrumColor("cobalt"), workspaceId: "ws-harbour", ownerId: "m-3", contributorIds: ["m-self"] },
+  // (a review on its own monthly rhythm, 0053; it's on hold just now)
+  { id: "p-northwind", name: "Northwind Review", emoji: "🧭", color: spectrumColor("cobalt"), workspaceId: "ws-harbour", ownerId: "m-3", contributorIds: ["m-self"],
+    updateRhythm: { cadence: "monthly", weekday: 4 } },
   { id: "p-northlight", name: "Website rebuild", emoji: "🌐", color: spectrumColor("coral"), workspaceId: "ws-northlight", ownerId: "m-4", contributorIds: ["m-self"] },
 ];
 
@@ -710,18 +727,30 @@ export const DEMO_GOAL_LINKS: GoalLink[] = [
 ];
 
 export const DEMO_PORTFOLIOS: Portfolio[] = [
-  { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise" },
+  // (0054 portfolio pages: an owner, what it's for, when it lands, who follows it, and its own look)
+  { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise",
+    ownerId: "m-self", description: "Everything that has to land for the Q3 launch: the product, the brand and the platform under it.",
+    targetDate: LAUNCH_DAY, followerIds: ["m-1", "m-3"], color: spectrumColor("sky"), emoji: "🚀" },
   // in Personal (only its creator sees it), across businesses; the last project has since gone from view
-  { id: "pf-openings", name: "Every opening this quarter", projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"], workspaceId: null },
+  { id: "pf-openings", name: "Every opening this quarter", projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"], workspaceId: null,
+    ownerId: "m-self", description: "Every launch and opening I'm part of, across the businesses.", targetDate: dayOffset(45), followerIds: [],
+    color: spectrumColor("amber"), emoji: "🏁" },
 ];
 
 /* Platform Infra has no update at all, so it reads as stale. Each says who posted it;
    the launch's first came from someone who has since left ("Former member"). */
 export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
+  // (0054: Sana's carries sections, asks Daniel something, and she's fixed a typo since)
   { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise", authorId: "m-3",
-    summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way." },
+    summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way.",
+    editedAt: daysAgoAt(2, 16, 40),
+    sections: { highlights: "The new colour palette is live across the web app.", risks: "The homepage hero waits on final copy.",
+      asks: "Daniel, can you approve the hero direction by Thursday?", next: "Tokens v2 review on Wednesday, then the hero build." },
+    askUserIds: ["m-self"] },
   { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise", authorId: "m-self",
-    summary: "Deck is the critical path; onboarding is blocked on tokens." },
+    summary: "Deck is the critical path; onboarding is blocked on tokens.",
+    // 0053: an At risk update's plan to recover and new target date
+    recoveryPlan: "Maya takes the deck review this week, and onboarding builds on the old tokens until v2 lands.", targetDate: dayOffset(8) },
   { id: "su-launch-kickoff", projectId: "p-launch", status: "on_track", createdAt: daysAgoAt(23, 10, 10), workspaceId: "ws-foundrise", authorId: "m-left",
     summary: "Kick-off done: scope agreed with sales and support, and the launch date is set." },
   { id: "su-growth", projectId: "p-growth", status: "on_track", createdAt: daysAgoAt(3, 17, 0), workspaceId: "ws-reco", authorId: "m-self",
@@ -731,6 +760,66 @@ export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
   // (the fit-out's last word was over two weeks ago: it reads as stale)
   { id: "su-clubhouse", projectId: "p-clubhouse", status: "at_risk", createdAt: daysAgoAt(16, 16, 30), workspaceId: "ws-courtside", authorId: "m-2",
     summary: "The lighting order waits on sign-off; snagging can't start until the second fix." },
+  // 0053: On hold is an update of its own, so it stays on hold when the next one comes in
+  { id: "su-northwind", projectId: "p-northwind", status: "on_hold", createdAt: daysAgoAt(4, 11, 0), workspaceId: "ws-harbour", authorId: "m-3",
+    summary: "Paused while Northwind's board reviews the scope. We pick it up once they've met." },
+  // 0054: Northlight's (where Daniel is a guest): he reads it, replies and reacts, never more
+  { id: "su-northlight", projectId: "p-northlight", status: "on_track", createdAt: daysAgoAt(1, 15, 20), workspaceId: "ws-northlight", authorId: "m-4",
+    summary: "The sitemap is signed off and the homepage copy is in review.",
+    sections: { highlights: "Sitemap and page list signed off.", asks: "Daniel, can you send notes on the homepage copy by Friday?", next: "Photography picks, then the booking widget." },
+    askUserIds: ["m-self"] },
+];
+
+/* 0054: the conversation on the demo's updates. Sana's brand update asks Daniel something (his
+   Inbox has it under "Needs your reply"); his launch update has two replies and reactions. Who has
+   read each one is "Seen by". */
+export const DEMO_UPDATE_THREADS: Record<string, { comments: UpdateComment[]; reactions: Record<string, string[]>; seenBy: string[] }> = {
+  "su-launch": {
+    comments: [
+      { id: "uc-demo-1", updateId: "su-launch", authorId: "m-1", authorName: "Maya Lin", createdAt: daysAgoAt(9, 17, 48), editedAt: null,
+        body: "I can take the deck review this week if Theo sends the numbers by Wednesday." },
+      { id: "uc-demo-2", updateId: "su-launch", authorId: "m-2", authorName: "Theo Vance", createdAt: daysAgoAt(8, 9, 15), editedAt: null,
+        body: "Numbers will be with you Wednesday morning." },
+      // (this afternoon's: the Inbox's "Maya replied" is this one)
+      { id: "uc-demo-5", updateId: "su-launch", authorId: "m-1", authorName: "Maya Lin", createdAt: minutesAgo(180), editedAt: null,
+        body: "Deck review is booked for Thursday at 10. I'll bring the new numbers." },
+    ],
+    reactions: { "👍": ["m-1", "m-2"], "👀": ["m-3"] },
+    seenBy: ["m-1", "m-2", "m-3"],
+  },
+  "su-brand": {
+    comments: [
+      { id: "uc-demo-3", updateId: "su-brand", authorId: "m-1", authorName: "Maya Lin", createdAt: daysAgoAt(2, 17, 2), editedAt: null,
+        body: "The hero copy is in the brand doc now." },
+    ],
+    reactions: { "🎉": ["m-1"] },
+    seenBy: ["m-1", "m-2"],
+  },
+  // (a guest's reply: Daniel answers Idris's Ask)
+  "su-northlight": {
+    comments: [
+      { id: "uc-demo-4", updateId: "su-northlight", authorId: "m-self", authorName: "Daniel Okai", createdAt: daysAgoAt(1, 16, 5), editedAt: null,
+        body: "Notes are in the doc. The second hero line is the one." },
+    ],
+    reactions: { "👍": ["m-self"] },
+    seenBy: ["m-self"],
+  },
+};
+
+/* 0054: project updates in the Inbox (task-less, kind "update"): Sana's asks you something,
+   and Maya replied on your launch update. */
+export const DEMO_UPDATE_ACTIVITY: Activity[] = ([
+  { id: "a-demo-up-1", taskId: null, taskTitle: "Brand Refresh", kind: "update", detail: "Sana Rao", createdAt: daysAgoAt(2, 16, 5),
+    meta: { statusUpdateId: "su-brand", projectId: "p-brand", updateEvent: "posted", updateStatus: "on_track", ask: true } },
+  { id: "a-demo-up-2", taskId: null, taskTitle: "Q3 Product Launch", kind: "update", detail: "Maya Lin", createdAt: minutesAgo(180),
+    meta: { statusUpdateId: "su-launch", projectId: "p-launch", updateEvent: "comment", commentId: "uc-demo-5", ask: false } },
+] satisfies Activity[]).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+
+/* 0054: the Q3 launch portfolio's last update, posted by Daniel a week ago. */
+export const DEMO_PORTFOLIO_UPDATES: PortfolioUpdate[] = [
+  { id: "pu-demo-1", portfolioId: "pf-q3", workspaceId: "ws-foundrise", authorId: "m-self", status: "at_risk", createdAt: daysAgoAt(7, 17, 30), editedAt: null,
+    summary: "2 of 3 projects are on track. The launch itself is at risk: the narrative deck is the critical path and onboarding is blocked on tokens.",
+    sections: { highlights: "The new colour palette shipped.", risks: "The deck review slips into launch week.", next: "Deck review Thursday; tokens v2 review Wednesday." } },
 ];
 
 /* Inbox items in the other businesses (the switcher's unread dots), newest first. Kept

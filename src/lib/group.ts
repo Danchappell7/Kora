@@ -7,7 +7,11 @@
      when given, a goal it says is behind counts too, and its line is
      shown under the goal.
    · projects to look at: off track or at risk (Kanbo's read of the work,
-     or the latest update's call), or no update in 14 days;
+     or the latest update's call), or its update missing (0053: past its
+     update day and the follow-ups; before 0053, no update in 14 days).
+     Each carries ONE pill, the lead's call and Kanbo's read together
+     (lib/honestStatus), and those where the call is rosier than the
+     work come first;
    · requests waiting for your approval there;
    · the week's wins: top-level tasks finished this week (on a Monday,
      last week's);
@@ -22,6 +26,8 @@ import type { ApprovalWithTask, Goal, Project, Role, StatusUpdate, Task, Workspa
 import { PRIORITY_META, getMember } from "../data/data";
 import { goalProgressMap, projectHealth, type GoalProgress, type HealthKind } from "../components/views/reportingUtils";
 import { indexTasks, isStale, oldestTaskAge, statusFacts, STALE_DAYS } from "./statusDraft";
+import { mergedStatus, type MergedStatus } from "./honestStatus";
+import { projectRhythmState, readsMissing } from "./updateRhythm";
 import { computeRisks, type Risk } from "./radar";
 import { projectProgressOf } from "./countRules";
 import { localDay, startOfWeekMon, addDays } from "./weekMath";
@@ -33,16 +39,21 @@ export type GoalPace = (goal: Goal, progress: GoalProgress, today: Date) => Goal
 
 export type GoalWhy = "off_track" | "at_risk" | "overdue" | "pace";
 export interface GroupGoal { goal: Goal; pct: number; why: GoalWhy; pace?: GoalPaceRead }
-export type ProjectWhy = "off_track" | "at_risk" | "stale";
+/** missing: past its update day and the follow-ups (0053) · stale: no update in 14 days (before 0053) */
+export type ProjectWhy = "off_track" | "at_risk" | "missing" | "stale";
 export interface GroupProject {
   project: Project;
   why: ProjectWhy;
-  /** "Off track", "At risk", "No update in 14 days" */
+  /** "Off track", "At risk", "Update missing", "No update in 14 days" */
   label: string;
-  /** whose call the label is: Kanbo's read of the work, or the latest update's (stale: neither) */
+  /** whose call the label is: Kanbo's read of the work, or the latest update's (missing / stale: neither) */
   source?: "work" | "update";
   /** "3 overdue · 2 blocked · Update: at risk", "Update: at risk", "Last update 16 days ago" */
   detail: string;
+  /** the one pill: the lead's call and Kanbo's read together */
+  status: MergedStatus;
+  /** its update is missing (0053), whatever else is wrong: a lead can ask for it */
+  missing?: boolean;
 }
 export interface GroupApproval { id: string; taskId: string; title: string; requestedByName: string | null; createdAt: string }
 export interface BusinessDigest {
@@ -86,7 +97,7 @@ export interface GroupInput {
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const KIND_LABEL: Record<"off_track" | "at_risk", string> = { off_track: "Off track", at_risk: "At risk" };
-const SEVERITY: Record<ProjectWhy, number> = { off_track: 0, at_risk: 1, stale: 2 };
+const SEVERITY: Record<ProjectWhy, number> = { off_track: 0, at_risk: 1, missing: 2, stale: 2 };
 
 /** The week the wins are counted over: this week so far, or on a Monday the whole of last week. */
 export function winsWeek(today: Date): { from: Date; to: Date; label: string } {
@@ -131,27 +142,33 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
   const pctOf = (pid: string) => projectProgressOf(goalTasks, pid).pct;
   const behind = goalsBehind(goals, goalProgressMap(goals, pctOf), today, input.pace);
 
-  // projects: Kanbo's read of the work, the latest update's call, or an update that's gone quiet
+  // projects: Kanbo's read of the work, the latest update's call, or an update that's gone missing
   const needs: GroupProject[] = [];
   for (const p of projects) {
     const ptasks = idx.byProject.get(p.id) ?? [];
     const health = projectHealth(ptasks, today);
     const f = statusFacts(p, tasks as Task[], statusUpdates as StatusUpdate[], today, idx);
     const call = f.latest?.status;
+    const status = mergedStatus(p, f.latest, { health: health?.kind ?? null, overdue: f.overdue.length, blocked: f.blocked.length });
+    const rhythm = projectRhythmState(p, ptasks, f.latest, today, input.workspaces);
+    const last = f.lastUpdateDays != null ? `Last update ${f.lastUpdateDays} ${f.lastUpdateDays === 1 ? "day" : "days"} ago` : "No update yet";
     const bad = (k?: HealthKind | string): k is "off_track" | "at_risk" => k === "off_track" || k === "at_risk";
     const worst = health?.kind === "off_track" || call === "off_track" ? "off_track"
       : bad(health?.kind) || call === "at_risk" ? "at_risk" : null;
+    const missing = !!rhythm && readsMissing(rhythm);
     if (worst) {
       const fromWork = !!health && health.kind === worst;
-      // (the project's own page shows its latest update: when that says otherwise, so does this)
-      const callSays = bad(call) && call !== worst ? ` · Update: ${KIND_LABEL[call].toLowerCase()}` : "";
-      needs.push({ project: p, why: worst, label: KIND_LABEL[worst], source: fromWork ? "work" : "update",
-        detail: fromWork ? `${health!.detail}${callSays}` : `Update: ${KIND_LABEL[worst].toLowerCase()}` });
-    } else if (isStale(f, oldestTaskAge(ptasks, p.id, today))) {
-      needs.push({ project: p, why: "stale", label: `No update in ${STALE_DAYS} days`, detail: f.lastUpdateDays != null ? `Last update ${f.lastUpdateDays} days ago` : "No update yet" });
+      // (the latest update's call is the row's pill, beside what Kanbo counts; a missing update says so beside it)
+      needs.push({ project: p, why: worst, label: KIND_LABEL[worst], source: fromWork ? "work" : "update", status, missing,
+        detail: fromWork ? health!.detail : `Update: ${KIND_LABEL[worst].toLowerCase()}` });
+    } else if (rhythm ? missing : isStale(f, oldestTaskAge(ptasks, p.id, today))) {
+      needs.push(rhythm
+        ? { project: p, why: "missing", label: "Update missing", status, missing, detail: last }
+        : { project: p, why: "stale", label: `No update in ${STALE_DAYS} days`, status, detail: last });
     }
   }
-  needs.sort((a, b) => SEVERITY[a.why] - SEVERITY[b.why]);
+  // the lead's call rosier than the work first, then the worst off
+  needs.sort((a, b) => Number(b.status.mismatch) - Number(a.status.mismatch) || SEVERITY[a.why] - SEVERITY[b.why]);
 
   // requests waiting for you here
   const waiting = approvalsEverywhere(approvals).filter((a) => (a.workspaceId ?? null) === wsId)
@@ -205,14 +222,18 @@ export function groupDigest(input: GroupInput): BusinessDigest[] {
   return [lead, ...list.slice(0, i), ...list.slice(i + 1)];
 }
 
-/** "1 approval · 1 of yours overdue · 1 project off track · 2 goals behind" (or "Nothing needs you") */
+/** How many of a business's projects to look at wear an Off track pill (the lead's call, as each row shows it). */
+export const offTrackPills = (d: BusinessDigest): number => d.projects.needs.filter((n) => n.status.lead === "off_track").length;
+
+/** "1 approval · 1 of yours overdue · 1 project off track · 2 goals behind" (or "Nothing needs you"): the projects
+ *  counted by the pill each row wears, so the line never says "off track" over a row that says "At risk". */
 export function digestLine(d: BusinessDigest): string {
   const bits: string[] = [];
   const p = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   if (d.approvals.length) bits.push(p(d.approvals.length, "approval"));
   if (d.mine.overdue) bits.push(`${d.mine.overdue} of yours overdue`);
   if (d.mine.dueToday) bits.push(`${d.mine.dueToday} of yours due today`);
-  const off = d.projects.needs.filter((n) => n.why === "off_track").length;
+  const off = offTrackPills(d);
   if (off) bits.push(`${p(off, "project")} off track`);
   const look = d.projects.needs.length - off;
   if (look) bits.push(`${p(look, "project")} to look at`);

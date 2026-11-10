@@ -14,6 +14,14 @@
 //     came into their Inbox since the last digest and is still unread
 //     (snoozed threads left out), plus what's due today or overdue. Once a
 //     day (rate key per local date); nothing to say → no email.
+//     The same run sends the update-day reminders (0053, "rhythm"): on a
+//     project's update day (the workspace's, or the project's own) and the
+//     two working days after, while nothing's been posted since the round
+//     before, its OWNER gets one push and one email a day listing every
+//     update that's theirs (from 09:00 to 18:00 their time; held in quiet
+//     hours, inside the digest for people on it; "update_email" /
+//     "update_push" switch it off). Archived and on-hold projects are
+//     skipped. No extra schedule: the digest's every-15-minutes job runs it.
 //   "drain" (every minute): sends the push and email held for bundling and
 //     quiet hours (_shared/notifyQueue.ts drainQueue), one message per task
 //     per person. Up to 200 a run, started within 40 seconds (the scheduler
@@ -48,7 +56,8 @@ import { hit, KEY_PREFIX, release, sweep } from "../_shared/limits.ts";
 import { dueDigestPush, pushDueDigest, pushToUser, vapidFromEnv, type VapidKeys } from "../_shared/webpush.ts";
 import { sendEmail } from "../_shared/email.ts";
 import { addDays, digestDue, digestMoment, localParts, NOTIFY_KINDS, planDelivery, resolveNotifyPrefs, type NotifyKind } from "../_shared/notifyTiming.ts";
-import { digestEmail, digestThreads, dueEmail, filterDigestItems, type DigestItem, type DueTask } from "../_shared/notifyCompose.ts";
+import { digestEmail, digestThreads, dueEmail, filterDigestItems, type DigestItem, type DigestUpdate, type DueTask } from "../_shared/notifyCompose.ts";
+import { digestUpdates, emptyRhythmReport, ownerPrefs, remindOwner, updateOwners, type RemindDeps } from "../_shared/updateReminders.ts";
 import { deliverNotice, drainQueue, supabaseDrainDeps, supabaseQueueStore, type SendOutcome } from "../_shared/notifyQueue.ts";
 
 interface TaskRow {
@@ -90,7 +99,7 @@ Deno.serve(async (req) => {
   const supa = createClient(url, serviceKey);
   try {
     if (mode === "drain") return json({ mode, ...(await drainQueue(supabaseDrainDeps(supa, { ...env, limit: DRAIN_LIMIT }))) });
-    if (mode === "digest") return json({ mode, ...(await digests(supa, env)) });
+    if (mode === "digest") return json({ mode, ...(await digests(supa, env)), rhythm: await rhythm(supa, env) });
     if (mode !== "due") return json({ error: "bad mode" }, 400);
     return await dueReminders(supa, env);
   } catch (e) {
@@ -254,7 +263,8 @@ async function digests(supa: Supa, env: Env) {
       // the email channel's own switches still count (all off → no digest)
       if (planDelivery({ kind: "mention", channel: "email", now, prefs }).action === "skip"
         && planDelivery({ kind: "comment", channel: "email", now, prefs }).action === "skip"
-        && planDelivery({ kind: "due", channel: "email", now, prefs }).action === "skip") continue;
+        && planDelivery({ kind: "due", channel: "email", now, prefs }).action === "skip"
+        && planDelivery({ kind: "update", channel: "email", now, prefs }).action === "skip") continue;
       report.due++;
       const key = `${KEY_PREFIX}digest-mail:${p.id}:${when.date}`;
       if (!(await hit(supa, key, { windowSec: 36 * 3600 })).allowed) { report.already++; continue; }
@@ -321,10 +331,58 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
     due = rows.filter((t) => canSee(t) && !(t.project_id && archived.has(t.project_id))).map((t) => ({ id: t.id, title: t.title, due_date: t.due_date }));
   }
 
-  const mail = digestEmail(threads, due, today, env.appUrl, { firstName, digestTime: prefs.digestTime });
+  // your project updates (0053): on their day (or a follow-up day), or a lead asked and nothing's been posted since
+  const updates = prefs.channel("update", "email") ? await digestUpdates(supa, userId, today, prefs.timezone, since).catch(() => [] as DigestUpdate[]) : [];
+
+  const mail = digestEmail(threads, due, today, env.appUrl, { firstName, digestTime: prefs.digestTime, updates });
   if (!mail) return "empty";
   const res = await sendEmail({ resendKey: env.resendKey, from: env.from }, { to: email, subject: mail.subject, html: mail.html, text: mail.text });
   return res.ok ? "sent" : "failed";
+}
+
+/* ---------------------------- the update rhythm (0053) ---------------------------- */
+
+/** The update-day reminders (run inside "digest"): one push and one email a day per owner, listing every update
+ *  that's theirs (_shared/updateReminders: who's owed one, and the once-a-day claim). */
+async function rhythm(supa: Supa, env: Env) {
+  const report = emptyRhythmReport();
+  if (!env.resendKey && !env.vapid) return { ...report, note: "no senders" };
+  // before 0053 there are no update days
+  const probe = await supa.from("workspaces").select("update_rhythm").limit(1);
+  if (probe.error) return { ...report, note: "update days need 0053" };
+  const owners = await updateOwners(supa);
+  let pushOn = !!env.vapid;
+  if (pushOn) {
+    const { error } = await supa.from("push_subscriptions").select("id").limit(1);
+    if (error) pushOn = false;
+  }
+  // everyone's prefs in one read, so an owner outside their 09:00–18:00 costs nothing more
+  const prefs = await ownerPrefs(supa, owners);
+  const vapid = pushOn ? env.vapid : null;
+  const resendKey = env.resendKey;
+  const deps: RemindDeps = {
+    db: supa, store: supabaseQueueStore(supa), now: new Date(), appUrl: env.appUrl,
+    claim: async (key) => (await hit(supa, key, { windowSec: 36 * 3600 })).allowed,
+    release: (key) => release(supa, key),
+    push: vapid ? async (ownerId, push) => {
+      const res = await pushToUser(supa, ownerId, push, vapid, { ttl: 12 * 3600 });
+      return res.sent > 0 ? "sent" : res.failed > 0 || res.readFailed ? "failed" : "nothing";
+    } : undefined,
+    email: resendKey ? async (ownerId, mail): Promise<SendOutcome> => {
+      const { data: u } = await supa.auth.admin.getUserById(ownerId);
+      const email = u?.user?.email;
+      if (!email) return "nothing";
+      const res = await sendEmail({ resendKey, from: env.from }, { to: email, subject: mail.subject, html: mail.html, text: mail.text });
+      return res.ok ? "sent" : "failed";
+    } : undefined,
+    afterEmail: async () => { await sleep(550); },   // Resend: ~2 requests a second
+  };
+  for (const ownerId of owners) {
+    report.owners++;
+    const p = prefs.get(ownerId);
+    if (p) await remindOwner(ownerId, p, deps, report);
+  }
+  return report;
 }
 
 function safeEq(a: string, b: string) {

@@ -79,7 +79,9 @@ describe("App · a guest", () => {
     expect(screen.queryByRole("columnheader", { name: "Risks" })).toBeNull();
     window.history.pushState(null, "", "/p/p-northlight/updates");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(await screen.findByText("Nobody has posted an update on this project yet.")).toBeInTheDocument();
+    // (Idris's update: a guest reads it, and replies, but never posts one)
+    expect(await screen.findByText("The sitemap is signed off and the homepage copy is in review.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Post an update" })).toBeNull();
     expect(screen.queryByText("Updates are for members")).toBeNull();
   });
 

@@ -59,8 +59,11 @@ describe("All businesses: the lists", () => {
       act("5", { kind: "integration" }),                                   // your setup: shown
       act("6", { kind: "doc_mention", meta: { docId: "d", projectId: "p-c" } }),
       act("7", { kind: "doc_mention", meta: { docId: "d", projectId: "p-hidden" } }),
+      // 0054: a project update, by its project's workspace
+      act("8", { kind: "update", meta: { statusUpdateId: "su", projectId: "p-b", updateEvent: "posted" } }),
+      act("9", { kind: "update", meta: { statusUpdateId: "su", projectId: "p-hidden", updateEvent: "posted" } }),
     ];
-    expect(inboxEverywhere(feed, tasks, PROJECTS).map((a) => a.id)).toEqual(["1", "2", "3", "5", "6"]);
+    expect(inboxEverywhere(feed, tasks, PROJECTS).map((a) => a.id)).toEqual(["1", "2", "3", "5", "6", "8"]);
     const wsOf = new Map(tasks.map((t) => [t.id, t.workspaceId ?? null] as const));
     expect(activityWorkspace(feed[1], wsOf, PROJECTS)).toBe("w-b");
     expect(activityWorkspace(feed[2], wsOf, PROJECTS)).toBeNull();

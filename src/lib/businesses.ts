@@ -17,6 +17,7 @@
 import type { Activity, ActivityKind, ApprovalWithTask, CalEvent, Project, Role, Task, Workspace, WorkspaceMember } from "../data/types";
 import { PRIORITY_META } from "../data/data";
 import { docMentionRoute } from "./docMentions";
+import { updateItemWorkspace } from "./updateInbox";
 import { durOf, isOnCanvas } from "../components/views/planCanvas";
 
 /** A workspace as a key: its id, or "personal". */
@@ -62,10 +63,12 @@ export const isYours = (t: Pick<Task, "assigneeId" | "collaborators">, me: strin
 /** Your own actions (history, not notifications): never unread. */
 export const SELF_KINDS: ReadonlySet<ActivityKind> = new Set<ActivityKind>(["created", "status", "completed", "reopened", "deleted"]);
 
-/** The workspace an Inbox item belongs to: its task's (a doc @mention: its project's). Undefined when
+/** The workspace an Inbox item belongs to: its task's (a doc @mention or a project update: its project's). Undefined when
  *  it can't be told (a deleted task, a project you can't see) or it's about your own setup (integrations). */
 export function activityWorkspace(a: Activity, wsOfTask: ReadonlyMap<string, string | null>, projects: readonly Pick<Project, "id" | "workspaceId">[]): string | null | undefined {
   if (a.taskId != null) return wsOfTask.has(a.taskId) ? wsOfTask.get(a.taskId) ?? null : undefined;
+  // 0054: a project update belongs to its project's workspace
+  if (a.kind === "update") return updateItemWorkspace(a, projects);
   const r = docMentionRoute(a);
   if (!r) return undefined;
   const p = projects.find((x) => x.id === r.projectId);

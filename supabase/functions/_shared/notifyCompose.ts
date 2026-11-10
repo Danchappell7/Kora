@@ -8,7 +8,11 @@
 //   • a bundle: everything held for one task in one window, as ONE push and
 //     ONE email — "3 comments on Launch deck from Sana and Theo", every
 //     mention named ("Sana mentioned you");
-//   • the morning due list and the daily digest (daily-reminders).
+//   • the morning due list and the daily digest (daily-reminders);
+//   • project updates (0053): the update-day reminder (daily-reminders'
+//     digest run) and "Ask for an update" (notify), and both in the digest;
+//   • (0054) a posted update for the project's owner and contributors, and
+//     an Ask in it for the people it names (notify { kind: "status_update" }).
 // Everything user-written is escaped; titles are one line and capped.
 // ============================================================
 import type { PushMessage } from "./webpush.ts";
@@ -54,6 +58,7 @@ export function noticeLine(kind: string, actorName: string): string {
     case "assigned": return `${w} assigned you this task`;
     case "approval": return `${w} asked about an approval`;
     case "kudos": return `${w} sent you kudos`;
+    case "update": return `${w} asked for an update`;
     default: return `${w} updated it`;
   }
 }
@@ -139,7 +144,9 @@ export function composeBundle(rows: readonly ComposeRow[], appUrl: string): Comp
     mentioners.length ? `${listJoin(mentioners)} mentioned you` : "",
     assigners.length ? `${listJoin(assigners)} assigned it to you` : "",
   ].filter(Boolean).join(" · ");
-  const path = taskId ? `/?task=${encodeURIComponent(taskId)}` : "/inbox";
+  // (a project's notices have no task: they open where their own said, e.g. its Updates tab)
+  const own = (sorted[sorted.length - 1]?.payload ?? {}) as Partial<NoticePayload>;
+  const path = taskId ? `/?task=${encodeURIComponent(taskId)}` : typeof own.url === "string" && own.url.startsWith("/") ? own.url : "/inbox";
   const push: PushMessage = {
     title: headline,
     body: [mentionLine, actors.length ? `From ${peopleList(actors)}` : ""].filter(Boolean).join(" · ") || taskTitle,
@@ -216,15 +223,23 @@ export interface DigestThread {
   latest: string;
 }
 
-const DIGEST_ORDER = ["mention", "doc_mention", "approval", "assigned", "comment", "kudos", "integration"];
+const DIGEST_ORDER = ["mention", "doc_mention", "approval", "assigned", "comment", "kudos", "update", "integration"];
 const digestRank = (k: string) => { const i = DIGEST_ORDER.indexOf(k); return i < 0 ? 99 : i; };
 
-/** Unread items → threads (one per task; a doc mention or notice stands alone), mentions first, then newest. */
+/** The thread an item belongs to: its task; a project update's, its project (a portfolio update's, its portfolio);
+ *  a doc mention or notice stands alone. */
+function threadKey(it: DigestItem): string {
+  if (it.task_id) return `t:${it.task_id}`;
+  const ref = it.kind === "update" ? it.meta?.project_id ?? it.meta?.portfolio_id : null;
+  return typeof ref === "string" && ref ? `u:${ref}` : `i:${it.id}`;
+}
+
+/** Unread items → threads (see threadKey), mentions first, then newest. */
 export function digestThreads(items: readonly DigestItem[]): DigestThread[] {
   const groups = new Map<string, DigestItem[]>();
   for (const it of items) {
     if (SELF.has(it.kind)) continue;
-    const key = it.task_id ? `t:${it.task_id}` : `i:${it.id}`;
+    const key = threadKey(it);
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(it);
   }
   const out: DigestThread[] = [];
@@ -242,6 +257,15 @@ export function digestThreads(items: readonly DigestItem[]): DigestThread[] {
       else if (kind === "assigned") lines.push(/^Request via\b/i.test(xs[0].detail) ? `New request ${oneLine(xs[0].detail.replace(/^Request\s+/i, ""), 80)}` : `${ppl || "Someone"} assigned you`);
       else if (kind === "approval") lines.push(xs.length === 1 ? `${ppl || "Someone"}: approval ${String(xs[0].meta?.event ?? "update").replace(/_/g, " ")}` : `${xs.length} approval updates`);
       else if (kind === "kudos") lines.push(`${ppl || "Someone"} sent you kudos`);
+      // 0054: a project update (the thread is its project): an Ask for you, replies, or posted
+      else if (kind === "update") {
+        const asks = xs.filter((x) => x.meta?.ask === true);
+        const replies = xs.filter((x) => x.meta?.update_event === "comment" && x.meta?.ask !== true);
+        const posted = xs.length - asks.length - replies.length;
+        if (asks.length) lines.push(`${peopleList(asks.map((x) => x.detail)) || "Someone"} asked you something in an update`);
+        if (replies.length) lines.push(`${plural(replies.length, "reply", "replies")} on your update${names(replies) ? ` from ${names(replies)}` : ""}`);
+        if (posted > 0) lines.push(posted === 1 ? `${names(xs.filter((x) => x.meta?.ask !== true && x.meta?.update_event !== "comment")) || "Someone"} posted an update` : `${posted} updates posted`);
+      }
       else if (kind === "integration") lines.push(oneLine(xs[0].detail || "An integration needs you", 120));
       else lines.push(plural(xs.length, "update"));
     }
@@ -263,10 +287,12 @@ export function filterDigestItems(items: readonly DigestItem[], visibleTasks: Re
   return items.filter((a) => (!a.task_id || (visibleTasks.has(a.task_id) && !snoozedTasks.has(a.task_id))) && wants(a.kind));
 }
 
-/** The digest email: unread updates by thread, then what's due. null when there's nothing to say. */
-export function digestEmail(threads: readonly DigestThread[], due: readonly DueTask[], today: string, appUrl: string, opts: { firstName?: string; digestTime?: string } = {}):
+/** The digest email: unread updates by thread, then what's due, then your project updates (0053). null when there's nothing to say. */
+export function digestEmail(threads: readonly DigestThread[], due: readonly DueTask[], today: string, appUrl: string,
+  opts: { firstName?: string; digestTime?: string; updates?: readonly DigestUpdate[] } = {}):
   { subject: string; html: string; text: string } | null {
-  if (!threads.length && !due.length) return null;
+  const ups = opts.updates ?? [];
+  if (!threads.length && !due.length && !ups.length) return null;
   const updates = threads.reduce((n, t) => n + t.lines.length, 0);
   const shown = threads.slice(0, 25);
   const link = (taskId: string | null) => (appUrl ? `${appUrl}${taskId ? `/?task=${encodeURIComponent(taskId)}` : "/inbox"}` : "");
@@ -287,7 +313,16 @@ export function digestEmail(threads: readonly DigestThread[], due: readonly DueT
   const parts: string[] = [];
   if (threads.length) parts.push(`<strong>${esc(plural(updates, "update"))} in your Inbox</strong>`, `<ul style="margin:0;padding:0 0 0 18px">${threadHtml}</ul>${moreThreads}`);
   if (due.length) parts.push(`<strong>${esc(`${plural(due.length, "task")} due today or overdue`)}</strong>`, `<ul style="margin:0;padding:0 0 0 18px">${dueHtml}</ul>${due.length > 15 ? `<p style="color:#71717a;font-size:13px;margin:0">…and ${due.length - 15} more.</p>` : ""}`);
-  const bits = [threads.length ? plural(updates, "update") : "", due.length ? `${plural(due.length, "task")} due` : ""].filter(Boolean);
+  if (ups.length) {
+    const upHtml = ups.slice(0, 10).map((u) => {
+      const href = appUrl ? `${appUrl}/p/${encodeURIComponent(u.projectId)}/updates` : "";
+      const name = esc(oneLine(u.name, 120) || "A project");
+      return `<li style="margin:0 0 6px">${href ? `<a href="${esc(href)}" style="color:#18181b;text-decoration:none">${name}</a>` : name} <span style="color:#71717a">${esc(oneLine(u.line, 120))}</span></li>`;
+    }).join("");
+    parts.push(`<strong>${esc(ups.length === 1 ? "Your project update" : `${ups.length} project updates`)}</strong>`,
+      `<ul style="margin:0;padding:0 0 0 18px">${upHtml}</ul><p style="color:#71717a;font-size:13px;margin:0">Kanbo has a draft ready on Today. Nothing is posted until you do.</p>`);
+  }
+  const bits = [threads.length ? plural(updates, "update") : "", due.length ? `${plural(due.length, "task")} due` : "", ups.length ? (ups.length === 1 ? "your project update" : `${ups.length} project updates`) : ""].filter(Boolean);
   const mail = renderEmail({
     heading: opts.firstName ? `Your Kanbo digest, ${oneLine(opts.firstName, 40)}` : "Your Kanbo digest",
     paragraphs: parts,
@@ -295,4 +330,128 @@ export function digestEmail(threads: readonly DigestThread[], due: readonly DueT
     footnotes: [`You get one email a day${opts.digestTime ? ` at ${esc(opts.digestTime)}` : ""}, plus a push for mentions and approvals. Change this in Kanbo › Settings › Notifications.`],
   });
   return { subject: `Your Kanbo digest: ${bits.join(", ")}`, html: mail.html, text: mail.text };
+}
+
+/* ---------- project updates (0053) ---------- */
+
+/** A project update that's yours to post: its name, and why ("due today", "was due Fri 6 Nov", "Theo asked for one"). */
+export interface DigestUpdate { projectId: string; name: string; line: string }
+
+/** One project on its update day (or a follow-up day) for its owner. */
+export interface UpdateDueItem {
+  projectId: string;
+  name: string;
+  /** "today", "Fri 6 Nov" */
+  when: string;
+  /** 0 on the day, then 1 and 2 */
+  followUp: number;
+}
+
+const projectName = (n: string | null | undefined) => oneLine(n, 120) || "your project";
+const dueSays = (i: UpdateDueItem) => (i.followUp === 0 || i.when === "today" ? "due today" : `was due ${i.when}`);
+/** "Your Q3 launch update is due today" · "Your Q3 launch update was due Fri 6 Nov" · "3 project updates are waiting on you" */
+const dueHeading = (items: readonly UpdateDueItem[]) => {
+  if (items.length !== 1) return `${items.length} project updates are waiting on you`;
+  const i = items[0];
+  return i.followUp === 0 || i.when === "today" ? `Your ${projectName(i.name)} update is due today` : `Your ${projectName(i.name)} update was due ${i.when}`;
+};
+
+/** The update-day reminder's push: one a day for everything that's yours (it opens Today, where the drafts are). */
+export function updateDuePush(items: readonly UpdateDueItem[]): PushMessage {
+  const one = items.length === 1;
+  return {
+    title: dueHeading(items),
+    body: one ? "Kanbo has drafted it from this week's work. Check it and post." : `${listJoin(items.slice(0, 4).map((i) => projectName(i.name)))}. Kanbo has drafts ready.`,
+    url: "/today",
+    tag: "kanbo-updates",
+    kind: "update",
+  };
+}
+
+/** …and its email. */
+export function updateDueEmail(items: readonly UpdateDueItem[], appUrl: string): { subject: string; html: string; text: string } {
+  const one = items.length === 1;
+  const heading = dueHeading(items);
+  const list = items.slice(0, 10).map((i) => {
+    const href = appUrl ? `${appUrl}/p/${encodeURIComponent(i.projectId)}/updates` : "";
+    const name = esc(projectName(i.name));
+    return `<li style="margin:0 0 6px">${href ? `<a href="${esc(href)}" style="color:#18181b;text-decoration:none;font-weight:600">${name}</a>` : `<strong>${name}</strong>`} <span style="color:#71717a">${esc(dueSays(i))}</span></li>`;
+  }).join("");
+  const mail = renderEmail({
+    heading,
+    paragraphs: [
+      ...(one ? [] : [`<ul style="margin:0;padding:0 0 0 18px">${list}</ul>`]),
+      one ? "Kanbo has drafted it from this week's work: what finished, what's late and what's next. Check it, change what you like, and post." : "Kanbo has drafted each from this week's work. Check them, change what you like, and post.",
+    ],
+    cta: appUrl ? { label: one ? "Review the draft" : "Open Today", href: one && items[0] ? `${appUrl}/p/${encodeURIComponent(items[0].projectId)}/updates` : `${appUrl}/today` } : undefined,
+    footnotes: ["It's your team's update day. If it's still to do you'll hear at most twice more, on the next working days. Change this in Kanbo › Settings › Notifications."],
+  });
+  return { subject: oneLine(heading, 180), html: mail.html, text: mail.text };
+}
+
+/** "Ask for an update": the push to the project's owner (it opens the project's Updates tab). */
+export function updateAskPush(askerName: string, name: string, projectId: string): PushMessage {
+  return {
+    title: `${who(askerName)} asked for an update`,
+    body: `On ${projectName(name)}. Kanbo has a draft ready.`,
+    url: `/p/${encodeURIComponent(projectId)}/updates`,
+    tag: `update-ask-${projectId}`,
+    kind: "update",
+  };
+}
+
+/** …and its email. */
+export function updateAskEmail(askerName: string, name: string, link: string): { subject: string; html: string; text: string } {
+  const heading = `${who(askerName)} asked for an update on ${projectName(name)}`;
+  const mail = renderEmail({
+    heading,
+    paragraphs: ["Kanbo has drafted one from this week's work. Check it, change what you like, and post. Everyone following the project sees it."],
+    cta: link ? { label: "Review the draft", href: link } : undefined,
+    footnotes: ["Change project update emails in Kanbo › Settings › Notifications."],
+  });
+  return { subject: oneLine(heading, 180), html: mail.html, text: mail.text };
+}
+
+/* ---------- a posted update (0054) ---------- */
+
+const STATUS_WORDS: Record<string, string> = { on_track: "On track", at_risk: "At risk", off_track: "Off track", on_hold: "On hold" };
+/** "On track" for a status key ("" for anything else). */
+export const statusWord = (s: string | null | undefined): string => STATUS_WORDS[String(s)] ?? "";
+
+/** What a posted update says in a notice: who, which project, its call, and (for the people its Ask names) the Ask. */
+export interface PostedUpdate { actorName: string; projectName: string; projectId: string; status: string; summary: string; ask?: string | null }
+
+/** One line in a bundle: "Sana Rao posted an update" · "Sana Rao asked you something". */
+export const postedLine = (u: Pick<PostedUpdate, "actorName">, asked: boolean): string =>
+  `${who(u.actorName)} ${asked ? "asked you something in an update" : "posted an update"}`;
+
+/** The push, for the people an Ask names (FYI readers get email only, or the digest). */
+export function updatePostedPush(u: PostedUpdate): PushMessage {
+  return {
+    title: `${who(u.actorName)} asked you something`,
+    body: oneLine(u.ask ? `${projectName(u.projectName)}: ${u.ask}` : `In the ${projectName(u.projectName)} update.`, 160),
+    url: `/p/${encodeURIComponent(u.projectId)}/updates`,
+    tag: `update-posted-${u.projectId}`,
+    kind: "update",
+  };
+}
+
+/** The email: the call, the words, and (asked) what it asks of you. */
+export function updatePostedEmail(u: PostedUpdate, asked: boolean, link: string): { subject: string; html: string; text: string } {
+  const word = statusWord(u.status);
+  const heading = asked
+    ? `${who(u.actorName)} asked you something in the ${projectName(u.projectName)} update`
+    : `${who(u.actorName)} posted an update on ${projectName(u.projectName)}${word ? `: ${word}` : ""}`;
+  const quote = (t: string) => `<p style="margin:0;padding:8px 12px;border-left:3px solid #e4e4e7;color:#3f3f46">${esc(oneLine(t, 600))}</p>`;
+  const mail = renderEmail({
+    heading,
+    paragraphs: [
+      ...(asked && u.ask ? [`<strong>The ask</strong>`, quote(u.ask)] : []),
+      quote(u.summary),
+      asked ? "Reply on the update, and everyone following the project sees it." : "Reply or react on the update in Kanbo.",
+    ],
+    cta: link ? { label: asked ? "Reply" : "Open the update", href: link } : undefined,
+    footnotes: ["Change project update emails in Kanbo › Settings › Notifications."],
+  });
+  return { subject: oneLine(heading, 180), html: mail.html, text: mail.text };
 }

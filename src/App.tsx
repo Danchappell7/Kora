@@ -4,7 +4,7 @@
    between every view and the store.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
-import { Icon, GlobalTipStyles, AppBg, Button, IconButton, type TabItem } from "./components/primitives";
+import { Icon, GlobalTipStyles, AppBg, Button, IconButton, EmptyState, type TabItem } from "./components/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { FullLoader } from "./components/FullLoader";
 import { PlaceSkeleton, PanelSkeleton, skeletonFor } from "./components/PlaceSkeleton";
@@ -25,7 +25,7 @@ import { PublicSite, UpdatePasswordScreen, PendingApproval } from "./entryChunks
 // it, or while the browser is idle (lazyViews.ts)
 import {
   MyWeekView, CalendarView, HomeView, InboxView, TasksPage, ProjectTitleAddon, ProjectActions, ProjectPanels, ProjectNotice,
-  SearchView, ProjectsView, GoalsView, PortfoliosView, AutomationsView, FormsView, RecycleBin, TeamPulse, TeamView,
+  SearchView, ProjectsView, GoalsView, PortfoliosView, PortfolioPage, AutomationsView, FormsView, RecycleBin, TeamPulse, TeamView,
   WorkspaceSettingsPanel, WorkloadView, AnalyticsView, ReportsView, DocsTab,
   TaskDetail, CommandPalette, SettingsModal, NewTaskModal, NewProjectModal, NewWorkspaceModal, DeleteProjectModal,
   ImportTasksModal, OnboardingModal, WelcomeModal, QuickCapture, ExtractTasksSheet, ShutdownSheet, WeeklyReview,
@@ -34,6 +34,13 @@ import {
   SlackLinkPage, GroupView, GoalPanelHost,
 } from "./lazyViews";
 import type { GroupTarget } from "./components/views/GroupView";
+// 0053 project updates: the update day, Ask for an update, and your own on Today
+import { useTodayUpdates } from "./components/updates/TodayUpdates";
+import { UpdateRhythmPanel } from "./components/updates/UpdateRhythmPanel";
+import type { StatusExtras } from "./components/project/StatusComposer";
+import { ownerCanPost, useAskForUpdate } from "./lib/updateAsks";
+import { askPeopleIn } from "./lib/updateSections";
+import type { UpdateRhythm } from "./lib/updateRhythm";
 // one view across businesses: All businesses on Today, Inbox and My tasks; the switcher's dots; Projects › Group
 import { useBusinessScope } from "./hooks/useBusinessScope";
 import { AllBusinessesToggle, BusinessChipsProvider, WorkspaceMark } from "./components/businesses/Businesses";
@@ -45,7 +52,7 @@ import { useToast } from "./components/Toast";
 import { reportError } from "./lib/monitoring";
 import { useFocusTimer } from "./hooks/useFocusTimer";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange } from "./data/store";
+import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject, type AppBanner, type Bootstrap, type RealtimeChange, type PortfolioPatch } from "./data/store";
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
@@ -76,6 +83,9 @@ import { ApprovalSummariesProvider } from "./components/approvals/ApprovalSummar
 import { approvalFailure, approvalsInWorkspace, listApprovalSummaries, listMyApprovals, subscribeApprovals, waitingOnApproval } from "./lib/approvals";
 import type { BinUndoResult } from "./lib/trash";
 import { docMentionInWorkspace, docMentionRoute } from "./lib/docMentions";
+import { updateItemRoute, updateItemWorkspace } from "./lib/updateInbox";
+import { notifyUpdatePosted } from "./lib/updateConversation";
+import { PortfolioScope, setInsightsPortfolio } from "./components/portfolios/PortfolioScope";
 import type { DocMakeTask } from "./components/docs/DocEditor";
 import type { HistoryLogProps } from "./components/bin/HistoryLog";
 import type { InsightsNavProps } from "./components/views/InsightsSummary";
@@ -91,7 +101,7 @@ import type { GoalExtras, GoalPatch } from "./data/types";
 import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
-import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan, NotifyPrefs,
+import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan, NotifyPrefs,
   BoardSettings, LibraryTemplate, MomentumPrefs, OnboardingState, SetupItemId } from "./data/types";
 import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
@@ -136,6 +146,8 @@ function RenderView({ render }: { render: () => React.ReactNode }) { return <>{r
 const TASK_VIEWS: readonly TaskView[] = ["list", "board", "timeline", "calendar", "files", "matrix"];
 /** (0048: Search saves views now — its old saved-search props get these) */
 const NO_SAVED_SEARCHES: SavedSearch[] = [];
+const NO_TASKS: Task[] = [];
+const NO_PORTFOLIOS: Portfolio[] = [];
 const noop = () => {};
 const isTaskView = (v: string | undefined): v is TaskView => !!v && (TASK_VIEWS as readonly string[]).includes(v);
 const GROUP_BYS: readonly GroupBy[] = ["status", "section", "due", "priority", "project", "none"];
@@ -181,7 +193,7 @@ function normaliseRoute(r: Route, ctx: { personal: boolean; guest: boolean }): R
   return r;
 }
 /** One page: a place, or one project in it (its tabs are the same page). */
-const pageOf = (r: Route) => `${placeOf(r)}:${r.view === "project" ? r.projectId ?? "" : ""}`;
+const pageOf = (r: Route) => `${placeOf(r)}:${r.view === "project" ? r.projectId ?? "" : r.view === "portfolios" ? r.portfolioId ?? "" : ""}`;
 /** Whose plan a task carries once a change lands: a change that hands the task to
  *  someone (you included) decides, otherwise its assignee. */
 const ownerAfter = (t: Task, patch: Partial<Task>) => ("assigneeId" in patch ? patch.assigneeId : t.assigneeId);
@@ -623,8 +635,10 @@ export default function App() {
     const wsOfTask = new Map(tasks.map((t) => [t.id, t.workspaceId ?? null]));
     return activity.filter((a) => (a.kind === "integration" && a.taskId == null)
       || (a.taskId != null && wsOfTask.has(a.taskId) && wsOfTask.get(a.taskId) === workspace)
-      || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace)));
-  }, [tasks, activity, workspace, projects]);
+      || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace))
+      // 0054: a project update (no task) belongs to its project's workspace (a portfolio's: its portfolio's)
+      || (a.kind === "update" && updateItemWorkspace(a, projects, portfolios) === workspace));
+  }, [tasks, activity, workspace, projects, portfolios]);
   const scopedActivityRef = useRef<Activity[]>([]); scopedActivityRef.current = scopedActivity;
   // unread = not read on the server (any device), and not your own actions
   const inboxCount = scopedActivity.filter((a) => !a.readAt && !SELF_KINDS.has(a.kind)).length;
@@ -1090,6 +1104,19 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, projects, workspace, tasks === null]);
+  // 0054: a portfolio's page in another workspace opens there (an address, the Inbox); switching
+  // workspace while on one goes back to that workspace's portfolios
+  const pfSeenRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (tasks === null) return;
+    if (route.view !== "portfolios" || !route.portfolioId) { pfSeenRef.current = undefined; return; }
+    const arrived = pfSeenRef.current !== route.portfolioId; pfSeenRef.current = route.portfolioId;
+    const pf = portfolios.find((x) => x.id === route.portfolioId);
+    if (!pf || (pf.workspaceId ?? null) === workspace) return;   // (not found: the page says so)
+    if (arrived) setWorkspace(pf.workspaceId ?? null);
+    else setRoute({ view: "portfolios" }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route, portfolios, workspace, tasks === null]);
   // The page has to make sense for who you are here, however you arrived (an address,
   // Back, a g-key, a workspace switch, a role change): Personal's /team is Insights, and
   // a guest opening Rules lands on Projects (or the project) instead. setRoute and Back
@@ -2386,7 +2413,7 @@ export default function App() {
 
   /** `boardSettingsChange` (0048): just what changed on the board, for the database to merge (merge_board_settings);
    *  `boardSettings` is the whole object, for the app's own copy (and a database without that function). */
-  const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings; boardSettingsChange?: BoardSettingsChange }) => {
+  const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings; boardSettingsChange?: BoardSettingsChange; updateRhythm?: UpdateRhythm | null }) => {
     const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
     if (denyGuest([p.workspaceId])) return;
     const { boardSettingsChange, ...local } = patch;
@@ -2739,16 +2766,17 @@ export default function App() {
     setPortfolios((p) => [...p, tmp]);
     store.createPortfolio({ workspaceId: wsId, name }, userIdRef.current)
       .then((pf) => {
-        const op = settleTmp(tmp.id, pf.id, (id, patch: { name?: string; projectIds?: string[] }) => store.updatePortfolio(id, patch), (id) => store.deletePortfolio(id));
+        const op = settleTmp(tmp.id, pf.id, (id, patch: PortfolioPatch) => store.updatePortfolio(id, patch), (id) => store.deletePortfolio(id));
         setPortfolios((p) => (op.deleted ? p.filter((x) => x.id !== tmp.id) : swapTmp(p, tmp.id, { ...pf, ...op.patch })));
       })
       .catch((e) => { reportError(e, { op: "createPortfolio" }); setPortfolios((p) => p.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the portfolio: " + (e?.message || e)); });
   }, [denyGuest, settleTmp, toastError]);
-  const updatePortfolio = useCallback((id: string, patch: { name?: string; projectIds?: string[] }) => {
+  const updatePortfolio = useCallback((id: string, patch: PortfolioPatch) => {
     if (denyGuest([workspaceRef.current])) return;
     setPortfolios((p) => p.map((x) => x.id === id ? { ...x, ...patch } : x));
     if (deferTmp(id, patch)) return;
-    store.updatePortfolio(id, patch).catch(saveFailed("updatePortfolio"));
+    // (before 0054 the page's details say they aren't switched on yet)
+    store.updatePortfolio(id, patch).catch((e) => saveFailed("updatePortfolio", /switched on/i.test(String(e?.message)) ? e.message : undefined)(e));
   }, [denyGuest, deferTmp, saveFailed]);
   const deletePortfolio = useCallback((id: string) => {
     if (denyGuest([workspaceRef.current])) return;
@@ -2758,13 +2786,33 @@ export default function App() {
   }, [denyGuest, deferTmp, saveFailed]);
 
   // ---- project status updates ----
-  const postStatusUpdate = useCallback((projectId: string, summary: string, status: StatusKind): Promise<boolean> => {
+  const postStatusUpdate = useCallback((projectId: string, summary: string, status: StatusKind, extras?: StatusExtras): Promise<boolean> => {
     const wsId = projectWs(projectId);
     if (denyGuest([wsId])) return Promise.resolve(false);
-    return store.createStatusUpdate({ workspaceId: wsId, projectId, summary, status }, userIdRef.current)
-      .then((su) => { setStatusUpdates((s) => [su, ...s]); return true; })
+    return store.createStatusUpdate({ workspaceId: wsId, projectId, summary, status, ...extras }, userIdRef.current)
+      .then((su) => { setStatusUpdates((s) => [su, ...s]); if (wsId && su.askUserIds?.length) notifyUpdatePosted(su.id); return true; })
       .catch((e) => { reportError(e, { op: "statusUpdate" }); toastError("Couldn't post the update — your text is still there."); return false; });
   }, [denyGuest, toastError]);
+  // 0054: an author changes their own update (marked edited); the author or a lead deletes one
+  const editStatusUpdate = useCallback((u: StatusUpdate, patch: { summary: string; status: StatusKind; sections: UpdateSections | null;
+    recoveryPlan?: string | null; targetDate?: string | null; askUserIds?: string[] }): Promise<boolean> => {
+    if (denyGuest([u.workspaceId ?? null])) return Promise.resolve(false);
+    return store.editStatusUpdate(u, patch)
+      .then((next) => { setStatusUpdates((s) => s.map((x) => (x.id === u.id ? next : x))); return true; })
+      .catch((e) => { reportError(e, { op: "editStatusUpdate" }); toastError(e?.message || "Couldn't save the update."); return false; });
+  }, [denyGuest, toastError]);
+  const deleteStatusUpdate = useCallback((u: StatusUpdate) => {
+    setStatusUpdates((s) => s.filter((x) => x.id !== u.id));
+    store.deleteStatusUpdate(u.id).catch((e) => {
+      reportError(e, { op: "deleteStatusUpdate" });
+      setStatusUpdates((s) => (s.some((x) => x.id === u.id) ? s : [u, ...s].sort((a, b) => b.createdAt.localeCompare(a.createdAt))));
+      toastError(e?.message || "Couldn't delete the update.");
+    });
+  }, [toastError]);
+  // an Inbox update item opens its project's Updates tab with its replies open (or its portfolio's page)
+  const [updateFocus, setUpdateFocus] = useState<string | null>(null);
+  // (the update the Inbox opened is brought into view once: leaving the project forgets it)
+  useEffect(() => { if (route.view !== "project") setUpdateFocus(null); }, [route.view]);
 
   // ---- automation rules ----
   type RulePatch = { name?: string; actions?: AutomationAction[]; enabled?: boolean; trigger?: AutomationRule["trigger"] };
@@ -3033,6 +3081,18 @@ export default function App() {
       reportError(e, { op: "updateWorkspace" });
       setWorkspaces(before); setReferenceData({ workspaces: before });
       toastError("Couldn't save workspace settings: " + (e?.message || e));
+    });
+  }, [toastError]);
+
+  // 0053: the team's update day (owners and admins)
+  const updateWorkspaceRhythm = useCallback((workspaceId: string, rhythm: UpdateRhythm | null) => {
+    const before = workspacesRef.current;
+    const next = before.map((w) => w.id === workspaceId ? { ...w, updateRhythm: rhythm } : w);
+    setWorkspaces(next); setReferenceData({ workspaces: next });
+    store.setUpdateRhythm(workspaceId, rhythm).catch((e) => {
+      reportError(e, { op: "setUpdateRhythm" });
+      setWorkspaces(before); setReferenceData({ workspaces: before });
+      toastError("Couldn't save the update day — change undone.");
     });
   }, [toastError]);
 
@@ -3622,6 +3682,22 @@ export default function App() {
   const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview: myApprovals.toReview, workspaces, members: wsMembers,
     workspace, me: currentUserId, today: dayKey, allChosen: !!onboarding.businesses?.all });
   allBizRef.current = biz.all;
+
+  /* ---- 0053 project updates: Ask for an update (owners and admins), and yours on Today ---- */
+  // (never of a guest owner: a guest can't post an update)
+  const updateAsks = useAskForUpdate(currentUserId, roleIn, (p) => ownerCanPost(p, wsMembers));
+  // (Today's scope: every business on All businesses, else this workspace's projects; never one where you're a guest)
+  const todayProjects = useMemo(() => (biz.all ? projects : projects.filter((p) => (p.workspaceId ?? null) === workspace))
+    .filter((p) => roleIn(p.workspaceId) !== "guest"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [biz.all, projects, workspace, wsMembers]);
+  const todayUpdates = useTodayUpdates({
+    me: currentUserId, projects: todayProjects, tasks: tasks ?? NO_TASKS, statusUpdates, onPost: postStatusUpdate,
+    aiStatus: appearance.ai !== false ? (facts: unknown) => store.aiStatus(facts) : undefined,
+    readOnly: !biz.all && roleIn(workspace) === "guest",
+    // (an Ask in it can be for anyone in the project's own workspace)
+    peopleFor: (p) => askPeopleIn(wsMembers, p.workspaceId ?? null, currentUserId),
+  });
   // (your choice, on every device: profiles.onboarding)
   const setAllBusinesses = useCallback((all: boolean) => changeOnboarding({ ...onboardingRef.current, businesses: all ? { all: true } : {} }), [changeOnboarding]);
   // the Inbox's "new" across every business while All businesses is on (else this workspace's, as ever)
@@ -3977,6 +4053,7 @@ export default function App() {
               <GoalServes goals={goalFlow.forProject(openProject.id)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} compact={isMobile} /></>,
             actions: (
               <Suspense fallback={null}><ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}
+                people={assignees.filter((m) => m.id !== currentUserId)}
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
                 onDuplicate={activeReadOnly ? undefined : duplicateProject}
                 onArchive={activeReadOnly || !canArchiveProject(openProject, { myRole }) ? undefined : (id) => setProjectArchived(id, true)}
@@ -4032,11 +4109,14 @@ export default function App() {
   // (a task's activity belongs to the workspace its task lives in, as in the Inbox itself)
   const wsTaskIds = new Set(tasks.filter((t) => (t.workspaceId ?? null) === workspace).map((t) => t.id));
   const inboxArchived = archivedRev >= 0 ? [...archivedHereRef.current.values()].map((p) => p.item)
-    .filter((a) => (a.kind === "integration" && !a.taskId) || (!!a.taskId && wsTaskIds.has(a.taskId)) || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace)))
+    .filter((a) => (a.kind === "integration" && !a.taskId) || (!!a.taskId && wsTaskIds.has(a.taskId)) || (a.kind === "doc_mention" && docMentionInWorkspace(a, projects, workspace))
+      || (a.kind === "update" && updateItemWorkspace(a, projects, portfolios) === workspace))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
   // Workload and Radar: guests' work shows, but they carry no team capacity
   const loadMembers = assignees.map((a) => ({ ...a, guest: wsMembers.some((m) => m.userId === a.id && (m.workspaceId ?? null) === workspace && m.role === "guest") || undefined }));
 
+  // 0054: the workspace's portfolios, for Insights' portfolio picker (Personal's Insights is yours alone: none)
+  const wsPortfolios = workspace === null ? NO_PORTFOLIOS : portfolios.filter((p) => (p.workspaceId ?? null) === workspace);
   const renderMain = () => {
     // a guest never sees the team's reporting, even for the moment before the route guard moves them on
     if (activeReadOnly && hiddenFromGuest(route.view)) return null;
@@ -4062,6 +4142,8 @@ export default function App() {
         templates={activeReadOnly ? undefined : todayTemplates}
         // 0052: one goal line in the brief, and your key results behind pace in Kanbo noticed
         goalFor={goalFlow.briefGoal} goalsBehind={biz.all ? goalFlow.behind() : goalFlow.behind(workspace)} onOpenGoal={openGoal}
+        // 0053: your project update is due (or a lead asked for it): a line under the brief, a nudge, Kanbo's draft ready
+        updates={todayUpdates}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
         setupSlot={showSetup ? (fold) => (
@@ -4077,8 +4159,11 @@ export default function App() {
       // workspace empty?" (a new member with nothing assigned yet isn't on a clean slate); its
       // personal widgets — today's brief, focus queue, weekly chart — use yours
       case "home": return <HomeView tasks={allTasks} myTasks={myTasks} projects={wsProjects} userName={currentUser?.name} onOpen={setDetailId} setRoute={setRoute} openFocus={() => openFocus(true)} onNewProject={() => setNewProjectOpen(true)} onNewTask={() => openNewTask()} onAutoPrioritize={autoPrioritize} aiBusy={aiBusy} calendarConnected={calConnections.length > 0} hasTeam={workspaces.some((w) => w.id !== null)} canCreateProject={!activeReadOnly} showInsights={!activeReadOnly} />;
-      case "analytics": return <AnalyticsView key={wsKey} tasks={allTasks} members={assignees} customFields={customFields} projects={wsProjects} onOpen={setDetailId} {...insightsNav} />;
-      case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} {...insightsNav} />;
+      // (0054: either can be narrowed to one of the workspace's portfolios)
+      case "analytics": return <PortfolioScope key={wsKey} workspaceId={workspace} portfolios={wsPortfolios} tasks={allTasks} projects={wsProjects}>
+        {(t, ps) => <AnalyticsView key={wsKey} tasks={t} members={assignees} customFields={customFields} projects={ps} onOpen={setDetailId} {...insightsNav} />}</PortfolioScope>;
+      case "reports": return <PortfolioScope key={wsKey} workspaceId={workspace} portfolios={wsPortfolios} tasks={allTasks} projects={wsProjects}>
+        {(t, ps) => <ReportsView key={wsKey} tasks={t} projects={ps} members={assignees} onOpen={setDetailId} {...insightsNav} />}</PortfolioScope>;
       // 0048 universal search: tasks, comments, docs, projects and people; saved as views (lib/views)
       case "search": return <SearchView tasks={seen} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId}
         goals={goalFlow.goals} onOpenGoal={openGoal}
@@ -4107,13 +4192,34 @@ export default function App() {
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
       case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
-        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} />;
+        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} asks={updateAsks} />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)
-      case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects}
-        tasks={personal ? acrossReportTasks : reportTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} statusUpdates={statusUpdates}
-        acrossBusinesses={personal ? { workspaces } : undefined} readOnly={activeReadOnly}
-        onOpenProject={(pid) => { const p = projects.find((x) => x.id === pid); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId: pid }); }} />;
+      case "portfolios": {
+        const openProjectFromPf = (pid: string) => { const p = projects.find((x) => x.id === pid); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId: pid }); };
+        // 0054: one portfolio's own page (/projects/portfolios/:id)
+        if (route.portfolioId) {
+          const pf = portfolios.find((p) => p.id === route.portfolioId && (p.workspaceId ?? null) === workspace);
+          if (!pf) return tasks === null ? null : (
+            <div className="kpj-page"><div className="kpj-wrap"><EmptyState art="briefcase" title="This portfolio isn't here"
+              body="It may have been deleted, or it's in another workspace you're not in."
+              action={<Button variant="secondary" onClick={() => setRoute({ view: "portfolios" })}>All portfolios</Button>} /></div></div>
+          );
+          // who can own or follow it: the workspace's owners, admins and members (Personal: you)
+          const pfPeople = personal ? [{ id: currentUserId, name: getMember(currentUserId)?.name ?? "You" }]
+            : wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active" && m.role !== "guest" && m.userId).map((m) => ({ id: m.userId!, name: m.name }));
+          return <PortfolioPage portfolio={pf} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects} tasks={personal ? acrossReportTasks : reportTasks}
+            statusUpdates={statusUpdates} members={pfPeople} me={currentUserId} readOnly={activeReadOnly} lead={isAdmin}
+            acrossBusinesses={personal ? { workspaces } : undefined} asks={updateAsks} aiPortfolio={aiOn ? (facts: unknown) => store.aiPortfolio(facts) : undefined}
+            tab={route.tab === "updates" ? "updates" : "table"} onTab={(t) => setRoute({ view: "portfolios", portfolioId: pf.id, ...(t === "updates" ? { tab: "updates" } : {}) }, { replace: true })}
+            onBack={() => setRoute({ view: "portfolios" })} onUpdate={updatePortfolio} onDelete={deletePortfolio} onOpenProject={openProjectFromPf}
+            onOpenInsights={personal || activeReadOnly ? undefined : () => { setInsightsPortfolio(workspace, pf.id); setRoute({ view: "analytics" }); }} />;
+        }
+        return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects}
+          tasks={personal ? acrossReportTasks : reportTasks} onCreate={createPortfolio} onUpdate={updatePortfolio} onDelete={deletePortfolio} statusUpdates={statusUpdates}
+          acrossBusinesses={personal ? { workspaces } : undefined} readOnly={activeReadOnly} asks={updateAsks}
+          onOpenPortfolio={(id) => setRoute({ view: "portfolios", portfolioId: id })} onOpenProject={openProjectFromPf} />;
+      }
       case "automations": return <AutomationsView key={wsKey} {...rulesProps()} readOnly={activeReadOnly} />;
       case "forms": return <FormsView key={wsKey} {...formsProps()} readOnly={activeReadOnly} />;
       // (your own plan on each task: "Add to Today" knows what's already on your day)
@@ -4133,6 +4239,14 @@ export default function App() {
         // 0047: "Approvals for you" first (this workspace's), and doc @mentions open their doc
         approvals={{ toReview: biz.all ? biz.approvals : approvalsInWorkspace(myApprovals.toReview, workspace), projects, members: biz.all ? biz.peopleAsMembers : wsPeople, onDecided: onApprovalsChange }}
         onOpenDoc={(a) => { const r = docMentionRoute(a); if (r) setRoute(r); }}
+        onOpenUpdate={(a) => {
+          const r = updateItemRoute(a);
+          if (!r) return;
+          const ws = updateItemWorkspace(a, projects, portfolios);
+          if (ws !== undefined && ws !== workspace) setWorkspace(ws);
+          setUpdateFocus(a.meta?.statusUpdateId ?? null);
+          setRoute(r);
+        }}
         // 0048: bundles and the quiet-hours line follow your prefs ("Change" opens them); snoozes look after themselves
         notifyPrefs={profile?.notifyPrefs} onOpenNotificationSettings={() => openSettings("notifications")} />;
       // Month: yours by default, the whole workspace's on "Team". Calendars are connected in Settings.
@@ -4143,7 +4257,8 @@ export default function App() {
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPlanProject={activeReadOnly ? undefined : () => openPlanner({ mode: "new" })}
         onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject}
-        goalChip={(pid) => <GoalServes goals={goalFlow.forProject(pid)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />} />;
+        goalChip={(pid) => <GoalServes goals={goalFlow.forProject(pid)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />}
+        asks={activeReadOnly ? undefined : updateAsks} />;
       // 0047: deleted tasks and projects, 30 days (rows come back through the realtime reload too)
       case "bin": return (
         <RecycleBin key={wsKey} workspaceId={workspace} workspaceName={activeWsName} role={workspace ? (myRole ?? null) : null} currentUserId={currentUserId}
@@ -4212,6 +4327,7 @@ export default function App() {
               <Suspense fallback={null}><ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={assignees}
                 canManage={canManageProject(openProject!)} readOnly={activeReadOnly} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus}
+                conversation={{ me: currentUserId, lead: isAdmin, onEdit: activeReadOnly ? undefined : editStatusUpdate, onDelete: deleteStatusUpdate, focusUpdateId: updateFocus }}
                 rules={{ ...rulesProps(openProject!.id), readOnly: activeReadOnly }} forms={{ ...formsProps(openProject!.id), readOnly: activeReadOnly }} /></Suspense>
             ),
             notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={activeReadOnly ? [] : risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,
@@ -4465,6 +4581,8 @@ export default function App() {
         section={settingsSection} onSection={setSettingsSection} isAdmin={canWorkspaceSettings} isGuest={activeReadOnly}
         renderWorkspace={canWorkspaceSettings ? () => (
           <>
+            {/* 0053: the day project updates are due here (before the workspace's own details, which end with Close workspace) */}
+            <UpdateRhythmPanel workspace={workspaces.find((w) => w.id === workspace)} onChange={updateWorkspaceRhythm} />
             <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
               onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
             {/* 0047: Settings › Workspace › History (who did what here; owners and admins see everyone's) */}
