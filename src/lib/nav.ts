@@ -8,6 +8,7 @@
    My tasks   /tasks · /tasks/waiting · /tasks/done  (?due=today|overdue|week)
    Search     /search · /search/list/:id
    Projects   /projects · /projects/portfolios · /projects/goals
+              /projects/group (owners and admins of two or more workspaces)
               /projects/rules · /projects/requests · /projects/bin
               /p/:id · /p/:id/:tab · /p/:id/docs/:docId
    Team       /team · /team/people · /team/workload
@@ -29,6 +30,8 @@ export interface NavCtx {
   guest: boolean;
   /** an owner or admin of this workspace */
   admin: boolean;
+  /** an owner or admin of two or more workspaces (Projects › Group) */
+  group?: boolean;
 }
 
 export interface PlaceTab {
@@ -37,6 +40,8 @@ export interface PlaceTab {
   route: Route;
   adminOnly?: boolean;
   hiddenForGuest?: boolean;
+  /** only for someone who runs two or more businesses (NavCtx.group) */
+  groupOnly?: boolean;
   /** set apart after a divider (Projects › Rules · Requests) */
   secondary?: boolean;
 }
@@ -76,6 +81,7 @@ export const PLACES: Place[] = [
       { id: "projects", label: "All", route: { view: "projects" } },
       { id: "portfolios", label: "Portfolios", route: { view: "portfolios" } },
       { id: "goals", label: "Goals", route: { view: "goals" } },
+      { id: "group", label: "Group", route: { view: "group" }, groupOnly: true },
       { id: "automations", label: "Rules", route: { view: "automations" }, secondary: true, hiddenForGuest: true },
       { id: "forms", label: "Requests", route: { view: "forms" }, secondary: true },
     ],
@@ -129,7 +135,7 @@ const PLACE_OF: Record<ViewId, PlaceId> = {
   plan: "today", myweek: "today", calendar: "today", home: "today",
   inbox: "inbox",
   tasks: "tasks", search: "tasks",
-  projects: "projects", portfolios: "projects", goals: "projects", automations: "projects", forms: "projects", project: "projects", bin: "projects",
+  projects: "projects", portfolios: "projects", goals: "projects", automations: "projects", forms: "projects", project: "projects", bin: "projects", group: "projects",
   pulse: "team", team: "team", workload: "team", analytics: "team", reports: "team",
 };
 
@@ -142,7 +148,7 @@ export function placeOf(route: Route): PlaceId {
  *  (Insights' Overview / Trends switch lives in the page). */
 export function tabsFor(place: PlaceId, ctx: NavCtx): PlaceTab[] {
   if (place === "team" && ctx.personal) return [];
-  return placeById(place).tabs.filter((t) => !(t.hiddenForGuest && ctx.guest) && !(t.adminOnly && !ctx.admin));
+  return placeById(place).tabs.filter((t) => !(t.hiddenForGuest && ctx.guest) && !(t.adminOnly && !ctx.admin) && !(t.groupOnly && !ctx.group));
 }
 
 /* ---------------- addresses ---------------- */
@@ -172,6 +178,7 @@ const PATHS: Record<string, Route> = {
   "/projects/rules": { view: "automations" },
   "/projects/requests": { view: "forms" },
   "/projects/bin": { view: "bin" },
+  "/projects/group": { view: "group" },
   "/team": { view: "pulse" },
   "/team/pulse": { view: "pulse" },
   "/team/people": { view: "team" },
@@ -198,6 +205,7 @@ const VIEW_PATH: Record<Exclude<ViewId, "tasks" | "search" | "project">, string>
   plan: "/today", myweek: "/today/week", calendar: "/today/month", home: "/today/overview",
   inbox: "/inbox",
   projects: "/projects", portfolios: "/projects/portfolios", goals: "/projects/goals", automations: "/projects/rules", forms: "/projects/requests", bin: "/projects/bin",
+  group: "/projects/group",
   pulse: "/team", team: "/team/people", workload: "/team/workload", analytics: "/team/insights", reports: "/team/insights/trends",
 };
 
@@ -322,6 +330,7 @@ export const GO_TARGETS: GoTarget[] = [
   { id: "projects", label: "Projects", keywords: "projects all projects directory", icon: "kanbo", route: { view: "projects" }, hint: "G O" },
   { id: "portfolios", label: "Portfolios", keywords: "portfolios projects rolled up exec", icon: "briefcase", route: { view: "portfolios" } },
   { id: "goals", label: "Goals", keywords: "goals okrs objectives key results", icon: "target", route: { view: "goals" } },
+  { id: "group", label: "Group", keywords: "group all businesses every business workspaces holding company side by side", icon: "layers", route: { view: "group" } },
   { id: "rules", label: "Rules", keywords: "rules automations automation", icon: "zap", route: { view: "automations" } },
   { id: "requests", label: "Requests", keywords: "requests forms form intake", icon: "inbox", route: { view: "forms" } },
   { id: "bin", label: "Recycle bin", keywords: "recycle bin trash deleted restore undelete recover", icon: "trash", route: { view: "bin" } },

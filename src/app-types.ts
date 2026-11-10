@@ -3,7 +3,9 @@ export type ViewId =
   | "goals" | "portfolios" | "workload" | "automations" | "forms" | "myweek"
   | "projects" | "pulse"
   /** 0047: Projects › Recycle bin (/projects/bin) */
-  | "bin";
+  | "bin"
+  /** Projects › Group: every business you run, side by side (/projects/group) */
+  | "group";
 
 /** My tasks' tabs. `route.tab` undefined means "open". */
 export type TasksTab = "open" | "waiting" | "done";

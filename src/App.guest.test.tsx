@@ -57,12 +57,13 @@ describe("App · a guest", () => {
   it("isn't offered Goals or Portfolios with nothing to read; by address they say who they're for, with nothing to create", async () => {
     asGuest("/projects");
     await boot();
-    await waitFor(() => expect(tabIds()).toEqual(["projects", "forms"]));   // (no Rules either)
+    // (no Rules either; Group is the businesses the demo person runs, wherever they are)
+    await waitFor(() => expect(tabIds()).toEqual(["projects", "group", "forms"]));
     window.history.pushState(null, "", "/projects/goals");
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByText("Goals are for members")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
-    expect(tabIds()).toEqual(["projects", "goals", "forms"]);                // the page you're on keeps its tab
+    expect(tabIds()).toEqual(["projects", "goals", "group", "forms"]);       // the page you're on keeps its tab
     window.history.pushState(null, "", "/projects/portfolios");
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByText("Portfolios are for members")).toBeInTheDocument();
@@ -73,7 +74,7 @@ describe("App · a guest", () => {
     localStorage.setItem("kanbo-projects-view", "table");
     asGuest("/projects");
     await boot();
-    await waitFor(() => expect(tabIds()).toEqual(["projects", "forms"]));
+    await waitFor(() => expect(tabIds()).toEqual(["projects", "group", "forms"]));
     expect(await screen.findByRole("columnheader", { name: "Progress" })).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Risks" })).toBeNull();
     window.history.pushState(null, "", "/p/p-northlight/updates");
@@ -87,7 +88,7 @@ describe("App · a guest", () => {
     at("/projects");
     await boot();
     expect(await screen.findByRole("columnheader", { name: "Risks" })).toBeInTheDocument();
-    expect(tabIds()).toEqual(["projects", "portfolios", "goals", "automations", "forms"]);
+    expect(tabIds()).toEqual(["projects", "portfolios", "goals", "group", "automations", "forms"]);
   });
 
   it("a member keeps the whole Team place", async () => {

@@ -19,6 +19,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { Approval, ApprovalDecision, ApprovalWithTask, Member, Project } from "../../data/types";
 import { Button, Icon, Kbd, ProjectTile, SectionLabel } from "../primitives";
+import { WorkspaceChip } from "../businesses/Businesses";
 import { APPROVAL_LIMITS, approvalActivityVerb, approvalErrorText, approvalFailure, decideApproval } from "../../lib/approvals";
 import { PersonMark, When, autoGrow, useAnnounce } from "./parts";
 import "./approvals.css";
@@ -167,6 +168,8 @@ export function ApprovalsInboxGroup({ approvals, projects, members, currentUserI
             <span className="kapv-isay"><strong>{asker}</strong> {approvalActivityVerb({ event: "requested" })} <strong>{title}</strong></span>
           </button>
           <div className="kapv-isub">
+            {/* All businesses: which business it's from (nothing otherwise) */}
+            {proj && <WorkspaceChip projectId={proj.id} />}
             {proj && <span className="kapv-iproj" id={`${subId}-p`}><ProjectTile project={proj} size={16} /><span>{proj.name}</span></span>}
             {a.note && <span className="kapv-inote" id={`${subId}-n`} title={a.note}>“{a.note}”</span>}
             {a.attachmentId && <span className="kapv-imark" id={`${subId}-f`}><Icon name="folder" size={12} sw={2} /> A file</span>}

@@ -21,12 +21,14 @@ import { Popover } from "../primitives/Popover";
 import { useToast } from "../Toast";
 import { getProject } from "../../data/data";
 import type { CaptureOptions } from "../../data/data";
-import type { Task, ExternalEvent } from "../../data/types";
+import type { Task, ExternalEvent, CalEvent } from "../../data/types";
 import {
   composeTodayBrief, ghostCandidates, ghostPlan, freeMinutes, plannedMinutes, placesHint, tomorrowPreview, WORK_START, WORK_END, type BriefFact,
 } from "../../lib/brief";
 import { noticedToday, type Noticed, type NoticedAction } from "../../lib/noticed";
 import type { Risk } from "../../lib/radar";
+import type { BusinessLead } from "../../lib/businesses";
+import { BusinessLeadLine, useGuestRow } from "../businesses/Businesses";
 import { readBig3 } from "../../lib/rituals";
 import { durOf, fmtDuration, fmtTime, isPlaced, ghostPrefsKey, readGhostPrefs, writeGhostPrefs, todaysEvents, type GhostPrefs } from "./planCanvas";
 
@@ -76,6 +78,17 @@ export interface TodayViewProps {
   winsSlot?: TodayCardSlot;
   /** "/" in the rail's capture field picks a template (the host's library and create path) */
   templates?: CaptureTemplates;
+  /* ---- across businesses (Today works without) ---- */
+  /** the line under the brief's words: All businesses on ("all"), the business that needs you most; off
+   *  ("elsewhere"), another workspace that needs you, with a way to show them all */
+  businessLead?: { lead: BusinessLead; mode: "all" | "elsewhere"; onShowAll?: () => void };
+  /** your blocks on today's day in other businesses: busy time here, so Plan my day works round them */
+  busyElsewhere?: CalEvent[];
+  /** everyone the brief may name (All businesses: every workspace's people); `members` stay the ones a
+   *  capture can name (the workspace it adds to) */
+  names?: { id: string; name: string }[];
+  /** All businesses, open on a workspace you're a guest in: no capture field (a capture adds there) */
+  noCapture?: boolean;
 }
 
 /** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
@@ -271,16 +284,20 @@ function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
-  setupSlot, winsSlot, templates,
+  setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
   const me = currentUserId;
   const dayEvents = useMemo(
-    () => dayEventsFor(calendarConnected, events),
+    () => {
+      const own = dayEventsFor(calendarConnected, events);
+      // time you've planned in your other businesses is taken here too
+      return busyElsewhere?.length ? [...own, ...busyElsewhere].sort((a, b) => a.start - b.start) : own;
+    },
     // `day` re-reads "today's" events after midnight
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [calendarConnected, events, day],
+    [calendarConnected, events, day, busyElsewhere],
   );
 
   /* ----- what you've waved away today ----- */
@@ -313,9 +330,14 @@ function TodayDay({
     }));
   }, [tasks, unskip]);
   const ghostsOff = !showSuggestions || prefs.hidden;
+  // All businesses: a task in a workspace you're a guest in stays where it is (Plan my day leaves it be)
+  const guestRow = useGuestRow();
+  const fixed = useMemo(() => tasks.filter(guestRow).map((t) => t.id), [tasks, guestRow]);
+  const fixedRef = useRef(fixed); fixedRef.current = fixed;
 
   /* ----- the plan, the brief and the beam ----- */
-  const plan = useMemo(() => ghostPlan(tasks, dayEvents, nowMin, { today: day, me, skip: prefs.skipped }), [tasks, dayEvents, nowMin, day, me, prefs.skipped]);
+  const plan = useMemo(() => ghostPlan(tasks, dayEvents, nowMin, { today: day, me, skip: fixed.length ? [...prefs.skipped, ...fixed] : prefs.skipped }),
+    [tasks, dayEvents, nowMin, day, me, prefs.skipped, fixed]);
   const ghosts = readOnly || ghostsOff ? [] : plan.suggestions;
   // today's work you've waved away ("Not now", "Not today"): Plan my day leaves it be
   const setAside = useMemo(() => {
@@ -323,8 +345,9 @@ function TodayDay({
     const skipped = new Set(prefs.skipped);
     return ghostCandidates(tasks, { today: day, me }).filter((t) => skipped.has(t.id)).length;
   }, [tasks, day, me, prefs.skipped]);
-  const brief = useMemo(() => composeTodayBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me, members, projects, dayClosed }),
-    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me, members, projects, dayClosed]);
+  const people = names ?? members;
+  const brief = useMemo(() => composeTodayBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me, members: people, projects, dayClosed }),
+    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me, people, projects, dayClosed]);
   const planned = plannedMinutes(tasks);
   const free = freeMinutes(tasks, dayEvents, nowMin);
   const placedOpen = tasks.filter((t) => isPlaced(t) && t.status !== "done" && !t.archivedAt);
@@ -345,7 +368,7 @@ function TodayDay({
   // re-orders and says nothing needed moving); only an empty day has nothing to do.
   // Once the working day is over there's nothing more to plan for today: the
   // brief counts what you finished, and the one action left is to close the day.
-  const replannable = placedOpen.filter((t) => t.scheduled! > nowMin && !t.dueTime);
+  const replannable = placedOpen.filter((t) => t.scheduled! > nowMin && !t.dueTime && !guestRow(t));
   // after the working day, or once you've shut it down: tomorrow takes over
   const evening = nowMin >= WORK_END || dayClosed;
   const mode: "plan" | "replan" | "none" | "evening" = evening ? "evening"
@@ -389,7 +412,7 @@ function TodayDay({
     const lift = new Set(m === "replan" ? again.map((t) => t.id) : []);
     const pool = lift.size ? cur.map((t) => (lift.has(t.id) ? { ...t, scheduled: null } : t)) : cur;
     // a block being re-laid is always a candidate, even one waved away earlier
-    const next = ghostPlan(pool, evs, now, { today, me: who, skip: prefsRef.current.skipped.filter((id) => !lift.has(id)) });
+    const next = ghostPlan(pool, evs, now, { today, me: who, skip: [...prefsRef.current.skipped.filter((id) => !lift.has(id)), ...fixedRef.current] });
     const byId = new Map(cur.map((t) => [t.id, t]));
     const moves = next.suggestions.filter((s) => byId.get(s.id)?.scheduled !== s.start || !byId.get(s.id)?.planToday);
     // A block that was lifted to be re-laid and no longer fits comes off the day,
@@ -486,8 +509,8 @@ function TodayDay({
   /* ----- Kanbo noticed ----- */
   const [dismissed, setDismissed] = useState<string[]>(() => readDismissed(me, day));
   useEffect(() => { setDismissed(readDismissed(me, day)); }, [me, day]);
-  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members, risks, dismissed }),
-    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, members, risks, dismissed]);
+  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, dismissed }),
+    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, dismissed]);
   const dismiss = (n: Noticed) => {
     const next = [...dismissed.filter((x) => x !== n.id), n.id];
     setDismissed(next); writeDismissed(me, day, next);
@@ -516,9 +539,10 @@ function TodayDay({
   const tomorrow = useMemo(() => {
     if (!evening) return null;
     const d = new Date(); d.setDate(d.getDate() + 1);
-    const tmrEvents = calendarConnected ? todaysEvents(events, d) : dayEvents;
+    // (the time you've planned in other businesses is today's, not tomorrow's)
+    const tmrEvents = calendarConnected ? todaysEvents(events, d) : dayEventsFor(false, events);
     return tomorrowPreview(tasks, tmrEvents, day, me);
-  }, [evening, calendarConnected, events, dayEvents, tasks, day, me]);
+  }, [evening, calendarConnected, events, tasks, day, me]);
 
   const busy = ordering || ranking;
   const wontFit = plan.unplaced.length;
@@ -558,7 +582,8 @@ function TodayDay({
       <style>{TODAY_CSS}</style>
       <style>{BRIEF_CSS}</style>
       <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks}
-        hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk} />
+        hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk}
+        lead={businessLead && <BusinessLeadLine lead={businessLead.lead} mode={businessLead.mode} focusTaskId={brief.focusTaskId} onOpen={onOpen} onShowAll={businessLead.onShowAll} />} />
       <div className="ktoday-actions">
         {/* data-plan-beam: the beam's row takes a dragged task too (PlanView binds it as a drop target) */}
         <div className="ktoday-beam" data-plan-beam="">
@@ -593,7 +618,7 @@ function TodayDay({
     <PlanView tasks={tasks} onUpdate={onUpdate} onCreate={onCreate} onOpen={onOpen} externalEvents={events}
       calendarConnected={calendarConnected} currentUserId={currentUserId} captureDefaults={captureDefaults}
       lede={lede} events={dayEvents} nowMin={nowMin} ghosts={ghosts} tomorrowIds={ghostsOff ? [] : plan.unplaced.map((t) => t.id)}
-      skipped={prefs.skipped} onSkip={skip} onUnskip={unskipOne} landing={landing} readOnly={readOnly} templates={readOnly ? undefined : templates}
+      skipped={prefs.skipped} onSkip={skip} onUnskip={unskipOne} landing={landing} readOnly={readOnly} noCapture={noCapture} templates={readOnly || noCapture ? undefined : templates}
       onStartFocus={onStartFocus} onExtractFromMeeting={onExtractFromMeeting} onConnectCalendar={onConnectCalendar}
       railFocus={railFocus} onRailFocus={setRailFocus} freePulse={freePulse} big3={big3}
       onOpenMyTasks={onOpenMyTasks} onShutdown={evening ? undefined : onShutdown} members={members} projects={projects}

@@ -21,7 +21,7 @@ export function skeletonFor(route: Route, taskView: TaskView = "list"): Skeleton
     case "myweek": return "week";
     case "calendar": return "month";
     case "home": case "pulse": case "analytics": case "reports": case "workload": return "insights";
-    case "projects": case "portfolios": case "goals": return "tiles";
+    case "projects": case "portfolios": case "goals": case "group": return "tiles";
     case "team": return "people";
     case "tasks": case "project": {
       // a project's own pages (Docs, Updates, Requests, Rules, About) are columns of rows too

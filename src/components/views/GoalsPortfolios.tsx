@@ -6,12 +6,41 @@
 import { useMemo, useState } from "react";
 import { Avatar, Button, DateChip, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, Segmented } from "../primitives";
 import { getProject, getMember, KANBO_TODAY, toLocalISO } from "../../data/data";
-import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, StatusUpdate } from "../../data/types";
+import type { Task, Project, Goal, GoalStatus, Portfolio, StatusKind, StatusUpdate, Workspace } from "../../data/types";
 import { goalDescendants, goalProgressMap, goalTree, projectHealth, useStableOrder, type GoalProgress, type HealthKind } from "./reportingUtils";
 import { DraftInput } from "../project/DraftInput";
 import { fmtAge, fmtShortDay, FORMER_MEMBER, indexTasks, isStale, oldestTaskAge, projectUpdates, statusFacts, STALE_DAYS, updateAuthor, type TaskIndex } from "../../lib/statusDraft";
 import { combinedProgress, progressOf, projectPct } from "../../lib/countRules";
+import { WorkspaceMark } from "../businesses/Businesses";
+import { shortName } from "../../lib/businesses";
 import "../project/projects.css";
+
+/* A Personal portfolio across businesses: each project says which business it's from, a project you can no
+   longer see keeps its place (and can be taken out), and the card says who can see it. */
+const ACROSS_CSS = `
+.kpj-pf-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.kpj-pf-name > .kpj-pf-open { flex: 0 1 auto; }
+.kpj-pf-biz { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 1; min-width: 0; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); white-space: nowrap; }
+.kpj-pf-biz > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.kpj-pf-gone { min-width: 0; font: 500 14px/20px var(--kpj-font); color: var(--ink-3); font-style: italic; }
+/* stacked (a narrow table): the remove button stays beside the name */
+@container (max-width: 599px) { .kpj-exec .kpj-tr[data-gone] .kpj-td:nth-child(5) { grid-column: 2; grid-row: 1; text-align: right; } }
+.kpj-pf-only { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); white-space: nowrap; }
+.kpj-pf-only > svg { color: var(--icon-quiet, var(--ink-4)); }
+.kpj-pick-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; }
+.kpj-pick-head { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; margin-top: 4px; font: 600 12px/16px var(--kpj-font); color: var(--ink-3); }
+.kpj-pick-group:first-child .kpj-pick-head { margin-top: 0; }
+.kpj-proj .kpj-pf-biz { grid-column: 2; }
+/* (its summary carries one more line: it wraps rather than run off a phone's edge) */
+[data-across] .kpj-card-side, [data-across] .kpj-pf-exec-head { flex-wrap: wrap; min-width: 0; row-gap: 6px; }
+[data-across] .kpj-card-side { justify-content: flex-end; }
+@media (max-width: 859px) {
+  .kpj-pf-name { flex-wrap: wrap; row-gap: 0; }
+  [data-across] .kpj-card-side { justify-content: flex-start; margin-left: 0; }
+  .kpj-pf-only { flex-basis: 100%; }
+}
+`;
+const ONLY_YOU = "It's in your Personal space, so only you can see it. It shows projects from every business you're in, from what you can already see.";
 
 type Tone = "neutral" | "accent" | "ok" | "warn" | "signal";
 
@@ -30,7 +59,7 @@ const KIND_TONE: Record<StatusKind, Tone> = { on_track: "ok", at_risk: "warn", o
 const HEALTH_TONE: Record<HealthKind, Tone> = { complete: "ok", on_track: "ok", at_risk: "warn", off_track: "signal" };
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 /** "Maya" for Maya Lin; "Former member" stays whole */
-const shortName = (name: string) => (name === FORMER_MEMBER ? name : name.split(/\s+/)[0] || name);
+const firstName = (name: string) => (name === FORMER_MEMBER ? name : name.split(/\s+/)[0] || name);
 
 /** An inline "add" row: a name field with Add and Cancel. */
 function Adder({ label, placeholder, onAdd, onCancel }: { label: string; placeholder: string; onAdd: (name: string) => void; onCancel: () => void }) {
@@ -249,7 +278,7 @@ function GoalsReadOnly({ ordered, progress, projects, todayIso }: {
 type PfView = "cards" | "table";
 const readView = (): PfView => { try { return localStorage.getItem("kanbo-portfolio-view") === "table" ? "table" : "cards"; } catch { return "cards"; } };
 
-export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, readOnly = false }: {
+export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = [], onCreate, onUpdate, onDelete, onOpenProject, acrossBusinesses, readOnly = false }: {
   portfolios: Portfolio[];
   projects: Project[];
   /** the workspace's tasks, archived projects' included: a finished project that's been
@@ -257,6 +286,9 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
   tasks: Task[];
   /** project status updates, newest first — adds each project's latest call to its row */
   statusUpdates?: StatusUpdate[];
+  /** Personal: portfolios only you can see, whose projects can come from every business you're in. `projects`
+   *  and `tasks` are then every workspace's (yours to see); the picker groups them by business. */
+  acrossBusinesses?: { workspaces: Workspace[] };
   onCreate: (name: string) => void;
   onUpdate: (id: string, patch: { name?: string; projectIds?: string[] }) => void;
   onDelete: (id: string) => void;
@@ -271,11 +303,27 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
   const ordered = useStableOrder(portfolios);
   // the task list grouped by project once per change, not filtered again for every project
   const idx = useMemo(() => indexTasks(tasks), [tasks]);
-  const explainer = "A portfolio rolls several projects into one view: their progress, health and latest updates.";
+  const across = acrossBusinesses ?? null;
+  const explainer = across
+    ? "A portfolio rolls several projects into one view. In Personal it can hold projects from every business you're in, and only you can see it."
+    : "A portfolio rolls several projects into one view: their progress, health and latest updates.";
   const findProject = (pid: string) => getProject(pid) ?? projects.find((p) => p.id === pid);
+  const bizOf = (p: Project) => (across ? across.workspaces.find((w) => (w.id ?? null) === (p.workspaceId ?? null)) : undefined);
+  const biz = (p: Project) => {
+    const w = bizOf(p);
+    return w ? <span className="kpj-pf-biz"><WorkspaceMark workspace={w} size={16} /><span>{shortName(w.name)}</span></span> : null;
+  };
+  const onlyYou = across ? <span className="kpj-pf-only" title={ONLY_YOU}><Icon name="lock" size={12} sw={2} />Only you can see this</span> : null;
+  // an archived project keeps its row (and its %), and says so
+  const openBtn = (p: Project) => (
+    <button type="button" className="kpj-pf-open" onClick={() => onOpenProject(p.id)} aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`}>
+      {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
+    </button>
+  );
 
   return (
     <div className="kpj-page">
+      {across && <style>{ACROSS_CSS}</style>}
       <div className="kpj-wrap">
         {portfolios.length === 0 && readOnly ? (
           <EmptyState art="briefcase" title="Portfolios are for members"
@@ -295,6 +343,28 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
             <div className={view === "cards" ? "kpj-stack" : undefined}>
               {ordered.map((pf) => {
                 const inPf = pf.projectIds.map(findProject).filter((p): p is Project => !!p);
+                // (Personal, across businesses: a project you can no longer see keeps its place, to be taken out)
+                const gone = across ? pf.projectIds.filter((id) => !findProject(id)) : [];
+                const goneRows = (table: boolean) => gone.map((id) => {
+                  const remove = <IconButton icon="x" size="sm" label={`Remove the project you can no longer see from ${pf.name}`} onClick={() => onUpdate(pf.id, { projectIds: pf.projectIds.filter((x) => x !== id) })} />;
+                  const why = <span className="kpj-card-meta">You've lost access to it, or it was deleted</span>;
+                  // in the table: a cell under each column (why under Latest update, remove under Updated)
+                  return table ? (
+                    <div key={id} className="kpj-tr kpj-exec-tr" role="row" data-gone="">
+                      <div role="cell" className="kpj-td"><span className="kpj-proj" style={{ padding: 0 }}><ProjectDot color="oklch(0.62 0 0)" size={10} /><span className="kpj-pf-gone">No longer visible to you</span></span></div>
+                      <div role="cell" className="kpj-td">{why}</div>
+                      <div role="cell" className="kpj-td" data-empty="true" />
+                      <div role="cell" className="kpj-td kpj-exec-ms" />
+                      <div role="cell" className="kpj-td kpj-num">{remove}</div>
+                    </div>
+                  ) : (
+                    <div key={id} className="kpj-pf-row" data-gone="">
+                      <ProjectDot color="oklch(0.62 0 0)" size={10} />
+                      <span className="kpj-pf-gone">No longer visible to you</span>
+                      <div className="kpj-pf-side">{why}{remove}</div>
+                    </div>
+                  );
+                });
                 const rows = inPf.map((p) => {
                   const ptasks = idx.byProject.get(p.id) ?? [];
                   return { p, ptasks, health: projectHealth(ptasks, KANBO_TODAY), latest: projectUpdates(statusUpdates, p.id)[0] };
@@ -305,6 +375,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                 const riskN = rows.filter((r) => r.health?.kind === "at_risk").length;
                 const summary = (
                   <>
+                    {onlyYou}
                     {inPf.length > 0 && <span className="kpj-count">{combined}% · {plural(inPf.length, "project")}</span>}
                     {offN > 0 && <Pill tone="signal">{offN} off track</Pill>}
                     {riskN > 0 && <Pill tone="warn">{riskN} at risk</Pill>}
@@ -313,13 +384,14 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
 
                 if (view === "table") {
                   return (
-                    <section key={pf.id} className="kpj-pf-exec" aria-label={pf.name}>
+                    <section key={pf.id} className="kpj-pf-exec" aria-label={pf.name} data-across={across ? "" : undefined}>
                       <div className="kpj-pf-exec-head">
                         <h2 className="kpj-pf-exec-name">{pf.name}</h2>
                         {summary}
                       </div>
-                      {rows.length === 0 ? <p className="kpj-card-meta">{readOnly ? "No projects in this portfolio yet." : "No projects in this portfolio yet. Switch to Cards to add some."}</p> : (
-                        <PortfolioTable rows={rows.map((r) => r.p)} tasks={tasks} idx={idx} statusUpdates={statusUpdates} label={`${pf.name} projects`} onOpenProject={onOpenProject} />
+                      {rows.length === 0 && gone.length === 0 ? <p className="kpj-card-meta">{readOnly ? "No projects in this portfolio yet." : "No projects in this portfolio yet. Switch to Cards to add some."}</p> : (
+                        <PortfolioTable rows={rows.map((r) => r.p)} tasks={tasks} idx={idx} statusUpdates={statusUpdates} label={`${pf.name} projects`} onOpenProject={onOpenProject}
+                          bizOf={across ? biz : undefined} extraRows={goneRows(true)} />
                       )}
                     </section>
                   );
@@ -327,8 +399,14 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
 
                 const available = projects.filter((p) => p.id !== "p-personal" && !pf.projectIds.includes(p.id));
                 const picking = pickFor === pf.id;
+                const pick = (p: Project) => (
+                  <button key={p.id} type="button" className="kpj-chip" aria-label={`Add ${p.name} to ${pf.name}`}
+                    onClick={() => { onUpdate(pf.id, { projectIds: [...pf.projectIds, p.id] }); setPickFor(null); }}>
+                    <ProjectDot color={p.color} size={8} /> {p.name}
+                  </button>
+                );
                 return (
-                  <article key={pf.id} className="kpj-card" aria-label={`Portfolio ${pf.name}`}>
+                  <article key={pf.id} className="kpj-card" aria-label={`Portfolio ${pf.name}`} data-across={across ? "" : undefined}>
                     <div className="kpj-card-head">
                       <Icon name="briefcase" size={16} sw={1.75} style={{ color: "var(--icon-quiet, var(--ink-4))" }} />
                       {readOnly ? <h3 className="kpj-name-static" style={{ margin: 0 }}>{pf.name}</h3>
@@ -344,15 +422,21 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                     </div>
                     {picking && (available.length > 0 ? (
                       <div className="kpj-card-row" role="group" aria-label={`Projects you can add to ${pf.name}`}>
-                        {available.map((p) => (
-                          <button key={p.id} type="button" className="kpj-chip" aria-label={`Add ${p.name} to ${pf.name}`}
-                            onClick={() => { onUpdate(pf.id, { projectIds: [...pf.projectIds, p.id] }); setPickFor(null); }}>
-                            <ProjectDot color={p.color} size={8} /> {p.name}
-                          </button>
-                        ))}
+                        {across
+                          // every business you're in, each under its logo
+                          ? across.workspaces.map((w) => {
+                            const here = available.filter((p) => (p.workspaceId ?? null) === (w.id ?? null));
+                            return here.length === 0 ? null : (
+                              <div key={w.id ?? "personal"} className="kpj-pick-group" role="group" aria-label={w.name}>
+                                <span className="kpj-pick-head" aria-hidden="true"><WorkspaceMark workspace={w} size={16} />{w.name}</span>
+                                {here.map(pick)}
+                              </div>
+                            );
+                          })
+                          : available.map(pick)}
                       </div>
-                    ) : <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>Every project in this workspace is already in this portfolio.</p>)}
-                    {rows.length === 0 ? (
+                    ) : <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>{across ? "Every project you can see is already in this portfolio." : "Every project in this workspace is already in this portfolio."}</p>)}
+                    {rows.length === 0 && gone.length === 0 ? (
                       <p className="kpj-card-meta" style={{ margin: "12px 0 0" }}>{readOnly ? "No projects in this portfolio yet." : "No projects yet. Add one with + Project."}</p>
                     ) : rows.map(({ p, ptasks, health, latest }) => {
                       // top-level tasks, the same rule as the Table and the project's own header
@@ -362,9 +446,12 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                       return (
                         <div key={p.id} className="kpj-pf-row">
                           <ProjectDot color={p.color} size={10} />
-                          <button type="button" className="kpj-pf-open" onClick={() => onOpenProject(p.id)} aria-label={`Open project ${p.name}${p.archivedAt ? " (archived)" : ""}`}>
-                            {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
-                          </button>
+                          {across ? (
+                            <span className="kpj-pf-name">
+                              {openBtn(p)}
+                              {biz(p)}
+                            </span>
+                          ) : openBtn(p)}
                           <div className="kpj-pf-side">
                             {health && <Pill tone={HEALTH_TONE[health.kind]} title={`Kanbo's read: ${health.detail}`}>{health.label}</Pill>}
                             {latest && STATUS_KIND_META[latest.status] && (
@@ -388,6 +475,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                         </div>
                       );
                     })}
+                    {goneRows(false)}
                   </article>
                 );
               })}
@@ -401,8 +489,12 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
 
 /** The exec view of a portfolio: one row per project with its latest call, progress,
  *  next milestone and how fresh its update is. */
-function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject }: {
+function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject, bizOf, extraRows }: {
   rows: Project[]; tasks: Task[]; idx: TaskIndex; statusUpdates: StatusUpdate[]; label: string; onOpenProject: (id: string) => void;
+  /** across businesses: the business a project is from, under its name */
+  bizOf?: (p: Project) => React.ReactNode;
+  /** rows after the projects (a Personal portfolio's projects you can no longer see) */
+  extraRows?: React.ReactNode;
 }) {
   return (
     <div role="table" aria-label={label} className="kpj-table kpj-exec">
@@ -430,6 +522,7 @@ function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject 
                     onClick={(e) => { e.stopPropagation(); onOpenProject(p.id); }}>
                     {p.name}{p.archivedAt && <span className="kpj-pf-archived"> (archived)</span>}
                   </button>
+                  {bizOf?.(p)}
                 </span>
               </div>
               <div role="cell" className="kpj-td">
@@ -437,7 +530,7 @@ function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject 
                   <span className="kpj-exec-update">
                     <Pill tone={KIND_TONE[latest.status]}>{STATUS_KIND_META[latest.status].label}</Pill>
                     {/* who said it, in words (a tooltip alone is out of reach on a phone or the keyboard) */}
-                    {by && <span className="kpj-exec-by" data-former={latest.authorId && getMember(latest.authorId) ? undefined : ""}>{shortName(by)}</span>}
+                    {by && <span className="kpj-exec-by" data-former={latest.authorId && getMember(latest.authorId) ? undefined : ""}>{firstName(by)}</span>}
                     <span className="kpj-exec-summary" title={by ? `${by}: ${latest.summary}` : latest.summary}>{latest.summary}</span>
                   </span>
                 ) : <Pill tone="neutral">No update</Pill>}
@@ -467,6 +560,7 @@ function PortfolioTable({ rows, tasks, idx, statusUpdates, label, onOpenProject 
             </div>
           );
         })}
+        {extraRows}
       </div>
     </div>
   );

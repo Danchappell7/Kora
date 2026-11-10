@@ -101,7 +101,8 @@ export function TasksPage({ tasks, allTasks, projects = [], view, setView, group
   onBulkPatch: (ids: string[], patch: Partial<Task>) => void;
   onBulkDelete: (ids: string[]) => void;
   onPatch: (id: string, patch: Partial<Task>) => void;
-  onQuickAdd: (partial: Partial<Task> & { title: string }) => void;
+  /** the list's Add rows (none: no Add row, e.g. All businesses open on a workspace you're a guest in) */
+  onQuickAdd?: (partial: Partial<Task> & { title: string }) => void;
   onOpenImport?: () => void;
   members: { id: string; name: string }[];
   allTags: Record<string, TagDef>;

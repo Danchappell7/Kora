@@ -17,7 +17,7 @@ import type { BoardSettingsChange } from "../components/tasks/otherViewsLogic";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
-  DEMO_ACTIVITY, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
+  DEMO_ACTIVITY, DEMO_ACTIVITY_ELSEWHERE, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
   EVENTS, KANBO_TODAY,
 } from "./data";
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
@@ -89,7 +89,8 @@ export interface NewProject {
 /* fields the prototype derived on load; persisted as columns in Supabase */
 function withPlanFields(t: Task): Task {
   const wsId = PROJECTS.find((p) => p.id === t.projectId)?.workspaceId ?? null;
-  return { ...t, energy: energyOf(t), dur: t.focusMin, scheduled: null, planToday: PLAN_TODAY_IDS.includes(t.id), workspaceId: wsId, recurrence: t.recurrence ?? "none" };
+  // (a seed task already placed on the day keeps its slot: Investor call prep in Reco HQ)
+  return { ...t, energy: energyOf(t), dur: t.focusMin, scheduled: t.scheduled ?? null, planToday: PLAN_TODAY_IDS.includes(t.id) || !!t.planToday, workspaceId: wsId, recurrence: t.recurrence ?? "none" };
 }
 
 const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.round(Math.random() * 1e6));
@@ -1444,6 +1445,16 @@ export const store = {
           id: "wm-" + i, workspaceId: "ws-foundrise", userId: m.id, email: m.email, name: m.name,
           role: m.type === "self" ? "owner" as const : "member" as const, status: "active" as const,
         }));
+        // the other businesses: you own Reco HQ, help Theo run Courtside Padel (admin) and are a member at Harbour Advisory
+        const elsewhere: [string, string, Role][] = [
+          ["ws-reco", "m-self", "owner"], ["ws-reco", "m-1", "member"], ["ws-reco", "m-2", "member"],
+          ["ws-courtside", "m-2", "owner"], ["ws-courtside", "m-self", "admin"],
+          ["ws-harbour", "m-3", "owner"], ["ws-harbour", "m-self", "member"],
+        ];
+        demoMembers = [...demoMembers, ...elsewhere.map(([workspaceId, userId, role], i) => {
+          const m = MEMBERS.find((x) => x.id === userId)!;
+          return { id: `wm-x${i}`, workspaceId, userId, email: m.email, name: m.name, role, status: "active" as const };
+        })];
         // Northlight Studio is Idris's, and Daniel is a guest there: read and comment only, no
         // goals, portfolios or team reporting (as the live database has it since 0051)
         const idris = MEMBERS.find((m) => m.id === "m-4"), self = MEMBERS.find((m) => m.type === "self");
@@ -1460,7 +1471,7 @@ export const store = {
         const docMention: Activity = { id: "a-demo-doc-1", taskId: null, taskTitle: "Launch brief", kind: "doc_mention", detail: "Sana Rao",
           createdAt: new Date(Date.now() - 125 * 60_000).toISOString(), meta: { docId: "doc-launch-brief", projectId: "p-launch" } };
         // 0048: a bundle of three comments on the launch deck and a kudos (lib/notifyDemo)
-        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity())].filter((a) => !logged.has(a.id))].sort(newestFirst);
+        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity()), ...seedCopy(DEMO_ACTIVITY_ELSEWHERE)].filter((a) => !logged.has(a.id))].sort(newestFirst);
       }
       return {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApprovalsInboxGroup } from "./ApprovalsInboxGroup";
 import { ApprovalBadge } from "./ApprovalBadge";
-import { APPROVAL_LIMITS, listMyApprovals, listTaskApprovals, resetApprovalsDemo } from "../../lib/approvals";
+import { APPROVAL_LIMITS, approvalsInWorkspace, listMyApprovals, listTaskApprovals, resetApprovalsDemo } from "../../lib/approvals";
 import { MEMBERS, PROJECTS } from "../../data/data";
 import type { ApprovalWithTask } from "../../data/types";
 
@@ -11,7 +11,8 @@ const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)
 let waiting: ApprovalWithTask[] = [];
 beforeEach(async () => {
   resetApprovalsDemo({ demoDelayMs: 0 });
-  waiting = (await listMyApprovals()).toReview;
+  // (Foundrise's, as its Inbox shows them: the demo's Courtside Padel request is another business's)
+  waiting = approvalsInWorkspace((await listMyApprovals()).toReview, "ws-foundrise");
 });
 const group = (extra: Partial<Parameters<typeof ApprovalsInboxGroup>[0]> = {}) => (
   <ApprovalsInboxGroup approvals={waiting} projects={PROJECTS} members={MEMBERS} currentUserId="m-self" onOpenTask={() => {}} {...extra} />

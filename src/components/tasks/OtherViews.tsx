@@ -10,6 +10,7 @@ import {
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useListKeyboard, type ListKeyAction } from "../../hooks/useListKeyboard";
 import { BulkMenuButton, CustomChips, useFloatBounds } from "./ListView";
+import { WorkspaceChip } from "../businesses/Businesses";
 import { parseDateText } from "../../lib/nlp";
 import {
   getProject, getMember, dueState, fmtDue, TAGS,
@@ -337,6 +338,8 @@ const KanbanCard = memo(function KanbanCard(p: KanbanCardProps) {
               )}
             </span>
           ) : loud ? <PriorityGlyph priority={task.priority} /> : null}
+          {/* All businesses: which business it's from (nothing otherwise) */}
+          {p.showProject && proj && <WorkspaceChip projectId={proj.id} mark />}
           {p.showProject && proj && <ProjectTile project={proj} size={16} title={proj.name} />}
           {onPatch && members.length > 0 ? (
             <span style={{ display: "inline-flex" }} onClick={stop}>
@@ -1349,7 +1352,7 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
             {byProject.map((g) => (
               <div key={g.project.id} className="ktv-tl-group">
                 <div className="ktv-tl-lane">
-                  <div className="ktv-tl-lane-in"><ProjectTile project={g.project} size={16} /><span>{g.project.name}</span><small>{g.items.length}</small></div>
+                  <div className="ktv-tl-lane-in"><WorkspaceChip projectId={g.project.id} mark /><ProjectTile project={g.project} size={16} /><span>{g.project.name}</span><small>{g.items.length}</small></div>
                 </div>
                 <div className="ktv-tl-rows" style={{ width: trackW }}>
                   {g.rows.map((t) => {
@@ -1680,6 +1683,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
                 <button key={t.id} type="button" className="ktv-agenda-item" onClick={() => onOpen(t.id)} aria-label={taskName(t)}>
                   <StatusGlyph status={t.status} size={16} readOnly />
                   <span style={{ color: t.status === "done" ? "var(--ink-3)" : undefined, textDecoration: t.status === "done" ? "line-through" : undefined }}>{t.title}</span>
+                  {proj && <WorkspaceChip projectId={proj.id} mark />}
                   {proj && <ProjectTile project={proj} size={16} title={proj.name} />}
                   <Avatar id={t.assigneeId} size={20} />
                 </button>
@@ -1758,6 +1762,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
                     onDragEnd={canEdit ? () => setDropDay(null) : undefined}
                     aria-label={taskName(t)} title={canEdit ? `${t.title}: drag to another day to reschedule` : t.title}>
                     <span aria-hidden="true" style={{ display: "inline-flex" }}><StatusGlyph status={t.status} size={14} readOnly /></span>
+                    <WorkspaceChip projectId={t.projectId} mark />
                     <span>{t.title}</span>
                   </button>
                 ))}
@@ -1790,6 +1795,7 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
               <RowButton key={t.id} autoFocus={i === 0} onClick={() => { setDayPop(null); onOpen(t.id); }}>
                 <StatusGlyph status={t.status} size={14} readOnly />
                 <span className="truncate" style={{ flex: 1, minWidth: 0, color: t.status === "done" ? "var(--ink-3)" : "var(--ink)", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</span>
+                <WorkspaceChip projectId={t.projectId} mark />
                 <Avatar id={t.assigneeId} size={20} />
               </RowButton>
             ))}
@@ -1833,6 +1839,7 @@ export function MatrixView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: stri
                   <button key={t.id} type="button" className="ktv-quad-item" onClick={() => onOpen(t.id)}>
                     <StatusGlyph status={t.status} size={14} readOnly />
                     <span>{t.title}</span>
+                    {proj && <WorkspaceChip projectId={proj.id} mark />}
                     {proj && <ProjectTile project={proj} size={16} title={proj.name} />}
                     {t.dueDate && <span className="ktv-mono" style={{ color: ds === "overdue" ? "var(--signal, var(--prio-urgent))" : "var(--ink-3)" }}>{fmtDue(t.dueDate)}</span>}
                   </button>

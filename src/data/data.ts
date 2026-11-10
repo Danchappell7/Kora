@@ -142,12 +142,27 @@ export let MEMBERS: Member[] = [
   { id: "m-4", name: "Idris Bell", email: "idris@partner.io", type: "external", color: "oklch(0.7 0.13 20)" },
 ];
 
+/* A demo business's logo: its letter on a rounded tile in its own colour (a data:
+   URI, as an uploaded logo's URL would be), so each business is told apart at a glance. */
+const demoLogo = (letter: string, from: string, to: string, mark = ""): string => "data:image/svg+xml," + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">`
+  + `<stop offset="0" stop-color="${from}"/><stop offset="1" stop-color="${to}"/></linearGradient></defs>`
+  + `<rect width="64" height="64" rx="14" fill="url(#g)"/>${mark}`
+  + `<text x="32" y="44" text-anchor="middle" font-family="Inter,Helvetica,Arial,sans-serif" font-size="34" font-weight="700" fill="#fff">${letter}</text></svg>`);
+
+/* The demo person runs three businesses (owner of Foundrise and Reco HQ, admin of
+   Courtside Padel), helps out at a fourth (a member of Harbour Advisory) and is a guest
+   at a fifth (Northlight Studio), so the Group page, All businesses, the switcher's dots
+   and a guest's view all have real work to show. */
 export let WORKSPACES: Workspace[] = [
   { id: null, name: "Personal", kind: "personal" },
-  { id: "ws-foundrise", name: "Foundrise", kind: "team" },
-  { id: "ws-reco", name: "Reco HQ", kind: "team" },
+  { id: "ws-foundrise", name: "Foundrise", kind: "team", ownerId: "m-self", logoUrl: demoLogo("F", "#3b6fe0", "#1d3f9a") },
+  { id: "ws-reco", name: "Reco HQ", kind: "team", ownerId: "m-self", logoUrl: demoLogo("R", "#f08a3c", "#c4532a") },
+  { id: "ws-courtside", name: "Courtside Padel", kind: "team", ownerId: "m-2",
+    logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`) },
+  { id: "ws-harbour", name: "Harbour Advisory", kind: "team", ownerId: "m-3", logoUrl: demoLogo("H", "#4a4f8f", "#262a5c") },
   // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't)
-  { id: "ws-northlight", name: "Northlight Studio", kind: "team" },
+  { id: "ws-northlight", name: "Northlight Studio", kind: "team", ownerId: "m-4", logoUrl: demoLogo("N", "#d4677a", "#9c3550") },
 ];
 
 /* Each demo project wears its own emoji and spectrum hue (lib/projectIdentity.ts),
@@ -159,7 +174,11 @@ export let PROJECTS: Project[] = [
   { id: "p-brand", name: "Brand Refresh", emoji: "🎨", color: spectrumColor("orchid"), workspaceId: "ws-foundrise", ownerId: "m-3", contributorIds: ["m-self", "m-1"] },
   { id: "p-infra", name: "Platform Infra", emoji: "⚙️", color: spectrumColor("jade"), workspaceId: "ws-foundrise", ownerId: "m-2", contributorIds: ["m-self"] },
   { id: "p-growth", name: "Growth Experiments", emoji: "📈", color: spectrumColor("tangerine"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-1"] },
-  { id: "p-northlight", name: "Website rebuild", emoji: "🧭", color: spectrumColor("lagoon"), workspaceId: "ws-northlight", ownerId: "m-4", contributorIds: ["m-self"] },
+  { id: "p-onboard", name: "Customer Onboarding", emoji: "🤝", color: spectrumColor("lagoon"), workspaceId: "ws-reco", ownerId: "m-self", contributorIds: ["m-2"] },
+  { id: "p-clubhouse", name: "Clubhouse Fit-out", emoji: "🏗️", color: spectrumColor("amber"), workspaceId: "ws-courtside", ownerId: "m-2", contributorIds: ["m-self"] },
+  { id: "p-league", name: "Winter League", emoji: "🎾", color: spectrumColor("citron"), workspaceId: "ws-courtside", ownerId: "m-self", contributorIds: ["m-2"] },
+  { id: "p-northwind", name: "Northwind Review", emoji: "🧭", color: spectrumColor("cobalt"), workspaceId: "ws-harbour", ownerId: "m-3", contributorIds: ["m-self"] },
+  { id: "p-northlight", name: "Website rebuild", emoji: "🌐", color: spectrumColor("coral"), workspaceId: "ws-northlight", ownerId: "m-4", contributorIds: ["m-self"] },
 ];
 
 /* Minimal reference data a brand-new (real) account starts with — one personal
@@ -335,6 +354,44 @@ export const TASKS: Task[] = [
   t({ title: "Security review sign-off", status: "review", priority: "high", projectId: "p-infra",
       assigneeId: "m-1", createdBy: "m-1", dueDate: thisWeek(2), tags: ["eng"], aiScore: 70, focusMin: 30, effortHours: 1,
       createdAt: daysAgoAt(3, 11, 50) }),
+  // ---- the other businesses (t-31 onwards): Reco HQ, Courtside Padel, Harbour Advisory
+  t({ title: "Sign off the onboarding email sequence", status: "todo", priority: "high", projectId: "p-onboard",
+      assigneeId: "m-self", createdBy: "m-2", dueDate: dayOffset(0), tags: ["writing"], aiScore: 68, focusMin: 30, effortHours: 1,
+      aiReason: "Theo can't schedule the sends until you've read it.", createdAt: daysAgoAt(3, 10, 0) }),
+  // already on the day at 17:00 in Reco HQ: Plan my day in another business leaves that time alone
+  t({ title: "Investor call prep", status: "todo", priority: "medium", projectId: "p-growth",
+      assigneeId: "m-self", dueDate: dayOffset(0), tags: ["writing"], aiScore: 55, focusMin: 45, planToday: true, scheduled: 17 * 60,
+      createdAt: daysAgoAt(4, 9, 15) }),
+  t({ title: "Interview three trial customers", status: "todo", priority: "medium", projectId: "p-onboard",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(3), tags: ["research"], aiScore: 47, focusMin: 60, createdAt: daysAgoAt(2, 14, 0) }),
+  t({ title: "Draft the welcome checklist", status: "done", priority: "medium", projectId: "p-onboard",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(-1), completedAt: dayOffset(-1), tags: ["writing"], aiScore: 40, focusMin: 40,
+      createdAt: daysAgoAt(6, 11, 0) }),
+  t({ title: "Choose the court resurfacing contractor", status: "review", priority: "high", projectId: "p-clubhouse",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(1), tags: ["ops"], aiScore: 73, focusMin: 30, effortHours: 2,
+      description: "Three quotes in. Theo recommends Proline: dearest, but the only one that can start before the league.",
+      createdAt: daysAgoAt(5, 16, 0) }),
+  t({ title: "Sign the clubhouse lighting order", status: "todo", priority: "high", projectId: "p-clubhouse",
+      assigneeId: "m-self", createdBy: "m-2", dueDate: dayOffset(-2), originalDueDate: dayOffset(-5), tags: ["ops"], aiScore: 82, focusMin: 20,
+      aiReason: "Overdue, and the electrician's second fix waits on it.", createdAt: daysAgoAt(9, 10, 30) }),
+  t({ title: "Book the electrician's second fix", status: "blocked", priority: "high", projectId: "p-clubhouse",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(-1), tags: ["ops"], dependencies: ["t-36"], aiScore: 66, focusMin: 30,
+      createdAt: daysAgoAt(8, 9, 0) }),
+  t({ title: "Fit-out snagging list", status: "blocked", priority: "medium", projectId: "p-clubhouse",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(-3), tags: ["ops"], dependencies: ["t-37"], aiScore: 44, focusMin: 60,
+      createdAt: daysAgoAt(20, 15, 0) }),
+  t({ title: "Publish the winter league fixtures", status: "done", priority: "high", projectId: "p-league",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(-1), completedAt: dayOffset(-1), tags: ["ops"], aiScore: 60, focusMin: 45,
+      createdAt: daysAgoAt(7, 12, 0) }),
+  t({ title: "Confirm two league sponsors", status: "done", priority: "high", projectId: "p-league",
+      assigneeId: "m-self", dueDate: dayOffset(0), completedAt: dayOffset(0), tags: ["ops"], aiScore: 64, focusMin: 30,
+      createdAt: daysAgoAt(6, 9, 30) }),
+  t({ title: "Print league scorecards", status: "todo", priority: "low", projectId: "p-league",
+      assigneeId: "m-2", createdBy: "m-2", dueDate: dayOffset(5), tags: ["ops"], aiScore: 25, focusMin: 20, createdAt: daysAgoAt(2, 10, 0) }),
+  t({ title: "Read the Northwind board pack", status: "todo", priority: "medium", projectId: "p-northwind",
+      assigneeId: "m-self", createdBy: "m-3", dueDate: dayOffset(1), tags: ["research"], aiScore: 50, focusMin: 60, createdAt: daysAgoAt(2, 8, 45) }),
+  t({ title: "Send Northwind the findings", status: "todo", priority: "medium", projectId: "p-northwind",
+      assigneeId: "m-3", createdBy: "m-3", dueDate: dayOffset(6), tags: ["writing"], aiScore: 45, focusMin: 90, createdAt: daysAgoAt(2, 8, 50) }),
   // Northlight Studio (Idris's workspace; Daniel is a guest there): its own work, nothing of Daniel's
   t({ id: "t-nl-1", title: "Sitemap and page list", status: "done", priority: "medium", projectId: "p-northlight",
       assigneeId: "m-4", createdBy: "m-4", dueDate: dayOffset(-5), completedAt: dayOffset(-6), focusMin: 45, createdAt: daysAgoAt(14, 10, 0) }),
@@ -518,10 +575,19 @@ export const DEMO_GOALS: Goal[] = [
     status: "on_track", projectId: "p-launch", due: LAUNCH_DAY, workspaceId: "ws-foundrise", position: 0 },
   { id: "g-actives", name: "Grow weekly actives to 5,000", description: "Weekly active users across web and mobile.",
     target: 5000, current: 3900, unit: "users", status: "at_risk", due: `${KANBO_TODAY.getFullYear()}-12-31`, workspaceId: "ws-foundrise", position: 1 },
+  // the other businesses: Reco HQ on track, Courtside Padel behind on both
+  { id: "g-reco-paying", name: "Reach 400 paying customers", description: "Paying accounts, net of churn.",
+    target: 400, current: 312, unit: "customers", status: "on_track", due: `${KANBO_TODAY.getFullYear()}-12-31`, workspaceId: "ws-reco", position: 0 },
+  { id: "g-court-hours", name: "Fill 80% of peak court hours", description: "Weekday 17:00–21:00 and weekend mornings.",
+    target: 80, current: 64, unit: "%", status: "at_risk", due: dayOffset(52), workspaceId: "ws-courtside", position: 0 },
+  { id: "g-court-open", name: "Open the clubhouse", description: "Bar, changing rooms and the viewing deck, open to members.",
+    status: "off_track", projectId: "p-clubhouse", due: dayOffset(22), workspaceId: "ws-courtside", position: 1 },
 ];
 
 export const DEMO_PORTFOLIOS: Portfolio[] = [
   { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise" },
+  // in Personal (only its creator sees it), across businesses; the last project has since gone from view
+  { id: "pf-openings", name: "Every opening this quarter", projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"], workspaceId: null },
 ];
 
 /* Platform Infra has no update at all, so it reads as stale. Each says who posted it;
@@ -533,7 +599,24 @@ export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
     summary: "Deck is the critical path; onboarding is blocked on tokens." },
   { id: "su-launch-kickoff", projectId: "p-launch", status: "on_track", createdAt: daysAgoAt(23, 10, 10), workspaceId: "ws-foundrise", authorId: "m-left",
     summary: "Kick-off done: scope agreed with sales and support, and the launch date is set." },
+  { id: "su-growth", projectId: "p-growth", status: "on_track", createdAt: daysAgoAt(3, 17, 0), workspaceId: "ws-reco", authorId: "m-self",
+    summary: "The pricing test is set up; the second round of interviews starts Thursday." },
+  { id: "su-league", projectId: "p-league", status: "on_track", createdAt: daysAgoAt(1, 18, 10), workspaceId: "ws-courtside", authorId: "m-2",
+    summary: "Fixtures are out and two sponsors have signed." },
+  // (the fit-out's last word was over two weeks ago: it reads as stale)
+  { id: "su-clubhouse", projectId: "p-clubhouse", status: "at_risk", createdAt: daysAgoAt(16, 16, 30), workspaceId: "ws-courtside", authorId: "m-2",
+    summary: "The lighting order waits on sign-off; snagging can't start until the second fix." },
 ];
+
+/* Inbox items in the other businesses (the switcher's unread dots), newest first. Kept
+   apart from DEMO_ACTIVITY: each workspace's Inbox shows only its own. */
+export const DEMO_ACTIVITY_ELSEWHERE: Activity[] = ([
+  { id: "a-demo-cs-1", taskId: "t-36", taskTitle: "Sign the clubhouse lighting order", kind: "mention", detail: "Theo Vance", createdAt: minutesAgo(55) },
+  { id: "a-demo-cs-2", taskId: "t-35", taskTitle: "Choose the court resurfacing contractor", kind: "approval", detail: "Theo Vance", createdAt: minutesAgo(140),
+    meta: { approvalId: "ap-demo-6", event: "requested", status: "pending", rule: "any" } },
+  { id: "a-demo-rc-1", taskId: "t-31", taskTitle: "Sign off the onboarding email sequence", kind: "assigned", detail: "Theo Vance", createdAt: daysAgoAt(3, 10, 0), readAt: daysAgoAt(3, 10, 30) },
+  { id: "a-demo-hb-1", taskId: "t-42", taskTitle: "Read the Northwind board pack", kind: "assigned", detail: "Sana Rao", createdAt: minutesAgo(400) },
+] satisfies Activity[]).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
 
 /* Rules have no conditions yet, so "tag bugs" would tag every new launch task:
    it ships switched off, ready to show (and to switch on). */

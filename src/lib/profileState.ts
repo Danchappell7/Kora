@@ -64,6 +64,7 @@ export function parseOnboardingState(raw: unknown): OnboardingState {
     if (Array.isArray(m.daysOff)) mom.daysOff = strArr(m.daysOff, 120).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
     out.momentum = mom;
   }
+  if (isObj(raw.businesses)) out.businesses = raw.businesses.all === true ? { all: true } : {};
   return out;
 }
 

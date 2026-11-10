@@ -69,6 +69,20 @@ main[tabindex="-1"]:focus { outline: none; }
 .ksb-wsi > svg { flex-shrink: 0; color: var(--icon-quiet, var(--ink-4)); }
 .ksb-wsi > svg.ksb-tick { color: var(--accent-text, var(--accent)); }
 .ksb-menu-head { padding: 6px 8px 4px; font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+/* each workspace's signals: unread (a count) and needs you (a dot); the switcher itself wears a dot
+   while another workspace has either */
+.ksb-ws-mark { position: relative; overflow: visible; }
+.ksb-ws-mark > img, .ksb-ws-mark > svg { border-radius: var(--r-sm, 6px); }
+.ksb-ws-ping { position: absolute; top: -3px; right: -3px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent-fill, var(--accent)); box-shadow: 0 0 0 2px var(--bg-deep); }
+.ksb-ws-ping[data-tone="warn"] { background: var(--warn); }
+.ksb-wsi-sig { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ksb-wsi-n { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent-fill, var(--accent)); color: var(--on-accent); font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.ksb-wsi-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
+/* …and what they are, in words, under the name (a touch screen has no hover to say it) */
+.ksb-wsi[data-sig] { height: auto; min-height: 40px; padding-top: 4px; padding-bottom: 4px; }
+.ksb-wsi-txt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.ksb-wsi-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 
 /* phone drawer only: search sits under the switcher (the header has it on desktop) */
 .ksb-search {
@@ -431,7 +445,7 @@ function FocusPill({ focus, onOpen, taskTitle }: { focus: FocusTimer; onOpen: ()
 const PLACE_ICON: Partial<Record<NavItem["id"], IconName>> = { projects: "kanbo" };
 
 export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, focus, openFocus, tasks, projects, inboxCount, currentUserId, currentUser, onSignOut, onOpenSettings, onNewProject, onDeleteProject, onArchiveProject, onRestoreProject, onNewWorkspace, subscription, onUpgrade, onManageBilling, savedSearches = [], savedSearchCounts, onDeleteSavedSearch, myRole, guardRoute = true, theme, onToggleTheme, teamBadge, onOpenSearch, onOpenShortcuts,
-  views, viewCounts, onOpenView, onEditView, onReorderViews, onDropTasksOnProject, onDropTasksOnToday, help }: {
+  views, viewCounts, onOpenView, onEditView, onReorderViews, onDropTasksOnProject, onDropTasksOnToday, help, wsSignals }: {
   route: Route;
   setRoute: (r: Route) => void;
   workspace: string | null;
@@ -500,6 +514,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   onDropTasksOnToday?: (taskIds: string[]) => void;
   /** the footer's Help (?) menu, beside Settings (the host lazy-loads it) */
   help?: ReactNode;
+  /** each workspace's signals, by workspace id ("personal" for Personal): unread Inbox items, and what needs
+   *  you there (`detail` says what). The switcher's rows show them; the switcher wears a dot while another has some. */
+  wsSignals?: ReadonlyMap<string, { unread: number; attention: number; detail: string }>;
 }) {
   const toast = useToast();
   const uid = useId();
@@ -753,6 +770,10 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
     </Suspense>
   )) : savedRows;
 
+  // another workspace has something for you: the switcher says so (its own rows say what)
+  const sigOf = (id: string | null) => wsSignals?.get(id ?? "personal");
+  const elsewhere = wsSignals ? workspaces.filter((w) => w.id !== workspace).map((w) => sigOf(w.id)).filter((s) => !!s && (s.unread > 0 || s.attention > 0)) : [];
+  const elsewhereTone = elsewhere.some((s) => s!.attention > 0) ? "warn" : "accent";
   const openTaskTitle = focus.taskId ? tasks.find((t) => t.id === focus.taskId)?.title : undefined;
   const displayName = currentUser?.name || "You";
   const hasAcctMenu = !!(onOpenSettings || onOpenShortcuts || onSignOut);
@@ -766,9 +787,10 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
       <div className="ksb-scroll">
         {/* workspace */}
         <button ref={wsBtnRef} type="button" className="ksb-ws" onClick={() => setWsOpen((v) => !v)} aria-expanded={wsOpen} aria-haspopup="dialog"
-          aria-label={`Switch workspace, current: ${activeWs.name}`}>
+          aria-label={`Switch workspace, current: ${activeWs.name}${elsewhere.length ? `. ${elsewhere.length === 1 ? "Another workspace has" : `${elsewhere.length} other workspaces have`} something for you` : ""}`}>
           <span className="ksb-ws-mark" aria-hidden="true">
             {activeWs.logoUrl ? <img src={activeWs.logoUrl} alt="" /> : <KanboLogo size={20} />}
+            {elsewhere.length > 0 && <span className="ksb-ws-ping" data-tone={elsewhereTone} />}
           </span>
           <span className="ksb-ws-name">{activeWs.name}</span>
           <Icon name="chevronDown" size={14} sw={1.75} className="ksb-ws-chev" />
@@ -779,11 +801,25 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
             <div className="ksb-menu-head" aria-hidden="true">Workspaces</div>
             {workspaces.map((w) => {
               const current = w.id === workspace;
+              const sig = sigOf(w.id);
+              const unread = sig?.unread ?? 0, needs = sig?.attention ?? 0;
+              const said = [unread > 0 && `${unread} unread`, needs > 0 && `needs you: ${sig!.detail}`].filter(Boolean).join(", ");
+              const sub = [needs > 0 && sig!.detail, unread > 0 && `${unread} unread`].filter(Boolean).join(" · ");
               return (
                 <button key={w.id ?? "personal"} ref={current ? wsCurrentRef : undefined} type="button" className="ksb-wsi"
-                  onClick={() => switchWorkspace(w.id)} aria-current={current ? "true" : undefined}>
+                  onClick={() => switchWorkspace(w.id)} aria-current={current ? "true" : undefined} data-sig={sub ? "" : undefined}
+                  aria-label={said ? `${w.name}, ${said}` : undefined}>
                   {w.logoUrl ? <img src={w.logoUrl} alt="" /> : <Icon name={w.kind === "personal" ? "user" : "briefcase"} size={16} sw={1.75} />}
-                  <span className="truncate" style={{ flex: 1, minWidth: 0 }}>{w.name}</span>
+                  <span className="ksb-wsi-txt">
+                    <span className="truncate">{w.name}</span>
+                    {sub && <span className="ksb-wsi-sub" aria-hidden="true">{sub}</span>}
+                  </span>
+                  {(unread > 0 || needs > 0) && (
+                    <span className="ksb-wsi-sig" aria-hidden="true">
+                      {needs > 0 && <span className="ksb-wsi-dot" />}
+                      {unread > 0 && <span className="ksb-wsi-n">{unread > 99 ? "99+" : unread}</span>}
+                    </span>
+                  )}
                   {current && <Icon name="check" size={14} sw={2} className="ksb-tick" />}
                 </button>
               );

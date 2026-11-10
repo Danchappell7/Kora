@@ -40,6 +40,7 @@ import { TaskApprovalBadge } from "../approvals/ApprovalSummaries";
 import { useSwipeRow } from "../../lib/gestures";
 import { useTaskDragSource, isTaskDragActive } from "../../lib/dnd";
 import { RowActionSheet, quickDueChoices, shortDay } from "../phone/RowActionSheet";
+import { WorkspaceChip, useGuestRow } from "../businesses/Businesses";
 
 // small chips showing a task's filled custom-field values (max 3)
 export function CustomChips({ task, fields, members = [] }: { task: Task; fields: CustomFieldDef[]; members?: { id: string; name: string }[] }) {
@@ -491,6 +492,8 @@ const TaskRow = memo(function TaskRow({ task, childTasks, childDone, byId, onOpe
         <div className="ktv-cluster">
           {action && <span className="ktv-action" onClick={stop}>{action}</span>}
           {smart && !done && <AiScore score={task.aiScore} reason={task.aiReason} />}
+          {/* All businesses: which business it's from (nothing otherwise) */}
+          {showProject && <WorkspaceChip projectId={task.projectId} col />}
           {showProject && (
             <span className="ktv-proj" data-row-project={task.id} title={proj?.name}>
               {proj && <><ProjectTile project={proj} size={16} /><span>{proj.name}</span></>}
@@ -722,6 +725,8 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   const sections = useStableList(sectionsIn);
   // read-only strips every write path at the source
   const patch = readOnly ? undefined : onPatch;
+  // All businesses: a row from a workspace you're a guest in is view-only, as it is there
+  const guestRow = useGuestRow();
   const quickAddFn = readOnly ? undefined : onQuickAdd;
   const bulkEnabled = !readOnly && !!onBulkPatch;
   const [adding, setAdding] = useState<{ key: string; at: "top" | "end" } | null>(null);
@@ -1316,7 +1321,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
               {addField("top")}
               <div className={entrance}>{shown.map((t) => (
                 <TaskRow key={t.id} task={t} childTasks={childrenOf.get(t.id) ?? NO_TASKS} childDone={doneKids.get(t.id) ?? 0} byId={byId}
-                  onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} onCheck={onCheck} smart={smart} isMobile={isMobile} readOnly={readOnly}
+                  onOpen={onOpen} onToggle={onToggle} onToggleSubtask={onToggleSubtask} onCheck={onCheck} smart={smart} isMobile={isMobile} readOnly={readOnly || guestRow(t)}
                   selected={selected.has(t.id)} selectionActive={selectionActive} onSelect={bulkEnabled ? onSelectRow : undefined} touchSelect={touchSelect}
                   draggable={dragEnabled && !sheetable} dragging={dragId === t.id} dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
                   onPickup={onPickup} onHover={onHoverRow} onRowDrop={onRowDrop} onMoveBy={dragEnabled ? onMoveBy : undefined} onRefocus={onRefocus}

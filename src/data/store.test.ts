@@ -1650,7 +1650,10 @@ describe("store (demo mode) — the redesign's seed and AI", () => {
     // 0047: the approvals waiting on you and a doc @mention ride along with every demo seed; 0048: a bundle of
     // comments on the launch deck and a kudos (lib/notifyDemo)
     const extra = new Set(["a-demo-ap-1", "a-demo-ap-2", "a-demo-ap-3", "a-demo-doc-1", "a-demo-n1", "a-demo-n2", "a-demo-n3"]);
-    expect(feed.filter((a) => !extra.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
+    // …and the other businesses' Inbox items (each workspace's Inbox shows only its own)
+    const elsewhere = new Set(["a-demo-cs-1", "a-demo-cs-2", "a-demo-rc-1", "a-demo-hb-1"]);
+    expect(feed.filter((a) => elsewhere.has(a.id))).toHaveLength(4);
+    expect(feed.filter((a) => !extra.has(a.id) && !elsewhere.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
     expect(feed.filter((a) => extra.has(a.id)).map((a) => a.kind).sort()).toEqual(["approval", "approval", "approval", "comment", "comment", "doc_mention", "kudos"]);
     expect(feed[0].kind).toBe("created");                  // logged just now, kept
     await s.clearInbox(["a-new"]);

@@ -202,7 +202,7 @@ const spans = (list: BriefSpan[], onOpen: (id: string) => void, onOpenRisks?: ()
 };
 
 /** The brief card. `hero` is the one action ("Plan my day for me", or "Shut down my day" after hours). */
-export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisks, hero, onShowList, onAsk }: {
+export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisks, hero, onShowList, onAsk, lead }: {
   brief: TodayBrief;
   nowMin: number;
   railFocus: RailFocus | null;
@@ -212,6 +212,8 @@ export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisk
   hero?: ReactNode;
   onShowList?: () => void;
   onAsk?: () => void;
+  /** across businesses: who needs you most, under the brief's words (before its figures) */
+  lead?: ReactNode;
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [why, setWhy] = useState(false);
@@ -232,6 +234,7 @@ export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisk
         <span>{brief.greeting} </span>{spans(brief.headline, onOpen, onOpenRisks)}
       </h2>
       {brief.prose.length > 0 && <p className="kbrief-prose">{spans(brief.prose, onOpen, onOpenRisks)}</p>}
+      {lead}
       {brief.facts.length > 0 && (
         <div className="kbrief-facts" role="group" aria-label="Today at a glance">
           {brief.facts.map((f) => {

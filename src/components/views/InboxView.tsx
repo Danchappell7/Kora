@@ -29,6 +29,7 @@ import { dayLabel } from "../../lib/rituals";
 import { prefersReducedMotion, useOptionalToast } from "../rituals/shared";
 import { useEntrance } from "../../hooks/useEntrance";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { WorkspaceChip, useGuestRow } from "../businesses/Businesses";
 
 const KIND_META: Record<ActivityKind, { icon: IconName; verb: string }> = {
   created:   { icon: "plus",    verb: "created" },
@@ -701,9 +702,12 @@ export function InboxView({
   const taskOf = (a: Activity) => (a.taskId ? taskById.get(a.taskId) : undefined);
   const canReply = (a: Activity) => !!onReply && !!taskOf(a);
   const isOnToday = (t: Task) => !!t.planToday || onToday.has(t.id);
-  const canToday = (a: Activity) => { const t = taskOf(a); return !!onAcceptToday && !readOnly && !!t && t.status !== "done" && !isOnToday(t); };
-  const canSchedule = (a: Activity) => { const t = taskOf(a); return !!onSchedule && !readOnly && !!t && t.status !== "done"; };
-  const canComplete = (a: Activity) => { const t = taskOf(a); return !!onComplete && !readOnly && !!t && t.status !== "done"; };
+  // (All businesses: an item on a task in a workspace you're a guest in can be replied to, nothing more)
+  const guestRow = useGuestRow();
+  const canAct = (t: Task | undefined): t is Task => !readOnly && !!t && t.status !== "done" && !guestRow(t);
+  const canToday = (a: Activity) => { const t = taskOf(a); return !!onAcceptToday && canAct(t) && !isOnToday(t); };
+  const canSchedule = (a: Activity) => { const t = taskOf(a); return !!onSchedule && canAct(t); };
+  const canComplete = (a: Activity) => { const t = taskOf(a); return !!onComplete && canAct(t); };
 
   const startReply = (row: Row) => {
     if (!canReply(row.a)) return;
@@ -742,7 +746,7 @@ export function InboxView({
   };
   const acceptToday = (a: Activity) => {
     const t = taskOf(a);
-    if (!t || !onAcceptToday || readOnly) return;
+    if (!t || !onAcceptToday || readOnly || guestRow(t)) return;
     if (isOnToday(t)) { toast?.toast("Already on Today"); return; }
     if (t.status === "done") return;
     onAcceptToday(t.id);
@@ -949,7 +953,7 @@ export function InboxView({
         data-open={composing ? true : undefined} data-gone={task || integ || (isDoc && openable) ? undefined : true}
         data-child={row.parent ? true : undefined} data-bundle={b ? true : undefined} style={style}
         rowRef={(el) => { if (el) rowEls.current.set(row.id, el); else rowEls.current.delete(row.id); }}
-        dragTaskId={task && task.status !== "done" ? task.id : null} dragOrigin={a.id} dragDisabled={!!readOnly} dragLabel={title}
+        dragTaskId={task && task.status !== "done" ? task.id : null} dragOrigin={a.id} dragDisabled={!!readOnly || guestRow(task)} dragLabel={title}
         onFocus={() => { if (cursorOn !== row.id) setCursor(row.id); }}>
         <ActorMark actor={b && !b.actors.length ? null : actor} kind={a.kind} request={!!via} members={members} />
         <div className="kinbox-body">
@@ -962,6 +966,8 @@ export function InboxView({
             <span className="kinbox-say">{say}</span>
           </button>
           <div className="kinbox-sub">
+            {/* All businesses: which business it's from (nothing otherwise) */}
+            <WorkspaceChip projectId={(proj ?? docProj)?.id} />
             {ctx}
             {expand}
             {marks}

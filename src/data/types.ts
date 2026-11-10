@@ -326,6 +326,8 @@ export interface CalEvent {
   /** the connected calendar it came from: its colour (a thin left edge) and name */
   color?: string;
   calendarName?: string;
+  /** time you've planned in another of your workspaces (busy here): which one, and the task */
+  elsewhere?: { workspaceId: string | null; name: string; taskId: string };
 }
 
 /* external calendar integration (Google / Microsoft): several accounts per
@@ -1297,14 +1299,18 @@ export interface OnboardingChecklistState {
 export interface OnboardingSample { projectId: string; taskIds: string[]; docId?: string | null; createdAt: string }
 /** Gentle nudges (U10): the streak chip and the wins recap can be hidden; days off don't break a streak. */
 export interface MomentumPrefs { streakHidden?: boolean; recapHidden?: boolean; daysOff?: string[] }
+/** All businesses on Today, Inbox and My tasks (off unless you switch it on): your choice, on every device. */
+export interface BusinessesPrefs { all?: boolean }
 /** profiles.onboarding. ONE top-level key per feature, merged one level deep by
- *  merge_onboarding(patch) (null removes a key): tour / checklist (U1), sample (U1), momentum (U10). */
+ *  merge_onboarding(patch) (null removes a key): tour / checklist (U1), sample (U1), momentum (U10),
+ *  businesses (All businesses). */
 export interface OnboardingState {
   v?: 1;
   tour?: OnboardingTourState;
   checklist?: OnboardingChecklistState;
   sample?: OnboardingSample;
   momentum?: MomentumPrefs;
+  businesses?: BusinessesPrefs;
 }
 export type OnboardingPatch = { [K in keyof OnboardingState]?: OnboardingState[K] | null };
 

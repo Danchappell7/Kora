@@ -148,6 +148,18 @@ describe("CommandPalette", () => {
     expect(onNavigate).toHaveBeenLastCalledWith("workload");
   });
 
+  it("offers Group only to someone who runs two or more businesses", () => {
+    const onGo = vi.fn();
+    const { unmount } = open({ onGo });
+    type("holding company");
+    expect(screen.queryByRole("option", { name: /Group/ })).not.toBeInTheDocument();
+    unmount();
+    open({ onGo, canSeeGroup: true });
+    type("holding company");
+    fireEvent.click(within(screen.getByRole("group", { name: "Go to" })).getByRole("option", { name: /Group/ }));
+    expect(onGo).toHaveBeenLastCalledWith({ view: "group" });
+  });
+
   it("hides New project from people who can't create projects (guests)", () => {
     const { unmount } = open();
     type("new project");
