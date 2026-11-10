@@ -170,8 +170,9 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
     props.onCreate(name, { parentId: g.id, kind: "key_result", ...(team ? { ownerId: me } : {}), period: g.period ?? null, periodStart: g.periodStart ?? null, periodEnd: g.periodEnd ?? null });
     setAddingUnder(false);
   };
-  // a team goal's key results would become company goals: only owners and admins set those (0052)
-  const deleteBlocked = !canDeleteGoal(g, childCount, who);
+  // a team goal's key results would become company goals: only owners and admins set those (0052).
+  // Before 0052 there are no owners to go by: anyone who writes deletes, as the database allows.
+  const deleteBlocked = v2 && !canDeleteGoal(g, childCount, who);
   const remove = () => {
     setMenuOpen(false);
     if (deleteBlocked) return;

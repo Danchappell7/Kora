@@ -317,4 +317,17 @@ describe("before 0052 is run", () => {
     expect(screen.queryByRole("menuitem", { name: "Archive goal" })).toBeNull();   // archive and identity come with 0052
     expect(screen.getByRole("menuitem", { name: /Delete goal/ })).toBeInTheDocument();
   });
+
+  it("a member deletes a team goal, as on main (no owners to go by yet), with no note about key results", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { props } = renderPanel({ id: "g", name: "Grow", status: "on_track", workspaceId: "ws", createdAt: "2026-10-01T09:00:00Z" },
+      { extras: null, me: "m-1", role: "member" });
+    fireEvent.click(screen.getByRole("button", { name: "Goal actions" }));
+    const del = screen.getByRole("menuitem", { name: /Delete goal/ });
+    expect(del).toBeEnabled();
+    expect(screen.queryByText(/would become the business's goals/)).toBeNull();
+    fireEvent.click(del);
+    expect(props.onDelete).toHaveBeenCalledWith("g");
+    confirm.mockRestore();
+  });
 });
