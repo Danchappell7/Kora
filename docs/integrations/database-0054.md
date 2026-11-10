@@ -9,7 +9,7 @@ update, section, reply, reaction, "seen by" and portfolio detail.
 
 | Part | Table / function | Who can see and do what |
 |---|---|---|
-| Authors only | `status_updates` (three restrictive policies) | Only an update's author edits it. Its author, or the workspace's owners and admins, delete it. Until now any member could change or delete anyone's. A team update must be about a project in its own workspace. Who, where and when it was posted can't be changed. Personal updates are unchanged (their creator's). |
+| Authors only | `status_updates` (three restrictive policies) | Only an update's author edits it. Its author, or the workspace's owners and admins, delete it. Until now any member could change or delete anyone's. A team update must be about a project in its own workspace. Who, where and when it was posted can't be changed, and when is the moment it's posted (an app can't date one ahead or back). Its status is one of On track, At risk, Off track or On hold. Personal updates are unchanged (their creator's). |
 | Edited mark | `status_updates.edited_at` | Set when the author changes what it says. The app shows "edited". |
 | Sections | `status_updates.sections` | Optional Highlights / Risks / Asks / Next (each ≤ 2000 characters, nothing else). Kanbo's drafts fill them; portfolio roll-ups read them. |
 | Asks | `status_updates.ask_user_ids` | The people an Ask is for (≤ 20). Only people who can read the update are kept, never its author. |
@@ -18,8 +18,8 @@ update, section, reply, reaction, "seen by" and portfolio detail.
 | Seen by | `status_update_views`, `mark_status_updates_seen(ids)` | Recorded by the function for the updates you read (never your own). Read by whoever reads the update. |
 | Inbox | `activity` kind `update` | Posting tells the project's owner and contributors (FYI, pref `update`) and the people an Ask names ("Needs your reply", pref `mention`). A reply tells the update's author and anyone it @mentions. A deleted update takes its Inbox items with it. |
 | Webhooks | `status_update.posted` | Team and personal endpoints. The update, its sections and Asks, who posted it and its project. |
-| Portfolio details | `portfolios.owner_id`, `description`, `target_date`, `follower_ids`, `color`, `emoji` | A team portfolio's owner and followers are its owners, admins and members (guests can't read portfolios, 0051). Its writers change them. |
-| Portfolio updates | `portfolio_updates` | Read like the portfolio (members and above; a Personal one by you). Its writers post; the author edits; the author or the workspace's owners and admins delete. The owner and followers hear (FYI). |
+| Portfolio details | `portfolios.owner_id`, `description`, `target_date`, `follower_ids`, `color`, `emoji` | A new portfolio's owner is the person who made it. A team portfolio's owner and followers are its owners, admins and members (guests can't read portfolios, 0051). Its writers change them. |
+| Portfolio updates | `portfolio_updates` | Read like the portfolio (members and above; a Personal one by you). Its writers post; the author edits; the author or the workspace's owners and admins delete. The owner and followers hear (FYI); a deleted one takes its Inbox items with it. |
 
 ## Owner steps
 
@@ -62,10 +62,11 @@ No new secrets and no new schedule.
   Highlights / Risks / Asks / Next block. Kanbo's draft fills Highlights,
   Risks and Next (its AI when it's on, else written on the device). Asks are
   yours: write what you need and pick who it's for.
-- **Who hears.** The owner and contributors see it in their Inbox as FYI and
-  get an email (their daily digest takes it instead if they have one; quiet
-  hours hold it). The people an Ask names see it under "Needs your reply" and
-  get a push too. The Inbox has an "Updates" filter.
+- **Who hears.** The owner and contributors see it in their Inbox as FYI (and
+  in their daily digest if they have one), with no email or push of its own.
+  The people an Ask names see it under "Needs your reply" and get a push and an
+  email (quiet hours hold them). Taking someone off an Ask and back on doesn't
+  tell them again. The Inbox has an "Updates" filter.
 - **The conversation.** Under each update: reactions, "Seen by 6" (names on
   hover), and Reply. Replies notify the update's author; an @mention in a reply
   notifies that person too.

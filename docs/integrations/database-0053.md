@@ -11,7 +11,7 @@ to run more than once: re-running keeps every update day, plan and ask.
 | The team's update day | `workspaces.update_rhythm`, `set_update_rhythm(ws, rhythm)` | Everyone in the workspace reads it. Its owners and admins set it (Settings › Workspace › Project updates). Unset means weekly on Friday. Weekly, every other week, once a month (the last chosen day of the month) or no update day. |
 | A project's own day | `projects.update_rhythm` | Read with the project. Its writers set it (About › Update day); "Never" included. Unset follows the workspace. |
 | Plan to recover | `status_updates.recovery_plan` (≤ 2000 characters), `status_updates.target_date` | Read with the update (guests too, as updates are). An At risk or Off track update's plan and new date. "On hold" is an update status of its own (no change needed). |
-| Ask for an update | `update_asks`, `ask_for_update(project)` | The workspace's owners and admins ask, about a live project someone else in the workspace owns: once per project in 20 hours, 30 a day per asker. Only the asker and the owner read an ask. Nobody writes the table but the function. Kept 30 days. |
+| Ask for an update | `update_asks`, `ask_for_update(project)` | The workspace's owners and admins ask, about a live project someone else in the workspace owns (not a guest there: a guest can't post an update): once per project in 20 hours, 30 a day per asker. Only the asker and the owner read an ask. Nobody writes the table but the function. Kept 30 days. |
 | Notify queue | `notify_queue` kind `update` | Service only. The update-day reminders and the asks' push and email (prefs `update_email` / `update_push`, default on). |
 
 ## Owner steps
@@ -48,7 +48,8 @@ If 0048 is ever run again, nothing breaks (it lists the `update` kind too).
   next two working days, while nothing's been posted since the round before.
   Quiet hours hold it; people on the daily digest get it inside their digest.
   Archived and on-hold projects, Never, and projects with no tasks are
-  skipped; a project that started in the last three days isn't chased yet.
+  skipped; a project that started in the last three days isn't chased yet,
+  and nor is an owner who is only a guest in its workspace.
 - **Update missing.** After those two working days the project shows "Update
   missing" in portfolios, the project directory and the Group page (and the
   round after, while the one before still hasn't come in). This replaces the

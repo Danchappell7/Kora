@@ -24,7 +24,8 @@
 --      check: nothing to change).
 --   4. update_asks + ask_for_update(project): "Ask for an update". Only
 --      the workspace's owners and admins, about a live project someone
---      else owns who's still in the workspace; one ask per project in 20
+--      else owns who's still in the workspace and isn't a guest there (a
+--      guest can't post an update); one ask per project in 20
 --      hours and 30 a day per asker. Read by the asker and the owner only;
 --      nobody writes the table but the function. Kept 30 days. The app
 --      then asks notify ({kind: "update_ask"}) to tell the owner.
@@ -124,8 +125,10 @@ grant select on public.update_asks to authenticated;
 grant select, insert, update, delete on public.update_asks to service_role;
 
 -- Ask a project's owner for its update. The caller leads the project's workspace (owner or
--- admin); the project is live, owned by someone else who's still in the workspace; it hasn't
--- been asked about in the last 20 hours; the caller has asked fewer than 30 times today.
+-- admin); the project is live, owned by someone else who's still in the workspace and can post
+-- its updates (not a guest); it hasn't been asked about in the last 20 hours; the caller has
+-- asked fewer than 30 times today. A project the caller doesn't lead, or that isn't there,
+-- gets the same answer (nothing given away about which exist).
 create or replace function public.ask_for_update(p_project uuid)
 returns public.update_asks language plpgsql security definer set search_path = public as $$
 declare
@@ -135,8 +138,9 @@ declare
 begin
   if me is null or not public.can_act() then raise exception 'not authorized'; end if;
   select id, workspace_id, owner_id, archived_at into p from public.projects where id = p_project;
-  if not found or p.workspace_id is null then raise exception 'project not found'; end if;
-  if public.ws_role(p.workspace_id) not in ('owner', 'admin') then raise exception 'not authorized'; end if;
+  if not found or p.workspace_id is null or coalesce(public.ws_role(p.workspace_id), 'none') not in ('owner', 'admin') then
+    raise exception 'not authorized';
+  end if;
   if p.archived_at is not null then raise exception 'not allowed: the project is archived'; end if;
   if p.owner_id is null then raise exception 'not allowed: no owner'; end if;
   if p.owner_id = me then raise exception 'not allowed: your own project'; end if;
@@ -144,6 +148,12 @@ begin
                   where m.workspace_id = p.workspace_id and m.user_id = p.owner_id and m.status = 'active')
      and not exists (select 1 from public.workspaces w where w.id = p.workspace_id and w.owner_id = p.owner_id) then
     raise exception 'not allowed: the owner has left';
+  end if;
+  -- a guest can't post an update, so there's nothing to ask them for
+  if not exists (select 1 from public.workspaces w where w.id = p.workspace_id and w.owner_id = p.owner_id)
+     and not exists (select 1 from public.workspace_members m where m.workspace_id = p.workspace_id and m.user_id = p.owner_id
+                      and m.status = 'active' and m.role in ('owner', 'admin', 'member')) then
+    raise exception 'not allowed: the owner is a guest';
   end if;
   -- two leads asking at once make one ask
   perform pg_advisory_xact_lock(hashtext('kanbo.update_ask:' || p_project::text));

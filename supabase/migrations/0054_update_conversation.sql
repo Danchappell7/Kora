@@ -39,6 +39,7 @@
 --   7. Webhooks: 'status_update.posted' (team and personal endpoints).
 --   8. Portfolio pages (c-portfolio-workspace, phase one): portfolios gain
 --      owner_id, description, target_date, follower_ids, color, emoji.
+--      A new portfolio's owner is its creator until they hand it on.
 --      A team portfolio's owner and followers are kept to the workspace's
 --      owners, admins and members (guests can't read portfolios, 0051).
 --      portfolio_updates: a portfolio-level update. Read like the
@@ -104,10 +105,13 @@ revoke execute on function public.can_see_status_update(uuid) from public, anon;
 grant execute on function public.can_see_status_update(uuid) to authenticated;
 
 -- Is a team update about a project in its own workspace? (personal ones are their creator's alone)
+-- Only the workspace's own people get an answer: to anyone else it says no, so it never tells
+-- an outsider which projects a workspace has.
 create or replace function public.status_update_project_ok(p_project text, p_ws uuid)
 returns boolean language plpgsql security definer stable set search_path = public as $$
 begin
   if p_ws is null then return true; end if;
+  if not public.is_member(p_ws) then return false; end if;
   if p_project is null or p_project !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then return false; end if;
   return exists (select 1 from public.projects p where p.id = p_project::uuid and p.workspace_id = p_ws);
 end; $$;
@@ -123,15 +127,27 @@ alter table public.status_updates add constraint status_updates_sections_shape
   check (public.update_sections_ok(sections) and cardinality(ask_user_ids) <= 20);
 
 -- Where and when it was posted never change afterwards (from the app or the API; its author
--- is 0051's to keep); an edit of what it says is marked; the people an Ask names are only ever
--- people who can read it (never its author). Server-side writers keep theirs. (user_id, the
--- row's keeper, isn't locked: account deletion hands it to the workspace's owner, sometimes from
--- a signed-in admin's call, and the permissive policies already keep a personal row its owner's.)
+-- is 0051's to keep), and when is the moment it's posted: a client can't date it ahead (an "On
+-- track" that stays the latest forever, silencing "Update missing" and the reminders) or back.
+-- Its call is one of the four. An edit of what it says is marked; the people an Ask names are
+-- only ever people who can read it (never its author). Server-side writers keep theirs. (user_id,
+-- the row's keeper, isn't locked: account deletion hands it to the workspace's owner, sometimes
+-- from a signed-in admin's call, and the permissive policies already keep a personal row its owner's.)
 create or replace function public.status_update_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
-declare client boolean := coalesce(auth.role(), '') in ('authenticated', 'anon');
+declare
+  client boolean := coalesce(auth.role(), '') in ('authenticated', 'anon');
+  -- (what the writer changed, before the Ask list is re-checked: someone named who has since left
+  --  drops out of it, and that alone isn't an edit)
+  asks_changed boolean := tg_op = 'UPDATE' and new.ask_user_ids is distinct from old.ask_user_ids;
 begin
-  if tg_op = 'UPDATE' and client then
+  if client and (tg_op = 'INSERT' or new.status is distinct from old.status)
+     and new.status not in ('on_track', 'at_risk', 'off_track', 'on_hold') then
+    raise exception 'invalid update status';
+  end if;
+  if tg_op = 'INSERT' and client then
+    new.created_at := now();
+  elsif tg_op = 'UPDATE' and client then
     new.project_id := old.project_id; new.workspace_id := old.workspace_id;
     new.created_at := old.created_at;
   end if;
@@ -146,8 +162,8 @@ begin
     if client then new.edited_at := null; end if;
   elsif client then
     new.edited_at := case
-      when (new.summary, new.status, new.sections, new.recovery_plan, new.target_date, new.ask_user_ids)
-           is distinct from (old.summary, old.status, old.sections, old.recovery_plan, old.target_date, old.ask_user_ids)
+      when asks_changed or (new.summary, new.status, new.sections, new.recovery_plan, new.target_date)
+           is distinct from (old.summary, old.status, old.sections, old.recovery_plan, old.target_date)
       then now() else old.edited_at end;
   end if;
   return new;
@@ -339,6 +355,11 @@ create policy "views: read with the update" on public.status_update_views for se
   using (public.can_see_status_update(update_id));
 
 -- ---------- 6. who hears about it ----------
+-- (a deleted update or portfolio update takes its Inbox items with it: found by these, not by
+--  reading the whole activity table once per deleted row)
+create index if not exists activity_status_update_ref_idx on public.activity ((meta ->> 'status_update_id')) where kind = 'update';
+create index if not exists activity_portfolio_update_ref_idx on public.activity ((meta ->> 'portfolio_update_id')) where kind = 'update';
+
 -- One Inbox item (activity kind 'update'). Internal: the triggers below call it.
 create or replace function public.update_notice(p_user uuid, p_title text, p_actor text, p_meta jsonb)
 returns void language sql security definer set search_path = public as $$
@@ -380,6 +401,9 @@ begin
     elsif new.ask_user_ids is distinct from old.ask_user_ids then
       fresh := array(select x from unnest(asked) x where not (x = any (coalesce(old.ask_user_ids, '{}'))));
       foreach r in array fresh loop
+        -- (once per person per update: taking someone off the Ask and back on doesn't tell them again)
+        if exists (select 1 from public.activity a where a.kind = 'update' and a.meta ->> 'status_update_id' = new.id::text
+                    and a.user_id = r and coalesce((a.meta ->> 'ask')::boolean, false)) then continue; end if;
         if r is distinct from new.author_id and public.is_task_audience(new.workspace_id, null, r) and public.notif_on(r, 'mention') then
           perform public.update_notice(r, pname, who, jsonb_build_object(
             'status_update_id', new.id, 'project_id', pid, 'update_event', 'asked', 'update_status', new.status, 'ask', true));
@@ -463,6 +487,11 @@ alter table public.portfolios add constraint portfolios_details_shape check (
 create or replace function public.portfolio_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
+  -- a new portfolio is its creator's to run until they hand it on
+  if tg_op = 'INSERT' and new.owner_id is null and new.user_id is not null
+     and (new.workspace_id is null or coalesce(public.user_ws_role(new.user_id, new.workspace_id), 'none') in ('owner', 'admin', 'member')) then
+    new.owner_id := new.user_id;
+  end if;
   if new.workspace_id is null then
     if new.owner_id is not null and new.owner_id <> new.user_id then new.owner_id := new.user_id; end if;
     new.follower_ids := case when new.user_id = any (coalesce(new.follower_ids, '{}')) then array[new.user_id] else '{}' end;
@@ -550,11 +579,15 @@ drop trigger if exists trg_portfolio_update_guard on public.portfolio_updates;
 create trigger trg_portfolio_update_guard before insert or update on public.portfolio_updates
   for each row execute function public.portfolio_update_guard();
 
--- the owner and followers hear about a new one (FYI)
+-- the owner and followers hear about a new one (FYI); a deleted one takes its Inbox items with it
 create or replace function public.portfolio_update_after() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare p record; r uuid; who text;
 begin
+  if tg_op = 'DELETE' then
+    delete from public.activity a where a.kind = 'update' and a.meta ->> 'portfolio_update_id' = old.id::text;
+    return null;
+  end if;
   select x.id, x.name, x.owner_id, x.follower_ids, x.workspace_id into p from public.portfolios x where x.id = new.portfolio_id;
   if p.id is null or p.workspace_id is null then return null; end if;
   who := public.kanbo_person_name(new.author_id);
@@ -568,7 +601,7 @@ begin
 end; $$;
 revoke execute on function public.portfolio_update_after() from public, anon, authenticated;
 drop trigger if exists trg_portfolio_update_after on public.portfolio_updates;
-create trigger trg_portfolio_update_after after insert on public.portfolio_updates
+create trigger trg_portfolio_update_after after insert or delete on public.portfolio_updates
   for each row execute function public.portfolio_update_after();
 
 do $prls$
