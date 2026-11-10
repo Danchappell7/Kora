@@ -223,3 +223,18 @@ describe("⌘K: goals (0052)", () => {
     expect(screen.queryByRole("group", { name: "Goals" })).toBeNull();
   });
 });
+
+describe("⌘K and project access (0058)", () => {
+  it("a Members only or Private project's row wears its lock", () => {
+    // (Foundrise has project access on in the demo's workspaces)
+    const locked: Project[] = [{ id: "p-pay", name: "Payroll & contracts", emoji: "🧾", color: "red", workspaceId: "ws-foundrise", visibility: "private" },
+      { id: "p-open", name: "Payroll tools", emoji: "🧰", color: "red", workspaceId: "ws-foundrise", visibility: "workspace" }];
+    setReferenceData({ members: MEMBERS, projects: locked });
+    open({ projects: locked, onOpenProject: () => {} });
+    type("Payroll");
+    const group = screen.getByRole("group", { name: "Projects" });
+    expect(within(group).getByRole("option", { name: /Payroll & contracts\s*, private/ })).toBeInTheDocument();
+    expect(within(group).getByRole("option", { name: /Payroll tools/ }).textContent).not.toMatch(/private/);
+  });
+});
+

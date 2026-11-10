@@ -185,7 +185,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
       <div className="kpj-wrap">
         {portfolios.length === 0 && readOnly ? (
           <EmptyState art="briefcase" title="Portfolios are for members"
-            body="Members of this workspace group its projects here to see how they're going together. As a guest you can still open every project." />
+            body={`Members of this workspace group its projects here to see how they're going together. As a guest you can still open ${projects.some((p) => accessOn(workspaces.find((w) => w.id === p.workspaceId))) ? "the projects you're added to" : "every project"}.`} />
         ) : portfolios.length === 0 && !adding ? (
           <EmptyState art="briefcase" title="No portfolios yet" body={explainer}
             action={<Button variant="primary" icon="plus" onClick={() => setAdding(true)}>New portfolio</Button>} />

@@ -51,6 +51,8 @@ export const AUDIT_ACTION_INFO: Readonly<Record<AuditAction, { label: string; gr
   "project.member":           { label: "Project people",            group: "Tasks and projects" },
 };
 export const AUDIT_ACTIONS = Object.keys(AUDIT_ACTION_INFO) as AuditAction[];
+/** 0058's own actions: nothing can have done them before 0058 is in (the Action filter leaves them out till then) */
+export const isAccessAction = (a: string): boolean => a.startsWith("project_access.") || a === "project.visibility" || a === "project.member";
 /** The page size the UI asks for, and the most one query may return. */
 export const AUDIT_PAGE = 100;
 export const AUDIT_PAGE_MAX = 500;

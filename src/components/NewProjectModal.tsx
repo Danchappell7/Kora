@@ -96,7 +96,11 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   const submit = () => {
     if (!trimmed) return;
     onCreate({ name: trimmed, emoji, color, workspaceId, templateId: templateId || undefined,
-      ...(asks ? { visibility, ...(visibility !== "workspace" && memberIds.length ? { memberIds } : {}) } : {}) });
+      // (Whole workspace takes only the guests chosen: the chips it shows)
+      ...(asks ? { visibility, ...(() => {
+        const ids = visibility === "workspace" ? memberIds.filter((u) => roleOf(access!.ctx, workspaceId, u) === "guest") : memberIds;
+        return ids.length ? { memberIds: ids } : {};
+      })() } : {}) });
     onClose();
   };
   const builtins = templates.filter((t) => t.id.startsWith("builtin-"));
@@ -217,13 +221,16 @@ const WHO_LINES: Record<ProjectVisibility, (ws: string) => string> = {
   private: (ws) => `The people you add, plus ${ws}'s owner.`,
 };
 
-/** "Who can see this?" (0058): the three choices, and who's on it for Members only and Private. */
+/** "Who can see this?" (0058): the three choices, and who's on it: for Members only and Private its
+ *  people, for Whole workspace the guests (everyone else here sees it anyway). */
 function WhoCanSee({ value, onChange, privateOk, workspaceName, people, chosen, onChosen }: {
   value: ProjectVisibility; onChange: (v: ProjectVisibility) => void; privateOk: boolean; workspaceName: string;
   people: { id: string; name: string; guest: boolean }[]; chosen: string[]; onChosen: (ids: string[]) => void;
 }) {
   const options: ProjectVisibility[] = privateOk ? ["workspace", "members", "private"] : ["workspace", "members"];
   const toggle = (id: string) => onChosen(chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id]);
+  const whole = value === "workspace";
+  const shown = whole ? people.filter((p) => p.guest) : people;
   return (
     <fieldset className="knpv">
       <legend className="knpv-legend">Who can see this?</legend>
@@ -237,10 +244,10 @@ function WhoCanSee({ value, onChange, privateOk, workspaceName, people, chosen, 
         ))}
       </div>
       {!privateOk && <p className="knpv-note">An owner can let members make projects private.</p>}
-      {value !== "workspace" && people.length > 0 && (
-        <div className="knpv-people" role="group" aria-label="People on it">
-          <span className="knpv-people-label">Add people</span>
-          {people.map((p) => (
+      {shown.length > 0 && (
+        <div className="knpv-people" role="group" aria-label={whole ? "Guests on it" : "People on it"}>
+          <span className="knpv-people-label">{whole ? "Add guests" : "Add people"}</span>
+          {shown.map((p) => (
             <button key={p.id} type="button" className="knpv-chip" aria-pressed={chosen.includes(p.id)} onClick={() => toggle(p.id)}>
               {p.name}{p.guest ? " (guest)" : ""}
             </button>

@@ -173,4 +173,12 @@ describe("App · Daniel the guest (Northlight Studio)", () => {
     await boot();
     expect(await screen.findByText(/you see the projects you're added to, and you can comment/)).toBeInTheDocument();
   });
+  it("Goals and Portfolios don't promise a guest every project", async () => {
+    inWs("ws-northlight", "/projects/goals");
+    await boot();
+    expect(await screen.findByText(/As a guest you can still open the projects you're added to and comment on their tasks\./)).toBeInTheDocument();
+    window.history.pushState(null, "", "/projects/portfolios");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    expect(await screen.findByText(/As a guest you can still open the projects you're added to\./)).toBeInTheDocument();
+  });
 });

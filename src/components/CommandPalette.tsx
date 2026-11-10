@@ -26,7 +26,7 @@
    lead and the Ask row is always the pick.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
-import { AiMark, Avatar, Icon, IconButton, Kbd, ProjectTile, StatusGlyph } from "./primitives";
+import { AiMark, Avatar, Icon, IconButton, Kbd, ProjectLock, ProjectTile, StatusGlyph } from "./primitives";
 import { AskKanbo, type AskKanboHandle, type AskSummary, type AskView, type AskVia } from "./AskKanbo";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { getProject, getMember, MEMBERS, PROJECTS, STATUS_META, todayISO } from "../data/data";
@@ -118,7 +118,7 @@ const sameRoute = (a: Route, b: Route) => a.view === b.view && (a.tab ?? "") ===
 type Item =
   | { kind: "ask"; text: string; example?: boolean }
   | { kind: "task"; id: string; label: string; status: Status; where?: string; due?: string; overdue?: boolean }
-  | { kind: "project"; id: string; label: string; color: string; emoji?: string; where?: string }
+  | { kind: "project"; id: string; label: string; color: string; emoji?: string; where?: string; workspaceId?: string | null; visibility?: Project["visibility"] }
   /* 0052: a goal, by its name (on the device) or its description (search_all) */
   | { kind: "goal"; id: string; label: string; color: string; emoji?: string; where?: string }
   | { kind: "search"; label: string }
@@ -478,14 +478,14 @@ export function CommandPalette({
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score || a.p.name.localeCompare(b.p.name))
       .slice(0, 5)
-      .map(({ p }) => ({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId) }));
+      .map(({ p }) => ({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId), workspaceId: p.workspaceId ?? null, visibility: p.visibility }));
     // projects whose description has the words (the device's or the server's), after the ones named so
     if (onOpenProject && projects) {
       for (const h of hits) {
         if (h.kind !== "project" || projectItems.length >= 5 || projectItems.some((it) => it.kind === "project" && it.id === h.id)) continue;
         const p = projects.find((x) => x.id === h.id);
         if (!p || p.archivedAt) continue;
-        projectItems.push({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId) });
+        projectItems.push({ kind: "project", id: p.id, label: p.name, color: p.color, emoji: p.emoji, where: wsName(p.workspaceId), workspaceId: p.workspaceId ?? null, visibility: p.visibility });
       }
     }
 
@@ -716,7 +716,7 @@ export function CommandPalette({
         });
       case "project":
         return row(it, <>
-          <span className="kcmd-label">{it.label}{it.where && <span className="sr-only">, project in {it.where}</span>}{!it.where && <span className="sr-only">, project</span>}</span>
+          <span className="kcmd-label">{it.label}<ProjectLock project={{ workspaceId: it.workspaceId ?? null, visibility: it.visibility }} />{it.where && <span className="sr-only">, project in {it.where}</span>}{!it.where && <span className="sr-only">, project</span>}</span>
           {it.where && <span className="kcmd-meta" aria-hidden="true">{it.where}</span>}
         </>, { icon: <ProjectTile project={{ id: it.id, color: it.color, name: it.label, emoji: it.emoji }} size={16} /> });
       case "goal":

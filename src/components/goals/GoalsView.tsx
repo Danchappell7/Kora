@@ -16,6 +16,7 @@
 import { useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Avatar, Button, DateChip, EmptyState, Icon, Meter, Pill, ProjectTile, Segmented } from "../primitives";
 import { KANBO_TODAY, toLocalISO, WORKSPACES } from "../../data/data";
+import { accessOn } from "../../lib/projectAccess";
 import type { Goal, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Project, Role, StatusUpdate, Task, WorkspaceMember } from "../../data/types";
 import { goalTree, useStableOrder, type GoalProgress } from "../views/reportingUtils";
 import { periodRange, quarterOf } from "../../lib/goalPeriods";
@@ -117,7 +118,7 @@ export function GoalsView(props: GoalsViewProps) {
   };
   const openId = props.onOpenGoal ? props.openGoalId ?? null : ownOpen?.id ?? null;
 
-  if (readOnly) return <GoalsReadOnly ordered={goalTree(stable)} reads={reads} projects={realProjects} todayIso={toLocalISO(today)} />;
+  if (readOnly) return <GoalsReadOnly ordered={goalTree(stable)} reads={reads} projects={realProjects} todayIso={toLocalISO(today)} gated={accessOn(WORKSPACES.find((w) => w.id === wsId))} />;
 
   // a new goal goes in the quarter on show (with every goal showing, the one you're in)
   const newQuarter = quarter === "all" ? quarterOf(today) : quarter;
@@ -298,8 +299,10 @@ function GoalRow({ r, all, links, checkins, projects, tasks, statusUpdates, memb
 /** Goals for a guest: the same goals to read, with no fields, pickers or buttons (a guest's
  *  changes would only be refused). Once 0051 is run, guests can't read goals at all, and the
  *  page says who they're for instead. */
-function GoalsReadOnly({ ordered, reads, projects, todayIso }: {
+function GoalsReadOnly({ ordered, reads, projects, todayIso, gated = false }: {
   ordered: { g: Goal; depth: number }[]; reads: Map<string, GoalRead>; projects: Project[]; todayIso: string;
+  /** 0058: project access is on here (a guest sees only the projects they're added to) */
+  gated?: boolean;
 }) {
   return (
     <div className="kpj-page">
@@ -307,7 +310,7 @@ function GoalsReadOnly({ ordered, reads, projects, todayIso }: {
         <div className="kpj-narrow">
           {ordered.length === 0 ? (
             <EmptyState art="target" title="Goals are for members"
-              body="Members of this workspace set its goals and track them here. As a guest you can still open every project and comment on its tasks." />
+              body={`Members of this workspace set its goals and track them here. As a guest you can still open ${gated ? "the projects you're added to and comment on their tasks" : "every project and comment on its tasks"}.`} />
           ) : (
             <>
               <div className="kpj-toolbar">

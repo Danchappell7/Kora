@@ -12,7 +12,7 @@ import { useState, useEffect, useRef, useMemo, useId, forwardRef, useImperativeH
 import type { ReactNode, RefObject, MutableRefObject, Dispatch, SetStateAction, KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   Icon, Avatar, AvatarStack, Check, EmojiPicker, Button, IconButton, Kbd, StatusGlyph, PriorityGlyph,
-  DateChip, AiMark, Meter, Pill, ProjectChip, ProjectTile, projectIdentity, projectPaint,
+  DateChip, AiMark, Meter, Pill, ProjectChip, ProjectLock, ProjectTile, projectIdentity, projectPaint,
 } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { useFocusTrap, isEditableTarget } from "../hooks/useFocusTrap";
@@ -1756,6 +1756,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
         <nav className="ktd-crumb" aria-label="Where this task lives">
           {proj && <ProjectChip project={proj} size="md" title={onOpenProject ? `Open ${proj.name}` : undefined}
             onClick={onOpenProject ? () => { onClose(); onOpenProject(proj.id); } : undefined} />}
+          {proj && <ProjectLock project={proj} />}
           {proj && section && <><span className="kpchip-sep" aria-hidden="true"><Icon name="chevronRight" size={12} /></span><span className="ktd-crumb-text">{section.name}</span></>}
         </nav>
         {readOnly && (canComment

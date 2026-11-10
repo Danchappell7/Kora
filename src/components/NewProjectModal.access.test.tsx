@@ -45,4 +45,14 @@ describe("NewProjectModal · Who can see this?", () => {
     expect(within(group).getByRole("radio", { name: /Members only/ })).toBeChecked();
     expect(screen.getByText("An owner can let members make projects private.")).toBeInTheDocument();
   });
+
+  it("Whole workspace offers just the guests (everyone else here sees it anyway), sent with the create", () => {
+    const onCreate = open(ctx("o", true));
+    const guests = screen.getByRole("group", { name: "Guests on it" });
+    expect(within(guests).getAllByRole("button").map((b) => b.textContent)).toEqual(["Ana Ruiz (guest)"]);
+    fireEvent.click(within(guests).getByRole("button", { name: "Ana Ruiz (guest)" }));
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ visibility: "workspace", memberIds: ["g"] });
+  });
 });
+

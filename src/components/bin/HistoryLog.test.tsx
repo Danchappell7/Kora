@@ -11,6 +11,7 @@ import { HistoryLog, actionMark, actionsFor, addDays, rangeDays } from "./Histor
 import { MEMBERS } from "../../data/data";
 import { AUDIT_ACTOR_KANBO, resetAuditDemo } from "../../lib/audit";
 import * as audit from "../../lib/audit";
+import { noteAccessSchema, resetAccessSchema } from "../../lib/projectAccess";
 
 const section = () => screen.getByRole("region", { name: "History" });
 const entries = () => within(section()).queryAllByRole("listitem");
@@ -82,6 +83,19 @@ describe("HistoryLog", () => {
     fireEvent.change(screen.getByLabelText("When"), { target: { value: "custom" } });
     expect(screen.getByLabelText("From")).toBeInTheDocument();
     expect(screen.getByLabelText("To")).toBeInTheDocument();
+  });
+
+  it("the Action filter lists project access's actions only once 0058 is in", async () => {
+    noteAccessSchema(false);   // (a live database before 0058)
+    const { unmount } = renderLog();
+    const actions = () => [...within(section()).getByLabelText("Action").querySelectorAll("option")].map((o) => o.textContent);
+    expect(actions()).not.toContain("Project access on");
+    expect(actions()).not.toContain("Who can see a project");
+    unmount();
+    resetAccessSchema();   // (the demo: it's in)
+    renderLog();
+    expect(actions()).toContain("Project access on");
+    expect(actions()).toContain("Project people");
   });
 
   it("someone who isn't an owner or admin sees only their own actions, and is told so", async () => {

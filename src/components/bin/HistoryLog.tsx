@@ -16,10 +16,11 @@ import type { AuditAction, AuditEvent, AuditPage, IconName, Member } from "../..
 import { Avatar, Button, EmptyState, Icon, KanboGlyph } from "../primitives";
 import { getMember, memberInitials } from "../../data/data";
 import {
-  AUDIT_ACTIONS, AUDIT_ACTION_INFO, AUDIT_ACTOR_KANBO, AUDIT_PAGE, AUDIT_RETENTION_DAYS, auditEventDetails, auditEventsToCsv, auditFailure,
+  AUDIT_ACTIONS, AUDIT_ACTION_INFO, AUDIT_ACTOR_KANBO, AUDIT_PAGE, AUDIT_RETENTION_DAYS, auditEventDetails, auditEventsToCsv, auditFailure, isAccessAction,
   auditParts, exportAuditEvents, listAuditEvents, londonDay, type AuditGroup,
 } from "../../lib/audit";
 import { downloadCsv } from "../../lib/exportTasks";
+import { accessSchema } from "../../lib/projectAccess";
 import "./bin.css";
 
 export interface HistoryLogProps {
@@ -339,7 +340,7 @@ export function HistoryLog({ workspaceId, workspaceName, members, currentUserId,
           {GROUPS.map((g) => (
             <optgroup key={g} label={g}>
               <option value={GROUP_PREFIX + g}>All {g.toLowerCase()}</option>
-              {AUDIT_ACTIONS.filter((a) => AUDIT_ACTION_INFO[a].group === g).map((a) => <option key={a} value={a}>{AUDIT_ACTION_INFO[a].label}</option>)}
+              {AUDIT_ACTIONS.filter((a) => AUDIT_ACTION_INFO[a].group === g && (accessSchema() || !isAccessAction(a))).map((a) => <option key={a} value={a}>{AUDIT_ACTION_INFO[a].label}</option>)}
             </optgroup>
           ))}
         </select>
