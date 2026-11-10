@@ -7,8 +7,8 @@
    ways to ask). Used by views/SearchView; ⌘K draws its own rows.
    ============================================================ */
 import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
-import { Avatar, Icon, IconButton, Pill, ProjectTile } from "../primitives";
-import { getMember, timeAgo } from "../../data/data";
+import { Avatar, Icon, IconButton, Pill, ProjectLock, ProjectTile, projectLocked } from "../primitives";
+import { getMember, getProject, timeAgo } from "../../data/data";
 import { periodLabel } from "../../lib/goalPeriods";
 import { splitHighlights } from "../../lib/searchRows";
 import { CHIP_ICON, chipSpoken } from "../../lib/search/chips";
@@ -199,10 +199,13 @@ export function HitRow({ hit, rowId, cursor, onOpen, projectOf, workspaceName }:
   } else if (hit.kind === "project") {
     const p = project ?? { id: hit.id, name: hit.title, color: hit.project?.color ?? "", emoji: hit.project?.emoji ?? undefined };
     av = <span className="ksr-av" style={{ background: "none" }} aria-hidden="true"><ProjectTile project={p} size={28} /></span>;
-    say = <HighlightTitle className="ksr-t" text={hit.title} />;
+    // (0058: Members only and Private wear the lock, where project access is on)
+    const known = getProject(hit.id);
+    const locked = projectLocked(known);
+    say = <><HighlightTitle className="ksr-t" text={hit.title} /><ProjectLock project={known} /></>;
     const ws = workspaceName?.(hit.workspaceId);
     sub = snippetText ? <Highlighted className="ksr-snip" runs={snippetRuns} /> : <span className="ksr-sub-meta">{ws ? `Project in ${ws}` : "Project"}</span>;
-    aria = `Project ${hit.title}${ws ? ` in ${ws}` : ""}${hit.project?.archived ? ", archived" : ""}${snippetText ? `: ${snippetText}` : ""}`;
+    aria = `Project ${hit.title}${locked ? `, ${locked === "private" ? "private" : "members only"}` : ""}${ws ? ` in ${ws}` : ""}${hit.project?.archived ? ", archived" : ""}${snippetText ? `: ${snippetText}` : ""}`;
     if (hit.project?.archived) side = <Pill tone="neutral" icon="archive">Archived</Pill>;
   } else if (hit.kind === "goal") {
     // 0052: a goal wears its own identity, as it does on the Goals page
