@@ -16,7 +16,8 @@
 //                                        flooded endpoints only ever slow down
 //                                        themselves.
 //   3. per delivery (5 senders; each claims more as soon as it's free):
-//        • the endpoint's creator must still have access (else it's switched off)
+//        • the endpoint's viewer (who set its address, else its creator) must
+//          still have access (else it's switched off)
 //        • serialiseEvent → the same JSON as the REST API, ≤ 256 KB (long
 //          descriptions trimmed first, "truncated": true); custom tag labels
 //          come only from the endpoint's own workspace (or, for a personal
@@ -75,12 +76,17 @@ export const DISPATCH_SQL = {
     "join public.tags t on t.id = i.id " +
     "where (s.ws is not null and t.workspace_id = s.ws and public.user_ws_role(s.uid, s.ws) in ('owner', 'admin', 'member')) " +
     "or (s.ws is null and t.workspace_id is null and t.user_id = s.uid and public.user_can_act(s.uid))",
-  /** may each endpoint's creator still see what it sends? and whose / which workspace's is it? ($1 = jsonb array of webhook ids) */
+  /**
+   * May each endpoint's viewer still see what it sends? and whose / which workspace's is it? ($1 =
+   * jsonb array of webhook ids). The viewer is whoever last set its address (0058's url_set_by), else
+   * who added it: read through to_jsonb, so this runs before 0058 too (no such column: the creator).
+   */
   creators:
-    "select w.id::text as id, w.created_by::text as created_by, w.workspace_id::text as workspace_id, " +
-    "case when w.workspace_id is null then public.user_can_act(w.created_by) " +
-    "else public.user_ws_role(w.created_by, w.workspace_id) in ('owner', 'admin', 'member') end as allowed " +
-    "from public.webhooks w where w.id::text = any (array(select jsonb_array_elements_text($1::jsonb)))",
+    "select w.id::text as id, v.uid::text as viewer, w.workspace_id::text as workspace_id, " +
+    "case when w.workspace_id is null then public.user_can_act(v.uid) " +
+    "else public.user_ws_role(v.uid, w.workspace_id) in ('owner', 'admin', 'member') end as allowed " +
+    "from public.webhooks w cross join lateral (select coalesce((to_jsonb(w) ->> 'url_set_by')::uuid, w.created_by) as uid) v " +
+    "where w.id::text = any (array(select jsonb_array_elements_text($1::jsonb)))",
   /** switch an endpoint off because its creator lost access, and give up on its queue */
   switchOff:
     "with off as (update public.webhooks set active = false, disabled_at = now(), disabled_reason = $2::text, " +
@@ -89,8 +95,9 @@ export const DISPATCH_SQL = {
     "updated_at = now() where d.webhook_id = $1::uuid and d.state = 'pending'",
 } as const;
 
-export const CREATOR_GONE_REASON = "Switched off: the person who added it no longer has access";
-export const CREATOR_GONE_ERROR = "Not sent: the person who added this endpoint no longer has access, so it was switched off.";
+/** (0058's pa_webhooks_viewer_gone writes the same two, word for word) */
+export const CREATOR_GONE_REASON = "Switched off: the person who set its address no longer has access";
+export const CREATOR_GONE_ERROR = "Not sent: the person who set this endpoint's address no longer has access, so it was switched off.";
 
 /** The app's built-in tags (src/data/data.ts BUILTIN_TAGS; a test keeps them equal). Custom tags come from public.tags. */
 export const BUILTIN_TAG_LABELS: Readonly<Record<string, { label: string; color: string }>> = {
@@ -608,19 +615,20 @@ async function tagMaps(service: Tx, rows: readonly ClaimedDelivery[], scopes: Re
 }
 
 /**
- * Each endpoint's scope, and the endpoints whose creator can no longer see
- * what they send (removed, made a guest, suspended).
+ * Each endpoint's scope, and the endpoints whose viewer (who set its address,
+ * else who added it) can no longer see what they send (removed, made a guest,
+ * suspended).
  */
 async function checkCreators(service: Tx, rows: readonly ClaimedDelivery[]): Promise<{ gone: Set<string>; scopes: Map<string, HookScope> }> {
   const ids = [...new Set(rows.map((r) => String(r.webhook_id)))];
   const scopes = new Map<string, HookScope>();
   if (!ids.length) return { gone: new Set(), scopes };
-  const got = await service.query<{ id: string; created_by: string | null; workspace_id: string | null; allowed: boolean | null }>(DISPATCH_SQL.creators, [JSON.stringify(ids)]);
+  const got = await service.query<{ id: string; viewer: string | null; workspace_id: string | null; allowed: boolean | null }>(DISPATCH_SQL.creators, [JSON.stringify(ids)]);
   const allowed = new Set<string>();
   for (const g of got) {
-    if (g.allowed !== true || !g.created_by) continue;
+    if (g.allowed !== true || !g.viewer) continue;
     allowed.add(String(g.id));
-    scopes.set(String(g.id), { ws: g.workspace_id ? String(g.workspace_id) : null, uid: String(g.created_by) });
+    scopes.set(String(g.id), { ws: g.workspace_id ? String(g.workspace_id) : null, uid: String(g.viewer) });
   }
   return { gone: new Set(ids.filter((id) => !allowed.has(id))), scopes };
 }

@@ -225,7 +225,7 @@ function fakeService(pool: ClaimedDelivery[], opts: {
         const ids = JSON.parse(params[0] as string) as string[];
         return ids.map((id) => {
           const h = opts.hooks?.[id] ?? { ws: W, uid: ME };
-          return { id, created_by: h.uid, workspace_id: h.ws, allowed: opts.creatorsOk?.[id] ?? true };
+          return { id, viewer: h.uid, workspace_id: h.ws, allowed: opts.creatorsOk?.[id] ?? true };
         }) as R[];
       }
       if (sql === DISPATCH_SQL.tags) {

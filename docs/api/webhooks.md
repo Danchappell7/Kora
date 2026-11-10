@@ -762,12 +762,13 @@ limit, for a delivery that already arrived, or for sending a test event again;
 - **No hammering.** Test events are limited to 5 a minute and "send again" to
   10 a minute per endpoint; test events can't be sent again, and every other
   failure counts towards switching the endpoint off.
-- An endpoint only ever hears what the person who added it can see (custom
-  tag names included: only the event's own workspace's, or for a personal
-  endpoint their own). If they
-  leave the workspace, become a guest, or their account is suspended, their
-  endpoints are **switched off** ("the person who added it no longer has
-  access") and nothing more is sent. A workspace owner or admin can delete it
+- An endpoint only ever hears what the person who set its address can see:
+  whoever added it, or whoever changed its address since (custom tag names
+  included: only the event's own workspace's, or for a personal endpoint
+  their own). If they leave the workspace, become a guest, or their account
+  is suspended, the endpoint is **switched off** ("the person who set its
+  address no longer has access"), whatever was waiting for it is marked
+  failed, and nothing more is sent. A workspace owner or admin can delete it
   and add a new one.
 - **Project access** (database update 0058, once a workspace's owner switches
   it on): an endpoint hears only about work its *viewer* can see, where the

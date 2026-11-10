@@ -122,7 +122,9 @@ No new secrets and no new schedule.
   or project's name never reaches admins who couldn't see it.
 - **Removing someone** from a workspace removes them from its projects.
   Making someone a guest turns their editor roles into commenter. Either way,
-  held notices and queued webhooks they can't see any more are dropped.
+  held notices and queued webhooks they can't see any more are dropped, and a
+  webhook whose address they set is switched off ("the person who set its
+  address no longer has access").
 - **Signed-out requests** read none of a workspace's rows, as before: the rules
   apply to signed-in callers.
 - **Every change** to the switch, a visibility or a project's people touches

@@ -674,6 +674,30 @@ begin
   return p;
 end; $$;
 
+-- (internal) the endpoints in p_ws (just p_webhook, if given) whose viewer (who set the address, else
+-- who added it) is no longer an owner, admin or member there: switched off, as the dispatcher does when
+-- it finds the same, and what's waiting for them failed. Answers how many. (Switch on: otherwise its
+-- project events would silently stop while member.joined still went to the address they set.)
+create or replace function public.pa_webhooks_viewer_gone(p_ws uuid, p_webhook uuid)
+returns integer language plpgsql security definer set search_path = public as $$
+declare ids uuid[];
+begin
+  if p_ws is null then return 0; end if;
+  select coalesce(array_agg(w.id), '{}') into ids from public.webhooks w
+   where w.active and w.workspace_id = p_ws and (p_webhook is null or w.id = p_webhook)
+     and public.user_ws_role(coalesce(w.url_set_by, w.created_by), p_ws) not in ('owner', 'admin', 'member');
+  if cardinality(ids) = 0 then return 0; end if;
+  update public.webhooks
+     set active = false, disabled_at = now(), updated_at = now(),
+         disabled_reason = 'Switched off: the person who set its address no longer has access'
+   where id = any (ids) and active;
+  update public.webhook_deliveries
+     set state = 'failed', next_attempt_at = null, lease_until = null, updated_at = now(),
+         error = 'Not sent: the person who set this endpoint''s address no longer has access, so it was switched off.'
+   where webhook_id = any (ids) and state = 'pending';
+  return cardinality(ids);
+end; $$;
+
 -- 2n. held notices and pending webhooks when access narrows (a project, or a whole workspace when
 -- p_project is null): what's waiting for someone who can't see it any more never goes. Only behind
 -- the switch: while it's off everything goes as it did before this file.
@@ -697,6 +721,8 @@ begin
       end if;
     end loop;
   end if;
+  -- (a viewer who's gone switches their endpoints off first: what's waiting for them says why)
+  if p_project is null then perform public.pa_webhooks_viewer_gone(p_ws, null); end if;
   update public.webhook_deliveries d
      set state = 'failed', error = 'not sent: no longer visible', lease_until = null, next_attempt_at = null, updated_at = now()
     from public.webhooks w, public.webhook_outbox o
@@ -773,7 +799,7 @@ do $internal$
 declare f text;
 begin
   foreach f in array array['public.pa_touch(uuid)', 'public.pa_webhook_project(text,jsonb)', 'public.pa_task_hidden_for(uuid,uuid)',
-                           'public.pa_notice_payload(uuid,jsonb)', 'public.pa_flush_held(uuid,uuid)',
+                           'public.pa_notice_payload(uuid,jsonb)', 'public.pa_flush_held(uuid,uuid)', 'public.pa_webhooks_viewer_gone(uuid,uuid)',
                            'public.pa_restore_landing(uuid,jsonb,text,jsonb)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
@@ -1513,6 +1539,8 @@ end; $$;
 
 -- webhook_deliveries (0046), before: an endpoint hears only what its viewer (who set its address,
 -- else who made it) can see now. Fan-out skips the rest; a redeliver of one they can't is failed.
+-- A viewer who's no longer an owner, admin or member there switches the endpoint off: nothing goes,
+-- an event with no project (member.joined) included.
 create or replace function public.pa_trg_webhook_deliveries_gate() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare w record; o record; proj text;
@@ -1521,6 +1549,13 @@ begin
   if new.event = 'ping' then return new; end if;
   select x.workspace_id, x.created_by, x.url_set_by into w from public.webhooks x where x.id = new.webhook_id;
   if w.workspace_id is null or not public.pa_on(w.workspace_id) then return new; end if;
+  if public.user_ws_role(coalesce(w.url_set_by, w.created_by), w.workspace_id) not in ('owner', 'admin', 'member') then
+    perform public.pa_webhooks_viewer_gone(w.workspace_id, new.webhook_id);
+    if tg_op = 'INSERT' then return null; end if;
+    new.state := 'failed'; new.lease_until := null; new.next_attempt_at := null;
+    new.error := 'Not sent: the person who set this endpoint''s address no longer has access, so it was switched off.';
+    return new;
+  end if;
   select x.event, x.payload into o from public.webhook_outbox x where x.id = new.outbox_id;
   proj := public.pa_webhook_project(o.event, o.payload);
   if proj is null or public.pa_rank_or_binned(coalesce(w.url_set_by, w.created_by), w.workspace_id, proj) >= 1 then

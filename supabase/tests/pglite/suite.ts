@@ -16,7 +16,7 @@
 // ============================================================
 import { sqlVerifier } from "../../functions/_shared/api/auth.ts";
 import { handleApiRequest } from "../../functions/_shared/api/pipeline.ts";
-import { runDispatch } from "../../functions/_shared/api/webhookDispatch.ts";
+import { CREATOR_GONE_ERROR, CREATOR_GONE_REASON, runDispatch } from "../../functions/_shared/api/webhookDispatch.ts";
 import { accessInstalled, personRankSql, projectAccess } from "../../functions/_shared/projectAccess.ts";
 import { loadCard, loadProjectCard, type SlackDb } from "../../functions/_shared/slackAppData.ts";
 import { handleMcpFunction, type McpDeps } from "../../functions/_shared/mcp/handler.ts";
@@ -3767,7 +3767,73 @@ async function projectAccessApiSuite(w: World) {
     eq(pending.n, 0, "nothing left waiting: the skipped one was never made, so never claimed");
     await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [hooks]);
   });
+  // (an admin of w1 made for one test, with an address of their own)
+  const admin = async (name: string) => {
+    const u = await makeUser(pg, `pa.${name}@example.org`, name);
+    await pg.query(`update public.profiles set approved = true where id = $1::uuid`, [u]);
+    await pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, $3, $4, 'admin', 'active')`,
+      [w.w1, u, `pa.${name}@example.org`, name]);
+    return u;
+  };
+  /** An endpoint added by `by` and re-pointed by `viewer` (who's then its viewer, D19). */
+  const repointed = async (by: string, viewer: string, path: string) => {
+    const made = (await asPerson<{ r: { id: string } }>(pg, by, `select public.create_webhook($1::uuid, $2, array['task.created', 'member.joined']) as r`,
+      [w.w1, `https://hooks.example.com/${path}-first`]))[0].r;
+    await asPerson(pg, viewer, `select public.update_webhook($1::uuid, $2)`, [made.id, `https://hooks.example.com/${path}`]);
+    return made.id;
+  };
+  await test("0058, webhooks, switch on: an endpoint whose viewer (who set its address) leaves, becomes a guest or is suspended is switched off, and nothing more goes to their address (member.joined included)", async () => {
+    await pg.query(`update public.webhook_outbox set processed_at = now() where processed_at is null`);
+    const ada = await admin("ada");
+    const ben = { left: await admin("ben-left"), guest: await admin("ben-guest"), suspended: await admin("ben-suspended"), stays: await admin("ben-stays") };
+    const hooks = {} as Record<keyof typeof ben, string>;
+    for (const k of Object.keys(ben) as (keyof typeof ben)[]) hooks[k] = await repointed(ada, ben[k], `ben-${k}`);
+    // something already waiting for each
+    await pg.query(`insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Queued before', $2, '', $3::uuid)`, [w.alice, w.launch, w.w1]);
+    await pg.query(`select public.webhook_claim_outbox(500)`);
+    const state = async (k: keyof typeof ben) => (await one<{ active: boolean; why: string | null; waiting: number; failed: string | null }>(
+      `select w.active, w.disabled_reason as why,
+              (select count(*)::int from public.webhook_deliveries d where d.webhook_id = w.id and d.state = 'pending') as waiting,
+              (select max(d.error) from public.webhook_deliveries d where d.webhook_id = w.id and d.state = 'failed') as failed
+         from public.webhooks w where w.id = $1::uuid`, [hooks[k]]));
+    eq((await state("left")).waiting, 1, "queued for each first");
+    await pg.query(`delete from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, ben.left]);
+    await pg.query(`update public.workspace_members set role = 'guest' where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, ben.guest]);
+    await pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [ben.suspended]);
+    for (const k of ["left", "guest"] as const) {
+      eq(await state(k), { active: false, why: CREATOR_GONE_REASON, waiting: 0, failed: CREATOR_GONE_ERROR }, `${k}: switched off at once, its queue failed`);
+    }
+    eq((await state("suspended")).active, true, "a suspension isn't seen until the next event");
+    // the next events: a new member (no project) and a task
+    const nia = await makeUser(pg, "pa.nia@example.org", "Nia");
+    await pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'pa.nia@example.org', 'Nia', 'guest', 'active')`, [w.w1, nia]);
+    await pg.query(`insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Queued after', $2, '', $3::uuid)`, [w.alice, w.launch, w.w1]);
+    await pg.query(`select public.webhook_claim_outbox(500)`);
+    eq(await state("suspended"), { active: false, why: CREATOR_GONE_REASON, waiting: 0, failed: CREATOR_GONE_ERROR }, "suspended: switched off by the next event, nothing queued");
+    const after = async (k: keyof typeof ben) => (await pg.query<{ e: string }>(
+      `select d.event as e from public.webhook_deliveries d join public.webhook_outbox o on o.id = d.outbox_id
+        where d.webhook_id = $1::uuid and d.state = 'pending' order by d.event`, [hooks[k]])).rows.map((r) => r.e);
+    for (const k of ["left", "guest", "suspended"] as const) eq(await after(k), [], `${k}: nothing waiting for their address`);
+    eq(await after("stays"), ["member.joined", "task.created", "task.created"], "an endpoint whose viewer stays hears all of it");
+    await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [Object.values(hooks)]);
+  });
   await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
+  await test("0058, webhooks, switch off: the dispatcher judges an endpoint by its viewer too: one whose viewer left is switched off and sent nothing", async () => {
+    await pg.query(`update public.webhook_outbox set processed_at = now() where processed_at is null`);
+    const cy = await admin("cy");
+    const hook = await repointed(w.alice, cy, "cy");
+    await pg.query(`delete from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, cy]);
+    eq((await one<{ a: boolean }>(`select active as a from public.webhooks where id = $1::uuid`, [hook])).a, true, "with the switch off the database leaves it to the dispatcher");
+    await pg.query(`insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'After cy left', $2, '', $3::uuid)`, [w.alice, w.launch, w.w1]);
+    const sent: string[] = [];
+    await runDispatch({
+      service: w.deps.service, resolve: async () => ["93.184.216.34"], appUrl: APP_URL, log: () => undefined,
+      send: async (target) => { sent.push(target.path); return { status: 200, reason: "OK" }; },
+    }, { deadlineMs: 5000 });
+    eq(sent.filter((p) => p === "/cy"), [], "nothing to the departed admin's address");
+    eq(await one(`select active, disabled_reason as why from public.webhooks where id = $1::uuid`, [hook]), { active: false, why: CREATOR_GONE_REASON }, "switched off");
+    await pg.query(`delete from public.webhooks where id = $1::uuid`, [hook]);
+  });
   await test("0058, functions, switch off again: open everywhere, and the API takes anyone in the workspace", async () => {
     eq([...await svc().closedProjects(w.w1)], [], "nothing closed");
     eq((await loadProjectCard(slackDb(w), w.alice, w.w1, pay))?.closedProject, false, "Board pay's card is open again");
