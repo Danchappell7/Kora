@@ -166,7 +166,7 @@ describe("at 0058 with the switch off", () => {
     expect(b.projects.find((p) => p.id === P1)?.visibility).toBe("workspace");
   });
 
-  it("an old-style contributors edit goes through the member calls; a new project sends no visibility", async () => {
+  it("an old-style contributors edit goes through the member calls; a new project sends the visibility it's given (a copy keeps its source's, even switched off)", async () => {
     const fake = fakeClient("off");
     const { store, data } = await load(fake);
     const b = await store.bootstrap({ id: ME });
@@ -175,7 +175,7 @@ describe("at 0058 with the switch off", () => {
     expect(fake.calls.some((c) => c.table === "projects" && c.op === "update")).toBe(false);
     expect(fake.calls.filter((c) => c.op === "rpc" && c.table !== "claim_invites").map((c) => [c.table, (c.payload as Row).p_user])).toEqual([["set_project_member", "new-person"], ["remove_project_member", "old-person"]]);
     await store.createProject({ name: "New", emoji: "", color: "c", workspaceId: WS, visibility: "private" }, ME);
-    expect(fake.calls.find((c) => c.table === "projects" && c.op === "insert")?.payload).not.toHaveProperty("visibility");
+    expect(fake.calls.find((c) => c.table === "projects" && c.op === "insert")?.payload).toMatchObject({ visibility: "private" });
     await store.updateTask(T1, { title: "Renamed" });
     expect(fake.calls.find((c) => c.table === "tasks" && c.op === "update")?.returning).toBeFalsy();
   });

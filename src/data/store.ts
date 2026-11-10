@@ -13,7 +13,7 @@ import { parseActivityMeta } from "../lib/activityMeta";
 import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
 import { noteRhythmSchema, parseRhythm, rhythmOn, rhythmRow, type UpdateRhythm } from "../lib/updateRhythm";
 import { noteRolloutSchema, parseRollout, rolloutRow } from "../lib/rolloutPlan";
-import { accessOn, accessSchema, canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, noteAccessSchema, projectRank, roleOf, taskRank, type AccessCtx } from "../lib/projectAccess";
+import { accessSchema, canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, noteAccessSchema, projectRank, roleOf, taskRank, type AccessCtx } from "../lib/projectAccess";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
 import { demoMeetingActivity } from "../lib/meetings/demo";
 import { demoNotifyActivity } from "../lib/notifyDemo";
@@ -2289,9 +2289,10 @@ export const store = {
   async createProject(input: NewProject, userId: string): Promise<Project> {
     const { templateId: _template, memberIds = [], visibility, ...rest } = input;
     const ws = input.workspaceId ? WORKSPACES.find((w) => w.id === input.workspaceId) : undefined;
-    // 0058: who can see it goes in the same insert, only where project access is on (the server
-    // gives every other new project the workspace's default)
-    const vis = visibility && input.workspaceId && accessOn(ws) ? visibility : undefined;
+    // 0058: who can see it goes in the same insert wherever 0058 is in (only New project, where the
+    // switch is on, and a copy, which keeps its source's, say one); the server gives every other new
+    // project the workspace's default
+    const vis = visibility && input.workspaceId && accessSchema() ? visibility : undefined;
     if (!supabase) {
       const id = newId();
       const p: Project = { id, ...rest, ownerId: userId, ...(input.workspaceId && accessSchema() ? { visibility: vis ?? ws?.projectAccess?.defaultVisibility ?? "workspace" } : {}) };

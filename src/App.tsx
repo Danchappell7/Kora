@@ -2583,12 +2583,16 @@ export default function App() {
     if (projectId.startsWith("tmp-")) { toastInfo("That project is still saving — try again in a moment."); return; }
     const me = userIdRef.current;
     // 0058: a copy keeps who can see it (in its own insert) and its people, so a private project's
-    // tasks never land in a Whole workspace copy
+    // tasks never land in a Whole workspace copy. The switch off too (the rollback window): a Private
+    // project copied then would come back on as the workspace's default, open to everyone
     const gated = accessOn(workspacesRef.current.find((w) => w.id === wsId));
-    const vis = gated ? visibilityOf(src) : undefined;
-    if (vis === "private" && !mayMakePrivateHere(wsId, accessNow())) { toastInfo("You can't make private projects here. Ask an owner."); return; }
-    // (its owner too, while the switch is on, when the copy is someone else's: lib/projectAccess copyPeople)
-    const people = accessSchema() && projectMembersRef.current ? copyPeople(src, accessNow()) : undefined;
+    let vis = wsId && accessSchema() ? visibilityOf(src) : undefined;
+    if (vis === "private" && !mayMakePrivateHere(wsId, accessNow())) {
+      if (gated) { toastInfo("You can't make private projects here. Ask an owner."); return; }
+      vis = "members";        // (switched off, a copy is never refused: it's as closed as you may make one)
+    }
+    // (its owner too, while the switch is on or the copy is closed, when it's someone else's: lib/projectAccess copyPeople)
+    const people = accessSchema() && projectMembersRef.current ? copyPeople(src, accessNow(), vis) : undefined;
     try {
       const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId, ...(vis ? { visibility: vis } : {}), ...(people?.length ? { memberIds: people } : {}) }, me);
       noteCreated(np.id); // a reload already under way doesn't know about it yet

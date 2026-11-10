@@ -84,6 +84,21 @@ describe("App · project access on (Foundrise)", () => {
     expect(create.mock.calls[0][0].memberIds).toEqual(expect.arrayContaining(["m-3"]));   // Sana, Brand Refresh's owner
   });
 
+  it("switched off (the rollback), a private project's copy still says private, so switching back on doesn't open it", async () => {
+    await store.setProjectAccess("ws-foundrise", { on: false });
+    try {
+      const create = spy(vi.spyOn(store, "createProject").mockRejectedValue(new Error("offline")));
+      inWs("ws-foundrise", "/p/p-payroll");
+      await boot();
+      fireEvent.click(await screen.findByRole("button", { name: "Project actions" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: /Duplicate/ }));
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      expect(create.mock.calls[0][0]).toMatchObject({ name: "Payroll & contracts (copy)", visibility: "private" });
+    } finally {
+      await store.setProjectAccess("ws-foundrise", { on: true });
+    }
+  });
+
   it("a private project's copy is private too, with its people", async () => {
     inWs("ws-foundrise", "/p/p-payroll");
     await boot();

@@ -196,6 +196,9 @@ describe("people, projects and previews", () => {
     expect(copyPeople(proj("pm", "members", "a"), world(true, "me")).sort()).toEqual(["a", "gc", "me", "mv"]);
     expect(copyPeople(proj("pq", "private", "me"), world(true, "me"))).toEqual([]);           // your own: you own the copy
     expect(copyPeople(proj("pw", "workspace", "gone"), world(true, "me"))).toEqual(["gc"]);   // an owner who's left isn't added
+    // switched off, a copy that stays Members only or Private keeps its owner too (it's closed again once it's back on)
+    expect(copyPeople(proj("pm", "members", "a"), world(false, "me"), "members").sort()).toEqual(["a", "gc", "me", "mv"]);
+    expect(copyPeople(proj("pm", "members", "a"), world(false, "me"), "workspace").sort()).toEqual(["gc", "me", "mv"]);
   });
   it("narrowingLoss says who'd lose sight of it and their open tasks there", () => {
     noteAccessSchema(true);

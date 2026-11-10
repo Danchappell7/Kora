@@ -100,13 +100,15 @@ export function taskRank(task: Pick<Task, "workspaceId" | "projectId">, ctx: Acc
   return rankFor(ctx, ctx.me, ws, task.projectId);
 }
 
-/** Who a project's copy starts with: its people, and, while the switch is on, its owner when the copy is
- *  someone else's (an owner has no row of their own, and would lose a closed copy). With it off, its
- *  people as they are: today's contributors, nobody added. */
-export function copyPeople(src: Pick<Project, "id" | "workspaceId" | "ownerId">, ctx: AccessCtx): string[] {
+/** Who a project's copy starts with: its people, and, while the switch is on (or whenever the copy is
+ *  Members only or Private: `copyVisibility`), its owner when the copy is someone else's (an owner has no
+ *  row of their own, and would lose a closed copy). A Whole workspace copy with the switch off: its
+ *  people as they are, today's contributors, nobody added. */
+export function copyPeople(src: Pick<Project, "id" | "workspaceId" | "ownerId">, ctx: AccessCtx, copyVisibility?: ProjectVisibility): string[] {
   const wsId = src.workspaceId ?? null;
   const own = (ctx.members ?? []).filter((m) => m.projectId === src.id).map((m) => m.userId);
-  const owner = accessOn(wsOf(ctx, wsId)) && src.ownerId && src.ownerId !== ctx.me && roleOf(ctx, wsId, src.ownerId) ? [src.ownerId] : [];
+  const closed = accessOn(wsOf(ctx, wsId)) || (!!copyVisibility && copyVisibility !== "workspace");
+  const owner = closed && src.ownerId && src.ownerId !== ctx.me && roleOf(ctx, wsId, src.ownerId) ? [src.ownerId] : [];
   return [...new Set([...own, ...owner])];
 }
 
