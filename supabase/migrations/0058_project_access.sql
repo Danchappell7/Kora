@@ -291,33 +291,63 @@ returns jsonb language sql security definer stable set search_path = public as $
     from (select 1) one
     left join public.projects p on p.id = public.kanbo_uuid(p_project) and p.workspace_id = p_ws;
 $$;
--- someone's rank on what a bin or history row names: the live project while it's there, else what was captured
+-- someone's rank from a captured access (null: the loose rule)
+create or replace function public.pa_captured_rank(p_user uuid, p_ws uuid, p_access jsonb)
+returns integer language sql security definer stable set search_path = public as $$
+  select public.pa_rank_core(
+           public.pa_on(p_ws), public.user_ws_role(p_user, p_ws),
+           case when p_access is null then null else coalesce(p_access ->> 'visibility', 'workspace') end,
+           p_access is not null and p_access ->> 'owner' = p_user::text,
+           (select e ->> 1 from jsonb_array_elements(case when jsonb_typeof(p_access -> 'members') = 'array'
+                                                          then p_access -> 'members' else '[]'::jsonb end) e
+             where e ->> 0 = p_user::text limit 1));
+$$;
+-- what's known of a project that's gone: its newest bin row's access while it's in the bin, else
+-- its newest history row's (deleted for good: the purge row keeps what its delete captured). Null:
+-- nothing known (a loose id, or a project deleted before this file)
+create or replace function public.pa_gone_access(p_ws uuid, p_project text)
+returns jsonb language sql security definer stable set search_path = public as $$
+  select coalesce(
+    (select x.access from public.trash x
+      where x.item_id = public.kanbo_uuid(p_project) and x.workspace_id = p_ws and x.kind = 'project' and x.restored_at is null
+      order by x.deleted_at desc limit 1),
+    (select e.access from public.audit_events e
+      where e.workspace_id = p_ws and e.target_kind = 'project' and e.target_id = p_project
+        and e.project_id is not null and e.access is not null
+      order by e.created_at desc, e.id desc limit 1))
+   where public.kanbo_uuid(p_project) is not null;
+$$;
+-- someone's rank on what a bin or history row names: the live project while it's there; else the
+-- lower of what the row itself captured and what's known of its project (D21). A row captured while
+-- its project was Whole workspace (or before this file, with nothing captured) mustn't open up once
+-- that project is made Private and then deleted.
 create or replace function public.pa_snapshot_rank_for(p_user uuid, p_ws uuid, p_project text, p_access jsonb)
 returns integer language sql security definer stable set search_path = public as $$
   select case
     when p_user is null or p_ws is null then 0
     when exists (select 1 from public.projects p where p.id = public.kanbo_uuid(p_project) and p.workspace_id = p_ws)
       then public.pa_rank_for(p_user, p_ws, p_project)
-    else public.pa_rank_core(
-           public.pa_on(p_ws), public.user_ws_role(p_user, p_ws),
-           case when p_access is null then null else coalesce(p_access ->> 'visibility', 'workspace') end,
-           p_access is not null and p_access ->> 'owner' = p_user::text,
-           (select e ->> 1 from jsonb_array_elements(case when jsonb_typeof(p_access -> 'members') = 'array'
-                                                          then p_access -> 'members' else '[]'::jsonb end) e
-             where e ->> 0 = p_user::text limit 1)) end;
+    else (select case when g.access is null then public.pa_captured_rank(p_user, p_ws, p_access)
+                      when p_access is null then public.pa_captured_rank(p_user, p_ws, g.access)
+                      else least(public.pa_captured_rank(p_user, p_ws, p_access), public.pa_captured_rank(p_user, p_ws, g.access)) end
+            from (select public.pa_gone_access(p_ws, p_project) as access) g) end;
 $$;
 create or replace function public.pa_snapshot_rank(p_ws uuid, p_project text, p_access jsonb)
 returns integer language sql security definer stable set search_path = public as $$
   select public.pa_snapshot_rank_for(auth.uid(), p_ws, p_project, p_access);
 $$;
--- a project's rank for someone, from the bin when it's been deleted (its tasks' webhook events
--- go out after the project has gone)
+-- a project's rank for someone, from the bin or the history when it's been deleted (its tasks'
+-- webhook events go out after the project has gone)
 create or replace function public.pa_rank_or_binned(p_user uuid, p_ws uuid, p_project text)
 returns integer language sql security definer stable set search_path = public as $$
-  select public.pa_snapshot_rank_for(p_user, p_ws, p_project,
-    (select x.access from public.trash x
-      where x.workspace_id = p_ws and x.kind = 'project' and x.item_id = public.kanbo_uuid(p_project)
-      order by x.deleted_at desc limit 1));
+  select public.pa_snapshot_rank_for(p_user, p_ws, p_project, null);
+$$;
+-- the narrowest visibility a gone project's work had: what its row captured, or what's known of the
+-- project, whichever is narrower ('workspace' when neither says)
+create or replace function public.pa_gone_visibility(p_ws uuid, p_project text, p_access jsonb)
+returns text language sql security definer stable set search_path = public as $$
+  select case when 'private' in (v.a, v.b) then 'private' when 'members' in (v.a, v.b) then 'members' else 'workspace' end
+    from (select p_access ->> 'visibility' as a, public.pa_gone_access(p_ws, p_project) ->> 'visibility' as b) v;
 $$;
 
 -- 2e. who's behind the switch, for the policies' cheap first test (computed once a statement)
@@ -512,6 +542,8 @@ begin
   -- internal
   foreach f in array array['public.pa_rank_for(uuid,uuid,text)', 'public.pa_access_snapshot(uuid,text)',
                            'public.pa_snapshot_rank_for(uuid,uuid,text,jsonb)', 'public.pa_rank_or_binned(uuid,uuid,text)',
+                           'public.pa_captured_rank(uuid,uuid,jsonb)', 'public.pa_gone_access(uuid,text)',
+                           'public.pa_gone_visibility(uuid,text,jsonb)',
                            'public.pa_gated_ws_for(uuid)', 'public.pa_guest_sees(uuid,uuid)', 'public.pa_manage_rule(uuid,boolean)',
                            'public.pa_user_may_make_private(uuid,uuid)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
@@ -669,11 +701,74 @@ begin
      and public.pa_rank_or_binned(coalesce(w.url_set_by, w.created_by), p_ws, public.pa_webhook_project(o.event, o.payload)) < 1;
 end; $$;
 
+-- 2o. where tasks back from the bin go when their project has gone (switch on; restore_from_trash):
+-- somewhere with the audience they had. 0047 takes the workspace's first project of any kind, so a
+-- task could vanish into a Private project (and its note name it), or a Private project's work land
+-- where everyone reads it. From a Whole workspace project: the workspace's first Whole workspace
+-- project. From a Members only or Private one: nowhere but that project ('restore its project
+-- first', or, deleted for good, 'its project was deleted for good'). Someone on the task who can't
+-- see where it lands drops off it (an assignee: its owner takes it, as D10's server writes).
+-- Answers {snapshot, note} with the snapshot's tasks moved, or null (nothing moves: 0047's own way).
+create or replace function public.pa_restore_landing(p_ws uuid, p_snap jsonb, p_project text, p_access jsonb)
+returns jsonb language plpgsql security definer stable set search_path = public as $$
+declare
+  src jsonb := case when jsonb_typeof(p_snap -> 'tasks') = 'array' then p_snap -> 'tasks' else '[]'::jsonb end;
+  out_t jsonb := '[]'::jsonb;
+  x jsonb;
+  pid text;
+  land_id uuid;
+  land_name text;
+  land_owner uuid;
+  who uuid;
+  k text;
+begin
+  if p_ws is null or not public.pa_on(p_ws) then return null; end if;
+  for x in select e from jsonb_array_elements(src) e loop
+    pid := x ->> 'project_id';
+    if public.kanbo_uuid(pid) is not null and public.kanbo_uuid(x ->> 'workspace_id') = p_ws
+       and not exists (select 1 from public.projects p where p.id = public.kanbo_uuid(pid)) then
+      if public.pa_gone_visibility(p_ws, pid, case when pid = p_project then p_access end) <> 'workspace' then
+        if exists (select 1 from public.trash b where b.item_id = public.kanbo_uuid(pid) and b.workspace_id = p_ws
+                                                  and b.kind = 'project' and b.restored_at is null) then
+          raise exception 'restore its project first' using hint = 'It was in a Members only or Private project, and comes back with it.';
+        end if;
+        raise exception 'its project was deleted for good' using hint = 'It was in a Members only or Private project, so it can''t come back on its own.';
+      end if;
+      if land_id is null then
+        select p.id, p.name, coalesce(p.owner_id, w.owner_id) into land_id, land_name, land_owner
+          from public.projects p join public.workspaces w on w.id = p.workspace_id
+         where p.workspace_id = p_ws and p.visibility = 'workspace'
+         order by (p.archived_at is not null), p.created_at, p.id limit 1;
+        if land_id is null then
+          raise exception 'no project to restore into' using hint = 'Make a Whole workspace project first.';
+        end if;
+      end if;
+      x := x || jsonb_build_object('project_id', land_id::text, 'section_id', null);
+      who := public.kanbo_uuid(x ->> 'assignee_id');
+      if who is not null and public.pa_rank_for(who, p_ws, land_id::text) < 1 then
+        x := x || jsonb_build_object('assignee_id', land_owner::text);
+      end if;
+      foreach k in array array['collaborators', 'followers'] loop
+        if jsonb_typeof(x -> k) = 'array' then
+          x := jsonb_set(x, array[k], coalesce((
+            select jsonb_agg(c order by i) from jsonb_array_elements_text(x -> k) with ordinality a(c, i)
+             where public.kanbo_uuid(c) is null or public.pa_rank_for(public.kanbo_uuid(c), p_ws, land_id::text) >= 1), '[]'::jsonb));
+        end if;
+      end loop;
+    end if;
+    out_t := out_t || jsonb_build_array(x);
+  end loop;
+  if land_id is null then return null; end if;
+  return jsonb_build_object('snapshot', jsonb_set(p_snap, '{tasks}', out_t),
+                            'note', 'Its project was deleted, so it''s back in “' || land_name || '”.');
+end; $$;
+
 do $internal$
 declare f text;
 begin
   foreach f in array array['public.pa_touch(uuid)', 'public.pa_webhook_project(text,jsonb)', 'public.pa_task_hidden_for(uuid,uuid)',
-                           'public.pa_notice_payload(uuid,jsonb)', 'public.pa_flush_held(uuid,uuid)'] loop
+                           'public.pa_notice_payload(uuid,jsonb)', 'public.pa_flush_held(uuid,uuid)',
+                           'public.pa_restore_landing(uuid,jsonb,text,jsonb)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
 end $internal$;
@@ -1436,8 +1531,10 @@ begin
 end; $$;
 
 -- trash, restore (restored_at set): a project comes back with its people; the caller needs edit rights
--- on the item's project (live, else as it was when deleted); a task of a deleted Private or Members
--- only project is its workspace owner's to bring back. A raise undoes the whole restore.
+-- on the item's project (live, else the lower of what the row captured and what's known of the
+-- project); a task comes back only into its own project, or (from a Whole workspace project that's
+-- gone) into a Whole workspace one: restore_from_trash picks it (pa_restore_landing), and this checks
+-- where it actually is. A raise undoes the whole restore.
 create or replace function public.pa_trg_trash_restore() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -1473,10 +1570,12 @@ begin
   end if;
   if public.pa_is_client() and public.pa_on(ws) then
     if public.pa_snapshot_rank(ws, old.project_id, old.access) < 3 then raise exception 'not found'; end if;
-    if old.kind = 'task'
-       and not exists (select 1 from public.projects p where p.id = public.kanbo_uuid(old.project_id) and p.workspace_id = ws)
-       and coalesce(old.access ->> 'visibility', 'workspace') <> 'workspace'
-       and public.ws_role(ws) <> 'owner' then
+    if old.kind = 'task' and exists (
+         select 1 from public.tasks t
+          where t.id = old.item_id and t.project_id is distinct from old.project_id
+            and not exists (select 1 from public.projects p
+                             where p.id = public.kanbo_uuid(t.project_id) and p.workspace_id = ws and p.visibility = 'workspace'
+                               and public.pa_gone_visibility(ws, old.project_id, old.access) = 'workspace')) then
       raise exception 'not found';
     end if;
   end if;
@@ -1810,8 +1909,8 @@ do $svc$ begin
   grant execute on function public.pa_trigger_defs() to service_role;
 exception when undefined_object then null; end $svc$;
 
--- 5c. (Re)makes everything: every policy above, the eight helper bodies this file changes (each
--- equal to its old one while the switch is off), and every trigger. Run below, and by 0025, 0041,
+-- 5c. (Re)makes everything: every policy above, the nine bodies this file changes (each equal to
+-- its old one while the switch is off), and every trigger. Run below, and by 0025, 0041,
 -- 0042, 0043, 0046, 0047, 0048, 0052, 0053, 0054, 0055 and 0056 when one of them is run again (they
 -- drop policies or put an old body back). Safe in any state from 0047 on, and twice in a row.
 -- Returns how many objects it made.
@@ -1989,6 +2088,66 @@ $b$ $fn$;
     n := n + 1;
   end if;
 
+  -- 0047's restore_from_trash: with the switch on, edit rights on the item's project first (what isn't
+  -- yours to restore is 'not found', restored or not), and a task whose project has gone comes back
+  -- somewhere with the audience it had (pa_restore_landing). Switch off: 0047's, line for line.
+  execute $fn$
+create or replace function public.restore_from_trash(p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $b$
+declare
+  me   uuid := auth.uid();
+  r    public.trash;
+  heir uuid;
+  res  jsonb;
+  prev text;
+  pid  text;
+  land jsonb;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  select * into r from public.trash where id = p_id for update;
+  if r.id is null
+     or not ((r.workspace_id is null and r.user_id = me)
+             or (r.workspace_id is not null and public.can_write(r.workspace_id))) then
+    raise exception 'not found';                 -- same answer whether it's gone or not yours
+  end if;
+  if r.workspace_id is not null and public.pa_on(r.workspace_id)
+     and public.pa_snapshot_rank(r.workspace_id, r.project_id, r.access) < 3 then
+    raise exception 'not found';
+  end if;
+  if r.restored_at is not null then
+    return jsonb_build_object('id', r.id, 'kind', r.kind, 'item_id', r.item_id, 'status', 'already_restored',
+                              'project_id', case when r.kind = 'project' then r.item_id::text
+                                                 else (select t.project_id from public.tasks t where t.id = r.item_id) end,
+                              'note', null, 'counts', r.summary -> 'counts');
+  end if;
+  heir := case when r.workspace_id is null then r.user_id
+               else (select w.owner_id from public.workspaces w where w.id = r.workspace_id) end;
+  if r.kind <> 'project' then land := public.pa_restore_landing(r.workspace_id, r.snapshot, r.project_id, r.access); end if;
+  prev := coalesce(current_setting('kanbo.restoring', true), '');
+  perform set_config('kanbo.restoring', 'on', true);
+  if r.kind = 'project' then res := public.trash_restore_project(r.snapshot, heir);
+  else res := public.trash_restore_tasks(coalesce(land -> 'snapshot', r.snapshot), heir);
+  end if;
+  perform set_config('kanbo.restoring', prev, true);
+  if land ->> 'note' is not null then
+    res := res || jsonb_build_object('note', concat_ws(' ', land ->> 'note', nullif(res ->> 'note', '')));
+  end if;
+  update public.trash set restored_at = now(), restored_by = me where id = r.id;
+  delete from public.trash_ids where trash_id = r.id;               -- its ids are in use again
+  pid := case when r.kind = 'project' then r.item_id::text
+              else (select t.project_id from public.tasks t where t.id = r.item_id) end;
+  if r.workspace_id is not null then
+    perform public.audit_log(r.workspace_id, r.kind || '.restored', r.kind, r.item_id::text, r.title,
+                             jsonb_build_object('trash_id', r.id, 'project_id', pid, 'note', res ->> 'note'));
+  end if;
+  return jsonb_build_object('id', r.id, 'kind', r.kind, 'item_id', r.item_id, 'status', 'restored',
+                            'project_id', pid, 'note', res ->> 'note', 'counts', r.summary -> 'counts');
+end;
+$b$ $fn$;
+  revoke execute on function public.restore_from_trash(uuid) from public, anon;
+  grant execute on function public.restore_from_trash(uuid) to authenticated;
+  n := n + 1;
+
   -- the triggers
   for d in select * from public.pa_trigger_defs() loop
     if to_regclass('public.' || d.tbl) is null then continue; end if;
@@ -2031,7 +2190,8 @@ returns boolean language sql stable set search_path = pg_catalog, public as $$
     and not exists (
       select 1 from unnest(array['public.can_see_task(uuid)', 'public.can_edit_task(uuid)', 'public.can_see_project(uuid)',
                                  'public.can_edit_project(uuid)', 'public.tasks_visible_to(uuid)',
-                                 'public.toggle_task_follow(uuid,boolean)', 'public.toggle_comment_reaction(uuid,text)']
+                                 'public.toggle_task_follow(uuid,boolean)', 'public.toggle_comment_reaction(uuid,text)',
+                                 'public.restore_from_trash(uuid)']
                            || case when to_regclass('public.status_update_comments') is not null
                                    then array['public.can_see_status_update(uuid)'] else '{}'::text[] end) f(sig)
        where not coalesce((select position('public.pa_' in p.prosrc) > 0 from pg_catalog.pg_proc p

@@ -284,6 +284,52 @@ revoke execute on function public.can_edit_project(uuid) from public, anon;
 grant execute on function public.can_see_project(uuid) to authenticated;
 grant execute on function public.can_edit_project(uuid) to authenticated;
 
+-- (0047_bin_history_approvals_docs.sql)
+create or replace function public.restore_from_trash(p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  me   uuid := auth.uid();
+  r    public.trash;
+  heir uuid;
+  res  jsonb;
+  prev text;
+  pid  text;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  select * into r from public.trash where id = p_id for update;
+  if r.id is null
+     or not ((r.workspace_id is null and r.user_id = me)
+             or (r.workspace_id is not null and public.can_write(r.workspace_id))) then
+    raise exception 'not found';                 -- same answer whether it's gone or not yours
+  end if;
+  if r.restored_at is not null then
+    return jsonb_build_object('id', r.id, 'kind', r.kind, 'item_id', r.item_id, 'status', 'already_restored',
+                              'project_id', case when r.kind = 'project' then r.item_id::text
+                                                 else (select t.project_id from public.tasks t where t.id = r.item_id) end,
+                              'note', null, 'counts', r.summary -> 'counts');
+  end if;
+  heir := case when r.workspace_id is null then r.user_id
+               else (select w.owner_id from public.workspaces w where w.id = r.workspace_id) end;
+  prev := coalesce(current_setting('kanbo.restoring', true), '');
+  perform set_config('kanbo.restoring', 'on', true);
+  if r.kind = 'project' then res := public.trash_restore_project(r.snapshot, heir);
+  else res := public.trash_restore_tasks(r.snapshot, heir);
+  end if;
+  perform set_config('kanbo.restoring', prev, true);
+  update public.trash set restored_at = now(), restored_by = me where id = r.id;
+  delete from public.trash_ids where trash_id = r.id;               -- its ids are in use again
+  pid := case when r.kind = 'project' then r.item_id::text
+              else (select t.project_id from public.tasks t where t.id = r.item_id) end;
+  if r.workspace_id is not null then
+    perform public.audit_log(r.workspace_id, r.kind || '.restored', r.kind, r.item_id::text, r.title,
+                             jsonb_build_object('trash_id', r.id, 'project_id', pid, 'note', res ->> 'note'));
+  end if;
+  return jsonb_build_object('id', r.id, 'kind', r.kind, 'item_id', r.item_id, 'status', 'restored',
+                            'project_id', pid, 'note', res ->> 'note', 'counts', r.summary -> 'counts');
+end; $$;
+revoke execute on function public.restore_from_trash(uuid) from public, anon;
+grant execute on function public.restore_from_trash(uuid) to authenticated;
+
 -- (0054_update_conversation.sql, only where 0054 is in)
 do $csu$
 begin

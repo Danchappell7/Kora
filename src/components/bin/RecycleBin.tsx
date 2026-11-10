@@ -17,7 +17,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { Member, Project, Role, TrashCounts, TrashItem, TrashKind, TrashRestoreResult } from "../../data/types";
 import { Avatar, Button, EmptyState, Icon, IconButton, Pill, ProjectChip, ProjectTile, SectionLabel, Segmented, Sheet, StatusGlyph } from "../primitives";
-import { getMember, PERSONAL_PROJECT, toLocalISO } from "../../data/data";
+import { getMember, PERSONAL_PROJECT, toLocalISO, WORKSPACES } from "../../data/data";
+import { accessOn } from "../../lib/projectAccess";
 import {
   daysLeft, listTrash, purgeTrash, restoreFromTrash, restoreTrashItems, trashFailure, trashFailureText, TRASH_DAYS, TRASH_LIST_MAX,
 } from "../../lib/trash";
@@ -590,7 +591,9 @@ function BinRow({ item: t, rowId, currentUserId, members, liveProject, binnedPro
         <ProjectChip project={chipProject} />
         {projectInBin
           ? <span className="kbin-gone" title="Restore its project first to put this back where it was"><Icon name="alert" size={12} sw={2} />Its project is in the bin too</span>
-          : projectGone && <span className="kbin-gone" title="It comes back in the workspace's first project"><Icon name="alert" size={12} sw={2} />Its project was deleted</span>}
+          : projectGone && <span className="kbin-gone" title={accessOn(WORKSPACES.find((w) => w.id === t.workspaceId))
+              // (0058: from a Members only or Private project it doesn't come back at all; restoring says so)
+              ? "It comes back in the workspace's first Whole workspace project" : "It comes back in the workspace's first project"}><Icon name="alert" size={12} sw={2} />Its project was deleted</span>}
       </>,
     );
   }

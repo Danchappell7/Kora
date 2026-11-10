@@ -112,7 +112,8 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
   /** Several steps, each as someone (null: the service role / SQL editor), in one transaction that's
    *  always rolled back: the world is as it was afterwards. */
   type Run = (who: string | null, sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
-  async function scenario<T>(fn: (run: Run, exec: (sql: string) => Promise<unknown>) => Promise<T>): Promise<T> {
+  /** (tryRun: one step that may raise, in a savepoint, so the scenario goes on) */
+  async function scenario<T>(fn: (run: Run, exec: (sql: string) => Promise<unknown>, tryRun: (who: string | null, sql: string, params?: unknown[]) => Promise<Outcome>) => Promise<T>): Promise<T> {
     let out: T | undefined;
     try {
       await pg.transaction(async (tx) => {
@@ -122,7 +123,18 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
           if (who) await tx.query(WITH_USER_SQL, [claims(who), ""]);
           return (await tx.query(sql, params)).rows as Record<string, unknown>[];
         };
-        out = await fn(run, async (sql) => { await tx.query(`reset role`); await tx.query(`select set_config('request.jwt.claims', '', true)`); return tx.exec(sql); });
+        const tryRun = async (who: string | null, sql: string, params: unknown[] = []): Promise<Outcome> => {
+          await tx.query(`savepoint pa_try`);
+          try {
+            const rows = await run(who, sql, params);
+            await tx.query(`release savepoint pa_try`);
+            return { rows };
+          } catch (e) {
+            await tx.query(`rollback to savepoint pa_try`);
+            return { error: String((e as Error).message), code: (e as { code?: string }).code };
+          }
+        };
+        out = await fn(run, async (sql) => { await tx.query(`reset role`); await tx.query(`select set_config('request.jwt.claims', '', true)`); return tx.exec(sql); }, tryRun);
         throw new Rollback([]);
       });
     } catch (e) {
@@ -996,14 +1008,16 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq((await one<{ v: string }>(`select visibility as v from public.projects where id = $1::uuid`, [w.proj.PQ])).v, "private", "visibility back");
     eq(await q(`select user_id::text as u, role as r from public.project_members where project_id = $1::uuid order by 1`, [w.proj.PQ]), peopleBefore, "people back");
     eq((await one<{ c: string[] }>(`select contributor_ids::text[] as c from public.projects where id = $1::uuid`, [w.proj.PQ])).c, [w.id.MC], "and its contributor_ids");
-    // a task of a deleted private project: only the workspace's owner brings it back
+    // a task of a deleted private project comes back only with its project, whoever asks
     await as(w.id.ME, `delete from public.tasks where id = $1::uuid`, [w.sub.PQ]);
     const tb = await one<{ id: string }>(`select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [w.sub.PQ]);
     await as(w.id.ME, `delete from public.projects where id = $1::uuid`, [w.proj.PQ]);
     const pb2 = await one<{ id: string }>(`select id::text as id from public.trash where item_id = $1::uuid and kind = 'project' and restored_at is null`, [w.proj.PQ]);
-    const gone = await attempt(w.id.ME, `select public.restore_from_trash($1::uuid) as r`, [tb.id]);
-    ok(/not found/.test(errOf(gone)), `ME restoring a task of a deleted private project: ${errOf(gone) || "restored"}`);
-    ok(okOf(await attempt(w.id.O, `select public.restore_from_trash($1::uuid) as r`, [tb.id])), "the owner can");
+    for (const who of ["ME", "O"] as const) {
+      const gone = await attempt(w.id[who], `select public.restore_from_trash($1::uuid) as r`, [tb.id]);
+      ok(/restore its project first/.test(errOf(gone)), `${who} restoring a task of a deleted private project: ${errOf(gone) || "restored"}`);
+    }
+    ok(/not found/.test(errOf(await attempt(w.id.M2, `select public.restore_from_trash($1::uuid) as r`, [tb.id]))), "M2 (not on it) hears nothing more");
     await as(w.id.O, `select public.restore_from_trash($1::uuid)`, [pb2.id]);
     await as(w.id.O, `select public.restore_from_trash($1::uuid)`, [tb.id]);
     eq((await one<{ p: string }>(`select project_id as p from public.tasks where id = $1::uuid`, [w.sub.PQ])).p, w.proj.PQ, "PQ and its sub-task are back where they were");
@@ -1090,6 +1104,109 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq(got.deleted.bin, { n: 2, has_stray: false }, "the parent's bin row holds only the parent and its own sub-task");
     eq(got.projectGone, { s4: { parent: null, project: w.proj.PP }, root: null }, "deleting the project leaves the PP one too");
     eq(got.restored, { parent: null, project: w.proj.PW }, "a sub-task back from the bin under a parent that's moved stands alone");
+  });
+
+  await test("0058, switch on: a bin or history row of a deleted project keeps the narrowest access it had (binned while Whole workspace, or before 0058, then made Private and deleted: closed)", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const binOf = async (item: string) => (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null order by deleted_at desc limit 1`, [item]))[0]?.id as string;
+      const n = async (who: Who, sql: string, p: unknown[] = []) => (await run(w.id[who], sql, p)).length;
+      const e = async (who: Who, sql: string, p: unknown[] = []) => errOf(await tryRun(w.id[who], sql, p));
+      const mkProject = async (name: string) => (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, $2, $3::uuid, 'workspace') returning id::text as id`, [w.id.O, name, w.ws]))[0].id as string;
+      const mkTask = async (title: string, project: string) => (await run(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2, $3, $1::text, $4::uuid) returning id::text as id`, [w.id.O, title, project, w.ws]))[0].id as string;
+      const binRow = `select 1 from public.trash where id = $1::uuid`;
+      const histRow = `select 1 from public.audit_events where action = 'task.deleted' and target_id = $1`;
+      // Payroll is Whole workspace when Meg bins its task; then Oona makes it Private, then deletes it
+      const pay = await mkProject("Zebra Payroll");
+      const tx = await mkTask("Zebra salary cut", pay);
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [tx]);
+      const tbin = await binOf(tx);
+      await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [pay]);
+      const whileLive = await n("M2", binRow, [tbin]);
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [pay]);
+      const gone = {
+        bin: { M2: await n("M2", binRow, [tbin]), A: await n("A", binRow, [tbin]), GC: await n("GC", binRow, [tbin]), O: await n("O", binRow, [tbin]) },
+        hist: { A: await n("A", histRow, [tx]), ME: await n("ME", histRow, [tx]), O: await n("O", histRow, [tx]) },
+        restoreM2: await e("M2", `select public.restore_from_trash($1::uuid)`, [tbin]),
+        purgeA: await e("A", `select public.purge_trash($1::uuid)`, [tbin]),
+        // (the owner may, but only with its project: anywhere else its audience would change)
+        restoreO: await e("O", `select public.restore_from_trash($1::uuid)`, [tbin]),
+      };
+      await run(w.id.O, `select public.restore_from_trash($1::uuid)`, [await binOf(pay)]);
+      await run(w.id.O, `select public.restore_from_trash($1::uuid)`, [tbin]);
+      const back = (await run(null, `select project_id as p from public.tasks where id = $1::uuid`, [tx]))[0]?.p;
+      // binned while Private, then the project deleted for good: it can't come back on its own
+      const t2 = await mkTask("Zebra acquisition", pay);
+      await run(w.id.O, `delete from public.tasks where id = $1::uuid`, [t2]);
+      const t2bin = await binOf(t2);
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [pay]);
+      await run(w.id.O, `select public.purge_trash($1::uuid)`, [await binOf(pay)]);
+      const purged = {
+        restoreO: await e("O", `select public.restore_from_trash($1::uuid)`, [t2bin]),
+        binA: await n("A", binRow, [t2bin]), histA: await n("A", histRow, [t2]), histO: await n("O", histRow, [t2]),
+        // and the first task's history once its project is gone for good too
+        firstHistA: await n("A", histRow, [tx]),
+      };
+      // before 0058: HR's task binned with nothing captured (the bin row and its history as 0057 wrote them)
+      const hr = await mkProject("Zebra HR");
+      const th = await mkTask("Zebra disciplinary note", hr);
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [th]);
+      const thbin = await binOf(th);
+      await run(null, `update public.trash set access = null where id = $1::uuid`, [thbin]);
+      await run(null, `update public.audit_events set access = null where target_id = $1`, [th]);
+      await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [hr]);
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [hr]);
+      const old = { binM2: await n("M2", binRow, [thbin]), histA: await n("A", histRow, [th]), binO: await n("O", binRow, [thbin]) };
+      return { whileLive, gone, back, pay, purged, old };
+    });
+    eq(got.whileLive, 0, "while Payroll is there and Private, Moe doesn't see the bin row");
+    eq(got.gone.bin, { M2: 0, A: 0, GC: 0, O: 1 }, "once it's deleted too, still only the owner");
+    eq(got.gone.hist, { A: 0, ME: 1, O: 1 }, "its history row: the owner, and Meg's own");
+    ok(/not found/.test(got.gone.restoreM2), `Moe restoring it: ${got.gone.restoreM2 || "restored"}`);
+    ok(/not found/.test(got.gone.purgeA), `Ari purging it: ${got.gone.purgeA || "purged"}`);
+    ok(/restore its project first/.test(got.gone.restoreO), `Oona restoring it before its project: ${got.gone.restoreO || "restored"}`);
+    eq(got.back, got.pay, "after its project, it's back in Payroll");
+    ok(/its project was deleted for good/.test(got.purged.restoreO), `a Private project's task after the project is purged: ${got.purged.restoreO || "restored"}`);
+    eq([got.purged.binA, got.purged.histA, got.purged.histO, got.purged.firstHistA], [0, 0, 1, 0], "the history keeps it Private after the purge");
+    eq(got.old, { binM2: 0, histA: 0, binO: 1 }, "a row from before 0058 follows the project's own bin row");
+  });
+
+  await test("0058, switch on: a task whose Whole workspace project has gone comes back in a Whole workspace project, never in the workspace's first project if that's Private", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const binOf = async (item: string) => (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null order by deleted_at desc limit 1`, [item]))[0]?.id as string;
+      // the workspace's first project (PW) goes Private; Meg's Launch (Whole workspace, Gail on it) has two tasks for Moe
+      await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [w.proj.PW]);
+      await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Open', $2::uuid, 'workspace')`, [w.id.O, w.ws]);
+      const launch = (await run(w.id.ME, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Launch', $2::uuid, 'workspace') returning id::text as id`, [w.id.ME, w.ws]))[0].id as string;
+      await run(w.id.ME, `select public.set_project_member($1::uuid, $2::uuid, 'commenter')`, [launch, w.id.GC]);
+      const mk = async (title: string) => (await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, collaborators) values ($1::uuid, $2, $3, $4, $5::uuid, $6::text[]) returning id::text as id`,
+        [w.id.ME, title, launch, w.id.M2, w.ws, [w.id.GC]]))[0].id as string;
+      const t1 = await mk("Zebra launch plan"), t2 = await mk("Zebra launch copy");
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [t1]);
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [t2]);
+      await run(w.id.ME, `delete from public.projects where id = $1::uuid`, [launch]);
+      const b1 = await binOf(t1), b2 = await binOf(t2);
+      const firstOpen = (await run(null, `select id::text as id, name from public.projects where workspace_id = $1::uuid and visibility = 'workspace' order by (archived_at is not null), created_at, id limit 1`, [w.ws]))[0];
+      const firstAny = (await run(null, `select id::text as id from public.projects where workspace_id = $1::uuid order by (archived_at is not null), created_at, id limit 1`, [w.ws]))[0].id;
+      // with no Whole workspace project at all, it says so (and lands nowhere)
+      await run(null, `select set_config('kanbo.pa_write', 'on', true)`);
+      const narrowed = (await run(null, `update public.projects set visibility = 'members' where workspace_id = $1::uuid and visibility = 'workspace' returning id::text as id`, [w.ws])).map((r) => r.id as string);
+      const none = errOf(await tryRun(w.id.M2, `select public.restore_from_trash($1::uuid)`, [b2]));
+      await run(null, `select set_config('kanbo.pa_write', 'on', true)`);
+      await run(null, `update public.projects set visibility = 'workspace' where id = any ($1::uuid[])`, [narrowed]);
+      await run(null, `select set_config('kanbo.pa_write', '', true)`);
+      // Moe (its assignee) brings one back
+      const r = (await run(w.id.M2, `select public.restore_from_trash($1::uuid) as r`, [b1]))[0].r as { note: string; project_id: string };
+      const reads = async (who: Who) => (await run(w.id[who], `select id from public.tasks where id = $1::uuid`, [t1])).length;
+      const row = (await run(null, `select assignee_id, collaborators from public.tasks where id = $1::uuid`, [t1]))[0];
+      return { firstOpen, firstAny, none, r, row, reads: { M2: await reads("M2"), ME: await reads("ME"), A: await reads("A"), GC: await reads("GC") } };
+    });
+    eq(got.firstAny, w.proj.PW, "PW is the workspace's first project");
+    ok(/no project to restore into/.test(got.none), `with no Whole workspace project: ${got.none || "restored"}`);
+    eq(got.r.project_id, got.firstOpen.id, "it lands in the first Whole workspace project");
+    ok(got.r.project_id !== w.proj.PW, "not in Private PW");
+    eq(got.r.note, `Its project was deleted, so it's back in “${got.firstOpen.name}”.`, "and the note names only that one");
+    eq(got.reads, { M2: 1, ME: 1, A: 1, GC: 0 }, "its assignee, its maker and an admin read it; Gail (not on the new project) doesn't");
+    eq([got.row.assignee_id, got.row.collaborators], [w.id.M2, []], "Moe keeps it; Gail, who can't see it there, drops off");
   });
 
   // ---------------------------------------------------------------- 14. what the database queues: the Inbox, held notices, webhooks
@@ -1305,7 +1422,8 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       myTriggers: await qk(`select concat_ws(' | ', c.relname, t.tgname, pg_get_triggerdef(t.oid)) as k from pg_trigger t join pg_class c on c.oid = t.tgrelid where not t.tgisinternal and t.tgname ~ '^trg_.*_pa(_|$)' order by 1`),
       bodies: await qk(`select concat_ws(' | ', p.proname, md5(p.prosrc)) as k from pg_proc p where p.pronamespace = 'public'::regnamespace and (p.proname like 'pa\\_%' or p.proname in
                          ('can_see_task','can_edit_task','can_see_project','can_edit_project','tasks_visible_to','toggle_task_follow','toggle_comment_reaction','can_see_status_update',
-                          'can_comment_task','can_comment_project','set_project_access','set_project_visibility','set_project_member','remove_project_member','set_invite_projects')) order by 1`),
+                          'can_comment_task','can_comment_project','set_project_access','set_project_visibility','set_project_member','remove_project_member','set_invite_projects',
+                          'restore_from_trash')) order by 1`),
       rls: await qk(`select concat_ws(' | ', c.relname, c.relrowsecurity::text) as k from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' order by 1`),
       grants: await qk(`select concat_ws(' | ', table_name, grantee, privilege_type) as k from information_schema.role_table_grants where table_schema = 'public' and grantee in ('anon', 'authenticated') order by 1`),
     };
@@ -1364,6 +1482,7 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       ["0043_integrations_push_forms_plans.sql", "tasks_visible_to(p_user uuid)", "public.tasks_visible_to(uuid)"],
       ["0047_bin_history_approvals_docs.sql", "can_see_project(p_project uuid)", "public.can_see_project(uuid)"],
       ["0047_bin_history_approvals_docs.sql", "can_edit_project(p_project uuid)", "public.can_edit_project(uuid)"],
+      ["0047_bin_history_approvals_docs.sql", "restore_from_trash(p_id uuid)", "public.restore_from_trash(uuid)"],
     ];
     if (await has("status_update_comments")) originals.push(["0054_update_conversation.sql", "can_see_status_update(p_update uuid)", "public.can_see_status_update(uuid)"]);
     for (const [file, sig, reg] of originals) {

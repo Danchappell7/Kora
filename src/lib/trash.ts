@@ -120,6 +120,8 @@ export function trashFailure(e: unknown): TrashFailure {
   if (/failed to fetch|network|load failed/i.test(msg)) return "network";
   if (/restore conflict/i.test(msg)) return "conflict";
   if (/no project to restore into/i.test(msg)) return "no_project";
+  if (/restore its project first/i.test(msg)) return "project_first";
+  if (/its project was deleted for good/i.test(msg)) return "project_gone";
   if (/not authorized|not allowed|permission denied/i.test(msg)) return "not_allowed";
   if (/not found/i.test(msg)) return "not_found";
   return "error";
@@ -321,6 +323,8 @@ export function trashFailureText(why: TrashFailure, kind: TrashKind = "task"): s
   switch (why) {
     case "conflict": return `Part of ${it} is already back in Kanbo, so it can't be restored over it.`;
     case "no_project": return "There's no project in this workspace to put it back into. Make a project first, then try again.";
+    case "project_first": return "It was in a Members only or Private project, so it comes back only with that project. Restore the project first.";
+    case "project_gone": return "It was in a Members only or Private project that's been deleted for good, so it can't come back.";
     case "not_allowed": return "You can't do that in this workspace.";
     case "not_found": return "It's no longer in the bin: someone restored it or deleted it for good.";
     case "unavailable": return "The recycle bin isn't switched on yet.";

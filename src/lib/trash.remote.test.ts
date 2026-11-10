@@ -103,7 +103,9 @@ describe("restore and purge", () => {
     expect(rpc).toHaveBeenCalledWith("restore_from_trash", { p_id: uuid(1001) });
     rpc.mockResolvedValueOnce({ data: RESULT(1, { status: "already_restored" }), error: null });
     expect((await restoreFromTrash(uuid(1001))).status).toBe("already_restored");
-    for (const [message, why] of [["restore conflict", "conflict"], ["no project to restore into", "no_project"], ["not authorized", "not_allowed"], ["not found", "not_found"]] as const) {
+    for (const [message, why] of [["restore conflict", "conflict"], ["no project to restore into", "no_project"], ["not authorized", "not_allowed"], ["not found", "not_found"],
+      // (0058: a task of a Members only or Private project that's gone)
+      ["restore its project first", "project_first"], ["its project was deleted for good", "project_gone"]] as const) {
       rpc.mockResolvedValueOnce({ data: null, error: { code: "P0001", message } });
       expect(trashFailure(await restoreFromTrash(uuid(1)).catch((x) => x))).toBe(why);
     }
@@ -143,6 +145,8 @@ describe("restore and purge", () => {
   it("says why in words", () => {
     expect(trashFailureText("conflict")).toMatch(/already back/);
     expect(trashFailureText("no_project")).toMatch(/Make a project first/);
+    expect(trashFailureText("project_first")).toMatch(/Restore the project first\./);
+    expect(trashFailureText("project_gone")).toMatch(/deleted for good/);
     expect(trashFailureText("network")).toMatch(/connection/);
   });
 });

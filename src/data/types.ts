@@ -1193,7 +1193,8 @@ export interface TrashRestoreResult {
   note: string | null;
   counts: TrashCounts | null;
 }
-export type TrashFailure = "not_allowed" | "not_found" | "conflict" | "no_project" | "unavailable" | "network" | "error";
+/** (project_first / project_gone, 0058: a task of a Members only or Private project that's gone comes back only with it) */
+export type TrashFailure = "not_allowed" | "not_found" | "conflict" | "no_project" | "project_first" | "project_gone" | "unavailable" | "network" | "error";
 /** restore_trash_items(): one answer per id, newest delete first. */
 export interface TrashBulkResult {
   id: string;
