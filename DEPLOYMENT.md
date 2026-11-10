@@ -940,9 +940,12 @@ steps; nothing breaks while you wait.
    Step 18's files: copy it with
    `pbcopy < ~/Downloads/kora-app/supabase/migrations/0058_project_access.sql`,
    paste, press **Run** ("Success. No rows returned"), then run the VERIFY query
-   at the end of the file: every column `true`. If it stops with "0058 needs …",
-   run the file it names first, then 0058 again. It's safe to run again: it
-   keeps everyone's projects and settings, and adds nobody back.
+   at the end of the file: every column `true`. It's commented out in the file;
+   this copies it ready to run:
+   `sed -n '/^-- select$/,/;$/p' ~/Downloads/kora-app/supabase/migrations/0058_project_access.sql | sed 's/^-- \{0,1\}//' | pbcopy`.
+   If it stops with "0058 needs …", run the file it names first, then 0058
+   again. It's safe to run again: it keeps everyone's projects and settings,
+   and adds nobody back.
 3. **Reload the app** and check: Settings › Workspace (as the business's owner)
    shows **Project access** with the switch **off** and "When you turn it on:"
    saying what would change for each guest. Admins and members don't see it.
@@ -968,10 +971,15 @@ steps; nothing breaks while you wait.
 5. **Rollback, if you need it.** Switch Project access off in Settings ›
    Workspace: instant, and the people, visibility and settings are kept for next
    time. If the app can't be reached, in the SQL editor:
+   `select id, name from public.workspaces where project_access;` lists the
+   businesses that are on; then
    `update public.workspaces set project_access = false where id = '<workspace id>';`
-   (or `… where project_access;` for every business). The full undo, only if
-   0058 itself is broken, is `supabase/rollback/0058_project_access_undo.sql`
-   (its VERIFY block too); it keeps the data. Running 0058 again after it puts
+   (or `update public.workspaces set project_access = false where project_access;`
+   for every business). The full undo, only if 0058 itself is broken, is
+   `pbcopy < ~/Downloads/kora-app/supabase/rollback/0058_project_access_undo.sql`
+   (paste, **Run**), then its VERIFY query, every column `true`:
+   `sed -n '/^-- select$/,/;$/p' ~/Downloads/kora-app/supabase/rollback/0058_project_access_undo.sql | sed 's/^-- \{0,1\}//' | pbcopy`.
+   It keeps the data. Running 0058 again after it puts
    everything back; anyone added to a Members only or Private project while it
    was out is added again in About › People & access.
 
