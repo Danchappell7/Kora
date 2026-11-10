@@ -162,6 +162,9 @@ const demoUpdateDay = (offset: number): number => {
   return iso > 5 ? 5 : iso;
 };
 
+/** A day from today, "YYYY-MM-DD" (the demo's rollout dates). */
+const demoDayIn = (n: number): string => { const d = new Date(KANBO_TODAY); d.setDate(d.getDate() + n); return toLocalISO(d); };
+
 /* The demo person runs three businesses (owner of Foundrise and Reco HQ, admin of
    Courtside Padel), helps out at a fourth (a member of Harbour Advisory) and is a guest
    at a fifth (Northlight Studio), so the Group page, All businesses, the switcher's dots
@@ -175,7 +178,9 @@ export let WORKSPACES: Workspace[] = [
   { id: "ws-reco", name: "Reco HQ", kind: "team", ownerId: "m-self", logoUrl: demoLogo("R", "#f08a3c", "#c4532a") },
   { id: "ws-courtside", name: "Courtside Padel", kind: "team", ownerId: "m-2",
     logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`),
-    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) } },
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(-5) },
+    // 0057: Courtside goes live in ten days, so its leads get Kanbo noticed's one next fix (only a rollout under way does)
+    rollout: { goLive: demoDayIn(10) } },
   { id: "ws-harbour", name: "Harbour Advisory", kind: "team", ownerId: "m-3", logoUrl: demoLogo("H", "#4a4f8f", "#262a5c") },
   // a partner's studio that invited Daniel as a guest: what a guest sees (and doesn't)
   { id: "ws-northlight", name: "Northlight Studio", kind: "team", ownerId: "m-4", logoUrl: demoLogo("N", "#d4677a", "#9c3550") },
