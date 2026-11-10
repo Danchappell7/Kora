@@ -114,6 +114,15 @@ function accessOn(tx: Tx): Promise<boolean> {
   return installed.get(tx)!;
 }
 
+/** Is Project access switched on in `ws`? False before 0058, or for Personal. Asked as the key's user,
+ *  who reads their own workspace's row (to_jsonb: no column named, so it can't fail after the undo file). */
+async function switchedOn(tx: Tx, ws: string | null | undefined): Promise<boolean> {
+  if (!ws || !(await accessOn(tx))) return false;
+  const rs = await tx.query<{ on: boolean }>(
+    `select coalesce((select (to_jsonb(w) ->> 'project_access') = 'true' from public.workspaces w where w.id = $1::uuid), false) as "on"`, [ws]);
+  return rs[0]?.on === true;
+}
+
 const CANT_CHANGE_PROJECT = "You can see this project but can't change it.";
 
 /** Writing into a team project (a task, a section, a move, the project itself) needs edit rights on it (0058). */
@@ -815,9 +824,10 @@ export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras
     }
 
     // ---- people ----
-    // with Project access (0058), anyone kept on it must be able to see its project: checked on every move
+    // with Project access switched on (0058), anyone kept on it must be able to see its project: checked on
+    // every move. Switched off, a move inside the workspace leaves its people as they are, as before
     const access = await accessOn(tx);
-    const recheck = moved || (projectChanged && access);
+    const recheck = moved || (projectChanged && (await switchedOn(tx, ws)));
     const seen = access ? project : undefined;
     if (v.assigneeId !== undefined) assignee = await resolveAssignee(tx, v.assigneeId, ws, me, seen);
     else if (recheck && cur.assignee_id && !(await canBeOnTask(tx, ws, String(cur.assignee_id), me, seen))) {
@@ -957,12 +967,14 @@ async function spawnNextOccurrence(ctx: RouteContext, tx: Tx, cur: Row): Promise
         and x.title = $3 and x.project_id = $4 and x.recurrence = $5 and x.due_date >= $6::date limit 1`,
     [id, s(cur.parent_id), String(cur.title ?? ""), String(cur.project_id), recurrence, occ.dueDate]);
   if (already.length) return null;
-  // Project access (0058): someone who can no longer see the project doesn't get its next occurrence; it comes
-  // to whoever completed this one (the app's rule on a move), with no plan of theirs on it
-  const cols = (await accessOn(tx))
+  // Project access (0058, switched on): someone who can no longer see the project doesn't get its next
+  // occurrence; it comes to whoever completed this one (the app's rule on a move), with no plan of theirs on it.
+  // Switched off, it goes to its assignee, as before
+  const gated = await switchedOn(tx, s(cur.workspace_id));
+  const cols = gated
     ? CLONED_COLS.replace("my_section_id, assignee_id", `case when k.ok then src.my_section_id end, case when k.ok then src.assignee_id else $7::text end`)
     : CLONED_COLS;
-  const kept = (await accessOn(tx))
+  const kept = gated
     ? ` cross join lateral (select src.workspace_id is null or src.assignee_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           or ${personRankSql("src.assignee_id", "src.workspace_id", "src.project_id")} >= 1 as ok) k`
     : "";

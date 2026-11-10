@@ -3576,6 +3576,25 @@ async function projectAccessApiSuite(w: World) {
     ok((await toolOk(w, bob, "get_task", { taskId: salary })).task.id === salary, "and reads its task");
     ok((await names(gus)).includes("Board pay"), "so does the guest");
   });
+  await test("0058 via REST, switch off: a move inside the workspace and a repeat answer as before 0058 (someone who's left stays on them)", async () => {
+    const fen = await makeUser(pg, "pa.fen@example.org", "Fen");
+    await pg.query(`update public.profiles set approved = true where id = $1::uuid`, [fen]);
+    await pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'pa.fen@example.org', 'fen', 'member', 'active')`, [w.w1, fen]);
+    const other = await mk("Zebra other", "workspace");
+    const t = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, followers, collaborators)
+      values ($1::uuid, 'Fen''s job', $2, $3, $4::uuid, array[$3, $5], array[$3]) returning id::text as id`, [w.alice, w.launch, fen, w.w1, w.bob])).id;
+    const rep = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, recurrence, due_date)
+      values ($1::uuid, 'Fen''s weekly report', $2, $3, $4::uuid, 'weekly', '2026-11-09') returning id::text as id`, [w.alice, w.launch, fen, w.w1])).id;
+    await pg.query(`delete from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, fen]);
+    const aliceKeyOff = (await asPerson<{ r: { key: string } }>(pg, w.alice, `select public.create_api_key('pa rest off', null, 'write', null) as r`))[0].r.key;
+    eq((await rest(w, aliceKeyOff, "PATCH", `/tasks/${t}`, { projectId: other })).status, 200, "moved");
+    const row = await one<{ a: string; f: string[]; c: string[] }>(`select assignee_id as a, followers as f, collaborators as c from public.tasks where id = $1::uuid`, [t]);
+    eq([row.a === fen, row.f.includes(fen), row.c.includes(fen)], [true, true, true], "Fen is still its assignee, follower and collaborator");
+    eq((await rest(w, aliceKeyOff, "PATCH", `/tasks/${rep}`, { status: "done" })).status, 200, "completed");
+    const next = await pg.query<{ a: string }>(`select assignee_id as a from public.tasks where title = 'Fen''s weekly report' and id <> $1::uuid`, [rep]);
+    eq(next.rows.map((r) => r.a === fen), [true], "its next occurrence is Fen's, as before");
+    await pg.query(`delete from public.tasks where id = any ($1::uuid[]) or (title = 'Fen''s weekly report')`, [[t, rep]]);
+  });
   await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, true)`, [w.w1]);
   await test("0058 via MCP and REST, switch on: a private project isn't listed, found, fetched or written by a member who isn't on it", async () => {
     eq((await names(bob)).includes("Board pay"), false, "list_projects");
