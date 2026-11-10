@@ -29,7 +29,20 @@ export interface NoticePayload {
   email?: { subject: string; html: string };
   /** a held morning due list (daily-reminders in quiet hours) */
   due?: { today: string; tasks: DueTask[]; more: number };
+  /** an "update" notice (0053/0054): what it's about, so the drain checks again before one that waited goes out
+   *  (they're still in each project's workspace, the projects are live, the update or the ask still stands) */
+  about?: UpdateAbout;
 }
+/** What an "update" notice is about. */
+export interface UpdateAbout {
+  /** the projects it names (at most ABOUT_MAX_PROJECTS: an update-day reminder can name several) */
+  projects: string[];
+  /** a posted update's (an Ask in it) */
+  updateId?: string;
+  /** an "Ask for an update" */
+  askId?: string;
+}
+export const ABOUT_MAX_PROJECTS = 60;
 export interface DueTask { id: string; title: string | null; due_date: string }
 
 /** The slice of a notify_queue row composing needs. */

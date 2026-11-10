@@ -20,7 +20,9 @@
 //     its claim's lease, so a slow run is never claimed twice), groups it by
 //     recipient + channel + task, checks each notice again (they may have
 //     left the workspace, snoozed the thread, switched to the digest, or be
-//     in quiet hours now) and sends ONE message per group naming everyone
+//     in quiet hours now; a project update's notice: still in each project's
+//     workspace, the project live, the update or the ask still there) and
+//     sends ONE message per group naming everyone
 //     and every mention. A lookup that fails (a passing database error) is
 //     never taken for "gone": those notices wait and are tried again.
 //   replanHeld()  after a change to quiet hours, time zone or delivery
@@ -35,7 +37,7 @@
 import {
   NOTIFY_BUNDLE_WINDOW_SEC, planDelivery, resolveNotifyPrefs, type DeliveryPlan, type NotifyChannel, type NotifyKind, type ResolvedNotifyPrefs,
 } from "./notifyTiming.ts";
-import { composeBundle, dueEmail, type Composed, type NoticePayload } from "./notifyCompose.ts";
+import { ABOUT_MAX_PROJECTS, composeBundle, dueEmail, type Composed, type NoticePayload, type UpdateAbout } from "./notifyCompose.ts";
 import { dueDigestPush, pushToUser, type PushMessage, type VapidKeys } from "./webpush.ts";
 import { sendEmail } from "./email.ts";
 
@@ -196,6 +198,10 @@ export interface DrainDeps {
   recipient(userId: string): Promise<{ prefs: ResolvedNotifyPrefs } | null>;
   /** can they still see the task? (people leave workspaces while a notice waits) — throws when it can't tell */
   canSee(userId: string, taskId: string): Promise<boolean>;
+  /** a project update's notice (kind "update", no task): are they still in each project's workspace, the projects
+   *  live, and the update (or the ask) still there and unanswered? — throws when it can't tell. Given, an "update"
+   *  notice that doesn't say what it's about isn't sent (there's nothing to check it by). */
+  canSeeUpdate?(userId: string, about: UpdateAbout): Promise<boolean>;
   /** throws when it can't tell */
   snoozedUntil(userId: string, taskId: string): Promise<Date | null>;
   send(userId: string, channel: NotifyChannel, msg: Composed): Promise<SendOutcome>;
@@ -225,6 +231,22 @@ export function composeGroup(rows: readonly QueueRow[], appUrl: string): Compose
   return composeBundle(rows, appUrl);
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A held "update" notice's `about`, as stored (null: it doesn't say, or says it wrongly). */
+export function updateAboutOf(payload: unknown): UpdateAbout | null {
+  const a = (payload as { about?: unknown } | null)?.about as Record<string, unknown> | undefined;
+  if (!a || typeof a !== "object" || !Array.isArray(a.projects)) return null;
+  const projects = [...new Set(a.projects.map(String))];
+  if (!projects.length || projects.length > ABOUT_MAX_PROJECTS || !projects.every((p) => UUID_RE.test(p))) return null;
+  const out: UpdateAbout = { projects };
+  for (const k of ["updateId", "askId"] as const) {
+    if (a[k] === undefined) continue;
+    if (typeof a[k] !== "string" || !UUID_RE.test(a[k] as string)) return null;
+    out[k] = a[k] as string;
+  }
+  return out;
+}
+
 const groupKey = (r: QueueRow) => `${r.user_id}\u0000${r.channel}\u0000${r.bundle_key}`;
 /** the claim's rows by recipient + channel + bundle, in claim order */
 function groupRows(rows: readonly QueueRow[]): QueueRow[][] {
@@ -242,6 +264,7 @@ export async function drainQueue(d: DrainDeps): Promise<DrainReport> {
   // per run: one read per person, task and thread (a failed read is remembered too: tried again next run)
   const people = new Map<string, Promise<{ prefs: ResolvedNotifyPrefs } | null>>();
   const sees = new Map<string, Promise<boolean>>();
+  const seesUpdate = new Map<string, Promise<boolean>>();
   const snoozed = new Map<string, Promise<Date | null>>();
   const memo = <T>(m: Map<string, Promise<T>>, k: string, fn: () => Promise<T>): Promise<T> => {
     if (!m.has(k)) m.set(k, Promise.resolve().then(fn));
@@ -269,6 +292,11 @@ export async function drainQueue(d: DrainDeps): Promise<DrainReport> {
     for (const r of list) {
       try {
         if (r.task_id && !(await memo(sees, `${userId}:${r.task_id}`, () => d.canSee(userId, r.task_id!)))) { drop.push(r); continue; }
+        if (r.kind === "update" && d.canSeeUpdate) {
+          const about = updateAboutOf(r.payload);
+          const check = d.canSeeUpdate.bind(d);
+          if (!about || !(await memo(seesUpdate, `${userId}:${JSON.stringify(about)}`, () => check(userId, about)))) { drop.push(r); continue; }
+        }
         if (r.kind === "digest") { keep.push(r); continue; }
         const until = r.task_id ? await memo(snoozed, `${userId}:${r.task_id}`, () => d.snoozedUntil(userId, r.task_id!)) : null;
         // it's due now: only the person's switches, snoozes, digest choice and quiet hours can still stop it
@@ -544,6 +572,38 @@ export function supabaseDrainDeps(db: ServiceDb, env: SenderEnv & { appUrl: stri
       if (!t || t.archived_at) return false;
       if (!t.workspace_id) return String(t.user_id) === userId;
       return (await teamOf(String(t.workspace_id))).has(userId);
+    },
+    async canSeeUpdate(userId, about) {
+      const ids = [...new Set(about.projects)];
+      if (!ids.length) return false;
+      const { data: ps, error } = await db.from("projects").select("id,workspace_id,owner_id,archived_at").in("id", ids);
+      if (error) throw new LookupFailed("projects", error);
+      const rows = (Array.isArray(ps) ? ps : []) as { id: string; workspace_id: string | null; owner_id: string | null; archived_at: string | null }[];
+      // every project it names: still there, live, in a workspace they're still in
+      if (rows.length !== ids.length) return false;
+      for (const p of rows) {
+        if (p.archived_at || !p.workspace_id) return false;
+        if (!(await teamOf(String(p.workspace_id))).has(userId)) return false;
+      }
+      if (about.updateId) {
+        // (an update its author deleted takes its Inbox items with it: its email and push go too)
+        const { data: u, error: e } = await db.from("status_updates").select("id").eq("id", about.updateId).maybeSingle();
+        if (e) throw new LookupFailed("update", e);
+        if (!u) return false;
+      }
+      if (about.askId) {
+        const { data: a, error: e } = await db.from("update_asks").select("id,project_id,owner_id,created_at").eq("id", about.askId).maybeSingle();
+        if (e) throw new LookupFailed("ask", e);
+        const p = a ? rows.find((x) => String(x.id) === String(a.project_id)) : undefined;
+        // the ask's gone, or the project isn't theirs to post any more
+        if (!a || !p || String(a.owner_id) !== userId || String(p.owner_id) !== userId) return false;
+        // answered meanwhile: an update in the project since the ask
+        const { data: later, error: e2 } = await db.from("status_updates").select("id").eq("project_id", String(a.project_id))
+          .eq("workspace_id", String(p.workspace_id)).gt("created_at", String(a.created_at)).limit(1);
+        if (e2) throw new LookupFailed("updates", e2);
+        if (Array.isArray(later) && later.length) return false;
+      }
+      return true;
     },
     snoozedUntil: (userId, taskId) => readSnoozedUntil(db, userId, taskId),
     async send(userId, channel, msg) {

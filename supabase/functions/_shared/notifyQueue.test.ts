@@ -627,3 +627,118 @@ describe("supabaseQueueStore (the calls it makes)", () => {
     expect(f.calls.find((c) => c[0] === "update")).toEqual(["update", { deliver_after: sec(600).toISOString(), claimed_at: null, attempts: 1, last_error: null }]);
   });
 });
+
+describe("a held project update notice is checked again before it goes (it has no task to check by)", () => {
+  const P = "22222222-2222-4222-8222-222222222222";
+  const U = "33333333-3333-4333-8333-333333333333";
+  const updateNotice = (over: Partial<Notice> = {}, about: unknown = { projects: [P], updateId: U }): Notice => notice("update", "Sana Rao", {
+    eventKey: `status_update:${U}`, bundleKey: `update:${P}`, taskId: null, title: "Secret launch",
+    payload: { v: 1, line: "Sana asked you something", url: `/p/${P}/updates`,
+      push: { title: "Sana asked you something", body: "Secret launch: approve the cuts", url: `/p/${P}/updates`, tag: `update-${P}`, kind: "update" },
+      ...(about === "none" ? {} : { about: about as never }) },
+    ...over,
+  });
+  const heldOvernight = async (n: Notice) => {
+    const w = world({ quiet_hours: { start: "22:00", end: "07:00" } });
+    w.clock.now = new Date("2026-10-09T22:30:00Z");   // 23:30 BST
+    expect((await w.deliver(n)).result).toBe("held");
+    w.clock.now = new Date("2026-10-10T06:01:00Z");
+    return w;
+  };
+
+  it("someone removed from the workspace (or the update deleted) meanwhile: dropped, nothing sent", async () => {
+    const w = await heldOvernight(updateNotice());
+    const asked: unknown[] = [];
+    const r = await w.drain({ canSeeUpdate: async (u, about) => { asked.push([u, about]); return false; } });
+    expect(asked).toEqual([["maya", { projects: [P], updateId: U }]]);
+    expect(r).toMatchObject({ dropped: 1, sent: 0 });
+    expect(w.sent).toHaveLength(0);
+  });
+
+  it("still theirs to read: it goes", async () => {
+    const w = await heldOvernight(updateNotice());
+    expect(await w.drain({ canSeeUpdate: async () => true })).toMatchObject({ sent: 1, dropped: 0 });
+    expect(w.sent[0].msg.push?.body).toBe("Secret launch: approve the cuts");
+  });
+
+  it("one that doesn't say what it's about (or says it wrongly) isn't sent: there's nothing to check it by", async () => {
+    for (const about of ["none", { projects: [] }, { projects: ["not-a-uuid"] }, { projects: [P], updateId: 7 }]) {
+      const w = await heldOvernight(updateNotice({}, about));
+      const check = vi.fn(async () => true);
+      expect(await w.drain({ canSeeUpdate: check })).toMatchObject({ dropped: 1, sent: 0 });
+      expect(check).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a check that can't be made (a passing database error) waits and is tried again, never sent unchecked", async () => {
+    const w = await heldOvernight(updateNotice());
+    expect(await w.drain({ canSeeUpdate: async () => { throw new LookupFailed("projects", "connection reset"); } })).toMatchObject({ retried: 1, sent: 0, dropped: 0 });
+    expect(w.sent).toHaveLength(0);
+  });
+});
+
+describe("supabaseDrainDeps.canSeeUpdate (the reads it makes)", () => {
+  const P = "22222222-2222-4222-8222-222222222222";
+  const U = "33333333-3333-4333-8333-333333333333";
+  const A = "44444444-4444-4444-8444-444444444444";
+  type Row = Record<string, unknown>;
+  /** supabase-js's chain over arrays of rows (select / eq / in / gt / limit / maybeSingle); `broken`: tables that error */
+  function rowsDb(tables: Record<string, Row[]>, broken: string[] = []) {
+    const from = (name: string) => {
+      const ops: [string, unknown[]][] = [];
+      const run = () => {
+        if (broken.includes(name)) return { data: null, error: { message: "canceling statement due to statement timeout" } };
+        let rows = [...(tables[name] ?? [])];
+        for (const [m, a] of ops) {
+          if (m === "eq") rows = rows.filter((r) => r[a[0] as string] === a[1]);
+          else if (m === "in") rows = rows.filter((r) => (a[1] as unknown[]).includes(r[a[0] as string]));
+          else if (m === "gt") rows = rows.filter((r) => String(r[a[0] as string]) > String(a[1]));
+          else if (m === "limit") rows = rows.slice(0, a[0] as number);
+        }
+        return { data: rows, error: null };
+      };
+      // deno-lint-ignore no-explicit-any
+      const b: any = {
+        then: (ok: (r: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve(run()).then(ok, bad),
+        maybeSingle: () => Promise.resolve(run()).then((r) => ({ data: r.data?.[0] ?? null, error: r.error })),
+      };
+      for (const m of ["select", "eq", "in", "gt", "limit", "order"]) b[m] = (...a: unknown[]) => { ops.push([m, a]); return b; };
+      return b;
+    };
+    return { from, rpc: vi.fn() };
+  }
+  const base = (over: Record<string, Row[]> = {}) => ({
+    projects: [{ id: P, workspace_id: "w1", owner_id: "maya", archived_at: null }],
+    workspace_members: [{ workspace_id: "w1", user_id: "maya", status: "active" }],
+    workspaces: [{ id: "w1", owner_id: "boss" }],
+    status_updates: [{ id: U, project_id: P, workspace_id: "w1", created_at: "2026-10-09T10:00:00Z" }],
+    update_asks: [{ id: A, project_id: P, owner_id: "maya", created_at: "2026-10-09T12:00:00Z" }],
+    ...over,
+  });
+  const check = (tables: Record<string, Row[]>, about: { projects: string[]; updateId?: string; askId?: string }, who = "maya", broken: string[] = []) =>
+    supabaseDrainDeps(rowsDb(tables, broken), { appUrl: "", vapid: null }).canSeeUpdate!(who, about);
+
+  it("an Ask in an update: still in the workspace and the update still there", async () => {
+    expect(await check(base(), { projects: [P], updateId: U })).toBe(true);
+    expect(await check(base({ workspace_members: [] }), { projects: [P], updateId: U })).toBe(false);                       // removed meanwhile
+    expect(await check(base({ workspace_members: [{ workspace_id: "w1", user_id: "maya", status: "removed" }] }), { projects: [P], updateId: U })).toBe(false);
+    expect(await check(base({ status_updates: [] }), { projects: [P], updateId: U })).toBe(false);                          // its author deleted it
+    expect(await check(base({ projects: [{ id: P, workspace_id: "w1", owner_id: "maya", archived_at: "2026-10-09T23:00:00Z" }] }), { projects: [P], updateId: U })).toBe(false);
+    expect(await check(base({ projects: [] }), { projects: [P] })).toBe(false);                                            // the project's gone
+    expect(await check(base({ workspace_members: [] }), { projects: [P] }, "boss")).toBe(true);                             // the workspace's owner
+  });
+
+  it("an Ask for an update: still the project's owner, and nothing posted since the ask", async () => {
+    expect(await check(base(), { projects: [P], askId: A })).toBe(true);
+    expect(await check(base({ update_asks: [] }), { projects: [P], askId: A })).toBe(false);
+    expect(await check(base({ projects: [{ id: P, workspace_id: "w1", owner_id: "theo", archived_at: null }] }), { projects: [P], askId: A })).toBe(false);
+    const answered = base({ status_updates: [{ id: "u2", project_id: P, workspace_id: "w1", created_at: "2026-10-09T18:00:00Z" }] });
+    expect(await check(answered, { projects: [P], askId: A })).toBe(false);
+  });
+
+  it("a read that fails throws (the notice waits), never 'no'", async () => {
+    for (const t of ["projects", "workspace_members", "status_updates", "update_asks"]) {
+      await expect(check(base(), { projects: [P], updateId: U, askId: A }, "maya", [t])).rejects.toBeInstanceOf(LookupFailed);
+    }
+  });
+});

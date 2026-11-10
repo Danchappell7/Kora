@@ -121,6 +121,14 @@ describe("digestUpdates: the digest's \"Your project updates\"", () => {
     const planted = world({ asks: [ask], updates: [{ id: "x", project_id: P1, workspace_id: null, created_at: "2026-11-11T12:00:00Z", status: "on_track" }] });
     expect((await digestUpdates(planted, ME, "2026-11-11", "Europe/London", since)).length).toBe(1);
   });
+  it("an owner who has since left the workspace, or is only a guest there now, isn't told about it (its name stays out)", async () => {
+    expect(await digestUpdates(world({ asks: [ask], members: [{ workspace_id: W1, user_id: ME, role: "member", status: "removed" }] }), ME, "2026-11-11", "Europe/London", since)).toEqual([]);
+    expect(await digestUpdates(world({ asks: [ask], members: [{ workspace_id: W1, user_id: ME, role: "guest", status: "active" }] }), ME, "2026-11-11", "Europe/London", since)).toEqual([]);
+    // the workspace's own owner always can
+    const theirs = world({ asks: [{ ...ask, owner_id: BOSS }], members: [],
+      projects: [{ id: P1, name: "Launch", workspace_id: W1, owner_id: BOSS, status: "on_track", update_rhythm: { cadence: "never", weekday: 5 }, archived_at: null }] });
+    expect(await digestUpdates(theirs, BOSS, "2026-11-11", "Europe/London", since)).toEqual([{ projectId: P1, name: "Launch", line: "Ada asked for one" }]);
+  });
   it("on the update day it says so once, not again for the ask", async () => {
     expect(await digestUpdates(world({ asks: [{ ...ask, created_at: "2026-11-13T08:00:00Z" }] }), ME, FRIDAY, "Europe/London", since))
       .toEqual([{ projectId: P1, name: "Launch", line: "due today" }]);

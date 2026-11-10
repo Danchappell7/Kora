@@ -22,7 +22,7 @@
 // ============================================================
 import { addWorkingDays, dueDayWords, dueOnOrBefore, effectiveRhythm, FOLLOW_UPS, isReminderDay, rhythmState } from "./updateRhythm.ts";
 import { localParts, resolveNotifyPrefs, type ResolvedNotifyPrefs } from "./notifyTiming.ts";
-import { updateDueEmail, updateDuePush, type DigestUpdate, type UpdateDueItem } from "./notifyCompose.ts";
+import { ABOUT_MAX_PROJECTS, updateDueEmail, updateDuePush, type DigestUpdate, type UpdateDueItem } from "./notifyCompose.ts";
 import type { PushMessage } from "./webpush.ts";
 import { deliverNotice, type QueueStore, type SendOutcome } from "./notifyQueue.ts";
 import { KEY_PREFIX } from "./limits.ts";
@@ -115,8 +115,19 @@ export async function ownerUpdatesDue(db: ReminderDb, ownerId: string, today: st
   return out;
 }
 
+/** Can they post in this workspace: an active owner, admin or member of it, or the workspace's owner? (false when it
+ *  can't be read: the digest leaves the line out rather than name a project they may have left) */
+async function canPostIn(db: ReminderDb, userId: string, workspaceId: string): Promise<boolean> {
+  const { data: m, error } = await db.from("workspace_members").select("role").eq("workspace_id", workspaceId).eq("user_id", userId)
+    .eq("status", "active").limit(1).maybeSingle();
+  if (error) return false;
+  if (m && POSTERS.has(String(m.role))) return true;
+  const { data: w, error: e2 } = await db.from("workspaces").select("owner_id").eq("id", workspaceId).maybeSingle();
+  return !e2 && !!w && String(w.owner_id) === userId;
+}
+
 /** The digest's "Your project updates": what ownerUpdatesDue finds, and the leads' asks since the last digest that
- *  nothing's been posted after. */
+ *  nothing's been posted after (about projects they own in a workspace they can still post in). */
 export async function digestUpdates(db: ReminderDb, userId: string, today: string, tz: string, since: string): Promise<DigestUpdate[]> {
   const out: DigestUpdate[] = (await ownerUpdatesDue(db, userId, today, tz))
     .map((i) => ({ projectId: i.projectId, name: i.name, line: i.followUp === 0 || i.when === "today" ? "due today" : `was due ${i.when}` }));
@@ -127,6 +138,8 @@ export async function digestUpdates(db: ReminderDb, userId: string, today: strin
     if (out.some((u) => u.projectId === a.project_id)) continue;
     const { data: p } = await db.from("projects").select("id,name,owner_id,workspace_id,archived_at").eq("id", a.project_id).maybeSingle();
     if (!p || p.archived_at || String(p.owner_id) !== userId || !p.workspace_id) continue;
+    // still someone who can post there (as the reminders have it): an active owner, admin or member, or its owner
+    if (!(await canPostIn(db, userId, String(p.workspace_id)))) continue;
     const { data: later } = await db.from("status_updates").select("id").eq("project_id", a.project_id).eq("workspace_id", p.workspace_id)
       .gt("created_at", a.created_at).limit(1);
     if (later?.length) continue;
@@ -174,7 +187,9 @@ export async function remindOwner(ownerId: string, prefs: ResolvedNotifyPrefs, d
     userId: ownerId, kind: "update" as const, eventKey: `update_due:${local.date}`, bundleKey: `update_due:${local.date}`,
     taskId: null, actorId: null, actorName: "", title: items.length === 1 ? oneLine(items[0].name) : "Project updates",
   };
-  const payload = { v: 1 as const, line: push.title, url: "/today", push, email: { subject: mail.subject, html: mail.html } };
+  // (one held for quiet hours is checked again before it goes: still in those workspaces, the projects live)
+  const about = { projects: [...new Set(items.map((i) => i.projectId))].slice(0, ABOUT_MAX_PROJECTS) };
+  const payload = { v: 1 as const, line: push.title, url: "/today", push, email: { subject: mail.subject, html: mail.html }, about };
   let failed = false;
   if (d.push) {
     const send = d.push;

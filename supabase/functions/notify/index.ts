@@ -563,12 +563,14 @@ async function updateAskNotice(supa: Supa, req: Request, body: Record<string, un
   const line = noticeLine("update", actorName);
   const store = supabaseQueueStore(supa);
   const base = { kind: "update", bundleKey: `update:${p.id}`, taskId: null, actorId, actorName, title: name } as const;
+  // (a notice held for quiet hours is checked again before it goes: still theirs, still unanswered)
+  const about = { projects: [p.id], askId: a.id };
   const now = new Date();
   let sent = 0, pushed = 0;
   if (env.vapid) {
     const vapid = env.vapid;
     const push = updateAskPush(actorName, name, p.id);
-    const r = await deliverNotice({ ...base, userId: id, channel: "push", eventKey: `update_ask:${a.id}`, payload: { v: 1, line, url: path, push } }, {
+    const r = await deliverNotice({ ...base, userId: id, channel: "push", eventKey: `update_ask:${a.id}`, payload: { v: 1, line, url: path, push, about } }, {
       store, now, prefs: person.prefs,
       send: async () => {
         const res = await pushToUser(supa, id, push, vapid);
@@ -579,7 +581,7 @@ async function updateAskNotice(supa: Supa, req: Request, body: Record<string, un
   }
   if (env.resendKey) {
     const mail = updateAskEmail(actorName, name, link);
-    const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `update_ask:${a.id}`, payload: { v: 1, line, url: path, email: { subject: mail.subject, html: mail.html } } }, {
+    const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `update_ask:${a.id}`, payload: { v: 1, line, url: path, email: { subject: mail.subject, html: mail.html }, about } }, {
       store, now, prefs: person.prefs,
       send: () => sendMail(supa, env, id, mail.subject, mail.html),
     });
@@ -625,6 +627,8 @@ async function statusUpdateNotice(supa: Supa, req: Request, body: Record<string,
   const link = env.appUrl ? `${env.appUrl}${path}` : "";
   const store = supabaseQueueStore(supa);
   const base = { kind: "update", bundleKey: `update:${p.id}`, taskId: null, actorId, actorName, title: oneLine(p.name || "a project") } as const;
+  // (a notice held for quiet hours is checked again before it goes: still in the workspace, the update not deleted)
+  const about = { projects: [p.id], updateId: u.id };
   let sent = 0, pushed = 0;
   for (const id of recips) {
     const person = await readRecipient(supa, id).catch(() => DEFAULT_RECIPIENT);
@@ -634,7 +638,7 @@ async function statusUpdateNotice(supa: Supa, req: Request, body: Record<string,
     if (env.vapid) {
       const vapid = env.vapid;
       const push = updatePostedPush(posted);
-      const r = await deliverNotice({ ...base, userId: id, channel: "push", eventKey: `status_update:${u.id}`, payload: { v: 1, line, url: path, push } }, {
+      const r = await deliverNotice({ ...base, userId: id, channel: "push", eventKey: `status_update:${u.id}`, payload: { v: 1, line, url: path, push, about } }, {
         store, now, prefs: person.prefs,
         send: async () => {
           const res = await pushToUser(supa, id, push, vapid);
@@ -645,7 +649,7 @@ async function statusUpdateNotice(supa: Supa, req: Request, body: Record<string,
     }
     if (env.resendKey) {
       const mail = updatePostedEmail(posted, true, link);
-      const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `status_update:${u.id}`, payload: { v: 1, line, url: path, email: { subject: mail.subject, html: mail.html } } }, {
+      const r = await deliverNotice({ ...base, userId: id, channel: "email", eventKey: `status_update:${u.id}`, payload: { v: 1, line, url: path, email: { subject: mail.subject, html: mail.html }, about } }, {
         store, now, prefs: person.prefs,
         send: () => sendMail(supa, env, id, mail.subject, mail.html),
       });
