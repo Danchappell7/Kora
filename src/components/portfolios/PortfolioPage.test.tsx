@@ -91,6 +91,42 @@ describe("a portfolio's page", () => {
     // and each project's latest underneath
     const latest = within(screen.getByRole("region", { name: "Each project's latest update" }));
     expect(latest.getByText("The deck is late. More soon.")).toBeInTheDocument();
+    // posted: the composer folds back to its button, rather than stay open and empty
+    expect(screen.queryByRole("textbox", { name: "Portfolio update" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Draft a portfolio update" })).toBeInTheDocument();
+  });
+
+  it("Updates: the owner's composer says once where its draft came from", () => {
+    page({ tab: "updates" });
+    expect(screen.getAllByText(/drafted this|Drafted on this device/)).toHaveLength(1);
+    expect(screen.getByText("Kanbo drafted this on this device from the projects' latest updates. Edit it, then post it for your followers.")).toBeInTheDocument();
+  });
+
+  it("Print or PDF puts its latest portfolio update at the top, the thing a meeting most wants", async () => {
+    const doc = { write: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue({ document: doc, focus: vi.fn(), print: vi.fn() } as unknown as Window);
+    page({ tab: "updates" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Post update" })); });
+    fireEvent.click(screen.getByRole("button", { name: "Print or PDF" }));
+    expect(doc.write.mock.calls[0][0]).toMatch(/Latest portfolio update · At risk · .*1 of 3 projects is on track/);
+  });
+
+  it("adding projects: Escape or another tab puts the picker away; with nothing left to add, the button says so", () => {
+    const { props } = page();
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Spare" }), { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Add projects to Q4" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Updates" }));
+    expect(props.onTab).toHaveBeenCalledWith("updates");
+    expect(screen.queryByRole("group", { name: "Add projects to Q4" })).toBeNull();
+  });
+
+  it("a portfolio just made (still on its way to the database) already offers its owner, date and followers", () => {
+    const { followerIds: _f, ownerId: _o, description: _d, targetDate: _t, ...bare } = PF;
+    page({ portfolio: { ...bare, id: "tmp-pf-1" } });
+    expect(screen.queryByText(/aren't switched on yet/)).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Portfolio owner" })).toBeInTheDocument();
   });
 
   it("Updates: Kanbo's AI drafts it when it's on (its facts never carry whole tasks)", async () => {

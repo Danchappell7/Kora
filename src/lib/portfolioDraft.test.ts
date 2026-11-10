@@ -41,6 +41,11 @@ describe("the portfolio's sentence", () => {
       .toBe("2 projects: 1 off track, 1 with no update yet");
     expect(portfolioSentence([], TODAY)).toBe("No projects in it yet.");
   });
+  it("a project nobody's updated counts as no update yet (as its pill says), whatever Kanbo reads in the work", () => {
+    const rows = [row(launch, update("p1", "on_track", 1, "Fine.")), row(infra, undefined, ok, "on_track"), row(app, undefined, missing), row(web, undefined, ok, "off_track")];
+    expect(portfolioSentence(rows, TODAY)).toBe("4 projects: 1 on track, 3 with no update yet");
+    expect(rows.map(rowBucket)).toEqual(["on_track", "none", "silent", "none"]);
+  });
 });
 
 describe("Kanbo's draft, on this device", () => {
@@ -60,6 +65,14 @@ describe("Kanbo's draft, on this device", () => {
       asks: "Launch: Approve the budget",
       next: "Launch: Launch day, Wed 18 Nov.",
     });
+  });
+  it("leaves out an Ask a project put to the portfolio's own owner; names a project with no update while Kanbo sees trouble", () => {
+    const asksSana = { ...update("p2", "on_track", 3, "Palette shipped.", { asks: "Sana, can you approve the palette?" }), askUserIds: ["u-sana"] };
+    const rows = [row(brand, asksSana), row(launch, update("p1", "on_track", 1, "Fine.", { asks: "Book the venue" })), row(web, undefined, ok, "off_track")];
+    const d = draftPortfolioLocal(rows, [], indexTasks([]), [], TODAY, "u-sana");
+    expect(d.sections.asks).toBe("Launch: Book the venue");
+    expect(d.sections.risks).toBe("Website: no update yet; 2 overdue.");
+    expect(draftPortfolioLocal(rows, [], indexTasks([]), [], TODAY).sections.asks).toBe("Brand: Sana, can you approve the palette?\nLaunch: Book the venue");
   });
   it("all on track reads on track; an empty portfolio says so", () => {
     expect(draftPortfolioLocal([row(brand, update("p2", "on_track", 1, "Fine."))], [], indexTasks([]), [], TODAY))

@@ -116,4 +116,12 @@ describe("store: a portfolio's details (0054)", () => {
     // a name alone is saved as before
     await expect(s.updatePortfolio("pf-1", { name: "Openings" })).resolves.toBeUndefined();
   });
+
+  it("demo: a new portfolio has its details from the start, owned by whoever made it (as the database does)", async () => {
+    vi.resetModules();
+    vi.doMock("../lib/supabase", () => ({ supabase: null, isSupabaseConfigured: false }));
+    const s = (await import("./store")).store;
+    expect(await s.createPortfolio({ workspaceId: "ws-courtside", name: "Clubhouse opening" }, "m-self")).toMatchObject({
+      name: "Clubhouse opening", ownerId: "m-self", description: null, targetDate: null, followerIds: [], color: null, emoji: null });
+  });
 });

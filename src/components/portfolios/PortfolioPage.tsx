@@ -39,9 +39,8 @@ import { AskForUpdateButton } from "../updates/AskForUpdate";
 import { UpdateSectionsList } from "../updates/UpdateCard";
 import { WorkspaceMark } from "../businesses/Businesses";
 import { shortName } from "../../lib/businesses";
-import { spectrumColor } from "../../lib/projectIdentity";
 import { AddProjectsPicker } from "./AddProjectsPicker";
-import { ACROSS_CSS, portfolioRows, PortfolioTable, type PfRow } from "./PortfoliosView";
+import { ACROSS_CSS, asIdentity, portfolioRows, PortfolioTable, type PfRow } from "./PortfoliosView";
 import "../project/projects.css";
 import "../updates/conversation.css";
 import "./portfolio.css";
@@ -49,11 +48,8 @@ import "./portfolio.css";
 export type PortfolioTab = "table" | "updates";
 export type AiPortfolio = (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind; sections?: UpdateSections }>>;
 
-const DEFAULT_COLOR = spectrumColor("sky");
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
-/** the portfolio dressed as a project, for the identity band, tile and identity sheet */
-const asIdentity = (pf: Portfolio): Project => ({ id: pf.id, name: pf.name, emoji: pf.emoji || "💼", color: pf.color || DEFAULT_COLOR, workspaceId: pf.workspaceId ?? null });
 
 /** The portfolio update Kanbo drafts for its owner, and its earlier ones. */
 function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, owner, aiPortfolio, onOpenProject }: {
@@ -73,8 +69,10 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
   const [posting, setPosting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
-  const open = canWrite && on && (writing || isOwner);
-  const local = () => draftPortfolioLocal(rows, tasks, idx, statusUpdates, KANBO_TODAY);
+  // the owner opens to Kanbo's draft; once they've posted it, it folds back to "Draft a portfolio update"
+  const [posted, setPosted] = useState(false);
+  const open = canWrite && on && (writing || (isOwner && !posted));
+  const local = () => draftPortfolioLocal(rows, tasks, idx, statusUpdates, KANBO_TODAY, owner);
   const draft = async () => {
     if (drafting) return;
     setErr(null);
@@ -84,7 +82,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
     if (!aiPortfolio) { fill(local(), "template", null); return; }
     setDrafting(true);
     let out: Awaited<ReturnType<AiPortfolio>> | null = null;
-    try { out = await aiPortfolio(portfolioFactsForAi(pf, rows, tasks, idx, statusUpdates, KANBO_TODAY)); } catch { out = null; }
+    try { out = await aiPortfolio(portfolioFactsForAi(pf, rows, tasks, idx, statusUpdates, KANBO_TODAY, owner)); } catch { out = null; }
     setDrafting(false);
     if (out?.source === "ai" && out.data?.summary) fill(out.data, "ai", null);
     else fill(local(), "template", out?.source === "limit" ? "You've used today's Kanbo drafts, so this one was written on this device." : "Kanbo couldn't draft this one just now, so it was written on this device.");
@@ -94,7 +92,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
     setPosting(true); setErr(null);
     try {
       await postPortfolioUpdate(pf.id, { summary: text, status: kind, sections: hasSections(sections) ? sections : undefined }, me);
-      setText(""); setSections({}); setSource(null); setNote(null); setWriting(false);
+      setText(""); setSections({}); setSource(null); setNote(null); setWriting(false); setPosted(true);
     } catch (e) { setErr((e as Error).message); }
     setPosting(false);
   };
@@ -118,7 +116,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
           <p className="kpf-off">Portfolio updates aren't switched on yet. Each project's latest update is below.</p>
         ) : open ? (
           <div className="kpf-compose kpj-composer">
-            <p className="kpf-compose-note">{isOwner ? "Kanbo drafted this from your projects' latest updates. Edit it, then post it for your followers." : `${ownerName ? `${firstName(ownerName)} owns this portfolio. ` : ""}Kanbo can draft it from the projects' latest updates.`}</p>
+            {!isOwner && <p className="kpf-compose-note">{ownerName ? `${firstName(ownerName)} owns this portfolio. ` : ""}Kanbo can draft it from the projects' latest updates.</p>}
             <Segmented ariaLabel="Portfolio status" options={STATUS_OPTIONS} value={kind} onChange={setKind} />
             <div className={source === "ai" ? "kvellum" : "kpj-draft"}>
               <textarea className={source === "ai" ? undefined : "kpj-field"} rows={4} value={text} aria-label="Portfolio update" placeholder={drafting ? "Kanbo is drafting…" : "How is the portfolio going?"}
@@ -126,7 +124,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void post(); } }} />
               {source === "ai" && <Provenance summary={`from ${plural(rows.length, "project")}' latest updates`} details={rows.map((r) => `${r.p.name}: ${r.status.label}`)} />}
             </div>
-            {source === "template" && <p className="kpj-composer-note">{note ?? "Drafted on this device from the projects' latest updates."} Edit it before you post.</p>}
+            {source === "template" && <p className="kpj-composer-note">{note ?? "Kanbo drafted this on this device from the projects' latest updates."} {isOwner ? "Edit it, then post it for your followers." : "Edit it before you post."}</p>}
             <fieldset className="kuc-sec">
               {SECTION_KEYS.map((k) => (
                 <label key={k} className="kuc-sec-row">
@@ -141,7 +139,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
                 <span className="kpj-btn-mark"><AiMark size={14} thinking={drafting} />{drafting ? "Drafting" : text.trim() ? "Redraft" : "Draft it for me"}</span>
               </Button>
               <span className="kpj-spacer" />
-              {!isOwner && <Button variant="ghost" size="sm" onClick={() => setWriting(false)}>Cancel</Button>}
+              {(!isOwner || posted) && <Button variant="ghost" size="sm" onClick={() => setWriting(false)}>Cancel</Button>}
               <Button variant="primary" size="sm" onClick={() => void post()} disabled={!text.trim() || posting} loading={posting}>Post update</Button>
             </div>
             {err && <p className="kuc-err" role="alert">{err}</p>}
@@ -274,7 +272,9 @@ export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, m
   const today = todayISO();
   const across = acrossBusinesses ?? null;
   // 0054's details (owner, description, date, followers, look): rows read before it carry none
-  const detailsOn = pf.followerIds !== undefined;
+  // (one just made, still on its way to the database, shows them: they're saved once it's there)
+  const detailsOn = pf.followerIds !== undefined || pf.id.startsWith("tmp-");
+  const { updates: pfUpdates } = usePortfolioUpdates(pf.id);
   const findProject = (pid: string) => projects.find((p) => p.id === pid);
   const inPf = pf.projectIds.map(findProject).filter((p): p is Project => !!p);
   // (re-read when the day turns over in a tab left open)
@@ -296,7 +296,8 @@ export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, m
   } : undefined;
   const csv = () => downloadCsv(portfolioFileName(pf.name, KANBO_TODAY, "csv"),
     portfolioCsv(rows, tasks, idx, statusUpdates, KANBO_TODAY, { ownerName: (id) => getMember(id)?.name, workspaces: across?.workspaces }));
-  const print = () => printPortfolio(ident.emoji ? { ...pf, emoji: ident.emoji } : pf, sentence, rows, tasks, idx, statusUpdates, KANBO_TODAY);
+  // (its latest portfolio update heads the page: what a meeting most wants)
+  const print = () => printPortfolio(ident.emoji ? { ...pf, emoji: ident.emoji } : pf, sentence, rows, tasks, idx, statusUpdates, KANBO_TODAY, pfUpdates[0]);
   const lands = pf.targetDate ? fmtShortDay(pf.targetDate, KANBO_TODAY) : null;
 
   return (
@@ -322,9 +323,9 @@ export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, m
           </div>
         </div>
         {/* how the programme is going, in the brief's voice */}
-        <p className="kpf-sentence">{sentence}.</p>
+        <p className="kpf-sentence">{/[.!?]$/.test(sentence) ? sentence : `${sentence}.`}</p>
         {rows.length > 0 && (
-          <p className="kpf-sentence-sub">{pct}% of the work is done{lands ? `, and it's due to land ${lands}` : ""}.{rows.some((r) => r.status.mismatch) ? " Kanbo sees more trouble than the leads on the projects marked." : ""}</p>
+          <p className="kpf-sentence-sub">{pct}% of the work is done{lands ? `, and it's due to land ${lands}` : ""}.{rows.some((r) => r.status.mismatch) ? " Kanbo sees more trouble in the work on the projects it marks." : ""}</p>
         )}
         <div className="kpf-desc">
           {canWrite && detailsOn
@@ -376,10 +377,11 @@ export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, m
         </div>
 
         <div className="kpf-tabs">
-          <Segmented ariaLabel="Portfolio view" value={tab} onChange={onTab}
+          <Segmented ariaLabel="Portfolio view" value={tab} onChange={(t) => { setPicking(false); onTab(t); }}
             options={[{ value: "table", label: `Table · ${rows.length}` }, { value: "updates", label: "Updates" }]} />
           <span className="kpf-tabs-end">
-            {canWrite && <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} onClick={() => setPicking((v) => !v)}>Projects</Button>}
+            {canWrite && <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} disabled={!available.length}
+              title={available.length ? undefined : "Every project is already in this portfolio"} onClick={() => setPicking((v) => !v)}>Projects</Button>}
             <Button variant="ghost" size="sm" icon="arrowUpRight" onClick={csv} disabled={!rows.length}>Export CSV</Button>
             <Button variant="ghost" size="sm" icon="notes" onClick={print} disabled={!rows.length}>Print or PDF</Button>
             {onOpenInsights && <Button variant="ghost" size="sm" icon="chart" onClick={onOpenInsights} disabled={!rows.length}>Insights</Button>}

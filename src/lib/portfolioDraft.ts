@@ -2,8 +2,9 @@
    KANBO — a portfolio, read the way the Today brief reads a day
    (0054, c-portfolio-workspace):
      · portfolioSentence: "6 projects: 4 on track, 1 at risk, 1 silent
-       for 3 weeks" — each project counted once, by its lead's call,
-       unless its update is missing (then it's silent);
+       for 3 weeks" — each project counted once, by the pill it wears
+       (its lead's call, or no update yet), unless its update is missing
+       (then it's silent);
      · portfolioFactsForAi / draftPortfolioLocal: the update Kanbo
        drafts from its projects' latest updates and health, for the
        owner to post (the AI's when it's on, else written here);
@@ -48,12 +49,11 @@ const firstSentence = (s: string, max = 160) => {
 };
 const lower = (s: string) => s.slice(0, 1).toLowerCase() + s.slice(1);
 
-/** How a project counts in the sentence: silent (its update is missing), or its lead's call (else Kanbo's read). */
+/** How a project counts in the sentence: silent (its update is missing), its lead's call, or none (no update yet):
+ *  the same as the pill its row wears. */
 export function rowBucket(r: PortfolioRowLike): StatusKind | "silent" | "none" {
   if (r.fresh.kind === "missing") return "silent";
-  if (r.status.lead) return r.status.lead;
-  if (r.status.kanbo === "off_track" || r.status.kanbo === "at_risk") return r.status.kanbo;
-  return r.status.kanbo ? "on_track" : "none";
+  return r.status.lead ?? "none";
 }
 
 /** "6 projects: 4 on track, 1 at risk, 1 silent for 3 weeks" (the brief's voice). */
@@ -66,23 +66,21 @@ export function portfolioSentence(rows: readonly PortfolioRowLike[], today: Date
     if (n) parts.push(`${n} ${lower(STATUS_WORDS[k])}`);
   }
   const silent = rows.filter((r) => rowBucket(r) === "silent");
-  if (silent.length) {
-    const quiet = silent.map((r) => daysSince(r.latest?.createdAt, today)).filter((d): d is number => d != null);
-    const never = silent.length - quiet.length;
-    if (quiet.length) {
-      const least = Math.min(...quiet);
-      parts.push(quiet.length === 1 ? `1 silent for ${quietFor(least)}` : `${quiet.length} silent for ${quietFor(least)} or more`);
-    }
-    if (never) parts.push(`${never} with no update yet`);
+  const quiet = silent.map((r) => daysSince(r.latest?.createdAt, today)).filter((d): d is number => d != null);
+  if (quiet.length) {
+    const least = Math.min(...quiet);
+    parts.push(quiet.length === 1 ? `1 silent for ${quietFor(least)}` : `${quiet.length} silent for ${quietFor(least)} or more`);
   }
-  const none = count("none");
-  if (none) parts.push(`${none} not started`);
+  // never posted: missing already, or not yet due
+  const never = silent.length - quiet.length + count("none");
+  if (never) parts.push(`${never} with no update yet`);
   return `${plural(rows.length, "project")}: ${parts.join(", ")}`;
 }
 
-/** The facts Kanbo's portfolio draft is written from: names, calls, counts and each project's latest words, never whole tasks. */
+/** The facts Kanbo's portfolio draft is written from: names, calls, counts and each project's latest words, never whole tasks
+ *  (an Ask a project put to the portfolio's own owner is left out: it isn't theirs to pass on). */
 export function portfolioFactsForAi(pf: Pick<Portfolio, "name" | "description" | "targetDate">, rows: readonly PortfolioRowLike[], tasks: Task[], idx: TaskIndex,
-  statusUpdates: StatusUpdate[], today: Date) {
+  statusUpdates: StatusUpdate[], today: Date, ownerId?: string | null) {
   return {
     portfolio: pf.name,
     description: pf.description?.slice(0, 400) ?? null,
@@ -101,19 +99,22 @@ export function portfolioFactsForAi(pf: Pick<Portfolio, "name" | "description" |
         updateMissing: r.fresh.kind === "missing",
         latest: r.latest ? {
           daysAgo: daysSince(r.latest.createdAt, today), status: r.latest.status, summary: r.latest.summary.slice(0, 400),
-          ...(r.latest.sections ? { sections: r.latest.sections } : {}),
+          ...(r.latest.sections ? { sections: ownerId && r.latest.askUserIds?.includes(ownerId) ? withoutAsks(r.latest.sections) : r.latest.sections } : {}),
         } : null,
       };
     }),
   };
 }
 
+const withoutAsks = (s: UpdateSections): UpdateSections => { const rest = { ...s }; delete rest.asks; return rest; };
+
 const RANK: Record<string, number> = { off_track: 0, at_risk: 1, silent: 2, on_hold: 3, none: 4, on_track: 5 };
 
 /** A portfolio update written on this device: where it stands in a sentence or two, the worst off by name,
- *  and Highlights / Risks / Asks / Next gathered from its projects' own updates. */
-export function draftPortfolioLocal(rows: readonly PortfolioRowLike[], tasks: Task[], idx: TaskIndex, statusUpdates: StatusUpdate[], today: Date):
-  { summary: string; status: StatusKind; sections: UpdateSections } {
+ *  and Highlights / Risks / Asks / Next gathered from its projects' own updates (an Ask a project put to the
+ *  portfolio's own owner isn't theirs to pass on, so it's left out). */
+export function draftPortfolioLocal(rows: readonly PortfolioRowLike[], tasks: Task[], idx: TaskIndex, statusUpdates: StatusUpdate[], today: Date,
+  ownerId?: string | null): { summary: string; status: StatusKind; sections: UpdateSections } {
   if (!rows.length) return { summary: "No projects in this portfolio yet.", status: "on_track", sections: {} };
   const buckets = rows.map((r) => ({ r, b: rowBucket(r) })).sort((x, y) => RANK[x.b] - RANK[y.b]);
   const onTrack = buckets.filter((x) => x.b === "on_track").length;
@@ -140,8 +141,11 @@ export function draftPortfolioLocal(rows: readonly PortfolioRowLike[], tasks: Ta
   }
   const risks = worst.map(({ r }) => `${r.p.name}: ${r.latest?.sections?.risks ? firstSentence(r.latest.sections.risks, 120) : r.status.sees.replace(/^Kanbo sees /, "")}`);
   for (const { r } of silent.slice(0, 2)) risks.push(`${r.p.name}: no update since ${r.latest ? fmtShortDay(r.latest.createdAt, today) : "it started"}.`);
+  // (nothing said yet, and Kanbo sees trouble in the work)
+  for (const { r } of buckets.filter((x) => x.b === "none" && x.r.status.mismatch).slice(0, 2)) risks.push(`${r.p.name}: no update yet; ${r.status.sees.replace(/^Kanbo sees /, "")}.`);
   if (risks.length) sections.risks = risks.join("\n");
-  const asks = rows.filter((r) => r.latest?.sections?.asks).slice(0, 3).map((r) => `${r.p.name}: ${firstSentence(r.latest!.sections!.asks!, 140)}`);
+  const asks = rows.filter((r) => r.latest?.sections?.asks && !(ownerId && r.latest.askUserIds?.includes(ownerId))).slice(0, 3)
+    .map((r) => `${r.p.name}: ${firstSentence(r.latest!.sections!.asks!, 140)}`);
   if (asks.length) sections.asks = asks.join("\n");
   const next = rows.map((r) => ({ r, ms: statusFacts(r.p, tasks, statusUpdates, today, idx).nextMilestone }))
     .filter((x) => x.ms?.dueDate).sort((a, b) => a.ms!.dueDate!.localeCompare(b.ms!.dueDate!)).slice(0, 3)

@@ -2231,7 +2231,9 @@ export const store = {
 
   /* ---------- portfolios ---------- */
   async createPortfolio(input: { workspaceId: string | null; name: string; projectIds?: string[] }, userId: string): Promise<Portfolio> {
-    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, name: input.name, projectIds: input.projectIds ?? [] };
+    // (demo: as the database makes it since 0054, owned by the person who made it)
+    if (!supabase) return { id: newId(), workspaceId: input.workspaceId, name: input.name, projectIds: input.projectIds ?? [],
+      ownerId: userId, description: null, targetDate: null, followerIds: [], color: null, emoji: null };
     const uid = await authUid(userId);
     const { data, error } = await supabase.from("portfolios").insert({ user_id: uid, workspace_id: input.workspaceId, name: input.name, project_ids: input.projectIds ?? [] }).select("*").single();
     if (error) throw error;

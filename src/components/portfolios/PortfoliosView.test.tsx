@@ -68,6 +68,30 @@ describe("PortfoliosView: one pill, mismatches first", () => {
     expect(screen.queryByRole("button", { name: /for an update/ })).toBeNull();
   });
 
+  it("the card's counts are the pills its rows wear: Kanbo's read counts as its mark, never as \"1 at risk\" over rows that say On track", () => {
+    render(<PortfoliosView {...base} />);
+    const card = screen.getByRole("article", { name: "Portfolio Q4" });
+    // (Rosy's work is at risk, its lead says On track: the header says Kanbo flags it, not "1 at risk")
+    expect(within(card).queryByText(/at risk|off track/)).toBeNull();
+    expect(within(card).getByText("Kanbo flags 1")).toBeInTheDocument();
+    expect(within(card).getByText("1 update missing")).toBeInTheDocument();
+  });
+
+  it("a project nobody's updated reads No update, never On track", () => {
+    render(<PortfoliosView {...base} statusUpdates={updates.filter((u) => u.projectId !== "calm")} />);
+    expect(screen.getByRole("img", { name: /^No update\. No update yet · Kanbo sees nothing overdue or blocked/ })).toHaveAttribute("data-tone", "neutral");
+  });
+
+  it("each card wears the portfolio's tile, which opens its page; with nothing left to add, + Projects says so", () => {
+    const onOpenPortfolio = vi.fn();
+    const { container } = render(<PortfoliosView {...base} projects={projects} onOpenPortfolio={onOpenPortfolio} />);
+    fireEvent.click(container.querySelector(".kup-pf-tile")!);
+    expect(onOpenPortfolio).toHaveBeenCalledWith("pf");
+    // (one name for the keyboard and a screen reader: Open)
+    expect(screen.getAllByRole("button", { name: "Open portfolio Q4" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Add projects to Q4" })).toBeDisabled();
+  });
+
   it("On hold is the lead's call: never a mismatch, and its update isn't chased", () => {
     localStorage.setItem("kanbo-portfolio-view", "table");
     render(<PortfoliosView {...base} statusUpdates={[...updates.filter((u) => u.projectId !== "quiet"), upd("quiet", "on_hold", "2026-10-20T10:00:00")]} asks={asks()} />);

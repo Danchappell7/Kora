@@ -12,17 +12,18 @@
    projects can be added at once from Cards or Table.
    ============================================================ */
 import { useMemo, useState } from "react";
-import { Avatar, Button, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, Segmented } from "../primitives";
+import { Avatar, Button, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, ProjectTile, Segmented } from "../primitives";
 import { getProject, getMember, KANBO_TODAY, toLocalISO, WORKSPACES } from "../../data/data";
 import type { Task, Project, Portfolio, StatusUpdate, Workspace } from "../../data/types";
 import { projectHealth, useStableOrder, type ProjectHealth } from "../views/reportingUtils";
 import { DraftInput } from "../project/DraftInput";
 import { fmtShortDay, FORMER_MEMBER, indexTasks, isStale, oldestTaskAge, projectUpdates, statusFacts, updateAuthor, type TaskIndex } from "../../lib/statusDraft";
 import { combinedProgress, progressOf } from "../../lib/countRules";
-import { mergedStatus, type MergedStatus } from "../../lib/honestStatus";
+import { mergedStatus, pillCounts, type MergedStatus } from "../../lib/honestStatus";
 import { projectRhythmState, updateFreshness, type UpdateFreshness } from "../../lib/updateRhythm";
 import type { AskForUpdate } from "../../lib/updateAsks";
 import { WorkspaceMark } from "../businesses/Businesses";
+import { spectrumColor } from "../../lib/projectIdentity";
 import { shortName } from "../../lib/businesses";
 import { MergedStatusPill } from "../updates/MergedStatusPill";
 import { AskForUpdateButton } from "../updates/AskForUpdate";
@@ -62,8 +63,27 @@ const PF_CSS = `
 @media (max-width: 859px) { .kup-pf-card .kpj-card-side { flex-wrap: wrap; min-width: 0; row-gap: 6px; } }
 .kup-pf-upd .kbtn { margin-right: -8px; }
 @container (max-width: 599px) { .kup-pf-upd { align-items: flex-start; } .kup-pf-upd .kbtn { margin: 0 0 0 -8px; } }
+/* the table's head on a phone: its name and counts on one line, + Projects and Open on their own under it */
+@media (max-width: 599px) {
+  .kup-pf-table .kpj-pf-exec-head { flex-wrap: wrap; align-items: center; row-gap: 4px; min-width: 0; }
+  .kup-pf-table .kpj-pf-exec-name { min-width: 0; overflow-wrap: anywhere; }
+  .kup-pf-table .kpf-head-acts { flex-basis: 100%; margin-left: -8px; }
+}
+/* a card's tile opens the portfolio's page */
+.kup-pf-tile { display: inline-flex; flex-shrink: 0; padding: 0; border: 0; border-radius: 7px; background: none; cursor: pointer; }
+.kup-pf-tile:hover { filter: brightness(0.96); }
+.kup-pf-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* a phone's card row: its whole name on one line, then the pill, its update and the rest under it */
+@media (max-width: 599px) {
+  .kup-pf-card .kpj-pf-row { grid-template-columns: 10px minmax(0, 1fr); row-gap: 4px; padding: 10px 0; }
+  .kup-pf-card .kpj-pf-row > .kpj-pf-open { white-space: normal; overflow-wrap: anywhere; }
+  .kup-pf-card .kpj-pf-row > .kpj-pf-side { grid-column: 2; justify-content: flex-start; gap: 6px 10px; }
+}
 `;
 const ONLY_YOU = "It's in your Personal space, so only you can see it. It shows projects from every business you're in, from what you can already see.";
+
+/** A portfolio dressed as a project, for its tile, its page's identity band and the identity sheet (0054). */
+export const asIdentity = (pf: Portfolio): Project => ({ id: pf.id, name: pf.name, emoji: pf.emoji || "💼", color: pf.color || spectrumColor("sky"), workspaceId: pf.workspaceId ?? null });
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 /** "Maya" for Maya Lin; "Former member" stays whole */
@@ -205,16 +225,18 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                 const rows = portfolioRows(inPf, tasks, idx, statusUpdates, KANBO_TODAY, workspaces);
                 // every top-level task across the portfolio's projects (lib/countRules), so it agrees with each row
                 const combined = combinedProgress(rows.flatMap((r) => r.ptasks), inPf.map((p) => p.id)).pct;
-                const offN = rows.filter((r) => r.health?.kind === "off_track").length;
-                const riskN = rows.filter((r) => r.health?.kind === "at_risk").length;
+                // counted from the pills the rows wear, so the header and the rows say the same thing
+                const counts = pillCounts(rows);
                 const missingN = rows.filter((r) => r.fresh.kind === "missing").length;
                 const summary = (
                   <>
                     {onlyYou}
                     {inPf.length > 0 && <span className="kpj-count">{combined}% · {plural(inPf.length, "project")}</span>}
-                    {offN > 0 && <Pill tone="signal">{offN} off track</Pill>}
-                    {riskN > 0 && <Pill tone="warn">{riskN} at risk</Pill>}
+                    {counts.off > 0 && <Pill tone="signal">{counts.off} off track</Pill>}
+                    {counts.risk > 0 && <Pill tone="warn">{counts.risk} at risk</Pill>}
                     {missingN > 0 && <Pill tone="neutral" title="Past their update day with nothing posted">{plural(missingN, "update")} missing</Pill>}
+                    {counts.marked > 0 && <span className="kup-flags" title="Kanbo sees more trouble in the work than these projects' pills say: they carry its mark">
+                      <span className="kup-pair-mark" data-tone="warn" aria-hidden="true" />Kanbo flags {counts.marked}</span>}
                   </>
                 );
 
@@ -227,8 +249,10 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                     onAdd={(ids) => { onUpdate(pf.id, { projectIds: [...pf.projectIds, ...ids.filter((id) => !pf.projectIds.includes(id))] }); setPickFor(null); }}
                     onCancel={() => setPickFor(null)} />
                 ) : null;
+                // (nothing left to add: the button says so rather than open an empty picker)
                 const addBtn = !readOnly && (
-                  <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} aria-label={`Add projects to ${pf.name}`} onClick={() => setPickFor((x) => x === pf.id ? null : pf.id)}>Projects</Button>
+                  <Button variant="ghost" size="sm" icon="plus" aria-expanded={picking} aria-label={`Add projects to ${pf.name}`} disabled={!available.length}
+                    title={available.length ? undefined : "Every project is already in this portfolio"} onClick={() => setPickFor((x) => x === pf.id ? null : pf.id)}>Projects</Button>
                 );
                 const openPage = onOpenPortfolio && (
                   <Button variant="ghost" size="sm" icon="arrowUpRight" aria-label={`Open portfolio ${pf.name}`} onClick={() => onOpenPortfolio(pf.id)}>Open</Button>
@@ -236,7 +260,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
 
                 if (view === "table") {
                   return (
-                    <section key={pf.id} className="kpj-pf-exec" aria-label={pf.name} data-across={across ? "" : undefined}>
+                    <section key={pf.id} className="kpj-pf-exec kup-pf-table" aria-label={pf.name} data-across={across ? "" : undefined}>
                       <div className="kpj-pf-exec-head">
                         <h2 className="kpj-pf-exec-name">{pf.name}</h2>
                         {summary}
@@ -254,7 +278,12 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                 return (
                   <article key={pf.id} className="kpj-card kup-pf-card" aria-label={`Portfolio ${pf.name}`} data-across={across ? "" : undefined}>
                     <div className="kpj-card-head">
-                      <Icon name="briefcase" size={16} sw={1.75} style={{ color: "var(--icon-quiet, var(--ink-4))" }} />
+                      {/* its own tile (0054), which opens its page (a pointer's shortcut: Open is the keyboard's and the screen reader's) */}
+                      {onOpenPortfolio ? (
+                        <button type="button" className="kup-pf-tile" onClick={() => onOpenPortfolio(pf.id)} tabIndex={-1} aria-hidden="true" title={`Open ${pf.name}`}>
+                          <ProjectTile project={asIdentity(pf)} size={20} />
+                        </button>
+                      ) : <ProjectTile project={asIdentity(pf)} size={20} />}
                       {readOnly ? <h3 className="kpj-name-static" style={{ margin: 0 }}>{pf.name}</h3>
                         : <DraftInput value={pf.name} required label={`Portfolio name: ${pf.name}`} onCommit={(v) => onUpdate(pf.id, { name: v })} className="kpj-name-input" />}
                       <div className="kpj-card-side">

@@ -1,10 +1,10 @@
 /* ============================================================
    KANBO — add several projects to a portfolio at once (0054). Tap
    projects to pick them (grouped by business in a Personal portfolio),
-   then "Add 3 projects". Used by the Portfolios list (Cards and Table)
-   and a portfolio's own page.
+   then "Add 3 projects". Escape puts it away. Used by the Portfolios
+   list (Cards and Table) and a portfolio's own page.
    ============================================================ */
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { Button, ProjectTile } from "../primitives";
 import type { Project, Workspace } from "../../data/types";
 import { WorkspaceMark } from "../businesses/Businesses";
@@ -25,9 +25,10 @@ export function AddProjectsPicker({ portfolioName, available, workspaces, onAdd,
 }) {
   const [picked, setPicked] = useState<string[]>([]);
   const toggle = (id: string) => setPicked((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]));
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } };
   if (!available.length) {
     return (
-      <div className="kpf-pick" role="group" aria-label={`Add projects to ${portfolioName}`}>
+      <div className="kpf-pick" role="group" aria-label={`Add projects to ${portfolioName}`} onKeyDown={onKeyDown}>
         <p className="kpf-pick-note">{emptyNote}</p>
         <div className="kpf-pick-foot"><Button variant="ghost" size="sm" onClick={onCancel}>Close</Button></div>
       </div>
@@ -44,7 +45,7 @@ export function AddProjectsPicker({ portfolioName, available, workspaces, onAdd,
     : null;
   const all = picked.length === available.length;
   return (
-    <div className="kpf-pick" role="group" aria-label={`Add projects to ${portfolioName}`}>
+    <div className="kpf-pick" role="group" aria-label={`Add projects to ${portfolioName}`} onKeyDown={onKeyDown}>
       <div className="kpf-pick-head">
         <span className="kpf-pick-title">Pick the projects to add</span>
         <Button variant="ghost" size="sm" onClick={() => setPicked(all ? [] : available.map((p) => p.id))}>{all ? "Clear" : "Select all"}</Button>
