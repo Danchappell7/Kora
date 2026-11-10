@@ -1,6 +1,6 @@
 /* lib/honestStatus: the lead's call and Kanbo's read as one pill, and the composer's one question. */
 import { describe, it, expect } from "vitest";
-import { honestQuestion, kanboCounts, kanboSees, leadCall, mergedStatus, rosier } from "./honestStatus";
+import { honestQuestion, kanboCounts, kanboSees, leadCall, mergedStatus, pillCounts, rosier } from "./honestStatus";
 
 describe("Kanbo's read in words", () => {
   it("says what it counts, and nothing when there's nothing", () => {
@@ -42,9 +42,19 @@ describe("one merged pill", () => {
     expect(rosier("off_track", "on_track")).toBe(false);
     expect(mergedStatus({}, { status: "at_risk" }, { health: "on_track", overdue: 0, blocked: 0 }).mismatch).toBe(false);
   });
-  it("no update: Kanbo's read is the pill, and it says nobody's posted", () => {
-    expect(mergedStatus({}, undefined, { health: "at_risk", overdue: 1, blocked: 0 })).toMatchObject({ label: "At risk", tone: "warn", lead: null, says: "No update yet", mismatch: false });
-    expect(mergedStatus({}, undefined, { health: null, overdue: 0, blocked: 0 })).toMatchObject({ label: "No update", tone: "neutral" });
+  it("no update: the pill says so (never \"On track\" for a project nobody's updated); trouble in the work still gets the mark", () => {
+    expect(mergedStatus({}, undefined, { health: "on_track", overdue: 0, blocked: 0 })).toMatchObject({ label: "No update", tone: "neutral", lead: null, says: "No update yet", mismatch: false });
+    expect(mergedStatus({}, undefined, { health: "at_risk", overdue: 1, blocked: 0 })).toMatchObject({ label: "No update", tone: "neutral", mismatch: true, kanboTone: "warn" });
+    expect(mergedStatus({}, undefined, { health: null, overdue: 0, blocked: 0 })).toMatchObject({ label: "No update", tone: "neutral", mismatch: false });
+  });
+  it("a roll-up counts the pills its rows wear", () => {
+    const rows = [
+      { status: mergedStatus({}, { status: "on_track" }, { health: "off_track", overdue: 3, blocked: 0 }) },   // On track, marked
+      { status: mergedStatus({}, { status: "at_risk" }, { health: "off_track", overdue: 3, blocked: 2 }) },   // At risk, marked (the work's off track)
+      { status: mergedStatus({}, undefined, { health: "on_track", overdue: 0, blocked: 0 }) },
+      { status: mergedStatus({ status: "on_hold" }, undefined, { health: "at_risk", overdue: 1, blocked: 0 }) },
+    ];
+    expect(pillCounts(rows)).toEqual({ off: 0, risk: 1, hold: 1, none: 1, marked: 2 });
   });
   it("set by hand before the first update says so; On hold set by hand stays, whatever's posted", () => {
     expect(mergedStatus({ status: "at_risk" }, undefined, { health: "on_track", overdue: 0, blocked: 0 })).toMatchObject({ label: "At risk", says: "Set by hand: At risk" });

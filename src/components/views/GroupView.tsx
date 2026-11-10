@@ -17,7 +17,7 @@ import { useMemo, type ReactNode } from "react";
 import { Button, EmptyState, Icon, Meter, Pill, ProjectTile, StatusGlyph } from "../primitives";
 import { timeAgo } from "../../data/data";
 import type { ApprovalWithTask, Goal, Project, StatusUpdate, Task, Workspace, WorkspaceMember } from "../../data/types";
-import { digestLine, groupDigest, type BusinessDigest, type GoalPace, type GoalWhy } from "../../lib/group";
+import { digestLine, groupDigest, offTrackPills, type BusinessDigest, type GoalPace, type GoalWhy } from "../../lib/group";
 import type { WorkspaceSignal } from "../../lib/businesses";
 import { readCapacities } from "../../lib/radar";
 import { BUSINESS_CSS, WorkspaceMark } from "../businesses/Businesses";
@@ -202,7 +202,7 @@ function BusinessSection({ d, onOpen, asks }: { d: BusinessDigest; onOpen: Group
             )}
         </Block>
 
-        <Block title="Projects to look at" n={d.projects.needs.length} of={d.projects.total} tone={d.projects.needs.some((x) => x.why === "off_track") ? "signal" : "warn"} calm={calmProjects}>
+        <Block title="Projects to look at" n={d.projects.needs.length} of={d.projects.total} tone={offTrackPills(d) > 0 ? "signal" : "warn"} calm={calmProjects}>
           {d.projects.total === 0 ? <p className="kgrp-calm">No projects yet.</p>
             : d.projects.needs.length === 0 ? <Calm>No project needs a look.</Calm> : (
               <ul className="kgrp-rows">
@@ -211,12 +211,13 @@ function BusinessSection({ d, onOpen, asks }: { d: BusinessDigest; onOpen: Group
                     <div className="kgrp-line">
                       <ProjectTile project={n.project} size={16} />
                       <button type="button" className="kgrp-open" onClick={() => go({ kind: "project", projectId: n.project.id })}>{n.project.name}</button>
-                      {n.why === "missing" && <AskForUpdateButton project={n.project} asks={asks} compact />}
+                      {/* (whatever else is wrong with it: a missing update can be asked for) */}
+                      {n.missing && <AskForUpdateButton project={n.project} asks={asks} compact />}
                     </div>
                     <div className="kgrp-meta">
                       {/* one pill: the lead's call and Kanbo's read together */}
                       <MergedStatusPill m={n.status} />
-                      {(n.why === "missing" || n.why === "stale") && <span className="kup-fresh" data-kind="missing">{n.label}</span>}
+                      {(n.missing || n.why === "stale") && <span className="kup-fresh" data-kind="missing">{n.why === "stale" ? n.label : "Update missing"}</span>}
                       <span className="kgrp-why">{n.detail}</span>
                     </div>
                   </li>

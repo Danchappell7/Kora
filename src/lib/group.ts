@@ -52,6 +52,8 @@ export interface GroupProject {
   detail: string;
   /** the one pill: the lead's call and Kanbo's read together */
   status: MergedStatus;
+  /** its update is missing (0053), whatever else is wrong: a lead can ask for it */
+  missing?: boolean;
 }
 export interface GroupApproval { id: string; taskId: string; title: string; requestedByName: string | null; createdAt: string }
 export interface BusinessDigest {
@@ -152,15 +154,15 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
     const bad = (k?: HealthKind | string): k is "off_track" | "at_risk" => k === "off_track" || k === "at_risk";
     const worst = health?.kind === "off_track" || call === "off_track" ? "off_track"
       : bad(health?.kind) || call === "at_risk" ? "at_risk" : null;
+    const missing = !!rhythm && readsMissing(rhythm);
     if (worst) {
       const fromWork = !!health && health.kind === worst;
-      // (the latest update's call is the row's pill, beside what Kanbo counts; a missing update too)
-      const missing = rhythm && readsMissing(rhythm) ? " · update missing" : "";
-      needs.push({ project: p, why: worst, label: KIND_LABEL[worst], source: fromWork ? "work" : "update", status,
-        detail: `${fromWork ? health!.detail : `Update: ${KIND_LABEL[worst].toLowerCase()}`}${missing}` });
-    } else if (rhythm ? readsMissing(rhythm) : isStale(f, oldestTaskAge(ptasks, p.id, today))) {
+      // (the latest update's call is the row's pill, beside what Kanbo counts; a missing update says so beside it)
+      needs.push({ project: p, why: worst, label: KIND_LABEL[worst], source: fromWork ? "work" : "update", status, missing,
+        detail: fromWork ? health!.detail : `Update: ${KIND_LABEL[worst].toLowerCase()}` });
+    } else if (rhythm ? missing : isStale(f, oldestTaskAge(ptasks, p.id, today))) {
       needs.push(rhythm
-        ? { project: p, why: "missing", label: "Update missing", status, detail: last }
+        ? { project: p, why: "missing", label: "Update missing", status, missing, detail: last }
         : { project: p, why: "stale", label: `No update in ${STALE_DAYS} days`, status, detail: last });
     }
   }
@@ -219,14 +221,18 @@ export function groupDigest(input: GroupInput): BusinessDigest[] {
   return [lead, ...list.slice(0, i), ...list.slice(i + 1)];
 }
 
-/** "1 approval · 1 of yours overdue · 1 project off track · 2 goals behind" (or "Nothing needs you") */
+/** How many of a business's projects to look at wear an Off track pill (the lead's call, as each row shows it). */
+export const offTrackPills = (d: BusinessDigest): number => d.projects.needs.filter((n) => n.status.lead === "off_track").length;
+
+/** "1 approval · 1 of yours overdue · 1 project off track · 2 goals behind" (or "Nothing needs you"): the projects
+ *  counted by the pill each row wears, so the line never says "off track" over a row that says "At risk". */
 export function digestLine(d: BusinessDigest): string {
   const bits: string[] = [];
   const p = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   if (d.approvals.length) bits.push(p(d.approvals.length, "approval"));
   if (d.mine.overdue) bits.push(`${d.mine.overdue} of yours overdue`);
   if (d.mine.dueToday) bits.push(`${d.mine.dueToday} of yours due today`);
-  const off = d.projects.needs.filter((n) => n.why === "off_track").length;
+  const off = offTrackPills(d);
   if (off) bits.push(`${p(off, "project")} off track`);
   const look = d.projects.needs.length - off;
   if (look) bits.push(`${p(look, "project")} to look at`);

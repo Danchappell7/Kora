@@ -113,9 +113,15 @@ describe("the Group page's businesses", () => {
     expect(monday.wins.count).toBe(2);
   });
 
-  it("a line that sums each business up", () => {
+  it("a line that sums each business up, counting the pills its rows wear", () => {
     const [alpha, beta] = groupDigest(input());
-    expect(digestLine(alpha)).toBe("1 approval · 1 project off track · 1 project to look at · 3 goals behind");
+    // (pa's work is off track but nobody's said so: its pill reads No update, marked, so it's one to look at)
+    expect(digestLine(alpha)).toBe("1 approval · 2 projects to look at · 3 goals behind");
+    const called = groupDigest(input({ statusUpdates: [upd("pa", "w-a", "off_track", "2026-10-08T10:00:00Z"), upd("pa2", "w-a", "at_risk", "2026-10-08T10:00:00Z")] }))[0];
+    expect(digestLine(called)).toBe("1 approval · 1 project off track · 1 project to look at · 3 goals behind");
+    // Kanbo's read says off track, the lead says At risk: the line says what the row says
+    const atRisk = groupDigest(input({ statusUpdates: [upd("pa", "w-a", "at_risk", "2026-10-08T10:00:00Z")] }))[0];
+    expect(digestLine(atRisk)).toBe("1 approval · 1 project to look at · 3 goals behind");
     expect(digestLine(beta)).toBe("1 project to look at");
     expect(digestLine({ ...beta, projects: { needs: [], total: 1 } })).toBe("Nothing needs you");
   });
@@ -127,10 +133,14 @@ describe("the Group page's businesses", () => {
   });
 
   it("a call rosier than the work comes first, ahead of worse projects that say so", () => {
-    // pa is off track and says nothing; pa2 says On track with two overdue: pa2 first
+    // pa is off track and says so; pa2 says On track with two overdue: pa2 first
     const tasks = [...input().tasks, task({ id: "a5", projectId: "pa2", dueDate: "2026-10-01" }), task({ id: "a6", projectId: "pa2", dueDate: "2026-10-02" })];
-    const d = groupDigest(input({ tasks, statusUpdates: [upd("pa2", "w-a", "on_track", "2026-10-08T10:00:00Z")] }));
+    const d = groupDigest(input({ tasks, statusUpdates: [upd("pa2", "w-a", "on_track", "2026-10-08T10:00:00Z"), upd("pa", "w-a", "off_track", "2026-10-08T10:00:00Z")] }));
     expect(d[0].projects.needs.map((n) => [n.project.id, n.status.mismatch])).toEqual([["pa2", true], ["pa", false]]);
+  });
+  it("a project nobody's updated wears No update (never Kanbo's read as if someone said it), marked when the work is in trouble", () => {
+    const [alpha] = groupDigest(input());
+    expect(alpha.projects.needs[0]).toMatchObject({ project: { id: "pa" }, why: "off_track", status: { label: "No update", tone: "neutral", mismatch: true, sees: "Kanbo sees 3 overdue" } });
   });
 
   it("'needs you' means what the switcher and Today mean: your own work and requests there; that business comes first", () => {
@@ -142,7 +152,7 @@ describe("the Group page's businesses", () => {
     const d = groupDigest({ ...base, signals });
     expect(d.map((x) => [x.workspace.name, !!x.needsMost])).toEqual([["Beta Padel", true], ["Alpha Studio", false]]);
     expect(d[0].mine).toEqual({ overdue: 2, dueToday: 1 });
-    expect(digestLine(d[0])).toBe("2 of yours overdue · 1 of yours due today · 1 project off track");
+    expect(digestLine(d[0])).toBe("2 of yours overdue · 1 of yours due today · 1 project to look at");
     // …the very business Today's brief names
     expect(businessLead(signals, WS).lead?.workspace.name).toBe("Beta Padel");
     // nothing needs you anywhere: no pill
@@ -152,11 +162,11 @@ describe("the Group page's businesses", () => {
 });
 
 describe("the Group page's projects, with an update day (0053)", () => {
-  it("a project past its day with nothing since the round before reads Update missing; one off track says so too", () => {
+  it("a project past its day with nothing since the round before reads Update missing; one off track is missing it too (and can be asked)", () => {
     // (Friday 9 Oct: everyone's day, the default)
     const [alpha, beta] = groupDigest(input({ tasks: [...input().tasks.map((x) => (x.id === "a1" ? { ...x, createdAt: "2026-09-01T09:00:00Z" } : x))] }));
-    expect(beta.projects.needs.map((n) => [n.project.id, n.why, n.label, n.detail])).toEqual([["pb", "missing", "Update missing", "Last update 19 days ago"]]);
+    expect(beta.projects.needs.map((n) => [n.project.id, n.why, n.label, n.detail, n.missing])).toEqual([["pb", "missing", "Update missing", "Last update 19 days ago", true]]);
     // Studio Opening is off track and hasn't posted in two rounds
-    expect(alpha.projects.needs[0]).toMatchObject({ project: { id: "pa" }, why: "off_track", detail: "3 overdue · update missing" });
+    expect(alpha.projects.needs[0]).toMatchObject({ project: { id: "pa" }, why: "off_track", detail: "3 overdue", missing: true });
   });
 });

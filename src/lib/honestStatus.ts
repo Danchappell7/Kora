@@ -4,10 +4,14 @@
    posted (the latest update, or the status set by hand before the
    first one) and what Kanbo sees in the work (reportingUtils
    projectHealth: overdue and blocked tasks, sub-tasks included).
-   · mergedStatus: ONE pill for both. It wears the lead's words; when
-     the lead's call is rosier than the work ("On track" with 4 overdue
-     and 2 blocked) it's a mismatch, marked on the pill and sorted
-     first, and "Lead says / Kanbo sees" explains it on hover or focus.
+   · mergedStatus: ONE pill for both. It wears the lead's words ("No
+     update" when nobody's said anything); when the pill reads better
+     than the work ("On track" with 4 overdue and 2 blocked, or no
+     update while the work is at risk) it's a mismatch, marked on the
+     pill and sorted first, and "Lead says / Kanbo sees" explains it on
+     hover or focus.
+   · pillCounts: a roll-up's counts from those same pills, so a header
+     never says "1 off track" over rows that say otherwise.
    · honestQuestion: the composer's one calm question when a lead
      picks On track while Kanbo sees overdue or blocked work. It never
      blocks the post.
@@ -67,12 +71,12 @@ export function leadCall(project: Pick<Project, "status">, latest?: Pick<StatusU
 }
 
 export interface MergedStatus {
-  /** the pill's words: the lead's call, else Kanbo's read, else "No update" */
+  /** the pill's words: the lead's call, else "No update" */
   label: string;
   tone: Tone;
   lead: StatusKind | null;
   kanbo: HealthKind | null;
-  /** the lead's call is rosier than the work */
+  /** the pill reads better than the work: the lead's call is rosier, or nothing's been said while Kanbo sees trouble */
   mismatch: boolean;
   /** Kanbo's read's tone (the mismatch mark) */
   kanboTone: Tone;
@@ -88,10 +92,11 @@ export interface MergedStatus {
 export function mergedStatus(project: Pick<Project, "status">, latest: Pick<StatusUpdate, "status"> | undefined, read: KanboRead): MergedStatus {
   const lead = leadCall(project, latest);
   const kanbo = read.health;
-  const mismatch = rosier(lead, kanbo);
+  // (nobody's said anything: the pill says so, and trouble in the work still gets the mark)
+  const mismatch = lead ? rosier(lead, kanbo) : !!kanbo && BADNESS[kanbo] > 0;
   const fromHand = !!lead && (project.status === "on_hold" || !latest);
-  const label = lead ? STATUS_WORDS[lead] : kanbo ? HEALTH_WORDS[kanbo] : "No update";
-  const tone: Tone = lead ? STATUS_TONES[lead] : kanbo ? HEALTH_TONES[kanbo] : "neutral";
+  const label = lead ? STATUS_WORDS[lead] : "No update";
+  const tone: Tone = lead ? STATUS_TONES[lead] : "neutral";
   const says = !lead ? "No update yet" : fromHand ? `Set by hand: ${STATUS_WORDS[lead]}` : `Lead says ${STATUS_WORDS[lead]}`;
   const worst = Math.max(lead && lead !== "on_hold" ? BADNESS[lead] : 0, kanbo ? BADNESS[kanbo] : 0);
   return {
@@ -99,5 +104,15 @@ export function mergedStatus(project: Pick<Project, "status">, latest: Pick<Stat
     kanboTone: kanbo ? HEALTH_TONES[kanbo] : "neutral",
     says, sees: kanboSees(read),
     rank: (mismatch ? 0 : 10) + (2 - worst),
+  };
+}
+
+/** A roll-up's counts, from the pills its rows wear: how many say Off track, At risk and On hold, how many
+ *  have no update, and how many Kanbo marks (the pill reads better than the work). */
+export function pillCounts(rows: readonly { status: MergedStatus }[]): { off: number; risk: number; hold: number; none: number; marked: number } {
+  const n = (f: (m: MergedStatus) => boolean) => rows.filter((r) => f(r.status)).length;
+  return {
+    off: n((m) => m.lead === "off_track"), risk: n((m) => m.lead === "at_risk"), hold: n((m) => m.lead === "on_hold"),
+    none: n((m) => !m.lead), marked: n((m) => m.mismatch),
   };
 }

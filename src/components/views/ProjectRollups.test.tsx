@@ -190,8 +190,8 @@ describe("PortfoliosView — exec table", () => {
     expect(alpha).toHaveTextContent("At risk");
     expect(alpha).toHaveTextContent("Deck is late");
     expect(within(alpha).getByRole("progressbar", { name: "Alpha progress" })).toHaveAttribute("aria-valuenow", "50");
-    // no update yet: the pill is Kanbo's read of the work, and the row says nobody's posted
-    expect(beta).toHaveTextContent("On trackNo update yet");
+    // no update yet: the pill says so (never "On track" for a project nobody's updated), and so does the row
+    expect(beta).toHaveTextContent("No updateNo update yet");
     expect(beta).toHaveTextContent("No update in 14 days");
     fireEvent.click(within(beta).getByRole("button", { name: "Open project Beta" }));
     expect(onOpenProject).toHaveBeenCalledWith("pb");
