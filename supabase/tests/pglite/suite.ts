@@ -2448,14 +2448,211 @@ async function updateConversationSuite(w: World) {
   });
 }
 
+/* ============================================================ 0055: shared capacity, working hours, time off, bill rates */
+
+/** A person's week at a business (you set yours, owners and admins anyone's; the team reads it, guests
+ *  don't), time off (the person's own, read by everyone who works beside them; the reason only by the
+ *  person and their owners and admins, in any business they share), and bill rates (owners and admins
+ *  only). Every table is written by its functions only. Then migrating twice, and re-running 0041. */
+async function availabilitySuite(w: World) {
+  const has0055 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0055') as "on"`)).rows[0].on;
+  if (!has0055) return;
+  const dee = await makeUser(w.pg, "dee@example.org", "Dee");     // an admin at Foundry
+  const hal = await makeUser(w.pg, "hal@example.org", "Hal");     // a member at Foundry and at Elsewhere (carol's)
+  await w.pg.query(`update public.profiles set approved = true where id in ($1::uuid, $2::uuid)`, [dee, hal]);
+  const join = (ws: string, u: string, email: string, role: string) => w.pg.query(
+    `insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, $3, $4, $5, 'active') on conflict do nothing`,
+    [ws, u, email, email.split("@")[0], role]);
+  await join(w.w1, dee, "dee@example.org", "admin");
+  await join(w.w1, hal, "hal@example.org", "member");
+  await join(w.w2, hal, "hal@example.org", "member");
+  const day = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const n = async (sql: string, params: unknown[] = []) => (await w.pg.query<{ n: number }>(sql, params)).rows[0].n;
+
+  type Hours = { weekly_hours: string | null; work_days: number[]; day_start: number; day_end: number };
+  const setHours = (u: string, ws: string, who: string, h: number | null, days: number[] | null = null, s: number | null = null, e: number | null = null) =>
+    asPerson<Hours>(w.pg, u, `select (r).weekly_hours::text as weekly_hours, (r).work_days::int[] as work_days, (r).day_start::int as day_start, (r).day_end::int as day_end
+      from (select public.set_member_availability($1::uuid, $2::uuid, $3::numeric, $4::smallint[], $5::smallint, $6::smallint) as r) x`, [ws, who, h, days, s, e]);
+  const hoursSeen = (u: string, ws: string) => asPerson<{ user_id: string }>(w.pg, u, `select user_id::text as user_id from public.member_availability where workspace_id = $1::uuid order by user_id`, [ws]);
+  const saveOff = (u: string, who: string, from: string, to: string, half: string | null = null, reason: string | null = null, id: string | null = null) =>
+    asPerson<{ id: string; user_id: string; half_day: string | null }>(w.pg, u, `select (r).id::text as id, (r).user_id::text as user_id, (r).half_day as half_day
+      from (select public.save_time_off($1::uuid, $2::uuid, $3::date, $4::date, $5, $6) as r) x`, [id, who, from, to, half, reason]);
+  const offSeen = (u: string, who: string) => asPerson<{ id: string }>(w.pg, u, `select id::text as id from public.time_off where user_id = $1::uuid`, [who]);
+  const reasonsSeen = (u: string, who: string) => asPerson<{ reason: string }>(w.pg, u, `select reason from public.time_off_notes where user_id = $1::uuid order by reason`, [who]);
+  const rate = (u: string, ws: string, project: string | null, r: number | null) =>
+    asPerson<{ rate: string | null }>(w.pg, u, `select (public.set_bill_rate($1::uuid, $2::uuid, $3::numeric)).hourly_rate::text as rate`, [ws, project, r]);
+  const ratesSeen = (u: string, ws: string) => asPerson<{ rate: string }>(w.pg, u, `select hourly_rate::text as rate from public.bill_rates where workspace_id = $1::uuid order by hourly_rate`, [ws]);
+
+  await test("0055: you set your own week; the workspace's owner and admins set anyone's", async () => {
+    eq((await setHours(w.bob, w.w1, w.bob, 32, [4, 1, 2, 3], 540, 1050))[0], { weekly_hours: "32.0", work_days: [1, 2, 3, 4], day_start: 540, day_end: 1050 }, "bob's own (days kept in order)");
+    eq((await setHours(w.alice, w.w1, w.bob, 30.25, [1, 2, 3, 4]))[0].weekly_hours, "30.3", "the owner sets bob's (one decimal)");
+    eq((await setHours(dee, w.w1, w.alice, null))[0], { weekly_hours: null, work_days: [1, 2, 3, 4, 5], day_start: 480, day_end: 1080 }, "an admin sets the owner's; nulls are the defaults");
+    await setHours(hal, w.w1, hal, 20, [1, 2, 3]);
+    await setHours(hal, w.w2, hal, 16, [4, 5]);
+    eq(await n(`select count(*)::int as n from public.member_availability where user_id = $1::uuid`, [hal]), 2, "one week per business");
+  });
+  await test("0055 attack: a member can't set a teammate's week; a guest or outsider can't set any; a guest has none to set", async () => {
+    await raises(setHours(w.bob, w.w1, w.alice, 10), /not authorized/);
+    await raises(setHours(hal, w.w1, w.bob, 10), /not authorized/);
+    await raises(setHours(w.gus, w.w1, w.gus, 10), /not authorized/);
+    await raises(setHours(w.gus, w.w1, w.bob, 10), /not authorized/);
+    await raises(setHours(w.carol, w.w1, w.bob, 10), /not authorized/);
+    await raises(setHours(w.carol, w.w1, w.carol, 10), /not authorized/);
+    await raises(setHours(w.alice, w.w1, w.gus, 10), /carry capacity/);
+    await raises(setHours(w.alice, w.w1, w.carol, 10), /carry capacity/);
+    eq((await w.pg.query<{ h: string }>(`select weekly_hours::text as h from public.member_availability where workspace_id = $1::uuid and user_id = $2::uuid`, [w.w1, w.bob])).rows[0].h, "30.3", "unchanged");
+  });
+  await test("0055 attack: a week in any other shape is refused, by the function and by the table", async () => {
+    for (const [h, d, s, e] of [[0, null, null, null], [169, null, null, null], [40, [0], null, null], [40, [1, 1], null, null], [40, [], null, null],
+      [40, [1, 8], null, null], [40, null, 600, 630], [40, null, 1000, 900], [40, null, -5, 600], [40, null, 480, 1500]] as [number, number[] | null, number | null, number | null][]) {
+      await raises(setHours(w.alice, w.w1, w.alice, h, d, s, e), /invalid availability/);
+    }
+    await raises(w.pg.query(`insert into public.member_availability (workspace_id, user_id, work_days) values ($1::uuid, $2::uuid, '{9}')`, [w.w1, w.gus]), /member_availability_shape/);
+  });
+  await test("0055: the team reads everyone's week (its guests and outsiders don't); the person reads their own", async () => {
+    const all = [w.alice, w.bob, hal].sort();
+    eq((await hoursSeen(w.alice, w.w1)).map((r) => r.user_id), all, "owner");
+    eq((await hoursSeen(w.bob, w.w1)).map((r) => r.user_id), all, "member");
+    eq((await hoursSeen(w.gus, w.w1)).length, 0, "guest");
+    eq((await hoursSeen(w.carol, w.w1)).length, 0, "outsider");
+    eq((await hoursSeen(w.bob, w.w2)).length, 0, "bob doesn't see Elsewhere's");
+    eq((await hoursSeen(w.carol, w.w2)).map((r) => r.user_id), [hal], "carol sees hal's at her business");
+  });
+  await test("0055 attack: nobody writes the tables directly", async () => {
+    await raises(asPerson(w.pg, w.bob, `insert into public.member_availability (workspace_id, user_id, weekly_hours) values ($1::uuid, $2::uuid, 5)`, [w.w1, w.bob]), /permission denied/);
+    await raises(asPerson(w.pg, w.alice, `update public.member_availability set weekly_hours = 5 where user_id = $1::uuid`, [w.bob]), /permission denied/);
+    await raises(asPerson(w.pg, w.alice, `delete from public.member_availability`), /permission denied/);
+    await raises(asPerson(w.pg, w.bob, `insert into public.time_off (user_id, starts_on, ends_on) values ($1::uuid, current_date, current_date)`, [w.bob]), /permission denied/);
+    await raises(asPerson(w.pg, w.bob, `insert into public.time_off_notes (time_off_id, user_id, reason) values (gen_random_uuid(), $1::uuid, 'x')`, [w.bob]), /permission denied/);
+    await raises(asPerson(w.pg, w.alice, `insert into public.bill_rates (workspace_id, hourly_rate) values ($1::uuid, 1)`, [w.w1]), /permission denied/);
+  });
+
+  let bobsOff = "";
+  await test("0055: the person records their time off and a private reason", async () => {
+    const r = (await saveOff(w.bob, w.bob, day(3), day(7), null, "  Family wedding  "))[0];
+    eq(r.user_id, w.bob, "bob's");
+    bobsOff = r.id;
+    eq((await reasonsSeen(w.bob, w.bob)).map((x) => x.reason), ["Family wedding"], "trimmed, and his to read");
+  });
+  await test("0055: everyone who works beside them sees they're off; only their owners and admins see why", async () => {
+    eq((await offSeen(w.alice, w.bob)).length, 1, "owner sees it");
+    eq((await offSeen(hal, w.bob)).length, 1, "a member sees it");
+    eq((await reasonsSeen(w.alice, w.bob)).length, 1, "the owner reads the reason");
+    eq((await reasonsSeen(dee, w.bob)).length, 1, "an admin reads the reason");
+    eq((await reasonsSeen(hal, w.bob)).length, 0, "a member doesn't");
+  });
+  await test("0055 attack: a guest and an outsider see neither the time off nor the reason", async () => {
+    eq((await offSeen(w.gus, w.bob)).length, 0, "guest");
+    eq((await reasonsSeen(w.gus, w.bob)).length, 0, "guest's reason");
+    eq((await offSeen(w.carol, w.bob)).length, 0, "outsider");
+    eq((await reasonsSeen(w.carol, w.bob)).length, 0, "outsider's reason");
+    eq((await asPerson(w.pg, w.carol, `select public.shares_team_with($1::uuid) as a, public.leads_person($1::uuid) as b`, [w.bob]))[0], { a: false, b: false }, "the helpers say no");
+  });
+  await test("0055: time off is the person's in every business they're in; each business's leads read the reason", async () => {
+    await saveOff(hal, hal, day(1), day(1), "pm", "Dentist");
+    eq((await offSeen(w.carol, hal)).length, 1, "carol (Elsewhere's owner) sees hal's");
+    eq((await reasonsSeen(w.carol, hal)).map((x) => x.reason), ["Dentist"], "and why");
+    eq((await reasonsSeen(w.alice, hal)).map((x) => x.reason), ["Dentist"], "so does Foundry's owner");
+    eq((await reasonsSeen(w.bob, hal)).length, 0, "not a fellow member");
+    eq((await offSeen(w.carol, w.bob)).length, 0, "carol still doesn't see bob's");
+  });
+  await test("0055: a lead records and changes someone's time off; the morning and afternoon of one day can both be off", async () => {
+    const r = (await saveOff(w.alice, hal, day(1), day(1), "am"))[0];
+    eq(r.half_day, "am", "the morning too");
+    await saveOff(dee, w.bob, day(3), day(8), null, "", bobsOff);
+    eq(await n(`select count(*)::int as n from public.time_off_notes where time_off_id = $1::uuid`, [bobsOff]), 0, "a blank reason clears it");
+    eq((await w.pg.query<{ e: string }>(`select ends_on::text as e from public.time_off where id = $1::uuid`, [bobsOff])).rows[0].e, day(8), "moved");
+    await saveOff(w.carol, hal, day(20), day(21));
+  });
+  await test("0055 attack: a member, guest or outsider can't record or change someone else's time off", async () => {
+    await raises(saveOff(hal, w.bob, day(30), day(31)), /not authorized/);
+    await raises(saveOff(w.gus, w.bob, day(30), day(31)), /not authorized/);
+    await raises(saveOff(w.carol, w.bob, day(30), day(31)), /not authorized/);
+    await raises(saveOff(hal, w.bob, day(3), day(4), null, null, bobsOff), /not authorized/);
+    // an id that isn't the person's can't be pointed at someone else
+    await raises(saveOff(w.alice, w.alice, day(3), day(4), null, null, bobsOff), /not authorized/);
+    await raises(asPerson(w.pg, hal, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
+    await raises(asPerson(w.pg, w.carol, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
+    await raises(asPerson(w.pg, w.gus, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
+    eq((await offSeen(w.bob, w.bob)).length, 1, "still there");
+  });
+  await test("0055 attack: time off in any other shape, or on days already off, is refused", async () => {
+    await raises(saveOff(w.bob, w.bob, day(5), day(4)), /invalid time off/);
+    await raises(saveOff(w.bob, w.bob, day(40), day(41), "am"), /invalid time off/);
+    await raises(saveOff(w.bob, w.bob, day(40), day(40), "evening"), /invalid time off/);
+    await raises(saveOff(w.bob, w.bob, day(40), day(40), null, "x".repeat(201)), /invalid time off/);
+    await raises(saveOff(w.bob, w.bob, day(-500), day(-499)), /invalid time off/);
+    await raises(saveOff(w.bob, w.bob, day(800), day(801)), /invalid time off/);
+    await raises(saveOff(w.bob, w.bob, day(8), day(10)), /already off then/);
+    await raises(saveOff(hal, hal, day(1), day(1), "pm"), /already off then/);
+    await raises(w.pg.query(`insert into public.time_off (user_id, starts_on, ends_on, half_day) values ($1::uuid, current_date, current_date + 1, 'am')`, [w.bob]), /time_off_shape/);
+  });
+  await test("0055: the person takes their time off back (the reason goes with it); 200 entries at most", async () => {
+    const r = (await saveOff(w.bob, w.bob, day(50), day(50), null, "Course"))[0];
+    await asPerson(w.pg, w.bob, `select public.delete_time_off($1::uuid)`, [r.id]);
+    eq(await n(`select count(*)::int as n from public.time_off_notes where time_off_id = $1::uuid`, [r.id]), 0, "reason gone");
+    await w.pg.query(`insert into public.time_off (user_id, starts_on, ends_on) select $1::uuid, current_date + 100 + g, current_date + 100 + g from generate_series(1, 200) g`, [w.gus]);
+    await raises(saveOff(w.gus, w.gus, day(400), day(400)), /too much time off/);
+    await w.pg.query(`delete from public.time_off where user_id = $1::uuid`, [w.gus]);
+  });
+  await test("0055 attack: a suspended person reads nothing and saves nothing", async () => {
+    await w.pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [hal]);
+    try {
+      eq((await offSeen(hal, w.bob)).length, 0, "time off");
+      eq((await hoursSeen(hal, w.w1)).length, 0, "hours");
+      await raises(saveOff(hal, hal, day(60), day(60)), /not authorized/);
+      await raises(setHours(hal, w.w1, hal, 10), /not authorized/);
+    } finally {
+      await w.pg.query(`update public.profiles set suspended = false where id = $1::uuid`, [hal]);
+    }
+  });
+
+  await test("0055: the owner and admins set a default rate and project rates; a null clears one", async () => {
+    eq((await rate(w.alice, w.w1, null, 85))[0].rate, "85.00", "default");
+    eq((await rate(dee, w.w1, w.launch, 95.555))[0].rate, "95.56", "a project's own (pence)");
+    eq((await rate(w.alice, w.w1, null, 90))[0].rate, "90.00", "changed, not doubled");
+    eq((await ratesSeen(w.alice, w.w1)).map((r) => r.rate), ["90.00", "95.56"]);
+    eq((await ratesSeen(dee, w.w1)).length, 2, "the admin reads them");
+    await rate(w.alice, w.w1, w.launch, null);
+    eq((await ratesSeen(w.alice, w.w1)).map((r) => r.rate), ["90.00"], "the project follows the default again");
+    await rate(w.alice, w.w1, w.launch, 95);
+  });
+  await test("0055 attack: members never see a rate, guests and outsiders nothing; only owners and admins set one", async () => {
+    eq((await ratesSeen(w.bob, w.w1)).length, 0, "member reads none");
+    eq((await ratesSeen(w.gus, w.w1)).length, 0, "guest reads none");
+    eq((await ratesSeen(w.carol, w.w1)).length, 0, "outsider reads none");
+    await raises(rate(w.bob, w.w1, null, 1), /not authorized/);
+    await raises(rate(w.gus, w.w1, null, 1), /not authorized/);
+    await raises(rate(w.carol, w.w1, null, 1), /not authorized/);
+    await raises(rate(w.carol, w.w2, w.launch, 1), /not authorized/);      // another business's project
+    await raises(rate(w.alice, w.w1, w.w2Project, 1), /not authorized/);
+    await raises(rate(w.alice, w.w1, null, -1), /invalid rate/);
+    await raises(rate(w.alice, w.w1, null, 100001), /invalid rate/);
+    eq((await ratesSeen(w.alice, w.w1)).map((r) => r.rate), ["90.00", "95.00"], "unchanged");
+  });
+
+  await test("0055: migrating twice keeps every week, day off, reason and rate; re-running 0041 keeps the rules", async () => {
+    const counts = async () => [await n(`select count(*)::int as n from public.member_availability`), await n(`select count(*)::int as n from public.time_off`),
+      await n(`select count(*)::int as n from public.time_off_notes`), await n(`select count(*)::int as n from public.bill_rates`)];
+    const before = await counts();
+    await applyFile(w.pg, "0055_shared_availability.sql");
+    await applyFile(w.pg, "0041_security_hardening_2.sql");
+    eq(await counts(), before, "rows");
+    eq((await reasonsSeen(hal, w.bob)).length, 0, "a member still can't read a teammate's reason");
+    eq((await offSeen(w.gus, hal)).length, 0, "a guest still sees no time off");
+    eq((await ratesSeen(w.bob, w.w1)).length, 0, "a member still reads no rate");
+    eq(await n(`select count(*)::int as n from public.schema_migrations where version = '0055'`), 1, "recorded once");
+  });
+}
+
 /* ============================================================ run */
 
 export async function main(argv: string[]): Promise<number> {
   const all = migrationFiles();
-  // 0051..0054 need only 0041/0042/0046 (0052 also 0051): they run in the set without 0048/0049 too
-  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || (f.slice(0, 4) >= "0050" && f.slice(0, 4) <= "0054"));
+  // 0051..0055 need only 0041/0042/0046 (0052 also 0051): they run in the set without 0048/0049 too
+  const set47 = all.filter((f) => f.slice(0, 4) <= "0047" || (f.slice(0, 4) >= "0050" && f.slice(0, 4) <= "0055"));
   const setAll = all;
-  const sets: [string, string[]][] = [["0001..0047+0050..0054", set47], ["0001..0054", setAll]];
+  const sets: [string, string[]][] = [["0001..0047+0050..0055", set47], ["0001..0055", setAll]];
   const only = argv[0];
   for (const [name, files] of sets) {
     if (only === "0047" && name !== sets[0][0]) continue;
@@ -2483,6 +2680,7 @@ export async function main(argv: string[]): Promise<number> {
     await goalsSuite(w);
     await updateRhythmSuite(w);
     await updateConversationSuite(w);
+    await availabilitySuite(w);
     console.log(`${name}: ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     await w.closeDriver();
     await w.pg.close();

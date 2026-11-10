@@ -14,7 +14,7 @@ were all broken. Test data is still set up with PGlite directly.
 export PATH="$HOME/.kora-tools/node-v20.18.1-darwin-arm64/bin:$PATH"
 cd ~/Downloads/kora-app
 node supabase/tests/pglite/run.mjs         # both migration sets
-node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0054 (no 0048, no 0049)
+node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0055 (no 0048, no 0049)
 node supabase/tests/pglite/run.mjs 0049    # every migration
 ```
 
@@ -63,3 +63,13 @@ nothing, a forged author or reaction is refused or ignored, and only the functio
 webhooks get status_update.posted; a portfolio's owner and followers come from its members, and
 portfolio updates are for members only. Then 0054 twice, 0041 again (the authors-only rules come
 back) and 0048 again (a webhook subscribed to status_update.posted keeps working).
+
+0055 (shared capacity, working hours, time off, bill rates): you set your own week at a business and its
+owners and admins set anyone's (a member, a guest and an outsider all try someone else's, and a guest has
+none to set); the team reads everyone's week and its guests and outsiders don't; time off is the person's
+in every business they're in, read by everyone who works beside them (never a guest or an outsider),
+with the reason only for the person and the owners and admins of a business they're in; nobody but the
+person or such a lead records, changes or takes back time off, and no two entries cover the same day
+(the morning and afternoon of one day can); rates are read and set by owners and admins only, and a rate
+can't be put on another business's project; a suspended person reads and saves nothing; nobody writes
+the tables directly. Then 0055 twice and 0041 again.
