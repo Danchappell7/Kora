@@ -320,6 +320,8 @@ button.ktd-row-title:focus-visible::after { outline: 2px solid var(--accent); ou
 
 /* composer */
 .ktd-compose { flex-shrink: 0; padding: 12px 16px 16px; border-top: 1px solid var(--hairline); background: var(--bg); }
+.ktd-audience { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font: 400 12px/16px var(--font-ui); color: var(--ink-3); }
+.ktd-compose > .ktd-audience:only-child { margin: 0; }
 .ktd[data-mobile="true"] .ktd-compose { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
 .ktd-replying { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font: 500 12px/16px ${UI}; color: var(--ink-3); }
 .ktd-replying b { color: var(--ink-2); font-weight: 600; }
@@ -836,6 +838,13 @@ export interface TaskDetailProps {
    *  dependencies, files and delete become read-only; comments, replies,
    *  comment reactions and Follow stay usable. */
   readOnly?: boolean;
+  /** 0058: false for a viewer (project access): no composer, replies or reactions, only Follow */
+  canComment?: boolean;
+  /** 0058: who can see this task's project (user ids): the only people offered as assignee, collaborator,
+   *  @mention or reviewer. Omit: everyone in its workspace (as before). */
+  people?: string[];
+  /** 0058: the quiet line by the composer on a Members only or Private project ("Only people on X can see this.") */
+  audienceNote?: string;
   /** ≥ 1280px: the panel sits beside the content (no scrim, no focus trap,
    *  aria-modal false) and the page behind stays usable. Esc still closes. */
   docked?: boolean;
@@ -922,7 +931,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, people: canSee, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -1223,7 +1232,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   // A personal-project task (no workspace) is therefore just you — never members
   // pulled in from your other team workspaces.
   const taskWs = task.workspaceId ?? null;
-  const activeMembers = members.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === taskWs);
+  const activeMembers = members.filter((m) => m.status === "active" && m.userId && (m.workspaceId ?? null) === taskWs && (!canSee || canSee.includes(m.userId)));
   const assignable: Person[] = activeMembers.length > 0
     ? activeMembers.map((m) => ({ id: m.userId!, name: m.name || m.email }))
     : [{ id: currentUserId, name: getMember(currentUserId)?.name || "You" }];
@@ -1749,7 +1758,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
             onClick={onOpenProject ? () => { onClose(); onOpenProject(proj.id); } : undefined} />}
           {proj && section && <><span className="kpchip-sep" aria-hidden="true"><Icon name="chevronRight" size={12} /></span><span className="ktd-crumb-text">{section.name}</span></>}
         </nav>
-        {readOnly && <Pill tone="neutral" icon="lock" title="Guests can view this task and comment on it">View and comment</Pill>}
+        {readOnly && (canComment
+          ? <Pill tone="neutral" icon="lock" title={audienceNote ? "You can view this task and comment on it" : "Guests can view this task and comment on it"}>View and comment</Pill>
+          : <Pill tone="neutral" icon="eye" title="You can view this task and follow it">View only</Pill>)}
         <PresenceAvatars peers={viewers} size="sm" max={3} />
         {/* 0048: kudos on a teammate's finished team task (guests too: it's a reaction); your own shows what you got */}
         {task.status === "done" && taskWs && task.assigneeId && (
@@ -2263,20 +2274,22 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
                       {editingComment !== c.id && (
                         <div className="ktd-c-foot">
                           {reacts.map(([emoji, uids]) => (
-                            <button key={emoji} type="button" className="ktd-react" onClick={() => toggleReaction(c, emoji)} title={`${uids.length}`} aria-pressed={uids.includes(currentUserId)}>
+                            <button key={emoji} type="button" className="ktd-react" onClick={() => toggleReaction(c, emoji)} title={`${uids.length}`} aria-pressed={uids.includes(currentUserId)} disabled={!canComment}>
                               {emoji} <span className="ktd-react-n">{uids.length}</span>
                             </button>
                           ))}
                           <span className="ktd-c-tools">
+                            {canComment && <>
                             <button type="button" className="ktd-act" onClick={() => { setReplyingTo(c.parentId ?? c.id); commentRef.current?.focus(); }} aria-label={`Reply to ${c.authorName || "comment"}`}>Reply</button>
                             <button type="button" className="ktd-act" onClick={() => setReactPickerFor((v) => v === c.id ? null : c.id)} aria-expanded={reactPickerFor === c.id}
                               aria-label={c.authorName ? `Add reaction to ${c.authorName}’s comment` : "Add reaction to this comment"}>React</button>
+                            </>}
                             {onConvertComment && !readOnly && c.body.trim() && (
                               <button type="button" className="ktd-act" onClick={() => onConvertComment(c.body.trim(), task.projectId)} title="Turn this comment into a task">Make a task</button>
                             )}
                             {c.authorId === currentUserId && (
                               <>
-                                <button type="button" className="ktd-act" data-edit-comment={c.id} onClick={() => { setEditDraft(c.body); setEditingComment(c.id); }}>Edit</button>
+                                {canComment && <button type="button" className="ktd-act" data-edit-comment={c.id} onClick={() => { setEditDraft(c.body); setEditingComment(c.id); }}>Edit</button>}
                                 <button type="button" className="ktd-act" data-tone="danger" onClick={() => removeComment(c)}>Delete</button>
                               </>
                             )}
@@ -2298,8 +2311,14 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
         )}
       </div>
 
-      {/* ================= composer ================= */}
+      {/* ================= composer (0058: a viewer reads; the line says who can see it) ================= */}
+      {!canComment ? (
+        <div className="ktd-compose">
+          <p className="ktd-audience">You can view this task. Ask {proj?.name ? `an editor of ${proj.name}` : "the project's owner"} if you need to comment.</p>
+        </div>
+      ) : (
       <div className="ktd-compose">
+        {audienceNote && <p className="ktd-audience">{audienceNote}</p>}
         {replyingToComment && (
           <div className="ktd-replying">
             <Icon name="arrowRight" size={14} sw={1.75} style={{ color: "var(--accent-text, var(--accent))" }} />
@@ -2346,6 +2365,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
         {/* 0048: "Theo is typing…" (a polite live region, said once per person) */}
         <TypingIndicator typers={typers} />
       </div>
+      )}
     </div>
   );
 }

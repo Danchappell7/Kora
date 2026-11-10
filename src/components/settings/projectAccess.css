@@ -1,0 +1,14 @@
+/* KANBO — Settings › Workspace › Project access (ProjectAccessPanel.tsx) */
+.kpas { margin-bottom: 28px; }
+.kpas-switch { display: inline-flex; align-items: center; gap: 8px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); cursor: pointer; }
+.kpas-switch > input, .kpas-check { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.kpas-ask {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0; padding: 12px 16px;
+  background: color-mix(in oklch, var(--warn, var(--st-review)) 10%, transparent); border-top: 1px solid var(--hairline);
+}
+.kpas-ask-text { flex: 1 1 280px; margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); text-wrap: pretty; }
+.kpas-ask-actions { display: inline-flex; gap: 8px; }
+.kpas-preview { padding: 12px 16px; border-top: 1px solid var(--hairline); }
+.kpas-preview-head { margin: 0 0 6px; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kpas-preview-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kpas-guest { color: var(--ink); }

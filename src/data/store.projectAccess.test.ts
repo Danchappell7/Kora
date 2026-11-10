@@ -184,7 +184,7 @@ describe("at 0058 with the switch on", () => {
     const { store } = await load(fake);
     await store.bootstrap({ id: ME });
     await store.updateTask(T1, { title: "Fine" });
-    expect(fake.calls.filter((c) => c.table === "tasks" && c.op === "update").at(-1)?.returning).toBe(true);
+    expect(fake.calls.filter((c) => c.table === "tasks" && c.op === "update").slice(-1)[0]?.returning).toBe(true);
     fake.refuse(true);
     await expect(store.updateTask(T1, { title: "Refused" })).rejects.toMatchObject({ code: "42501", message: "You can view this project, but not change it." });
   });

@@ -187,6 +187,15 @@ export function seesCount(project: Project, ctx: AccessCtx, visibility: ProjectV
     && rankCore(true, m.role, visibility, project.ownerId === m.userId, memberRole(ctx, project.id, m.userId!)) >= 1).length;
 }
 
+/** A meeting's agenda reaches everyone it's for (D17): a team meeting takes only Whole workspace
+ *  projects, a leadership one Whole workspace and Members only. Private projects never go on an
+ *  agenda. With project access off (or a loose row) everything is open. */
+export function audienceOpen(preset: "team" | "leadership", ws: Pick<Workspace, "projectAccess"> | undefined, project: Pick<Project, "visibility"> | undefined): boolean {
+  if (!accessOn(ws) || !project) return true;
+  const v = visibilityOf(project);
+  return v === "workspace" || (preset === "leadership" && v === "members");
+}
+
 /** Sentence-case labels for each visibility. */
 export const VISIBILITY_LABEL: Record<ProjectVisibility, string> = { workspace: "Whole workspace", members: "Members only", private: "Private" };
 export const ROLE_LABEL: Record<ProjectRole, string> = { editor: "Can edit", commenter: "Can comment", viewer: "Can view" };

@@ -12,7 +12,7 @@
    ask a project's owner for its update from its row.
    ============================================================ */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { AiMark, Avatar, AvatarStack, Button, EmptyState, Icon, IconButton, Meter, Pill, ProgressRing, ProjectCover, ProjectTile, Segmented, projectIdentity } from "../primitives";
+import { AiMark, Avatar, AvatarStack, Button, EmptyState, Icon, IconButton, Meter, Pill, ProgressRing, ProjectCover, ProjectLock, ProjectTile, Segmented, projectIdentity } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { getMember, KANBO_TODAY, todayISO, WORKSPACES } from "../../data/data";
@@ -274,7 +274,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members, currentU
       case "name": return (
         <div className="kpj-proj">
           <ProjectTile project={r.p} size={20} />
-          <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-proj-name" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}</a>
+          <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-proj-name" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}<ProjectLock project={r.p} /></a>
           <span className="kpj-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</span>
           {goalChip && <span style={{ gridColumn: 2, display: "flex", minWidth: 0, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>{goalChip(r.p.id)}</span>}
         </div>
@@ -354,7 +354,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members, currentU
                     <Pill tone={r.pill.tone} title={r.pill.title}>{r.pill.label}</Pill>
                   </div>
                   <div className="kpj-gcard-body">
-                    <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-gcard-link" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}</a>
+                    <a href={pathOf({ view: "project", projectId: r.p.id })} className="kpj-gcard-link" onClick={(e) => onLink(e, r.p.id)}>{r.p.name}<ProjectLock project={r.p} /></a>
                     <p className="kpj-gcard-read" title={r.read}><span className="sr-only">Kanbo's read: </span>{r.read}</p>
                     {goalChip && <div style={{ display: "flex", minWidth: 0, marginTop: 6 }}>{goalChip(r.p.id)}</div>}
                     <div className="kpj-gcard-foot">

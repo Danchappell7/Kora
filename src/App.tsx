@@ -4,7 +4,7 @@
    between every view and the store.
    ============================================================ */
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
-import { Icon, GlobalTipStyles, AppBg, Button, IconButton, EmptyState, type TabItem } from "./components/primitives";
+import { Icon, GlobalTipStyles, AppBg, Button, IconButton, EmptyState, ProjectLock, type TabItem } from "./components/primitives";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { FullLoader } from "./components/FullLoader";
 import { PlaceSkeleton, PanelSkeleton, skeletonFor } from "./components/PlaceSkeleton";
@@ -58,6 +58,8 @@ import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject,
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
+import { accessErrorText, accessOn, accessSchema, editableProjects as accessEditable, peopleFor as accessPeople, projectRank, taskRank, visibilityOf, VISIBILITY_LABEL, type AccessCtx } from "./lib/projectAccess";
+import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
 import { splitPersonal, withOverlay, writePlanOverlay, writeSectionOverlay, writeScoreOverlay, prunePlanOverlay, type PersonalKey } from "./lib/planOverlay";
@@ -109,7 +111,7 @@ import {
   STATUS_META, getProject, getMember, setReferenceData, toLocalISO, todayISO, MEMBERS, KANBO_TODAY, energyOf, SELF_COLOR,
 } from "./data/data";
 import type { Task, Subtask, Project, Workspace, WorkspaceMember, Role, TagDef, Comment, Activity, ActivityKind, Subscription, Plan, Status, Profile, CalProvider, CalendarConnection, CalendarWarning, ExternalEvent, Section, CustomFieldDef, SavedSearch, Goal, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, IconName, WorkspaceTemplate, Member, ApprovalSummary, MyApprovals, AppliedProjectPlan, NotifyPrefs,
-  BoardSettings, LibraryTemplate, MomentumPrefs, OnboardingState, SetupItemId } from "./data/types";
+  BoardSettings, LibraryTemplate, MomentumPrefs, OnboardingState, SetupItemId, ProjectMember, ProjectRole, ProjectVisibility, ProjectAccessSettings } from "./data/types";
 import type { Route, TaskView, GroupBy, ProjectTab } from "./app-types";
 import {
   newTaskId, isTaskId, descendantsOf, parentsFirst, runLimited, createLimiter, swapTmp, keepTmp, statusTransition, buildRecurrence,
@@ -268,6 +270,10 @@ export default function App() {
   const [forms, setForms] = useState<FormDef[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([{ id: null, name: "Personal", kind: "personal" }]);
   const [wsMembers, setWsMembers] = useState<WorkspaceMember[]>([]);
+  // 0058: who's on which project (null before 0058: every project is everyone's, as before)
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[] | null>(null);
+  // the project whose People & access was asked for (the header's lock chip)
+  const [accessOpenFor, setAccessOpenFor] = useState<string | null>(null);
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
@@ -404,6 +410,7 @@ export default function App() {
   const allBizRef = useRef(false);
   const workspaceRef = useRef<string | null>(null); workspaceRef.current = workspace;
   const wsMembersRef = useRef<WorkspaceMember[]>([]); wsMembersRef.current = wsMembers;
+  const projectMembersRef = useRef<ProjectMember[] | null>(null); projectMembersRef.current = projectMembers;
   const activityRef = useRef<Activity[]>([]); activityRef.current = activity;
   const signedInRef = useRef(false); signedInRef.current = !auth.configured || !!auth.user;
 
@@ -504,6 +511,30 @@ export default function App() {
     return true;
   }, [roleIn, toastInfo]);
   const projectWs = (projectId: string | undefined) => (projectId ? getProject(projectId)?.workspaceId ?? null : null);
+  /** 0058: the rank questions as they stand now (refs: safe in callbacks) */
+  const accessNow = useCallback((): AccessCtx => ({ me: userIdRef.current, workspaces: workspacesRef.current, projects: projectsRef.current,
+    wsMembers: wsMembersRef.current, members: projectMembersRef.current }), []);
+  /** 0058: read who's on which project again (after a member call, or a project made with people) */
+  const reloadProjectMembers = useCallback(() => {
+    store.listProjectMembers().then(setProjectMembers, (e) => reportError(e, { op: "listProjectMembers" }));
+  }, []);
+  /** Refuse up front an edit to work you can only view (0058): a project id, or a task (its workspace and
+   *  project). With project access off this is denyGuest exactly: guests rank 2, everyone else 3. */
+  const denyEdit = useCallback((subjects: (string | Pick<Task, "workspaceId" | "projectId"> | null | undefined)[]): boolean => {
+    const ctx = accessNow();
+    const low = subjects.find((x) => x && (typeof x === "string" ? projectRank(x, ctx) : taskRank(x, ctx)) < 3);
+    if (!low) return false;
+    const ws = typeof low === "string" ? projectWs(low) : low.workspaceId ?? projectWs(low.projectId);
+    const now = Date.now();
+    if (now - lastGuestToastRef.current > 3000) {
+      lastGuestToastRef.current = now;
+      const proj = getProject(typeof low === "string" ? low : low.projectId);
+      const on = accessOn(workspacesRef.current.find((w) => w.id === ws));
+      toastInfo(!on && roleIn(ws) === "guest" ? GUEST_MSG : `You can view ${proj && (proj.workspaceId ?? null) === ws ? proj.name : "this"}, but not change it.`);
+    }
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessNow, roleIn, toastInfo]);
 
   /** The server gave a task a different id than we generated (only until the
    *  store inserts with explicit ids): move every local reference over. */
@@ -880,6 +911,8 @@ export default function App() {
     // (undefined: 0052's rows couldn't be read this time: keep what's on screen rather than switch goals off)
     setGoals((cur) => keepTmp(b.goals, cur)); setGoalExtras((cur) => (b.goalExtras === undefined ? cur : b.goalExtras)); setPortfolios((cur) => keepTmp(b.portfolios, cur)); setStatusUpdates(b.statusUpdates);
     setAutomationRules((cur) => keepTmp(b.automationRules, cur)); setForms((cur) => keepTmp(b.forms, cur));
+    // 0058 (undefined: couldn't be read this time: keep what's on screen)
+    setProjectMembers((cur) => (b.projectMembers === undefined ? cur : b.projectMembers));
     return true;
   }, [mergeServerTasks, applyProjects, applyTags, noteSchemaBehind]);
 
@@ -1913,7 +1946,7 @@ export default function App() {
 
   const toggleTask = useCallback((id: string) => {
     const t = tasksRef.current?.find((x) => x.id === id); if (!t) return;
-    if (denyGuest([t.workspaceId])) return;
+    if (denyEdit([t])) return;
     const completing = t.status !== "done";
     if (completing && !confirmCompleteBlocked([t])) return;
     const status: Status = completing ? "done" : "todo";
@@ -1931,7 +1964,7 @@ export default function App() {
       }, {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, confirmCompleteBlocked, onStatusChange, updateWithStatus, updateTasks, unspawnRecurrence, toastAction]);
+  }, [denyEdit, confirmCompleteBlocked, onStatusChange, updateWithStatus, updateTasks, unspawnRecurrence, toastAction]);
 
   const patchTaskRef = useRef<(id: string, patch: Partial<Task>) => void>(() => {});
   const bulkPatchRef = useRef<(ids: string[], patch: Partial<Task>, opts?: BulkOpts) => void>(() => {});
@@ -1941,12 +1974,13 @@ export default function App() {
     const patch: Partial<Task> = { ...patchIn };
     // following a task is open to everyone who can see it (guests included)
     const onlyFollow = Object.keys(patch).length > 0 && Object.keys(patch).every((k) => k === "followers");
-    if (!onlyFollow && denyGuest([prev.workspaceId])) return;
+    if (!onlyFollow && denyEdit([prev])) return;
     // re-picking the same status must never restamp completedAt
     if ("status" in patch && (!patch.status || patch.status === prev.status)) { delete patch.status; delete patch.completedAt; }
     if (patch.status === "done" && !confirmCompleteBlocked([prev])) return;
     const note = retarget(prev, patch);
     if ("workspaceId" in patch && (patch.workspaceId ?? null) !== (prev.workspaceId ?? null) && denyGuest([patch.workspaceId])) return;
+    if ("projectId" in patch && patch.projectId && patch.projectId !== prev.projectId && denyEdit([patch.projectId])) return;
     Object.assign(patch, releasedPlan(prev, patch));
     const fx = newStatusFx();
     if (patch.status) Object.assign(patch, onStatusChange(prev, { ...prev, ...patch }, fx));
@@ -1957,7 +1991,7 @@ export default function App() {
     if (fx.logs.size) updateWithStatus(patches, fx, { retry: () => patchTaskRef.current(id, patchIn) });
     else updateTasks(patches);
     if (note) toastInfo(note);
-  }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastInfo]);
+  }, [denyGuest, denyEdit, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastInfo]);
   patchTaskRef.current = patchTask;
 
   // follow/unfollow a task (followers get its activity in their inbox)
@@ -2014,8 +2048,8 @@ export default function App() {
     const all = tasksRef.current ?? [];
     const rows = ids.map((id) => all.find((t) => t.id === id)).filter((t): t is Task => !!t);
     if (!rows.length) return;
-    if (denyGuest(rows.map((r) => r.workspaceId))) return;
-    if (patchIn.projectId && denyGuest([projectWs(patchIn.projectId)])) return;
+    if (denyEdit(rows)) return;
+    if (patchIn.projectId && denyEdit([patchIn.projectId])) return;
     if (patchIn.status === "done" && !confirmCompleteBlocked(rows.filter((r) => r.status !== "done"))) return;
     const patches = new Map<string, Partial<Task>>();
     const notes = new Set<string>();
@@ -2055,7 +2089,7 @@ export default function App() {
     }, {});
     if (notes.size === 1) toastInfo([...notes][0]);
     else if (notes.size > 1) toastInfo(`${plural(notes.size, "task")} ${notes.size === 1 ? "was" : "were"} reassigned to you — their assignees aren't in that workspace.`);
-  }, [denyGuest, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
+  }, [denyEdit, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
   bulkPatchRef.current = bulkPatch;
 
   /* ---- personal plan state: the assignee-only write guard ----
@@ -2091,7 +2125,7 @@ export default function App() {
     const { personal, shared } = splitPersonal(patch);
     let plan: GuardedUndo["plan"] = null;
     if (Object.keys(personal).length) {
-      if (denyGuest([t.workspaceId])) return null;
+      if (denyEdit([t])) return null;
       // what you saw there before: your own plan on it (the row's is its assignee's)
       const seen = seenRef.current?.find((x) => x.id === id) ?? t;
       plan = pickFields(seen, Object.keys(personal)) as GuardedUndo["plan"];
@@ -2099,7 +2133,7 @@ export default function App() {
     }
     if (Object.keys(shared).length) patchTask(id, shared);
     return { id, row: pickFields(t, rowKeys(shared)), plan };
-  }, [patchTask, denyGuest, writeOverlay]);
+  }, [patchTask, denyEdit, writeOverlay]);
   const guardedPatch = useCallback((id: string, patch: Partial<Task>) => { guardedWrite(id, patch); }, [guardedWrite]);
   /** Put back what a guarded change replaced: the row's own fields that no longer
    *  hold their old value (a change that never landed writes nothing), and your plan. */
@@ -2122,7 +2156,7 @@ export default function App() {
     const all = tasksRef.current ?? [], me = userIdRef.current;
     const theirs = Object.keys(personal).length ? all.filter((t) => ids.includes(t.id) && ownerAfter(t, patch) !== me) : [];
     if (!theirs.length) { bulkPatch(ids, patch); return; }
-    if (denyGuest(all.filter((t) => ids.includes(t.id)).map((t) => t.workspaceId))) return;
+    if (denyEdit(all.filter((t) => ids.includes(t.id)))) return;
     const seen = new Map((seenRef.current ?? []).map((t) => [t.id, t]));
     const before = theirs.map((t) => ({ t, plan: pickFields(seen.get(t.id) ?? t, Object.keys(personal)) }));
     theirs.forEach((t) => writeOverlay(t, personal));
@@ -2131,16 +2165,16 @@ export default function App() {
       patchFor: (t) => (theirIds.has(t.id) ? shared : patch),
       undoAlso: () => before.forEach(({ t, plan }) => writeOverlay(t, plan)),
     });
-  }, [bulkPatch, denyGuest, writeOverlay]);
+  }, [bulkPatch, denyEdit, writeOverlay]);
 
   const deleteTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
     const t = all.find((x) => x.id === id); if (!t) return;
-    if (denyGuest([t.workspaceId])) return;
+    if (denyEdit([t])) return;
     // deleting a parent removes its sub-tasks too (the DB cascades); mirror that locally
     const kids = descendantsOf([id], all).length;
     removeTasks([t], kids ? `Deleted “${t.title}” and ${plural(kids, "sub-task")}` : `Deleted “${t.title}”`);
-  }, [denyGuest, removeTasks]);
+  }, [denyEdit, removeTasks]);
 
   const bulkDelete = useCallback((ids: string[]) => {
     if (!ids.length) return;
@@ -2148,15 +2182,15 @@ export default function App() {
     const sel = new Set(ids);
     const rows = all.filter((t) => sel.has(t.id));
     if (!rows.length) return;
-    if (denyGuest(rows.map((r) => r.workspaceId))) return;
+    if (denyEdit(rows)) return;
     const kids = descendantsOf(ids, all).filter((k) => !sel.has(k.id)).length;
     removeTasks(rows, `Deleted ${plural(rows.length, "task")}${kids ? ` and ${plural(kids, "sub-task")}` : ""}`);
-  }, [denyGuest, removeTasks]);
+  }, [denyEdit, removeTasks]);
 
   const archiveTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
     const t = all.find((x) => x.id === id); if (!t) return;
-    if (denyGuest([t.workspaceId])) return;
+    if (denyEdit([t])) return;
     const at = new Date().toISOString();
     const patches = new Map<string, Partial<Task>>([[id, { archivedAt: at }]]);
     cascadeToDescendants(t, { archivedAt: at }, all, patches);
@@ -2165,23 +2199,23 @@ export default function App() {
     toastAction(kids ? `Archived “${t.title}” and ${plural(kids, "sub-task")}` : `Archived “${t.title}”`, "Undo", () => {
       updateTasks(new Map([...patches.keys()].map((k) => [k, { archivedAt: undefined }])), { notify: false });
     }, {});
-  }, [denyGuest, cascadeToDescendants, updateTasks, toastAction]);
+  }, [denyEdit, cascadeToDescendants, updateTasks, toastAction]);
   const unarchiveTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
     const t = all.find((x) => x.id === id); if (!t) return;
-    if (denyGuest([t.workspaceId])) return;
+    if (denyEdit([t])) return;
     // sub-tasks that were archived together with it come back with it
     const patches = new Map<string, Partial<Task>>([[id, { archivedAt: undefined }]]);
     cascadeToDescendants(t, { archivedAt: undefined }, all, patches);
     updateTasks(patches, { notify: false });
-  }, [denyGuest, cascadeToDescendants, updateTasks]);
+  }, [denyEdit, cascadeToDescendants, updateTasks]);
 
   // duplicate a task: a fresh to-do copy with its sub-tasks — no comments, reactions,
   // followers, time logged, schedule or plan carried over
   const duplicateTask = useCallback((id: string) => {
     const all = tasksRef.current ?? [];
     const src = all.find((t) => t.id === id); if (!src) return;
-    if (denyGuest([src.workspaceId])) return;
+    if (denyEdit([src])) return;
     const rows = cloneTaskTree(src, all, (x, isRoot) => ({
       title: isRoot ? `${src.title} (copy)` : x.title,
       status: "todo", completedAt: undefined, archivedAt: undefined, comments: 0, dependencies: [], reactions: {}, followers: [],
@@ -2193,7 +2227,7 @@ export default function App() {
       if (i === 0) copyChecklist(created, src.subtasks.map((s) => ({ ...s, done: false })));
     });
     toastSuccess(rows.length > 1 ? `Task duplicated with ${plural(rows.length - 1, "sub-task")}` : "Task duplicated");
-  }, [denyGuest, persistTask, copyChecklist, toastSuccess]);
+  }, [denyEdit, persistTask, copyChecklist, toastSuccess]);
 
   /* ---- comments, checklists, sub-tasks, dependencies ---- */
   const addComment = useCallback(async (taskId: string, body: string, mentions: string[] = [], parentId?: string): Promise<Comment | null> => {
@@ -2223,12 +2257,12 @@ export default function App() {
   const toggleSubtask = useCallback((taskId: string, subId: string) => {
     const task = tasksRef.current?.find((t) => t.id === taskId);
     const sub = task?.subtasks.find((s) => s.id === subId); if (!task || !sub) return;
-    if (denyGuest([task.workspaceId])) return;
+    if (denyEdit([task])) return;
     const setDone = (done: boolean) => setTasks((ts) => ts && ts.map((t) => t.id === taskId ? { ...t, subtasks: t.subtasks.map((s) => s.id === subId ? { ...s, done } : s) } : t));
     const done = !sub.done;
     setDone(done);
     store.setSubtaskDone(subId, done).catch((e) => { reportError(e, { op: "setSubtaskDone" }); setDone(!done); toastError("Couldn't save — change undone"); });
-  }, [denyGuest, toastError]);
+  }, [denyEdit, toastError]);
 
   // a sub-task is a full task with parentId — it inherits the parent's project
   // (and therefore workspace) and assignee, and can be given its own due date,
@@ -2236,7 +2270,7 @@ export default function App() {
   const addSubtask = useCallback((parentId: string, title: string) => {
     const parent = tasksRef.current?.find((t) => t.id === parentId);
     if (!parent) return;
-    if (denyGuest([parent.workspaceId])) return;
+    if (denyEdit([parent])) return;
     persistTask({
       id: newTaskId(),
       title, description: "", status: "todo", priority: "medium",
@@ -2245,7 +2279,7 @@ export default function App() {
       aiScore: 50, aiReason: undefined, focusMin: 30, dur: 30, scheduled: null,
       planToday: false, recurrence: "none", dueDate: undefined, position: Date.now(),
     });
-  }, [denyGuest, persistTask]);
+  }, [denyEdit, persistTask]);
 
   /** Server ids for tasks that may still be being inserted. */
   const whenSaved = useCallback((ids: string[]): Promise<string[]> =>
@@ -2259,7 +2293,7 @@ export default function App() {
   const addDependency = useCallback((taskId: string, dependsOn: string) => {
     if (taskId === dependsOn) return;
     const cur = tasksRef.current?.find((t) => t.id === taskId); if (!cur) return;
-    if (denyGuest([cur.workspaceId])) return;
+    if (denyEdit([cur])) return;
     const before = cur.dependencies ?? [];
     setDeps(taskId, [...new Set([...before, dependsOn])]);
     whenSaved([taskId, dependsOn]).then(([a, b]) => store.addDependency(a, b)).catch((e) => {
@@ -2268,10 +2302,10 @@ export default function App() {
       setDeps(taskId, now.filter((d) => d !== dependsOn || before.includes(d)));
       toastError("Couldn't save — change undone");
     });
-  }, [denyGuest, setDeps, whenSaved, toastError]);
+  }, [denyEdit, setDeps, whenSaved, toastError]);
   const removeDependency = useCallback((taskId: string, dependsOn: string) => {
     const cur = tasksRef.current?.find((t) => t.id === taskId); if (!cur) return;
-    if (denyGuest([cur.workspaceId])) return;
+    if (denyEdit([cur])) return;
     setDeps(taskId, (cur.dependencies ?? []).filter((d) => d !== dependsOn));
     whenSaved([taskId, dependsOn]).then(([a, b]) => store.removeDependency(a, b)).catch((e) => {
       reportError(e, { op: "removeDependency" });
@@ -2279,7 +2313,7 @@ export default function App() {
       setDeps(taskId, [...new Set([...now, dependsOn])]);
       toastError("Couldn't save — change undone");
     });
-  }, [denyGuest, setDeps, whenSaved, toastError]);
+  }, [denyEdit, setDeps, whenSaved, toastError]);
 
   /* ---- new tasks from every entry point ---- */
   /** Tell the user when a new task landed outside the workspace they're looking at. */
@@ -2334,19 +2368,19 @@ export default function App() {
   // inline quick-add + quick capture
   const quickAddTask = useCallback((partial: Partial<Task> & { title: string }) => {
     const t = unplanIfTheirs(applyAutomation(buildNewTask(partial)));
-    if (denyGuest([projectWs(t.projectId)])) return;
+    if (denyEdit([t.projectId])) return;
     persistTask(t);
     noteElsewhere([t.projectId]);
-  }, [applyAutomation, buildNewTask, denyGuest, persistTask, noteElsewhere, unplanIfTheirs]);
+  }, [applyAutomation, buildNewTask, denyEdit, persistTask, noteElsewhere, unplanIfTheirs]);
 
   // genuine "new task" entry points (modal, forms) run automation rules;
   // duplicate / recurrence / sub-tasks call persistTask directly (no rules)
   // (on Today a new task of yours lands on today's plan; one for a teammate, or one a
   // rule hands to someone else, never plans their day for them)
   const createTask = useCallback((t: Task) => {
-    if (denyGuest([projectWs(t.projectId)])) return;
+    if (denyEdit([t.projectId])) return;
     persistTask(unplanIfTheirs(applyAutomation({ ...t, planToday: routeRef.current.view === "plan" ? (t.planToday ?? true) : false })));
-  }, [denyGuest, persistTask, applyAutomation, unplanIfTheirs]);
+  }, [denyEdit, persistTask, applyAutomation, unplanIfTheirs]);
 
   // Today's capture: in the workspace you're planning; yours unless you named someone
   // (@person); on today's plan unless it's for a later day. Like every new task, it never
@@ -2357,7 +2391,7 @@ export default function App() {
     if (wsId !== null && projectWs(projectId) !== wsId) {
       projectId = projectsRef.current.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id ?? projectId;
     }
-    if (denyGuest([projectWs(projectId)])) return;
+    if (denyEdit([projectId])) return;
     // (someone named who isn't in the workspace it's saved in couldn't see it: it stays with you)
     let assigneeId = t.assigneeId || userIdRef.current;
     if (!canAssignIn(wsMembersRef.current, assigneeId, projectWs(projectId), userIdRef.current)) {
@@ -2368,7 +2402,7 @@ export default function App() {
       ...t, id: newTaskId(), projectId, assigneeId, planToday: t.planToday ?? true,
     })));
     noteElsewhere([projectId]);
-  }, [denyGuest, persistTask, applyAutomation, noteElsewhere, unplanIfTheirs, toastInfo]);
+  }, [denyEdit, persistTask, applyAutomation, noteElsewhere, unplanIfTheirs, toastInfo]);
 
   /* ---- optimistic tmp-* rows (projects, sections, goals, rules…) ----
      Edits or deletes made before the create returns its real id are queued and
@@ -2393,7 +2427,7 @@ export default function App() {
     if (denyGuest([input.workspaceId])) return;
     // optimistic: show it immediately, reconcile/rollback with the server
     const tmpId = "tmp-proj-" + Date.now();
-    const { templateId, ...fields } = input;
+    const { templateId, memberIds: _memberIds, ...fields } = input;
     const optimistic: Project = { id: tmpId, ...fields };
     applyProjects([...projectsRef.current, optimistic]);
     store.createProject(input, userIdRef.current)
@@ -2402,6 +2436,8 @@ export default function App() {
         if (!op.deleted) noteCreated(p.id); // a reload already under way doesn't know about it yet
         applyProjects(op.deleted ? projectsRef.current.filter((x) => x.id !== tmpId) : swapTmp(projectsRef.current, tmpId, { ...p, ...op.patch }));
         setRouteRaw((r) => (r.view === "project" && r.projectId === tmpId ? { ...r, projectId: p.id } : r));
+        // 0058: the people it was made with
+        if (input.memberIds?.length) reloadProjectMembers();
         // started from a built-in template: add its sections, then its starter tasks
         if (!op.deleted && templateId) {
           (async () => {
@@ -2424,13 +2460,13 @@ export default function App() {
         applyProjects(projectsRef.current.filter((x) => x.id !== tmpId));
         toastError("Couldn't save the project: " + (e?.message || e));
       });
-  }, [denyGuest, applyProjects, settleTmp, noteCreated, toastError, persistTask]);
+  }, [denyGuest, applyProjects, settleTmp, noteCreated, toastError, persistTask, reloadProjectMembers]);
 
   /** `boardSettingsChange` (0048): just what changed on the board, for the database to merge (merge_board_settings);
    *  `boardSettings` is the whole object, for the app's own copy (and a database without that function). */
   const updateProject = useCallback((id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[]; boardSettings?: BoardSettings; boardSettingsChange?: BoardSettingsChange; updateRhythm?: UpdateRhythm | null }) => {
     const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
-    if (denyGuest([p.workspaceId])) return;
+    if (denyEdit([p.id])) return;
     const { boardSettingsChange, ...local } = patch;
     const before = Object.fromEntries(Object.keys(local).map((k) => [k, (p as unknown as Record<string, unknown>)[k]]));
     applyProjects(projectsRef.current.map((x) => x.id === id ? { ...x, ...local } : x));
@@ -2440,11 +2476,11 @@ export default function App() {
       applyProjects(projectsRef.current.map((x) => x.id === id ? { ...x, ...before } : x));
       toastError("Couldn't save the project — change undone.");
     });
-  }, [denyGuest, applyProjects, deferTmp, toastError]);
+  }, [denyEdit, applyProjects, deferTmp, toastError]);
 
   const setProjectArchived = useCallback((id: string, archived: boolean) => {
     const p = projectsRef.current.find((x) => x.id === id); if (!p) return;
-    if (denyGuest([p.workspaceId])) return;
+    if (denyEdit([p.id])) return;
     if (id.startsWith("tmp-")) { toastInfo("That project is still saving — try again in a moment."); return; }
     const prevAt = p.archivedAt ?? null;
     applyProjects(projectsRef.current.map((x) => x.id === id ? { ...x, archivedAt: archived ? new Date().toISOString() : null } : x));
@@ -2460,7 +2496,7 @@ export default function App() {
     }
     else toastSuccess(`Restored “${p.name}”`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, applyProjects, toastError, toastSuccess, toastInfo, toastAction]);
+  }, [denyEdit, applyProjects, toastError, toastSuccess, toastInfo, toastAction]);
   const setProjectArchivedRef = useRef(setProjectArchived); setProjectArchivedRef.current = setProjectArchived;
 
   // duplicate a project as a template: clones sections + tasks (statuses reset to
@@ -2556,7 +2592,7 @@ export default function App() {
     if (id === "p-personal") return; // built-in default can't be deleted
     if (mode === "reassign" && !targetId) return; // never fall through to deleting
     const proj = projectsRef.current.find((p) => p.id === id); if (!proj) return;
-    if (denyGuest([proj.workspaceId])) return;
+    if (denyEdit([proj.id])) return;
     if (!canDeleteProject(proj)) { toastError(`Only the owner of “${proj.name}” or a workspace admin can delete it.`); return; }
     if (id.startsWith("tmp-")) { deferTmp(id); applyProjects(projectsRef.current.filter((p) => p.id !== id)); return; }
     const dropProject = () => {
@@ -2615,14 +2651,14 @@ export default function App() {
         }
       });
     }, {});
-  }, [denyGuest, canDeleteProject, deferTmp, applyProjects, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError, toastAction, toastInfo, clearWrite, setRoute]);
+  }, [denyEdit, canDeleteProject, deferTmp, applyProjects, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError, toastAction, toastInfo, clearWrite, setRoute]);
 
   // ---- sections (ordered groupings within a project) ----
   const sectionWs = (s: Section | undefined) => (s ? s.workspaceId ?? projectWs(s.projectId) : null);
   /** Returns the new section's temporary id (tasks filed under it wait for the real one). */
   const createSection = useCallback((projectId: string, name: string, position?: number): string | undefined => {
     const wsId = projectWs(projectId);
-    if (denyGuest([wsId])) return undefined;
+    if (denyEdit([projectId])) return undefined;
     const pos = position ?? Date.now();
     const tmp: Section = { id: `tmp-sec-${pos}-${Math.round(Math.random() * 1e4)}`, projectId, workspaceId: wsId, name, position: pos };
     setSections((s) => [...s, tmp]);
@@ -2646,22 +2682,22 @@ export default function App() {
   }, [denyGuest, settleTmp, toastError]);
   const renameSection = useCallback((id: string, name: string) => {
     const sec = sectionsRef.current.find((s) => s.id === id);
-    if (denyGuest([sectionWs(sec)])) return;
+    if (denyEdit([sec?.projectId])) return;
     setSections((s) => s.map((x) => x.id === id ? { ...x, name } : x));
     if (deferTmp(id, { name })) return;
     store.updateSection(id, { name }).catch(saveFailed("renameSection", "Couldn't rename the section."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, deferTmp, saveFailed]);
+  }, [denyEdit, deferTmp, saveFailed]);
   const deleteSection = useCallback((id: string) => {
     const sec = sectionsRef.current.find((s) => s.id === id);
-    if (denyGuest([sectionWs(sec)])) return;
+    if (denyEdit([sec?.projectId])) return;
     setSections((s) => s.filter((x) => x.id !== id));
     const affected = (tasksRef.current ?? []).filter((t) => t.sectionId === id || t.mySectionId === id);
     updateTasks(new Map(affected.map((t) => [t.id, (t.sectionId === id ? { sectionId: undefined } : { mySectionId: undefined }) as Partial<Task>])), { notify: false });
     if (deferTmp(id)) return;
     store.deleteSection(id).catch(saveFailed("deleteSection", "Couldn't delete the section."));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, updateTasks, deferTmp, saveFailed]);
+  }, [denyEdit, updateTasks, deferTmp, saveFailed]);
 
   // CSV / paste import: positions in file order, one summary. Each row is saved on
   // its own (a few at a time), so one bad row only flags that row — the rest save,
@@ -2689,7 +2725,7 @@ export default function App() {
       Object.assign(t, { projectId: parent.projectId, workspaceId: parent.workspaceId, sectionId: undefined });
       moved.add(t.id);
     }
-    if (denyGuest(built.map((t) => t.workspaceId))) return;
+    if (denyEdit(built)) return;
     // sections the file names that this project doesn't have yet (tasks wait for their real ids)
     const newSections = new Map<string, string | undefined>();
     built.forEach((t, i) => {
@@ -2738,7 +2774,7 @@ export default function App() {
     noteElsewhere(projs);
     // (0056: a meeting links its actions to the tasks it made)
     return built.map((t) => t.id);
-  }, [applyAutomation, buildNewTask, denyGuest, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
+  }, [applyAutomation, buildNewTask, denyEdit, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
 
   // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
 
@@ -2806,11 +2842,11 @@ export default function App() {
   // ---- project status updates ----
   const postStatusUpdate = useCallback((projectId: string, summary: string, status: StatusKind, extras?: StatusExtras): Promise<boolean> => {
     const wsId = projectWs(projectId);
-    if (denyGuest([wsId])) return Promise.resolve(false);
+    if (denyEdit([projectId])) return Promise.resolve(false);
     return store.createStatusUpdate({ workspaceId: wsId, projectId, summary, status, ...extras }, userIdRef.current)
       .then((su) => { setStatusUpdates((s) => [su, ...s]); if (wsId && su.askUserIds?.length) notifyUpdatePosted(su.id); return true; })
       .catch((e) => { reportError(e, { op: "statusUpdate" }); toastError("Couldn't post the update — your text is still there."); return false; });
-  }, [denyGuest, toastError]);
+  }, [denyEdit, toastError]);
   // 0054: an author changes their own update (marked edited); the author or a lead deletes one
   const editStatusUpdate = useCallback((u: StatusUpdate, patch: { summary: string; status: StatusKind; sections: UpdateSections | null;
     recoveryPlan?: string | null; targetDate?: string | null; askUserIds?: string[] }): Promise<boolean> => {
@@ -2837,7 +2873,7 @@ export default function App() {
   const ruleWs = (id: string) => { const r = rulesRef.current.find((x) => x.id === id); return r ? r.workspaceId ?? projectWs(r.projectId) : workspaceRef.current; };
   const createRule = useCallback((projectId: string, name: string, actions: AutomationAction[], trigger: AutomationRule["trigger"] = "task_created") => {
     const wsId = projectWs(projectId);
-    if (denyGuest([wsId])) return;
+    if (denyEdit([projectId])) return;
     const tmp: AutomationRule = { id: "tmp-rule-" + Date.now(), workspaceId: wsId, projectId, name, trigger, actions, enabled: true };
     setAutomationRules((rs) => [...rs, tmp]);
     store.createRule({ workspaceId: wsId, projectId, name, actions, trigger }, userIdRef.current)
@@ -2846,7 +2882,7 @@ export default function App() {
         setAutomationRules((rs) => (op.deleted ? rs.filter((x) => x.id !== tmp.id) : swapTmp(rs, tmp.id, { ...rule, ...op.patch })));
       })
       .catch((e) => { reportError(e, { op: "createRule" }); setAutomationRules((rs) => rs.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the rule: " + (e?.message || e)); });
-  }, [denyGuest, settleTmp, toastError]);
+  }, [denyEdit, settleTmp, toastError]);
   const updateRule = useCallback((id: string, patch: RulePatch) => {
     if (denyGuest([ruleWs(id)])) return;
     setAutomationRules((rs) => rs.map((x) => x.id === id ? { ...x, ...patch } : x));
@@ -2867,7 +2903,7 @@ export default function App() {
   const formWs = (id: string) => { const f = formsRef.current.find((x) => x.id === id); return f ? f.workspaceId ?? projectWs(f.projectId) : workspaceRef.current; };
   const createForm = useCallback((projectId: string, name: string, fields: FormFieldKey[]) => {
     const wsId = projectWs(projectId);
-    if (denyGuest([wsId])) return;
+    if (denyEdit([projectId])) return;
     const tmp: FormDef = { id: "tmp-form-" + Date.now(), workspaceId: wsId, projectId, name, fields };
     setForms((fs) => [...fs, tmp]);
     store.createForm({ workspaceId: wsId, projectId, name, fields }, userIdRef.current)
@@ -2876,7 +2912,7 @@ export default function App() {
         setForms((fs) => (op.deleted ? fs.filter((x) => x.id !== tmp.id) : swapTmp(fs, tmp.id, { ...form, ...op.patch })));
       })
       .catch((e) => { reportError(e, { op: "createForm" }); setForms((fs) => fs.filter((x) => x.id !== tmp.id)); toastError("Couldn't add the form: " + (e?.message || e)); });
-  }, [denyGuest, settleTmp, toastError]);
+  }, [denyEdit, settleTmp, toastError]);
   const updateForm = useCallback((id: string, patch: { name?: string; fields?: FormFieldKey[] }) => {
     if (denyGuest([formWs(id)])) return;
     setForms((fs) => fs.map((x) => x.id === id ? { ...x, ...patch } : x));
@@ -2910,7 +2946,7 @@ export default function App() {
   // ---- custom fields (per-project definitions) ----
   const createCustomField = useCallback((projectId: string, name: string, type: CustomFieldDef["type"], options: string[] = []) => {
     const wsId = projectWs(projectId);
-    if (denyGuest([wsId])) return;
+    if (denyEdit([projectId])) return;
     const tmp: CustomFieldDef = { id: "tmp-cf-" + Date.now(), projectId, workspaceId: wsId, name, type, options };
     setCustomFields((cs) => [...cs, tmp]);
     store.createCustomField({ projectId, workspaceId: wsId, name, type, options }, userIdRef.current)
@@ -2919,7 +2955,7 @@ export default function App() {
         setCustomFields((cs) => (op.deleted ? cs.filter((c) => c.id !== tmp.id) : swapTmp(cs, tmp.id, { ...def, ...op.patch })));
       })
       .catch((e) => { reportError(e, { op: "createCustomField" }); setCustomFields((cs) => cs.filter((c) => c.id !== tmp.id)); toastError("Couldn't add the field: " + (e?.message || e)); });
-  }, [denyGuest, settleTmp, toastError]);
+  }, [denyEdit, settleTmp, toastError]);
   const customFieldsRef = useRef<CustomFieldDef[]>([]); customFieldsRef.current = customFields;
   const deleteCustomField = useCallback((id: string) => {
     const f = customFieldsRef.current.find((c) => c.id === id);
@@ -3071,10 +3107,10 @@ export default function App() {
 
   /* ---- 0047 docs: "Make task" from a doc line, in the doc's project; resolves to the saved id (null: not made) ---- */
   const makeDocTask: DocMakeTask = useCallback(async ({ title, projectId }) => {
-    if (denyGuest([projectWs(projectId)])) return null;
+    if (denyEdit([projectId])) return null;
     return persistTask(unplanIfTheirs(applyAutomation(buildNewTask({ title, projectId, planToday: false }))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, persistTask, unplanIfTheirs, applyAutomation, buildNewTask]);
+  }, [denyEdit, persistTask, unplanIfTheirs, applyAutomation, buildNewTask]);
 
   /* ---- workspaces & people ---- */
   /** A new workspace; `start` sets it up from a team template or a business pack once it exists.
@@ -3136,6 +3172,59 @@ export default function App() {
       toastError("Couldn't save the update day — change undone.");
     });
   }, [toastError]);
+
+  /* ---- 0058: project access (the server decides each change; a refusal is said, then everything reloads) ---- */
+  const accessRefused = useCallback((op: string, e: unknown, text?: string) => {
+    reportError(e, { op });
+    toastError(text ?? accessErrorText(e));
+    requestReloadRef.current?.();
+  }, [toastError]);
+  const setWorkspaceAccess = useCallback(async (workspaceId: string, patch: Partial<Pick<ProjectAccessSettings, "on" | "defaultVisibility" | "membersMayMakePrivate">>): Promise<boolean> => {
+    try {
+      const next = await store.setProjectAccess(workspaceId, patch);
+      const list = workspacesRef.current.map((w) => (w.id === workspaceId ? { ...w, projectAccess: next } : w));
+      setWorkspaces(list); setReferenceData({ workspaces: list });
+      if ("on" in patch) toastSuccess(next.on ? "Project access is on" : "Project access is off. Everyone sees every project again.");
+      return true;
+    } catch (e) {
+      const code = (e as { code?: string })?.code;
+      accessRefused("setProjectAccess", e, code === "not_authorized" ? "Only the workspace's owner can change this." : undefined);
+      return false;
+    }
+  }, [accessRefused, toastSuccess]);
+  const setProjectVisibility = useCallback(async (projectId: string, v: ProjectVisibility): Promise<boolean> => {
+    try {
+      const saved = await store.setProjectVisibility(projectId, v);
+      applyProjects(projectsRef.current.map((p) => (p.id === projectId ? { ...p, visibility: saved } : p)));
+      return true;
+    } catch (e) { accessRefused("setProjectVisibility", e); return false; }
+  }, [applyProjects, accessRefused]);
+  const setProjectMember = useCallback(async (projectId: string, userId: string, role: ProjectRole): Promise<boolean> => {
+    try {
+      const stored = await store.setProjectMember(projectId, userId, role);
+      if (stored !== "owner") {
+        const p = projectsRef.current.find((x) => x.id === projectId);
+        setProjectMembers((cur) => {
+          const list = cur ?? [];
+          return list.some((m) => m.projectId === projectId && m.userId === userId)
+            ? list.map((m) => (m.projectId === projectId && m.userId === userId ? { ...m, role: stored } : m))
+            : [...list, { id: `tmp-pm-${projectId}-${userId}`, projectId, workspaceId: p?.workspaceId ?? "", userId, role: stored }];
+        });
+        applyProjects(projectsRef.current.map((x) => (x.id === projectId ? { ...x, contributorIds: [...new Set([...(x.contributorIds ?? []), userId])] } : x)));
+      }
+      reloadProjectMembers();
+      return true;
+    } catch (e) { accessRefused("setProjectMember", e); return false; }
+  }, [applyProjects, accessRefused, reloadProjectMembers]);
+  const removeProjectMember = useCallback(async (projectId: string, userId: string): Promise<boolean> => {
+    try {
+      await store.removeProjectMember(projectId, userId);
+      setProjectMembers((cur) => (cur ?? []).filter((m) => !(m.projectId === projectId && m.userId === userId)));
+      applyProjects(projectsRef.current.map((x) => (x.id === projectId ? { ...x, contributorIds: (x.contributorIds ?? []).filter((u) => u !== userId) } : x)));
+      reloadProjectMembers();
+      return true;
+    } catch (e) { accessRefused("removeProjectMember", e); return false; }
+  }, [applyProjects, accessRefused, reloadProjectMembers]);
 
   const uploadWorkspaceLogo = useCallback(async (workspaceId: string, file: File) => {
     try {
@@ -3401,7 +3490,7 @@ export default function App() {
         // "on today" for someone else's new task is your plan, not theirs
         const mine = !t0.assigneeId || t0.assigneeId === me;
         const t = mine ? (planToday !== undefined ? { ...t0, planToday } : t0) : unplanIfTheirs(t0);
-        if (denyGuest([projectWs(t.projectId)])) continue;
+        if (denyEdit([t.projectId])) continue;
         persistTask(t);
         if (!mine && planToday) writeOverlay(t, { planToday: true });
         noteElsewhere([t.projectId]);
@@ -3417,7 +3506,7 @@ export default function App() {
       if (created.length) discardCreated(created);
     }, {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [guardedWrite, undoGuarded, applyAutomation, buildNewTask, unplanIfTheirs, writeOverlay, denyGuest, persistTask, noteElsewhere, discardCreated, toastAction]);
+  }, [guardedWrite, undoGuarded, applyAutomation, buildNewTask, unplanIfTheirs, writeOverlay, denyEdit, persistTask, noteElsewhere, discardCreated, toastAction]);
 
   /** Waiting on: ask the assignee for an update, in a comment that mentions them. */
   const nudge = useCallback((taskId: string) => {
@@ -3482,14 +3571,14 @@ export default function App() {
       const onToday = routeRef.current.view === "plan";
       const { task, subtasks, checklist } = templateTasks(plan, (p) => buildNewTask(p));
       const parent = unplanIfTheirs(applyAutomation({ ...task, planToday: onToday ? task.planToday : false }));
-      if (denyGuest([projectWs(parent.projectId)])) return;
+      if (denyEdit([parent.projectId])) return;
       const created = persistTask(parent);
       subtasks.forEach((sub) => persistTask({ ...sub, projectId: parent.projectId, parentId: parent.id }, { log: false }));
       copyChecklist(created, checklist);
       noteElsewhere([parent.projectId]);
     }, (e: unknown) => { reportError(e, { op: "applyTemplatePlan" }); toastError("Couldn't use that template. Check your connection and try again."); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [buildNewTask, unplanIfTheirs, applyAutomation, denyGuest, persistTask, copyChecklist, noteElsewhere, toastError]);
+  }, [buildNewTask, unplanIfTheirs, applyAutomation, denyEdit, persistTask, copyChecklist, noteElsewhere, toastError]);
   /** Today's capture field ("/" for a template): the template's plan from what was typed (it wins), then the same create path. */
   const captureFromTemplate = useCallback((t: LibraryTemplate, partial: Partial<Task> & { title: string }, typed: { priority?: Task["priority"]; focusMin?: number; dueDate?: string }) => {
     import("./lib/templatePlan").then(({ captureTemplatePlan }) => {
@@ -3976,11 +4065,23 @@ export default function App() {
   guestKeysRef.current = activeReadOnly;
   const aiOn = appearance.ai !== false;
   const detailTask = detailId ? seen.find((t) => t.id === detailId) : undefined;
-  const detailReadOnly = !!detailTask && roleIn(detailTask.workspaceId) === "guest";
+  // 0058: rights per project (with project access off: guests view and comment, everyone else edits, as before)
+  const accessCtx: AccessCtx = { me: currentUserId, workspaces, projects, wsMembers, members: projectMembers };
+  const detailRank = detailTask ? taskRank(detailTask, accessCtx) : 3;
+  const detailReadOnly = !!detailTask && detailRank < 3;
+  const detailProject = detailTask ? projects.find((p) => p.id === detailTask.projectId) : undefined;
+  const detailGated = !!detailTask?.workspaceId && accessOn(workspaces.find((w) => w.id === detailTask.workspaceId));
+  const detailPeople = detailTask && detailGated && detailProject ? accessPeople(detailProject.id, accessCtx).map((m) => m.userId!) : undefined;
+  const detailAudience = detailGated && detailProject && visibilityOf(detailProject) !== "workspace" ? `Only people on ${detailProject.name} can see this.` : undefined;
 
   // scope tasks by route: "My tasks" stays within the workspace you're viewing — your
   // personal tasks never mix with a team workspace's, and vice versa
   const openProject = route.view === "project" && route.projectId ? getProject(route.projectId) : undefined;
+  // a project you can view but not change (0058): its page reads like a guest's
+  const projRO = activeReadOnly || (!!openProject && projectRank(openProject.id, accessCtx) < 3);
+  const openGated = !!openProject?.workspaceId && accessOn(workspaces.find((w) => w.id === openProject.workspaceId));
+  // who can be assigned or asked on this project (everyone here while project access is off)
+  const projectPeople = openProject && openGated ? (() => { const ids = new Set(accessPeople(openProject.id, accessCtx).map((m) => m.userId)); return (ps: { id: string; name: string }[]) => ps.filter((x) => ids.has(x.id)); })() : (ps: { id: string; name: string }[]) => ps;
   // (All businesses: yours in every workspace)
   const scoped = route.view === "tasks" ? (biz.all ? biz.mine : myTasks) : openProject ? allTasks.filter((t) => t.projectId === openProject.id) : allTasks;
   const wsProjects = projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt);
@@ -4011,7 +4112,7 @@ export default function App() {
 
   const currentUser = getMember(currentUserId);
   const wsKey = workspace ?? "personal";
-  const canManageProject = (p: Project) => !activeReadOnly && (isAdmin || p.ownerId === currentUserId || !p.ownerId);
+  const canManageProject = (p: Project) => !activeReadOnly && projectRank(p.id, accessCtx) >= 3 && (isAdmin || p.ownerId === currentUserId || !p.ownerId);
   // a project's board settings (WIP limits, project covers): its writers — everyone here but guests (the projects policies)
   const canEditProjectBoard = (p: Project) => !activeReadOnly && !p.id.startsWith("tmp-");
   // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
@@ -4054,7 +4155,7 @@ export default function App() {
     { id: "docs", label: "Docs", secondary: true, href: projectHref("docs") },
     { id: "updates", label: "Updates", count: projUpdates.length || undefined, secondary: true, href: projectHref("updates") },
     { id: "requests", label: "Requests", count: projForms.length || undefined, secondary: true, href: projectHref("requests") },
-    ...(activeReadOnly ? [] : [{ id: "rules", label: "Rules", count: projRules.length || undefined, secondary: true, href: projectHref("rules") }]),
+    ...(projRO ? [] : [{ id: "rules", label: "Rules", count: projRules.length || undefined, secondary: true, href: projectHref("rules") }]),
     { id: "about", label: "About", secondary: true, href: projectHref("about") },
   ] : [];
   const rulesProps = (projectId?: string): React.ComponentProps<typeof AutomationsView> => ({
@@ -4132,11 +4233,13 @@ export default function App() {
             // (0048: who else is in the project right now, beside its people)
             titleAddon: <><Suspense fallback={null}><ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")}
               me={currentUser ? { userId: currentUserId, name: currentUser.name, color: currentUser.color ?? "" } : null} /></Suspense>
+              {/* 0058: Members only / Private, opening About's People & access */}
+              <ProjectLock project={openProject} chip onClick={() => { setAccessOpenFor(openProject.id); goProjectTab("about"); }} />
               <GoalServes goals={goalFlow.forProject(openProject.id)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} compact={isMobile} /></>,
             actions: (
-              <Suspense fallback={null}><ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}
-                people={assignees.filter((m) => m.id !== currentUserId)}
-                onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
+              <Suspense fallback={null}><ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={projRO}
+                people={projectPeople(assignees).filter((m) => m.id !== currentUserId)}
+                onPostStatus={projRO ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
                 onDuplicate={activeReadOnly ? undefined : duplicateProject}
                 onArchive={activeReadOnly || !canArchiveProject(openProject, { myRole }) ? undefined : (id) => setProjectArchived(id, true)}
                 onDelete={activeReadOnly || openProject.id === "p-personal" || !canDeleteProject(openProject) ? undefined : (id) => setDeleteProjectId(id)}
@@ -4376,7 +4479,7 @@ export default function App() {
         // through each task's own workspace (a guest's rows are view-only); an assignee must be able to see the task;
         // adding a task adds here, so there's no Add row in a workspace you're a guest in.
         const allMy = biz.all && !inProject;
-        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${allMy ? "all" : wsKey}:${viewKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={allMy ? false : activeReadOnly}
+        return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${allMy ? "all" : wsKey}:${viewKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={allMy ? false : openProject ? projRO : activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
           exportName={openProject ? openProject.name : "my-tasks"}
           tasks={scoped} allTasks={allMy ? biz.liveSeen : allTasks} projects={allMy ? projects.filter((p) => !p.archivedAt) : wsProjects} view={taskView} setView={inProject ? goProjectTab : setView}
@@ -4408,17 +4511,23 @@ export default function App() {
             tab: projectTab, onTab: goProjectTab, extraTabs,
             renderExtra: (tab: string) => tab === "docs" ? (
               <Suspense fallback={null}>
-                <DocsTab project={openProject!} members={wsPeople} tasks={scoped} currentUserId={currentUserId} readOnly={activeReadOnly}
+                <DocsTab project={openProject!} members={openGated ? wsPeople.filter((m) => projectPeople([{ id: m.id, name: m.name }]).length > 0) : wsPeople} tasks={scoped} currentUserId={currentUserId} readOnly={projRO}
                   docId={route.docId ?? null}
                   onOpenDoc={(docId) => setRoute({ view: "project", projectId: openProject!.id, tab: "docs", ...(docId ? { docId } : {}) }, { keepPanel: true })}
                   onMakeTask={makeDocTask} onOpenTask={setDetailId} />
               </Suspense>
             ) : (
-              <Suspense fallback={null}><ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={assignees}
-                canManage={canManageProject(openProject!)} readOnly={activeReadOnly} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
-                onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus}
-                conversation={{ me: currentUserId, lead: isAdmin, onEdit: activeReadOnly ? undefined : editStatusUpdate, onDelete: deleteStatusUpdate, focusUpdateId: updateFocus }}
-                rules={{ ...rulesProps(openProject!.id), readOnly: activeReadOnly }} forms={{ ...formsProps(openProject!.id), readOnly: activeReadOnly }} /></Suspense>
+              <Suspense fallback={null}><ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={projectPeople(assignees)}
+                canManage={canManageProject(openProject!)} readOnly={projRO} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
+                onPostStatus={projRO ? undefined : postStatusUpdate} aiStatus={aiStatus}
+                conversation={{ me: currentUserId, lead: isAdmin, onEdit: projRO ? undefined : editStatusUpdate, onDelete: deleteStatusUpdate, focusUpdateId: updateFocus }}
+                rules={{ ...rulesProps(openProject!.id), readOnly: projRO }} forms={{ ...formsProps(openProject!.id), readOnly: projRO }}
+                // 0058: who's on it (once 0058 is in) and, with project access on, who can see it
+                access={accessSchema() && projectMembers !== null && openProject!.workspaceId ? {
+                  ctx: accessCtx, workspaceName: activeWsName, open: accessOpenFor === openProject!.id,
+                  onSetVisibility: setProjectVisibility, onSetMember: setProjectMember, onRemoveMember: removeProjectMember,
+                  onInviteGuest: isAdmin ? () => { setRoute({ view: "team" }); toastInfo("Invite them as a guest here, then add them to the project in its About tab."); } : undefined,
+                } : undefined} /></Suspense>
             ),
             notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={activeReadOnly ? [] : risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,
             // 0048 board: the project's settings ({} when none: its WIP limits are then everyone's); writers save one change at a time
@@ -4619,7 +4728,8 @@ export default function App() {
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
           <TaskDetail taskId={detailId} ai={aiOn} onApprovalsChange={onApprovalsChange} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
-            readOnly={detailReadOnly} docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })}
+            readOnly={detailReadOnly} canComment={detailRank >= 2} people={detailPeople} audienceNote={detailAudience}
+            docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })}
             onSaveAsTemplate={(id) => setSaveTemplateFor(id)}
             goalRow={(t) => <GoalServesRow goals={goalFlow.forTask(t)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />} />
           </Suspense>
@@ -4633,6 +4743,7 @@ export default function App() {
         workspaceId={workspace} initialTemplate={newTaskTemplate} onApplyTemplate={applyTemplatePlan}
         onBrowseTemplates={() => { setNewTaskOpen(false); setNewTaskTemplate(null); openTemplateLibrary(); }} /></Deferred>
       <Deferred when={newProjectOpen}><NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects}
+        access={workspace ? { ctx: accessCtx, workspaceName: activeWsName, nameOf: (id) => getMember(id)?.name || wsMembers.find((m) => m.userId === id)?.name || "Someone" } : undefined}
         // guests never create from a template (createFromTeamTemplate refuses them too)
         onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate} packs={activeReadOnly ? undefined : rollout.wrapPacks(newProjectPacks)}
         startIn={rollout.packMode ? "team" : undefined}
@@ -4686,6 +4797,9 @@ export default function App() {
           <>
             {/* 0053: the day project updates are due here (before the workspace's own details, which end with Close workspace) */}
             <UpdateRhythmPanel workspace={workspaces.find((w) => w.id === workspace)} onChange={updateWorkspaceRhythm} />
+            {/* 0058: Project access (the workspace's owner only; nothing before 0058) */}
+            <ProjectAccessPanel workspace={workspaces.find((w) => w.id === workspace)} ctx={accessCtx} onChange={setWorkspaceAccess}
+              nameOf={(id) => getMember(id)?.name || wsMembers.find((m) => m.userId === id)?.name} />
             <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
               onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
             {/* 0047: Settings › Workspace › History (who did what here; owners and admins see everyone's) */}

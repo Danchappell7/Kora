@@ -4,11 +4,11 @@
    progress, people), ProjectActions on its right (Draft update ·
    Post update · ⋯), ProjectNotice as the one line under the tabs,
    and ProjectPanels for the Updates · Requests · Rules · About tabs.
-   ProjectOverview is the retired overview card, kept working until
-   the shell stops rendering it.
+   0058: About's people are project_members once project access is in
+   (People & access while it's on).
    ============================================================ */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Icon, Avatar, AvatarStack, StatusDot, EmojiPicker, Collapse, AiMark, Button, EmptyState, IconButton, Meter, Pill, ProgressRing, ProjectTile, projectPaint } from "../primitives";
+import { Icon, Avatar, AvatarStack, AiMark, Button, EmptyState, IconButton, Meter, Pill, ProgressRing, ProjectTile, projectLocked } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { STATUS_KIND_META } from "../views/GoalsPortfolios";
 import { AutomationsView, FormsView } from "../views/RulesForms";
@@ -28,6 +28,8 @@ import { PresenceAvatars, useProjectPresence, type PresenceMe } from "../presenc
 import { UpdateDayField } from "../updates/UpdateDay";
 import { UpdateCard, type UpdateEditPatch } from "../updates/UpdateCard";
 import { markUpdatesSeen, useUpdateConversation, threadOf } from "../../lib/updateConversation";
+import { PeopleAccess, accessSummary, type PeopleAccessProps } from "./PeopleAccess";
+import { accessOn, canManagePeople, memberRole, roleOf } from "../../lib/projectAccess";
 import "./projects.css";
 
 export type { AiStatus, PostStatus } from "./StatusComposer";
@@ -328,7 +330,7 @@ export interface UpdatesConversation {
 }
 
 /** A project's non-task tabs: Updates · Requests · Rules · About. */
-export function ProjectPanels({ tab, project, tasks, statusUpdates, members, canManage, readOnly, onUpdate, onPostStatus, aiStatus, rules, forms, conversation }: {
+export function ProjectPanels({ tab, project, tasks, statusUpdates, members, canManage, readOnly, onUpdate, onPostStatus, aiStatus, rules, forms, conversation, access }: {
   tab: "updates" | "requests" | "rules" | "about";
   project: Project;
   tasks: Task[];
@@ -342,6 +344,8 @@ export function ProjectPanels({ tab, project, tasks, statusUpdates, members, can
   rules: React.ComponentProps<typeof AutomationsView>;
   forms: React.ComponentProps<typeof FormsView>;
   conversation?: UpdatesConversation;
+  /** 0058: who's on it and who can see it (omit before 0058: About keeps today's contributors) */
+  access?: AboutAccess;
 }): JSX.Element {
   if (tab === "rules") {
     if (readOnly) {
@@ -354,7 +358,7 @@ export function ProjectPanels({ tab, project, tasks, statusUpdates, members, can
     return <AutomationsView {...rules} projectId={project.id} />;
   }
   if (tab === "requests") return <FormsView {...forms} projectId={project.id} readOnly={readOnly || forms.readOnly} />;
-  if (tab === "about") return <AboutPanel project={project} tasks={tasks} statusUpdates={statusUpdates} members={members} canManage={canManage} readOnly={readOnly} onUpdate={onUpdate} />;
+  if (tab === "about") return <AboutPanel project={project} tasks={tasks} statusUpdates={statusUpdates} members={members} canManage={canManage} readOnly={readOnly} onUpdate={onUpdate} access={access} />;
   return <UpdatesPanel project={project} tasks={tasks} statusUpdates={statusUpdates} readOnly={readOnly} onPostStatus={onPostStatus} aiStatus={aiStatus}
     members={members} conversation={conversation} />;
 }
@@ -417,7 +421,8 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
                     defaultOpen={conversation?.focusUpdateId === u.id}
                     // the latest update can go to the team's Slack channel (the button renders
                     // nothing in Personal, before Slack is connected, or for guests)
-                    actions={i === 0 && !readOnly ? (
+                    // (0058: never a Members only or Private project's: a Slack channel is the whole team's)
+                    actions={i === 0 && !readOnly && !projectLocked(project) ? (
                       <SlackPostButton workspaceId={project.workspaceId ?? null} kind="status" projectId={project.id} status={u.status}
                         getText={() => u.summary} label="Share to Slack" variant="ghost" />
                     ) : undefined} />
@@ -436,9 +441,16 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
   );
 }
 
-function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnly, onUpdate }: {
+/** 0058: what About needs for a project's people once project access is in. */
+export type AboutAccess = Omit<PeopleAccessProps, "project" | "tasks" | "nameOf"> & {
+  /** open People & access (the header's lock chip, or arriving to manage it) */
+  open?: boolean;
+};
+
+function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnly, onUpdate, access }: {
   project: Project; tasks: Task[]; statusUpdates: StatusUpdate[]; members: { id: string; name: string }[];
   canManage: boolean; readOnly: boolean; onUpdate: (id: string, patch: Record<string, unknown>) => void;
+  access?: AboutAccess;
 }) {
   const today = todayISO();
   const facts = useMemo(() => statusFacts(project, tasks, statusUpdates, KANBO_TODAY), [project, tasks, statusUpdates, today]);
@@ -448,7 +460,10 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
   useEffect(() => { setEmojiOpen(false); setDescEditing(false); }, [project.id]);
   const editable = !readOnly;
   const ownerId = project.ownerId ?? null;
-  const nameOf = (id: string) => members.find((m) => m.id === id)?.name || getMember(id)?.name || "Former member";
+  // (0058: someone a guest can't see is "Someone at …", never "Former member")
+  const someone = access && accessOn(access.ctx.workspaces.find((w) => w.id === project.workspaceId)) ? `Someone at ${access.workspaceName}` : "Former member";
+  const nameOf = (id: string) => members.find((m) => m.id === id)?.name || getMember(id)?.name
+    || access?.ctx.wsMembers.find((m) => m.userId === id && m.workspaceId === project.workspaceId)?.name || someone;
   const contribIds = (project.contributorIds ?? []).filter((id) => id !== ownerId);
   const toggleContrib = (id: string) => {
     const set = new Set(contribIds);
@@ -456,6 +471,10 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
     onUpdate(project.id, { contributorIds: [...set] });
   };
   const mine = tasks.filter((t) => t.projectId === project.id && !t.archivedAt);
+  // 0058: switch on, People & access (opened from the summary or the header's lock chip)
+  const accessIsOn = !!access && accessOn(access.ctx.workspaces.find((w) => w.id === project.workspaceId));
+  const [peopleOpen, setPeopleOpen] = useState(!!access?.open);
+  useEffect(() => { if (access?.open) setPeopleOpen(true); }, [access?.open, project.id]);
   const dated = mine.map((t) => t.dueDate).filter((d): d is string => !!d).sort();
   const age = oldestTaskAge(mine, project.id, KANBO_TODAY);
   const stale = isStale(facts, age);
@@ -551,9 +570,16 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
             ) : <span className="kpj-muted">No owner</span>}
           </dd>
 
-          <dt>Contributors</dt>
+          <dt>{accessIsOn ? "People & access" : "Contributors"}</dt>
           <dd>
-            {canManage ? (
+            {access && accessIsOn ? (
+              <>
+                <span className="kpj-card-meta" style={{ color: "var(--ink-2)" }}>{accessSummary(project, access.ctx)}</span>
+                <Button size="sm" variant="ghost" aria-expanded={peopleOpen} onClick={() => setPeopleOpen((v) => !v)}>{peopleOpen ? "Done" : "Manage"}</Button>
+              </>
+            ) : access ? (
+              <ContributorsChecklist project={project} access={access} nameOf={nameOf} canManage={canManage} />
+            ) : canManage ? (
               members.filter((m) => m.id !== ownerId).length === 0
                 ? <span className="kpj-muted">Invite teammates to add contributors.</span>
                 : (
@@ -594,242 +620,45 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
             </span>
           </dd>
         </dl>
+        {access && accessIsOn && peopleOpen && (
+          <PeopleAccess {...access} project={project} tasks={tasks} nameOf={nameOf} />
+        )}
       </div>
     </div>
   );
 }
 
-/* ============================ legacy: the overview card ============================ */
-
-/** The retired overview card (the shell rendered it above a project's tasks). Kept working until it stops. */
-export function ProjectOverview({ project, tasks: allProjectTasks, onUpdate, statusUpdates = [], onPostStatus, members = [], canManagePeople = false, onDuplicate, onArchive }: { project: Project; tasks: Task[]; onUpdate: (id: string, patch: { name?: string; emoji?: string; color?: string; description?: string; status?: string; ownerId?: string | null; contributorIds?: string[] }) => void; statusUpdates?: StatusUpdate[]; onPostStatus?: (projectId: string, summary: string, status: StatusKind) => Promise<boolean> | void; members?: { id: string; name: string }[]; canManagePeople?: boolean; onDuplicate?: (projectId: string) => void; onArchive?: (projectId: string) => void }) {
-  // progress and the task count are top-level tasks, like the page header (sub-tasks nest
-  // under their parent); what needs attention — overdue, due soon, blocked — counts every
-  // task, sub-tasks included, because that's real work that's late or stuck
-  const tasks = allProjectTasks.filter((t) => !t.parentId);
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [peopleOpen, setPeopleOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
-  const [nameDraft, setNameDraft] = useState(project.name);
-  const [emojiDraft, setEmojiDraft] = useState(project.emoji);
-  useEffect(() => { setNameDraft(project.name); setEmojiDraft(project.emoji); setEditOpen(false); setEmojiPickerOpen(false); }, [project.id, project.name, project.emoji]);
-  const PROJECT_PALETTE = ["oklch(0.74 0.14 230)", "oklch(0.74 0.16 305)", "oklch(0.75 0.13 155)", "oklch(0.78 0.15 70)", "oklch(0.66 0.2 20)", "oklch(0.78 0.1 45)"];
-  const [descEditing, setDescEditing] = useState(false);
-  const [descDraft, setDescDraft] = useState(project.description || "");
-  const [updOpen, setUpdOpen] = useState(false);
-  const [updText, setUpdText] = useState("");
-  const [updKind, setUpdKind] = useState<StatusKind>("on_track");
-  const [posting, setPosting] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const history = statusUpdates.filter((s) => s.projectId === project.id);
-  const latest = history[0];
-  const latestAge = latest ? relDay(latest.createdAt) : null;
-  const stale = !!latestAge && latestAge.days > 14;
-  // keep the draft until the update is actually saved
-  const postUpd = () => {
-    const v = updText.trim(); if (!v || !onPostStatus || posting) return;
-    const r = onPostStatus(project.id, v, updKind);
-    if (r && typeof (r as Promise<boolean>).then === "function") {
-      setPosting(true);
-      (r as Promise<boolean>).then((ok) => { setPosting(false); if (ok) { setUpdText(""); setUpdOpen(false); } });
-    } else { setUpdText(""); setUpdOpen(false); }
+/** 0058 in, the switch off: the same contributors checklist, guests included (labelled), each tick
+ *  a member call (an editor; a guest a commenter) rather than a write to contributor_ids. */
+function ContributorsChecklist({ project, access, nameOf, canManage }: { project: Project; access: AboutAccess; nameOf: (id: string) => string; canManage: boolean }) {
+  const { ctx } = access;
+  const wsId = project.workspaceId ?? null;
+  const ownerId = project.ownerId ?? null;
+  const people = ctx.wsMembers.filter((m) => (m.workspaceId ?? null) === wsId && m.status === "active" && !!m.userId && m.userId !== ownerId);
+  const on = (uid: string) => memberRole(ctx, project.id, uid) !== null;
+  const [busy, setBusy] = useState(false);
+  // (who edits the list is as before: the project's owner and the workspace's leads)
+  if (!canManage || !canManagePeople(project, ctx)) {
+    const ids = people.filter((m) => on(m.userId!)).map((m) => m.userId!);
+    return ids.length ? <>{ids.map((id) => <span key={id} className="kpj-person"><Avatar id={id} size={24} />{nameOf(id)}</span>)}</> : <span className="kpj-muted">None yet</span>;
+  }
+  if (!people.length) return <span className="kpj-muted">Invite teammates to add contributors.</span>;
+  const toggle = async (uid: string) => {
+    setBusy(true);
+    try {
+      if (on(uid)) await access.onRemoveMember(project.id, uid);
+      else await access.onSetMember(project.id, uid, roleOf(ctx, wsId, uid) === "guest" ? "commenter" : "editor");
+    } finally { setBusy(false); }
   };
-  const { total, done, pct: prog } = progressOf(allProjectTasks);
-  const todayMid = new Date(KANBO_TODAY.getFullYear(), KANBO_TODAY.getMonth(), KANBO_TODAY.getDate()).getTime();
-  const dueSoon = allProjectTasks.filter((t) => t.status !== "done" && t.dueDate && (() => { const d = new Date(t.dueDate + "T00:00:00").getTime(); return d <= todayMid + 7 * 86400000; })()).length;
-  // auto-computed RAG health — complements the manually-set project phase
-  const overdue = allProjectTasks.filter((t) => t.status !== "done" && t.dueDate && new Date(t.dueDate + "T00:00:00").getTime() < todayMid).length;
-  const blockedCount = allProjectTasks.filter((t) => t.status === "blocked").length;
-  const health = (() => {
-    if (total === 0) return null;
-    const bits: string[] = [];
-    if (overdue) bits.push(`${overdue} overdue`);
-    if (blockedCount) bits.push(`${blockedCount} blocked`);
-    const detail = bits.length ? bits.join(" · ") : "nothing overdue or blocked";
-    if (prog === 100) return { label: "Complete", color: "var(--st-done)", detail: "all tasks done" };
-    if (overdue >= 3 || overdue / allProjectTasks.length > 0.25 || (overdue >= 1 && blockedCount >= 2)) return { label: "Off track", color: "var(--prio-urgent)", detail };
-    if (overdue >= 1 || blockedCount >= 1) return { label: "At risk", color: "var(--st-review)", detail };
-    return { label: "On track", color: "var(--st-done)", detail };
-  })();
-  const byStatus = (["todo", "progress", "review", "blocked", "done"] as Status[]).map((s) => ({ s, n: tasks.filter((t) => t.status === s).length })).filter((x) => x.n > 0);
-  const printReport = () => printProjectReport(project, allProjectTasks);
-  const curStatus = PROJECT_STATUSES.find((s) => s.v === project.status);
   return (
-    <div className="glass" style={{ margin: "14px 24px 0", padding: "16px 18px", borderRadius: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-     <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 180 }}>
-        <div style={{ position: "relative" }}>
-          <button onClick={() => canManagePeople && setEditOpen((v) => !v)} title={canManagePeople ? "Edit project" : undefined}
-            style={{ width: 40, height: 40, borderRadius: 11, display: "grid", placeItems: "center", fontSize: 20, background: `color-mix(in oklch, ${project.color} 18%, transparent)`, border: `1px solid color-mix(in oklch, ${project.color} 32%, transparent)`, cursor: canManagePeople ? "pointer" : "default", padding: 0 }}>{project.emoji}</button>
-          {editOpen && canManagePeople && (
-            <>
-              <div onClick={() => setEditOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-              <div className="glass anim-scalein" style={{ position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 31, width: 280, padding: 14, borderRadius: 14, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 12 }}>
-                <div className="kicker">Edit project</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => setEmojiPickerOpen((v) => !v)} title="Choose icon" aria-label="Project icon"
-                    style={{ width: 46, height: 38, textAlign: "center", fontSize: 19, borderRadius: 9, border: emojiPickerOpen ? "1px solid var(--accent)" : "1px solid var(--hairline)", background: "var(--surface)", cursor: "pointer" }}>{emojiDraft}</button>
-                  <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && nameDraft.trim()) { onUpdate(project.id, { name: nameDraft.trim() }); setEditOpen(false); } }} onBlur={() => { if (nameDraft.trim() && nameDraft.trim() !== project.name) onUpdate(project.id, { name: nameDraft.trim() }); }} aria-label="Project name"
-                    style={{ flex: 1, height: 38, padding: "0 11px", borderRadius: 9, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink)", fontFamily: "var(--font-display)", fontSize: 14, outline: "none" }} />
-                </div>
-                {emojiPickerOpen && <EmojiPicker width={252} height={180} onPick={(e) => { setEmojiDraft(e); onUpdate(project.id, { emoji: e }); setEmojiPickerOpen(false); }} />}
-                <div>
-                  <div className="kicker" style={{ marginBottom: 7 }}>Colour</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {PROJECT_PALETTE.map((c) => (
-                      <button key={c} onClick={() => onUpdate(project.id, { color: c })} aria-label="Set colour"
-                        style={{ width: 26, height: 26, borderRadius: 8, background: c, border: project.color === c ? "2px solid var(--ink)" : "2px solid transparent", cursor: "pointer" }} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 15, fontWeight: 600 }}>{project.name}</span>
-            <div style={{ position: "relative" }}>
-              <button onClick={() => setStatusOpen((v) => !v)} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 99, border: "1px solid var(--hairline)", background: curStatus ? `color-mix(in oklch, ${curStatus.color} 14%, transparent)` : "var(--surface)", cursor: "pointer", fontSize: 11.5, fontFamily: "var(--font-display)", color: curStatus ? curStatus.color : "var(--ink-4)" }}>
-                {curStatus ? <><span style={{ width: 7, height: 7, borderRadius: 99, background: curStatus.color }} />{curStatus.label}</> : "Set status"}
-              </button>
-              {statusOpen && (
-                <>
-                  <div onClick={() => setStatusOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
-                  <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 5px)", left: 0, zIndex: 21, width: 150, padding: 5, borderRadius: 11, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                    {PROJECT_STATUSES.map((s) => (
-                      <button key={s.v} onClick={() => { onUpdate(project.id, { status: project.status === s.v ? "" : s.v }); setStatusOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 8px", borderRadius: 8, border: "none", background: project.status === s.v ? "var(--surface-2)" : "transparent", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 13, textAlign: "left", color: "var(--ink-2)" }}>
-                        <span style={{ width: 8, height: 8, borderRadius: 99, background: s.color }} /> {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-            {health && (
-              <span title={`Auto health: ${health.detail}`} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 99, fontSize: 11.5, fontFamily: "var(--font-display)", color: health.color, background: `color-mix(in oklch, ${health.color} 14%, transparent)`, border: `1px solid color-mix(in oklch, ${health.color} 30%, transparent)` }}>
-                <span style={{ width: 7, height: 7, borderRadius: 99, background: health.color }} />{health.label}
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: 12, color: "var(--ink-4)" }}>{total} task{total === 1 ? "" : "s"}{dueSoon > 0 ? ` · ${dueSoon} due soon` : ""}</div>
-        </div>
-      </div>
-      <div style={{ flex: 1, minWidth: 160 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 5 }}><span className="kicker">Progress</span><span className="mono tnum" style={{ color: prog > 0 ? "var(--accent)" : "var(--ink-4)" }}>{prog}%</span></div>
-        <div style={{ height: 7, borderRadius: 99, background: "var(--track, var(--surface-2))", overflow: "hidden" }}><div style={{ width: prog + "%", height: "100%", borderRadius: 99, background: project.color, transition: "width .9s var(--ease)" }} /></div>
-        <div style={{ display: "flex", gap: 12, marginTop: 9, flexWrap: "wrap" }}>
-          {byStatus.map(({ s, n }) => (
-            <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--ink-3)" }}><StatusDot status={s} size={7} />{STATUS_META[s].label} <span className="mono" style={{ color: "var(--ink-4)" }}>{n}</span></span>
-          ))}
-        </div>
-      </div>
-      {(() => {
-        const ownerId = project.ownerId ?? null;
-        const ownerName = ownerId ? (members.find((m) => m.id === ownerId)?.name || getMember(ownerId)?.name || "Owner") : null;
-        const contribIds = (project.contributorIds ?? []).filter((id) => id !== ownerId);
-        const toggleContrib = (id: string) => {
-          const set = new Set(contribIds);
-          set.has(id) ? set.delete(id) : set.add(id);
-          onUpdate(project.id, { contributorIds: [...set] });
-        };
-        return (
-          <div style={{ position: "relative" }}>
-            <div className="kicker" style={{ marginBottom: 6 }}>Owner & contributors</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {/* owner */}
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }} title={ownerName ? `Owner: ${ownerName}` : "No owner"}>
-                {ownerId ? <Avatar id={ownerId} size={28} /> : <span style={{ width: 28, height: 28, borderRadius: 99, display: "grid", placeItems: "center", background: "var(--surface-2)", border: "1px dashed var(--hairline-strong)", color: "var(--ink-4)" }}><Icon name="user" size={14} /></span>}
-                <span style={{ fontSize: 12.5, color: "var(--ink-2)" }} className="truncate">{ownerName || "Set owner"}<span style={{ color: "var(--ink-4)", fontSize: 11 }}> · owner</span></span>
-              </div>
-              {/* contributors stack */}
-              {contribIds.length > 0 && <div style={{ display: "flex", marginLeft: 4 }}>{contribIds.slice(0, 6).map((id, i) => <span key={id} title={members.find((m) => m.id === id)?.name || getMember(id)?.name} style={{ marginLeft: i ? -8 : 0, borderRadius: 99, boxShadow: "0 0 0 2px var(--surface-raised)" }}><Avatar id={id} size={28} /></span>)}</div>}
-              {canManagePeople && <button onClick={() => setPeopleOpen((v) => !v)} className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12 }}><Icon name="users" size={13} /> Manage</button>}
-            </div>
-            {peopleOpen && canManagePeople && (
-              <>
-                <div onClick={() => setPeopleOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
-                <div className="anim-scalein" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 31, width: 280, maxHeight: 320, overflowY: "auto", padding: 8, borderRadius: 12, background: "var(--surface-solid)", border: "1px solid var(--hairline)", boxShadow: "var(--shadow-lg)" }}>
-                  <div className="kicker" style={{ padding: "4px 8px 6px" }}>Owner</div>
-                  <select value={ownerId ?? ""} onChange={(e) => onUpdate(project.id, { ownerId: e.target.value || null })} aria-label="Project owner"
-                    style={{ width: "100%", height: 32, padding: "0 8px", borderRadius: 8, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, outline: "none", cursor: "pointer", marginBottom: 8 }}>
-                    {!ownerId && <option value="">Select owner…</option>}
-                    {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  </select>
-                  <div className="kicker" style={{ padding: "4px 8px 6px" }}>Contributors</div>
-                  {members.filter((m) => m.id !== ownerId).length === 0 && <p style={{ fontSize: 12, color: "var(--ink-4)", padding: "2px 8px" }}>Invite teammates to add contributors.</p>}
-                  {members.filter((m) => m.id !== ownerId).map((m) => (
-                    <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 8px", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>
-                      <input type="checkbox" checked={contribIds.includes(m.id)} onChange={() => toggleContrib(m.id)} />
-                      <Avatar id={m.id} size={22} /><span className="truncate">{m.name}</span>
-                    </label>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        );
-      })()}
-      <div style={{ display: "flex", gap: 8, alignSelf: "flex-start" }}>
-        {onDuplicate && <button onClick={() => onDuplicate(project.id)} className="btn btn-ghost" title="Duplicate this project (as a template)" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="layers" size={14} /> Duplicate</button>}
-        {onArchive && <button onClick={() => { if (window.confirm(`Archive "${project.name}"? It's hidden but kept, and you can restore it from the sidebar.`)) onArchive(project.id); }} className="btn btn-ghost" title="Archive this project" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="archive" size={14} /> Archive</button>}
-        <button onClick={printReport} className="btn btn-ghost" title="Print / export a PDF report" style={{ padding: "6px 11px", fontSize: 12.5 }}><Icon name="arrowUpRight" size={14} /> Report</button>
-      </div>
-     </div>
-     {descEditing ? (
-       // eslint-disable-next-line jsx-a11y/no-autofocus
-       <textarea autoFocus value={descDraft} onChange={(e) => setDescDraft(e.target.value)} onBlur={() => { setDescEditing(false); if (descDraft !== (project.description || "")) onUpdate(project.id, { description: descDraft }); }}
-         placeholder="Add a project description…" rows={2}
-         style={{ width: "100%", resize: "vertical", padding: "8px 11px", borderRadius: 10, border: "1px solid var(--accent)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, lineHeight: 1.55, outline: "none" }} />
-     ) : (
-       <div onClick={() => { setDescDraft(project.description || ""); setDescEditing(true); }} style={{ fontSize: 13, lineHeight: 1.55, color: project.description ? "var(--ink-3)" : "var(--ink-4)", cursor: "text", padding: "2px 0" }}>
-         {project.description || "Add a project description…"}
-       </div>
-     )}
-     {/* guests can read the updates; only people who can edit can post one */}
-     {(onPostStatus || history.length > 0) && (
-       <div style={{ borderTop: "1px solid var(--hairline)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-           <span className="kicker">Status update</span>
-           {latest && <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: STATUS_KIND_META[latest.status].color }}><span style={{ width: 7, height: 7, borderRadius: 99, background: STATUS_KIND_META[latest.status].color }} />{STATUS_KIND_META[latest.status].label}</span>}
-           {latestAge && <span style={{ fontSize: 11.5, color: stale ? "var(--st-review)" : "var(--ink-4)" }} title={new Date(latest!.createdAt).toLocaleString("en-GB")}>{stale ? `Stale · last update ${latestAge.label}` : `Posted ${latestAge.label}`}</span>}
-           {onPostStatus && <button onClick={() => setUpdOpen((v) => !v)} className="btn btn-ghost" style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}>{updOpen ? "Cancel" : "Post update"}</button>}
-         </div>
-         {latest && !updOpen && <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.5 }}>{latest.summary}</div>}
-         {history.length > 1 && !updOpen && (
-           <div>
-             <button onClick={() => setHistoryOpen((v) => !v)} aria-expanded={historyOpen} className="btn btn-ghost" style={{ padding: "3px 8px", fontSize: 12, color: "var(--ink-3)" }}>
-               <Icon name={historyOpen ? "chevronDown" : "chevronRight"} size={13} /> {historyOpen ? "Hide earlier updates" : `Show ${plural(history.length - 1, "earlier update")}`}
-             </button>
-             <Collapse open={historyOpen}>
-               <ol style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-                 {history.slice(1, 21).map((s) => (
-                   <li key={s.id} style={{ display: "flex", gap: 9, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-3)" }}>
-                     <span style={{ width: 7, height: 7, borderRadius: 99, marginTop: 6, flexShrink: 0, background: STATUS_KIND_META[s.status].color }} aria-hidden="true" />
-                     <span><span style={{ color: STATUS_KIND_META[s.status].color, fontWeight: 600 }}>{STATUS_KIND_META[s.status].label}</span> <span style={{ color: "var(--ink-4)" }}>· {relDay(s.createdAt).label}</span><br />{s.summary}</span>
-                   </li>
-                 ))}
-               </ol>
-             </Collapse>
-           </div>
-         )}
-         {updOpen && onPostStatus && (
-           <>
-             <div style={{ display: "flex", gap: 6 }}>
-               {(Object.keys(STATUS_KIND_META) as StatusKind[]).map((k) => (
-                 <button key={k} onClick={() => setUpdKind(k)} style={{ padding: "4px 10px", borderRadius: 8, cursor: "pointer", fontSize: 12, border: `1px solid ${updKind === k ? STATUS_KIND_META[k].color : "var(--hairline)"}`, background: updKind === k ? `color-mix(in oklch, ${STATUS_KIND_META[k].color} 14%, transparent)` : "transparent", color: updKind === k ? STATUS_KIND_META[k].color : "var(--ink-3)", fontFamily: "var(--font-display)" }}>{STATUS_KIND_META[k].label}</button>
-               ))}
-             </div>
-             {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
-             <textarea autoFocus value={updText} onChange={(e) => setUpdText(e.target.value)} placeholder="What's the latest? Wins, risks, next steps…" rows={2}
-               style={{ width: "100%", resize: "vertical", padding: "8px 11px", borderRadius: 10, border: "1px solid var(--hairline)", background: "var(--surface)", color: "var(--ink-2)", fontFamily: "var(--font-display)", fontSize: 13, lineHeight: 1.55, outline: "none" }} />
-             <button onClick={postUpd} disabled={posting || !updText.trim()} className="btn btn-accent" style={{ alignSelf: "flex-start", padding: "6px 13px", fontSize: 13, opacity: posting || !updText.trim() ? 0.6 : 1 }}>{posting ? "Posting…" : "Post update"}</button>
-           </>
-         )}
-       </div>
-     )}
+    <div className="kpj-checklist" role="group" aria-label="Contributors">
+      {people.map((m) => (
+        <label key={m.userId} className="kpj-check">
+          <input type="checkbox" checked={on(m.userId!)} disabled={busy} onChange={() => void toggle(m.userId!)} />
+          <Avatar id={m.userId!} size={20} /><span className="truncate">{nameOf(m.userId!)}</span>
+          {m.role === "guest" && <span className="kpj-card-meta">Guest</span>}
+        </label>
+      ))}
     </div>
   );
 }
-

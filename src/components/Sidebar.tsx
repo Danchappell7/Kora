@@ -9,7 +9,7 @@
    ============================================================ */
 import { useState, useMemo, useEffect, useRef, useId, Suspense } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Icon, Avatar, KanboLogo, Collapse, IconButton, Kbd, ProjectTile, SectionLabel, projectIdentity } from "./primitives";
+import { Icon, Avatar, KanboLogo, Collapse, IconButton, Kbd, ProjectTile, ProjectLock, SectionLabel, projectIdentity } from "./primitives";
 import { Popover } from "./primitives/Popover";
 import { MenuItem, MenuSeparator } from "./Topbar";
 import { trialDaysLeft, BILLING_ENABLED } from "../lib/billing";
@@ -314,6 +314,8 @@ function ProjectRow({ p, active, count, isPinned, archivable, deletable, onOpen,
       <button type="button" onClick={onOpen} {...prefetchProps({ view: "project", projectId: p.id })} className="kproj kp" style={projectIdentity(p).style} data-active={active || undefined} aria-current={active ? "page" : undefined}>
         <ProjectTile project={p} size={20} />
         <span className="truncate kproj-name">{p.name}</span>
+        {/* 0058: Members only and Private, where project access is on */}
+        <ProjectLock project={p} size={11} />
         {isPinned && <span className="kproj-pinmark" aria-hidden="true"><StarGlyph filled size={11} /></span>}
         {isPinned && <span className="sr-only">, pinned</span>}
         {count > 0 && <span className="kproj-n">{count}<span className="sr-only"> open {count === 1 ? "task" : "tasks"}</span></span>}

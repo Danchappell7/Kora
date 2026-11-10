@@ -380,3 +380,5 @@ export function GlobalTipStyles() {
     `}</style>
   );
 }
+// 0058 project access: the lock after a Members only or Private project's name
+export { ProjectLock, projectLocked } from "./ProjectLock";

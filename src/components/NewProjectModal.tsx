@@ -6,6 +6,9 @@
    each with sections, starter tasks, a request form and a rule),
    added to this workspace. Back returns to the form.
    "Plan it with Kanbo" hands over to the AI project planner (App).
+   0058: where the workspace has project access on, it asks "Who can
+   see this?" (the workspace's default first) and, for Members only or
+   Private, who's on it.
    ============================================================ */
 import { useState, useEffect, useRef } from "react";
 import { Button, Sheet, spectrumColor } from "./primitives";
@@ -18,10 +21,12 @@ import { usePackFlow } from "./packs/usePackFlow";
 import type { PackHost } from "./packs/packTypes";
 import { IdentityFields, IdentityPreview, freshSpectrum } from "./project/IdentityPicker";
 import type { NewProject } from "../data/store";
-import type { Project, WorkspaceTemplate } from "../data/types";
+import type { Project, ProjectVisibility, WorkspaceTemplate } from "../data/types";
+import { accessOn, mayMakePrivate, roleOf, VISIBILITY_LABEL, type AccessCtx } from "../lib/projectAccess";
 import "./project/projects.css";
+import "./project/whoCanSee.css";
 
-export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects, onApplyTemplate, onPlanWithKanbo, packs, startIn }: {
+export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects, onApplyTemplate, onPlanWithKanbo, packs, startIn, access }: {
   open: boolean;
   onClose: () => void;
   /** templateId: the template it was started from, if any — a built-in one
@@ -39,6 +44,8 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   packs?: PackHost;
   /** open on the packs and templates (0057: the first run's "Pick a pack", Get set up's pack item) */
   startIn?: "team";
+  /** 0058: who can see it (asked only where the workspace has project access on) */
+  access?: { ctx: AccessCtx; workspaceName: string; nameOf: (userId: string) => string };
 }) {
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("");
@@ -54,6 +61,14 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   const teamButtonRef = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
   const packApply = packs?.apply;
+  // 0058: "Who can see this?" (only where project access is on, and never in Personal)
+  const ws = access && workspaceId ? access.ctx.workspaces.find((w) => w.id === workspaceId) : undefined;
+  const asks = !!access && !!workspaceId && accessOn(ws);
+  const privateOk = asks && mayMakePrivate(workspaceId, access!.ctx);
+  const fallback = (v: ProjectVisibility | undefined): ProjectVisibility => (v === "private" && !privateOk ? "members" : v ?? "workspace");
+  const startsAs = fallback(ws?.projectAccess?.defaultVisibility);
+  const [visibility, setVisibility] = useState<ProjectVisibility>(startsAs);
+  const [memberIds, setMemberIds] = useState<string[]>([]);
   const flow = usePackFlow({
     context: packs?.context ?? null,
     apply: async (pack, pick) => (packApply ? packApply(pack, pick) : null),
@@ -67,6 +82,7 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   useEffect(() => {
     if (!open) return;
     setName(""); setEmoji(""); setColor(spectrumColor(freshSpectrum(projects))); setTemplateId(""); setSaved(null); setTemplates(getProjectTemplates());
+    setVisibility(startsAs); setMemberIds([]);
     const t = window.setTimeout(() => inputRef.current?.focus(), 30);
     return () => window.clearTimeout(t);
   }, [open]);
@@ -79,7 +95,8 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
   const trimmed = name.trim();
   const submit = () => {
     if (!trimmed) return;
-    onCreate({ name: trimmed, emoji, color, workspaceId, templateId: templateId || undefined });
+    onCreate({ name: trimmed, emoji, color, workspaceId, templateId: templateId || undefined,
+      ...(asks ? { visibility, ...(visibility !== "workspace" && memberIds.length ? { memberIds } : {}) } : {}) });
     onClose();
   };
   const builtins = templates.filter((t) => t.id.startsWith("builtin-"));
@@ -152,6 +169,9 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
         </>
       )}>
       <div className="kpj-dialog">
+        {(onApplyTemplate || onPlanWithKanbo) && asks && startsAs !== "workspace" && (
+          <p className="knpv-note">A pack, a template or Kanbo's plan starts as {VISIBILITY_LABEL[startsAs]}. Change it in About.</p>
+        )}
         {(onApplyTemplate || onPlanWithKanbo) && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignSelf: "flex-start" }}>
             {onApplyTemplate && (
@@ -180,7 +200,53 @@ export function NewProjectModal({ open, onClose, onCreate, workspaceId, projects
             placeholder="Project name" aria-label="Project name" />
         </IdentityPreview>
         <IdentityFields name={name} emoji={emoji} color={color} onEmoji={setEmoji} onColor={setColor} />
+        {asks && (
+          <WhoCanSee value={visibility} onChange={setVisibility} privateOk={privateOk} workspaceName={access!.workspaceName}
+            people={access!.ctx.wsMembers.filter((m) => m.workspaceId === workspaceId && m.status === "active" && !!m.userId && m.userId !== access!.ctx.me)
+              .map((m) => ({ id: m.userId!, name: access!.nameOf(m.userId!), guest: roleOf(access!.ctx, workspaceId, m.userId!) === "guest" }))}
+            chosen={memberIds} onChosen={setMemberIds} />
+        )}
       </div>
     </Sheet>
+  );
+}
+
+const WHO_LINES: Record<ProjectVisibility, (ws: string) => string> = {
+  workspace: (ws) => `Everyone at ${ws}. Guests only if you add them.`,
+  members: (ws) => `The people you add, plus ${ws}'s owners and admins.`,
+  private: (ws) => `The people you add, plus ${ws}'s owner.`,
+};
+
+/** "Who can see this?" (0058): the three choices, and who's on it for Members only and Private. */
+function WhoCanSee({ value, onChange, privateOk, workspaceName, people, chosen, onChosen }: {
+  value: ProjectVisibility; onChange: (v: ProjectVisibility) => void; privateOk: boolean; workspaceName: string;
+  people: { id: string; name: string; guest: boolean }[]; chosen: string[]; onChosen: (ids: string[]) => void;
+}) {
+  const options: ProjectVisibility[] = privateOk ? ["workspace", "members", "private"] : ["workspace", "members"];
+  const toggle = (id: string) => onChosen(chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id]);
+  return (
+    <fieldset className="knpv">
+      <legend className="knpv-legend">Who can see this?</legend>
+      <div className="knpv-options" role="radiogroup" aria-label="Who can see this?">
+        {options.map((v) => (
+          <label key={v} className="knpv-option" data-chosen={v === value || undefined}>
+            <input type="radio" name="knpv-visibility" value={v} checked={v === value} onChange={() => onChange(v)} />
+            <span className="knpv-option-name">{VISIBILITY_LABEL[v]}</span>
+            <span className="knpv-option-line">{WHO_LINES[v](workspaceName)}</span>
+          </label>
+        ))}
+      </div>
+      {!privateOk && <p className="knpv-note">An owner can let members make projects private.</p>}
+      {value !== "workspace" && people.length > 0 && (
+        <div className="knpv-people" role="group" aria-label="People on it">
+          <span className="knpv-people-label">Add people</span>
+          {people.map((p) => (
+            <button key={p.id} type="button" className="knpv-chip" aria-pressed={chosen.includes(p.id)} onClick={() => toggle(p.id)}>
+              {p.name}{p.guest ? " (guest)" : ""}
+            </button>
+          ))}
+        </div>
+      )}
+    </fieldset>
   );
 }
