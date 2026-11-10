@@ -14,8 +14,8 @@ were all broken. Test data is still set up with PGlite directly.
 export PATH="$HOME/.kora-tools/node-v20.18.1-darwin-arm64/bin:$PATH"
 cd ~/Downloads/kora-app
 node supabase/tests/pglite/run.mjs         # both migration sets
-node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050 + 0051 only (no 0048, no 0049)
-node supabase/tests/pglite/run.mjs 0049    # 0001..0051 (everything)
+node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0052 only (no 0048, no 0049)
+node supabase/tests/pglite/run.mjs 0049    # 0001..0052 (everything)
 ```
 
 It takes a few seconds and exits non-zero if anything fails. Each set applies 0050 twice.
@@ -41,7 +41,12 @@ and an app coming back days later with the `client_id` it remembers). Last, 0051
 read a team's goals or portfolios by any query while a member still can (personal rows untouched,
 and the guest still reads the team's status updates), no function a signed-in person can call hands
 them back, an update's author can't be forged, re-pointed or blanked and empties when the account is
-deleted, and re-running 0051 or 0041 keeps the lock.
+deleted, and re-running 0051 or 0041 keeps the lock. Then 0052's goals: a member can't set a company goal
+or edit or delete a goal they don't own or help with, a contributor can't hand one over, owners and
+contributors are members (never guests or outsiders), a leadership-only goal and its check-ins and links
+are hidden from members, a check-in's author and time can't be forged, a link never reaches another
+workspace (server-side either), periods, cycles, deleted accounts and parents, a team API key's scope,
+the backfill, and re-running 0052 or 0041 keeps every rule.
 
 vitest doesn't pick these files up (none is named `*.test.*`). `metadata.test.ts` checks the
 harness opens transactions exactly as the live `db.ts` does.

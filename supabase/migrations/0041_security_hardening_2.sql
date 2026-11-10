@@ -322,3 +322,14 @@ begin
     perform public.guest_lock_restore();
   end if;
 end $guestlock$;
+
+-- ---------- 10. 0052's goal rules survive a re-run of this file ----------
+-- Section 4 drops 0052's restrictive goal policies too (leadership-only goals;
+-- only owners, admins, the goal's owner and contributors edit or delete; company
+-- goals are for owners and admins). When 0052 is in, put them back.
+do $goalrules$
+begin
+  if to_regprocedure('public.goal_rules_restore()') is not null then
+    perform public.goal_rules_restore();
+  end if;
+end $goalrules$;
