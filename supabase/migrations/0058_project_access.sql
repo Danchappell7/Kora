@@ -846,8 +846,9 @@ end $internal$;
 
 -- ---------- 3. seeding (the first run only) ----------
 -- One row per contributor_ids entry: editor for active owners, admins and members, commenter for
--- guests; never the project's owner (implicit) or anyone who isn't in the workspace any more. contributor_ids itself is left
--- as it is, and the creator isn't added, so who gets 0054's update notices stays as it was.
+-- guests; never the project's owner (implicit) or anyone who isn't in the workspace any more.
+-- contributor_ids itself is left as it is, and the creator isn't added, so who gets 0054's update
+-- notices stays as it was.
 -- Not on a re-run. After the undo file (not recorded, but project_members kept), contributor_ids was
 -- the app's list of a project's people again, with nothing keeping project_members in step: the rows
 -- are brought back to it (whoever was taken off, left the workspace or became its owner meanwhile
