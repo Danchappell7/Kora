@@ -6,13 +6,14 @@
 import type {
   Member, Workspace, Project, TagDef, Task, CalEvent,
   Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta, Recurrence,
-  Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
+  Activity, Goal, GoalCheckin, GoalLink, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
 import { parseTask, tidyTitle, type NlpKind, type ParsedTask } from "../lib/nlp";
 import { spectrumColor } from "../lib/projectIdentity";
 import { projectPct } from "../lib/countRules";
+import { periodRange, quarterOf, type PeriodRange } from "../lib/goalPeriods";
 import { daysBetweenISO, nextDueDateFrom, parseLocalDay, seriesAnchorDay, shiftISO } from "../../supabase/functions/_shared/recurrence.ts";
 
 /* Real "today" (midnight, local) — drives all relative due-date math.
@@ -570,18 +571,125 @@ const launchDayLabel = (() => {
   const d = new Date(LAUNCH_DAY + "T00:00:00");
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 })();
+/* Goals 2.0 (0052): owners, quarters, start values and check-ins. Most goals run this
+   quarter, and where each number stands comes from how far through it today is, so the
+   pace line tells the same story whichever day the demo is opened: weekly actives a
+   little behind (marked at risk), churn and paying customers on pace, the launch far
+   behind while it still says on track (Kanbo says so, calmly). */
+const DEMO_QUARTER = quarterOf(KANBO_TODAY);
+const DEMO_HALF = `${KANBO_TODAY.getFullYear()}-H${KANBO_TODAY.getMonth() < 6 ? 1 : 2}`;
+const QUARTER = periodRange(DEMO_QUARTER)!, HALF = periodRange(DEMO_HALF)!;
+const inQuarter = { period: DEMO_QUARTER, periodStart: QUARTER.start, periodEnd: QUARTER.end };
+const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+/** how far from `from` to `to` today is, 0–1 */
+const fracThrough = (from: string, to: string) => clamp01(daysBetweenISO(from, toLocalISO(KANBO_TODAY)) / Math.max(1, daysBetweenISO(from, to)));
+const roundTo = (n: number, step: number) => Math.round(n / step) * step;
+/** a number running from `start` to `target`, `lead` (±) of the way off an even pace through `r` */
+const pacedValue = (start: number, target: number, lead: number, r: PeriodRange, step = 1, curve = (t: number) => t) =>
+  Number(roundTo(start + (target - start) * clamp01(curve(fracThrough(r.start, r.end)) + lead), step).toFixed(2));
+const COURT_MADE = daysAgoAt(38, 10, 0), COURT_WINDOW = { start: toLocalISO(new Date(COURT_MADE)), end: dayOffset(52) };
+const ACTIVES = pacedValue(3200, 5000, -0.13, QUARTER, 10);
+const ACTIVATION = pacedValue(32, 45, -0.16, QUARTER);
+const CHURN = pacedValue(8, 5, 0.04, QUARTER, 0.1);
+const SEED_ROUND = pacedValue(0, 1.5, 0.04, HALF, 0.05, (t) => t * t);
+const PAYING = pacedValue(240, 400, 0.02, QUARTER);
+const FIRST_VALUE = pacedValue(25, 10, 0.03, QUARTER);
+const COURT_HOURS = pacedValue(52, 80, -0.12, COURT_WINDOW);
+const RETAINERS = pacedValue(0, 6, 0.05, QUARTER);
+const BOOKS = pacedValue(0, 24, 0.02, { start: `${KANBO_TODAY.getFullYear()}-01-01`, end: `${KANBO_TODAY.getFullYear()}-12-31` });
+
 export const DEMO_GOALS: Goal[] = [
   { id: "g-launch", name: `Launch Q3 on ${launchDayLabel}`, description: "Ship the Q3 launch on the date we told customers.",
-    status: "on_track", projectId: "p-launch", due: LAUNCH_DAY, workspaceId: "ws-foundrise", position: 0 },
+    status: "on_track", projectId: "p-launch", due: LAUNCH_DAY, workspaceId: "ws-foundrise", position: 0,
+    createdAt: daysAgoAt(40, 9, 30), ownerId: "m-self", contributors: ["m-1", "m-3"], kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 3 },
   { id: "g-actives", name: "Grow weekly actives to 5,000", description: "Weekly active users across web and mobile.",
-    target: 5000, current: 3900, unit: "users", status: "at_risk", due: `${KANBO_TODAY.getFullYear()}-12-31`, workspaceId: "ws-foundrise", position: 1 },
+    target: 5000, current: ACTIVES, startValue: 3200, unit: "users", status: "at_risk", due: QUARTER.end, workspaceId: "ws-foundrise", position: 1,
+    createdAt: daysAgoAt(45, 10, 0), ownerId: "m-1", contributors: ["m-self"], ...inQuarter, kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 3 },
   // the other businesses: Reco HQ on track, Courtside Padel behind on both
   { id: "g-reco-paying", name: "Reach 400 paying customers", description: "Paying accounts, net of churn.",
-    target: 400, current: 312, unit: "customers", status: "on_track", due: `${KANBO_TODAY.getFullYear()}-12-31`, workspaceId: "ws-reco", position: 0 },
+    target: 400, current: PAYING, startValue: 240, unit: "customers", status: "on_track", due: QUARTER.end, workspaceId: "ws-reco", position: 0,
+    createdAt: daysAgoAt(44, 9, 0), ownerId: "m-self", contributors: ["m-1"], ...inQuarter, kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 4 },
   { id: "g-court-hours", name: "Fill 80% of peak court hours", description: "Weekday 17:00–21:00 and weekend mornings.",
-    target: 80, current: 64, unit: "%", status: "at_risk", due: dayOffset(52), workspaceId: "ws-courtside", position: 0 },
+    target: 80, current: COURT_HOURS, startValue: 52, unit: "%", status: "at_risk", due: dayOffset(52), workspaceId: "ws-courtside", position: 0,
+    createdAt: COURT_MADE, ownerId: "m-2", contributors: ["m-self"], kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 2 },
   { id: "g-court-open", name: "Open the clubhouse", description: "Bar, changing rooms and the viewing deck, open to members.",
-    status: "off_track", projectId: "p-clubhouse", due: dayOffset(22), workspaceId: "ws-courtside", position: 1 },
+    status: "off_track", projectId: "p-clubhouse", due: dayOffset(22), workspaceId: "ws-courtside", position: 1,
+    createdAt: daysAgoAt(60, 9, 0), ownerId: "m-2", contributors: ["m-self"], kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 2 },
+  // ---- 0052 (appended): key results with weights, a lower-is-better number, a leadership-only goal,
+  // a business where Daniel is a member (he owns one goal there and reads the other) and a personal goal
+  { id: "g-churn", name: "Cut monthly churn from 8% to 5%", description: "Paying accounts lost each month, as a share of the month's start.",
+    target: 5, current: CHURN, startValue: 8, unit: "%", status: "on_track", due: QUARTER.end, workspaceId: "ws-foundrise", position: 2, parentId: "g-actives", weight: 2,
+    createdAt: daysAgoAt(44, 11, 0), ownerId: "m-3", contributors: ["m-self"], ...inQuarter, kind: "key_result", direction: "lower", visibility: "everyone", pace: "linear", confidence: 4 },
+  { id: "g-activation", name: "Lift activation to 45%", description: "New sign-ups who finish setup in their first week.",
+    target: 45, current: ACTIVATION, startValue: 32, unit: "%", status: "at_risk", due: QUARTER.end, workspaceId: "ws-foundrise", position: 3, parentId: "g-actives", weight: 1,
+    createdAt: daysAgoAt(44, 11, 5), ownerId: "m-1", contributors: [], ...inQuarter, kind: "key_result", direction: "higher", visibility: "everyone", pace: "linear", confidence: 2 },
+  { id: "g-raise", name: "Close the seed round", description: "£1.5m to take the product to three new markets.",
+    target: 1.5, current: SEED_ROUND, startValue: 0, unit: "£m", status: "on_track", due: HALF.end, workspaceId: "ws-foundrise", position: 4,
+    createdAt: daysAgoAt(80, 8, 30), ownerId: "m-self", contributors: [], period: DEMO_HALF, periodStart: HALF.start, periodEnd: HALF.end,
+    kind: "objective", direction: "higher", visibility: "leadership", pace: "backloaded", confidence: 4 },
+  { id: "g-reco-onboard", name: "Make onboarding self-serve", description: "New customers get going without a call.",
+    status: "on_track", due: QUARTER.end, workspaceId: "ws-reco", position: 1,
+    createdAt: daysAgoAt(44, 9, 30), ownerId: "m-self", contributors: ["m-2"], ...inQuarter, kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 3 },
+  { id: "g-reco-ttv", name: "Time to first value under 10 minutes", description: "From sign-up to the first report sent.",
+    target: 10, current: FIRST_VALUE, startValue: 25, unit: "min", status: "on_track", due: QUARTER.end, workspaceId: "ws-reco", position: 2, parentId: "g-reco-onboard", weight: 2,
+    createdAt: daysAgoAt(44, 9, 40), ownerId: "m-2", contributors: [], ...inQuarter, kind: "key_result", direction: "lower", visibility: "everyone", pace: "linear", confidence: 3 },
+  { id: "g-reco-ship", name: "Ship the new onboarding", description: "The welcome checklist and email sequence, live for every trial.",
+    status: "on_track", projectId: "p-onboard", due: QUARTER.end, workspaceId: "ws-reco", position: 3, parentId: "g-reco-onboard", weight: 1,
+    createdAt: daysAgoAt(44, 9, 45), ownerId: "m-self", contributors: ["m-2"], ...inQuarter, kind: "key_result", direction: "higher", visibility: "everyone", pace: "backloaded" },
+  { id: "g-harbour-clients", name: "Sign 6 new retainer clients", description: "Monthly advisory retainers, signed and invoiced.",
+    target: 6, current: RETAINERS, startValue: 0, unit: "clients", status: "on_track", due: QUARTER.end, workspaceId: "ws-harbour", position: 0,
+    createdAt: daysAgoAt(42, 9, 0), ownerId: "m-3", contributors: [], ...inQuarter, kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", confidence: 4 },
+  { id: "g-harbour-review", name: "Deliver the Northwind review", description: "Findings and the board pack, sent before their year end.",
+    status: "on_track", projectId: "p-northwind", due: QUARTER.end, workspaceId: "ws-harbour", position: 1,
+    createdAt: daysAgoAt(8, 9, 0), ownerId: "m-self", contributors: [], kind: "objective", direction: "higher", visibility: "everyone", pace: "backloaded" },
+  { id: "g-books", name: "Read 24 books this year", target: 24, current: BOOKS, startValue: 0, unit: "books", status: "on_track",
+    due: `${KANBO_TODAY.getFullYear()}-12-31`, workspaceId: null, position: 0, createdAt: daysAgoAt(300, 8, 0), ownerId: "m-self", contributors: [],
+    period: `${KANBO_TODAY.getFullYear()}-FY`, periodStart: `${KANBO_TODAY.getFullYear()}-01-01`, periodEnd: `${KANBO_TODAY.getFullYear()}-12-31`,
+    kind: "metric", direction: "higher", visibility: "everyone", pace: "linear" },
+];
+
+/* Each goal's check-ins, newest first: the goal's current value is its newest. Earlier
+   ones climb towards it from the start value (never from before the goal's period began). */
+function checkinTrail(goalId: string, workspaceId: string | null, start: number, now: number, from: string, step: number,
+  posts: [daysAgo: number, author: string, confidence: number | null, note?: string][]): GoalCheckin[] {
+  const last = posts[0][0];
+  const span = Math.max(1, daysBetweenISO(from, dayOffset(-last)));
+  return posts
+    .filter(([ago]) => ago === last || dayOffset(-ago) > from)
+    .map(([ago, authorId, confidence, note], i) => ({
+      id: `gc-${goalId.slice(2)}-${i + 1}`, goalId, workspaceId, authorId, confidence,
+      value: i === 0 ? now : Number(roundTo(start + (now - start) * clamp01(daysBetweenISO(from, dayOffset(-ago)) / span), step).toFixed(2)),
+      ...(note ? { note } : {}), createdAt: daysAgoAt(ago, 17, 10 + i),
+    }));
+}
+export const DEMO_GOAL_CHECKINS: GoalCheckin[] = [
+  ...checkinTrail("g-actives", "ws-foundrise", 3200, ACTIVES, QUARTER.start, 10, [
+    [2, "m-1", 3, "Onboarding fix is in: sign-ups back to growth"], [9, "m-self", 2, "Flat week: the app store feature ended"],
+    [16, "m-1", 3, "Activation emails shipped"], [23, "m-1", 3]]),
+  ...checkinTrail("g-churn", "ws-foundrise", 8, CHURN, QUARTER.start, 0.1, [
+    [4, "m-3", 4, "Win-back emails saved 11 accounts"], [18, "m-3", 3]]),
+  ...checkinTrail("g-activation", "ws-foundrise", 32, ACTIVATION, QUARTER.start, 1, [[6, "m-1", 2, "Setup still loses people at the import step"]]),
+  ...checkinTrail("g-raise", "ws-foundrise", 0, SEED_ROUND, HALF.start, 0.05, [
+    [8, "m-self", 4, "Lead investor's term sheet is with the lawyers"], [37, "m-self", 3, "Two angels in"]]),
+  ...checkinTrail("g-reco-paying", "ws-reco", 240, PAYING, QUARTER.start, 1, [[3, "m-self", 4, "Annual plans are pulling ahead"], [17, "m-1", 4]]),
+  ...checkinTrail("g-reco-ttv", "ws-reco", 25, FIRST_VALUE, QUARTER.start, 1, [[5, "m-2", 3, "Sample data on sign-up cut 6 minutes"]]),
+  ...checkinTrail("g-court-hours", "ws-courtside", 52, COURT_HOURS, COURT_WINDOW.start, 1, [[6, "m-2", 2, "Weekday evenings fill; weekend mornings don't"], [20, "m-2", 3]]),
+  ...checkinTrail("g-harbour-clients", "ws-harbour", 0, RETAINERS, QUARTER.start, 1, [[11, "m-3", 4, "Two signed, a third with legal"]]),
+  ...checkinTrail("g-books", null, 0, BOOKS, `${KANBO_TODAY.getFullYear()}-01-01`, 1, [[12, "m-self", null]]),
+].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+/* The work each goal is linked to (its own workspace's): the project a goal reads its %
+   from is one of them, as 0052 carries goals.project_id over. */
+export const DEMO_GOAL_LINKS: GoalLink[] = [
+  { id: "gl-launch", goalId: "g-launch", workspaceId: "ws-foundrise", kind: "project", targetId: "p-launch" },
+  { id: "gl-actives-launch", goalId: "g-actives", workspaceId: "ws-foundrise", kind: "project", targetId: "p-launch" },
+  { id: "gl-actives-events", goalId: "g-actives", workspaceId: "ws-foundrise", kind: "task", targetId: "t-10" },
+  { id: "gl-churn-onboarding", goalId: "g-churn", workspaceId: "ws-foundrise", kind: "task", targetId: "t-2" },
+  { id: "gl-reco-growth", goalId: "g-reco-paying", workspaceId: "ws-reco", kind: "project", targetId: "p-growth" },
+  { id: "gl-reco-pricing", goalId: "g-reco-paying", workspaceId: "ws-reco", kind: "task", targetId: "t-3" },
+  { id: "gl-reco-ship", goalId: "g-reco-ship", workspaceId: "ws-reco", kind: "project", targetId: "p-onboard" },
+  { id: "gl-court-open", goalId: "g-court-open", workspaceId: "ws-courtside", kind: "project", targetId: "p-clubhouse" },
+  { id: "gl-harbour-review", goalId: "g-harbour-review", workspaceId: "ws-harbour", kind: "project", targetId: "p-northwind" },
 ];
 
 export const DEMO_PORTFOLIOS: Portfolio[] = [

@@ -238,6 +238,9 @@ export interface GoalCheckin {
   note?: string;
   createdAt: string;
 }
+/** 0052's check-ins and links, loaded beside the goals. Null in a bootstrap means the
+ *  tables aren't there yet (owners, quarters and check-ins are not switched on). */
+export interface GoalExtras { checkins: GoalCheckin[]; links: GoalLink[] }
 export type GoalLinkKind = "project" | "task" | "view";
 /** 0052: work a goal is linked to (always in the goal's own workspace) */
 export interface GoalLink {
