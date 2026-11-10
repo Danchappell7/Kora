@@ -8,6 +8,7 @@ import type { TeamStartHost } from "./TeamStart";
 import { WelcomeCard } from "./WelcomeCard";
 import { WorkspaceHealthCard, type WorkspaceHealthProps } from "./WorkspaceHealth";
 import { workspaceHealth, welcomeContent } from "../../lib/rollout";
+import { EMPTY_AVAILABILITY, resetAvailability, updateAvailability } from "../../lib/availability";
 
 const NOW = new Date(2026, 10, 10, 9, 0);
 beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW); });
@@ -130,6 +131,20 @@ describe("Welcome to <workspace>", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Got it" }));
     fireEvent.click(within(card).getByRole("button", { name: "Put away “Welcome to Harbour Advisory”" }));
     expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
+  it("says who's off beside them (0055), and nothing for a guest", () => {
+    const content = welcomeContent({ me: "m-1", workspace: { id: "ws", ownerId: "m-3" }, role: "member", members: [m("m-1", "member"), m("m-3", "owner"), m("m-4", "admin")], projects: [], tasks: [], nameOf: (x) => x.name });
+    act(() => updateAvailability({ ...EMPTY_AVAILABILITY, status: "on", me: "m-1", activeWs: "ws", roles: { ws: { "m-1": "member", "m-3": "owner", "m-4": "admin" } },
+      timeOff: [{ id: "o1", userId: "m-3", workspaceId: "ws", startsOn: "2026-11-10", endsOn: "2026-11-12", halfDay: null }] }));
+    try {
+      const { rerender } = render(<WelcomeCard workspaceName="Harbour Advisory" workspaceId="ws" content={content} onOpenProject={vi.fn()} onOpenTask={vi.fn()} onOpenPeople={vi.fn()} onDismiss={vi.fn()} />);
+      const card = screen.getByRole("region", { name: "Welcome to Harbour Advisory" });
+      expect(within(card).getAllByText("Off until Fri")).toHaveLength(1);
+      expect(card.querySelectorAll(".kav-chip")).toHaveLength(1);
+      act(() => updateAvailability({ roles: { ws: { "m-1": "guest", "m-3": "owner", "m-4": "admin" } } }));
+      rerender(<WelcomeCard workspaceName="Harbour Advisory" workspaceId="ws" content={content} onOpenProject={vi.fn()} onOpenTask={vi.fn()} onOpenPeople={vi.fn()} onDismiss={vi.fn()} />);
+      expect(card.querySelector(".kav-chip")).toBeNull();
+    } finally { act(() => resetAvailability()); }
   });
   it("with nothing of yours yet: a first step, not an empty list", () => {
     const content = welcomeContent({ me: "m-1", workspace: { id: "ws", ownerId: "m-3" }, role: "guest", members: [m("m-1", "guest")], projects: [], tasks: [], nameOf: (x) => x.name });

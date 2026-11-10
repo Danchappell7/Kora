@@ -13,10 +13,13 @@ import { Avatar, Button, Icon, IconButton, Meter, ProjectTile } from "../primiti
 import type { Goal, Project, Task } from "../../data/types";
 import type { WelcomeContent, WelcomePerson } from "../../lib/rollout";
 import { ROLE_META } from "../../lib/permissions";
+import { OffChip } from "../availability/OffChip";
 
 export interface WelcomeCardProps {
   workspaceName: string;
   logoUrl?: string;
+  /** the workspace: "Off today" beside someone who's away (0055; nothing before it, or for a guest) */
+  workspaceId?: string | null;
   content: WelcomeContent;
   /** the team goal's % and its pace line ("On pace", "Behind pace by 12%"), when it has one */
   goalRead?: { pct: number; line?: string } | null;
@@ -71,7 +74,7 @@ const LINE_CSS = `
 @media (max-width: 859px) { .kwlcl { margin-top: 12px; } }
 `;
 
-export function WelcomeCard({ workspaceName, logoUrl, content, goalRead, onOpenProject, onOpenTask, onOpenGoal, onOpenPeople, onDismiss }: WelcomeCardProps) {
+export function WelcomeCard({ workspaceName, logoUrl, workspaceId, content, goalRead, onOpenProject, onOpenTask, onOpenGoal, onOpenPeople, onDismiss }: WelcomeCardProps) {
   const headId = "kwlc" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const { projects, people, morePeople, goal, ask, starters } = content;
   // one person here, and they're who to ask: say it once, under them
@@ -117,7 +120,10 @@ export function WelcomeCard({ workspaceName, logoUrl, content, goalRead, onOpenP
                   <Avatar id={p.id} size={28} />
                   <span className="kwlc-person-text">
                     <span className="kwlc-person-name">{p.name}</span>
-                    <span className="kwlc-person-role">{p.title || ROLE_META[p.role]?.label}</span>
+                    <span className="kwlc-person-role">
+                      <span className="kwlc-person-rtext">{p.title || ROLE_META[p.role]?.label}</span>
+                      <OffChip userId={p.id} workspaceId={workspaceId} size="xs" />
+                    </span>
                   </span>
                 </li>
               ))}
@@ -228,7 +234,8 @@ div.kwlc-goal-open { cursor: default; }
 .kwlc-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .kwlc-person-text { display: grid; min-width: 0; }
 .kwlc-person-name { font: 600 13px/18px var(--font-ui, var(--font-display)); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kwlc-person-role { font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kwlc-person-role { display: flex; align-items: center; gap: 6px; min-width: 0; font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kwlc-person-rtext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kwlc-link {
   margin: 8px 0 0; padding: 0; border: 0; background: none; cursor: pointer; color: var(--accent-text, var(--accent));
   font: 500 12px/16px var(--font-ui, var(--font-display));

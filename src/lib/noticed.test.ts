@@ -131,3 +131,22 @@ describe("Kanbo noticed: leading a rollout (0058)", () => {
     expect(items.some((x) => x.kind === "rollout")).toBe(false);
   });
 });
+
+describe("Kanbo noticed: wave 2 and wave 3 together", () => {
+  const away = { id: "away:sana:2026-10-01", kind: "away" as const, tone: "warn" as const, icon: "calendar" as const, title: "Sana's away when a task is due", body: "…",
+    actions: [{ kind: "away" as const, label: "Give to Theo", userId: "sana", taskIds: ["x"], to: "2026-10-01", assignTo: "theo" }] };
+  const update = { id: "update:p1:2026-09-30", kind: "update" as const, tone: "accent" as const, icon: "notes" as const, title: "Your Launch update is due", body: "…",
+    actions: [{ kind: "update" as const, label: "Write it", projectId: "p1" }] };
+  const rollout = { id: "rollout:loose:ws:4", kind: "rollout" as const, tone: "accent" as const, icon: "users" as const, title: "4 tasks have no owner", body: "…",
+    actions: [{ kind: "fix" as const, label: "Sort them out", fix: "loose" }] };
+  const goal = { goalId: "g", name: "Grow weekly actives", noun: "key result", gap: 12, line: "Behind pace by 12%", sinceCheckin: 9 };
+  it("your update, then the away card, then your goal: three at most, and the rollout's fix waits", () => {
+    const items = noticed([], { updates: [update], away: [away], goalsBehind: [goal], rollout: [rollout] });
+    expect(items.map((x) => x.kind)).toEqual(["update", "away", "goal"]);
+  });
+  it("waving one away lets the rollout's fix in, last", () => {
+    const items = noticed([], { updates: [update], away: [away], goalsBehind: [goal], rollout: [rollout], dismissed: [away.id] });
+    expect(items.map((x) => x.kind)).toEqual(["update", "goal", "rollout"]);
+    expect(items[2].actions).toEqual([{ kind: "fix", label: "Sort them out", fix: "loose" }]);
+  });
+});

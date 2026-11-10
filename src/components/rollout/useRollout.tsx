@@ -201,7 +201,7 @@ export function useRollout(h: RolloutAppHost) {
     const id = wsRow.id;
     return (
       <Suspense fallback={null}>
-        <WelcomeCard workspaceName={wsRow.name} logoUrl={wsRow.logoUrl} content={content}
+        <WelcomeCard workspaceName={wsRow.name} logoUrl={wsRow.logoUrl} workspaceId={id} content={content}
           goalRead={read ? { pct: read.pct, line: read.pace?.line } : null}
           onOpenProject={(pid) => h.setRoute({ view: "project", projectId: pid })} onOpenTask={h.openTask}
           onOpenGoal={h.goalReads.size ? h.openGoal : undefined} onOpenPeople={() => h.setRoute({ view: "team" })}
