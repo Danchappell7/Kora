@@ -180,10 +180,13 @@ function Entity({ e, onOpen, onOpenRisks, onOpenGoal, glue }: { e: BriefEntity; 
       return <span className="kbrief-time">{e.text}</span>;
     case "risks":
       return onOpenRisks ? <button type="button" className="kbrief-risks" onClick={onOpenRisks}>{e.text}</button> : <>{e.text}</>;
-    case "goal":
+    case "goal": {
+      // the goal's own tile (its icon on its colour, else its initial on the hue its id picks), as on Goals
+      const tile = <ProjectTile project={{ id: e.goalId, name: e.text, emoji: e.icon ?? undefined, color: e.color ?? "" }} size={16} />;
       return onOpenGoal
-        ? <button type="button" className="kbrief-ent" data-kind="goal" onClick={() => onOpenGoal(e.goalId)} title="Open this goal"><Icon name="target" size={14} sw={1.75} /><span className="kbrief-ent-text">{e.text}</span></button>
-        : <span className="kbrief-ent" data-kind="goal"><Icon name="target" size={14} sw={1.75} /><span className="kbrief-ent-text">{e.text}</span></span>;
+        ? <button type="button" className="kbrief-ent" data-kind="goal" onClick={() => onOpenGoal(e.goalId)} title="Open this goal">{tile}<span className="kbrief-ent-text">{e.text}</span></button>
+        : <span className="kbrief-ent" data-kind="goal">{tile}<span className="kbrief-ent-text">{e.text}</span></span>;
+    }
   }
 }
 

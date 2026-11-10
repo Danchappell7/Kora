@@ -243,7 +243,7 @@ describe("Ask about goals (0052): which are slipping, which have no work behind 
 
   it("names the slipping goals, how far behind and whose, and how many are on pace", () => {
     const r = askG("Which goals are slipping?");
-    expect(r.answer).toBe("Two goals are slipping: “Launch Q3 on 18 Nov” (behind pace by 63%, Daniel) and “Lift activation to 45%” (behind pace by 13%, Maya). The other two are on pace.");
+    expect(r.answer).toBe("Two goals are slipping: “Launch Q3 on 18 Nov” (behind pace by 63%, yours) and “Lift activation to 45%” (behind pace by 13%, Maya). The other two are on pace.");
     expect(r.actions).toEqual([{ op: "open", route: { view: "goals" } }]);
     expect(r.cites).toBeUndefined();   // drawn from the goals: no claim about tasks
     expect(validateActions(r.actions, tasks, ctx, false)).toEqual({ valid: r.actions, rejected: [] });   // a way there, never a change (guests too)
@@ -263,7 +263,20 @@ describe("Ask about goals (0052): which are slipping, which have no work behind 
   });
 
   it("how the goals are doing, in one line", () => {
-    expect(askG("how are our goals on track?").answer).toBe("Two of four open goals are on pace; “Launch Q3 on 18 Nov” (behind pace by 63%, Daniel) and “Lift activation to 45%” (behind pace by 13%, Maya) are behind.");
+    expect(askG("how are our goals on track?").answer).toBe("Two of four open goals are on pace; “Launch Q3 on 18 Nov” (behind pace by 63%, yours) and “Lift activation to 45%” (behind pace by 13%, Maya) are behind.");
+  });
+
+  it("names a fourth slipping goal rather than \"and one more\", and says one open goal plainly", () => {
+    const four = goals.map((x) => ({ ...x, slipping: true }));
+    expect(askG("which goals are slipping?", four).answer).toBe("Four goals are slipping: “Launch Q3 on 18 Nov” (behind pace by 63%, yours), “Lift activation to 45%” (behind pace by 13%, Maya), “Grow weekly actives to 5,000” (on pace, yours) and “Close the seed round” (ahead of pace, yours).");
+    expect(askG("which goals are slipping?", [...four, g("g5", "Hire a head of sales", { slipping: true })]).answer).toMatch(/“Grow weekly actives to 5,000” \(on pace, yours\) and two more\.$/);
+    expect(askG("which goals are slipping?", [goals[2]]).answer).toBe("The one open goal isn't slipping: it's on pace or not started yet.");
+  });
+
+  it("leaves a task question that mentions a goal to the task answers", () => {
+    expect(askG("what's overdue in the goal review?").answer).not.toMatch(/slipping|on pace/);
+    expect(askG("which tasks move the retention goal?").answer).not.toMatch(/slipping|on pace/);
+    expect(askG("which goals have no tasks?").answer).toMatch(/no work behind them/);
   });
 
   it("leaves task questions to the task answers (\"behind\" there means overdue), and goals unknown to the host alone", () => {

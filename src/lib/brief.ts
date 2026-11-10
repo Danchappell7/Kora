@@ -366,7 +366,7 @@ export type BriefEntity =
   | { kind: "project"; text: string; projectId: string }
   | { kind: "time"; text: string }
   | { kind: "risks"; text: string }
-  | { kind: "goal"; text: string; goalId: string };
+  | { kind: "goal"; text: string; goalId: string; icon?: string | null; color?: string | null };
 export type BriefSpan = string | BriefEntity;
 
 export type BriefFactKind = "meetings" | "free" | "due" | "overdue" | "slipping" | "team";
@@ -403,7 +403,7 @@ export interface TodayBriefInput extends BriefInput {
   dayClosed?: boolean;
   /** the goal of yours (you own it or help on it) a task moves, if any (lib/goalFlow): the brief
    *  says so in at most one line ("Finishing it moves Grow weekly actives.") */
-  goalFor?: (task: Task) => { goalId: string; name: string; behind: boolean } | null;
+  goalFor?: (task: Task) => { goalId: string; name: string; behind: boolean; icon?: string | null; color?: string | null } | null;
 }
 
 const FOCUS_MAX = 44;
@@ -548,7 +548,8 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
       .map((t) => ({ t, g: goalFor(t) })).find((x) => !!x.g);
     const g = own ?? other?.g;
     if (!g) return;
-    const goal: BriefEntity = { kind: "goal", text: g.name.length > TITLE_MAX ? shorten(g.name) : g.name, goalId: g.goalId };
+    // (wearing the goal's own icon and colour, as a project chip wears its project's)
+    const goal: BriefEntity = { kind: "goal", text: g.name.length > TITLE_MAX ? shorten(g.name) : g.name, goalId: g.goalId, ...(g.icon ? { icon: g.icon } : {}), ...(g.color ? { color: g.color } : {}) };
     if (own) prose.push(" Finishing it moves ", goal);
     else prose.push(" Finishing ", { kind: "task", text: shorten(other!.t.title), taskId: other!.t.id, status: other!.t.status }, " moves ", goal);
     prose.push(g.behind ? ", which is behind pace." : ".");

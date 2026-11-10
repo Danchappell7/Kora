@@ -547,11 +547,13 @@ function listIntent(q: string, tasks: Task[], ctx: AskContext): AskResult | null
 const GOAL_WORDS = /\b(goals?|key results?|krs?|okrs?|objectives?)\b/;
 const SLIPPING_WORDS = /\b(slipping|slipped|behind|off[- ]track|at risk|late|lagging|falling|struggling|in trouble|worried|worst)\b/;
 const NO_WORK_WORDS = /\b(no work|nothing (?:behind|linked|moving)|without (?:any )?work|not linked|unlinked|no projects?|no tasks?)\b/;
+// a question about tasks that only mentions a goal ("what's overdue in the goal review?") is a task question
+const TASK_WORDS = /\b(tasks?|sub-?tasks?|to-?dos?|overdue|due|assigned|deadlines?)\b/;
 
 /** "Which goals are slipping?", "which goals have no work behind them?", "how are our goals doing?":
  *  answered from the goals the app reads (lib/goalFlow askGoals), with a way to the Goals page. */
 function goalIntent(q: string, ctx: Ctx): AskResult | null {
-  if (!GOAL_WORDS.test(q)) return null;
+  if (!GOAL_WORDS.test(q) || (TASK_WORDS.test(q) && !NO_WORK_WORDS.test(q))) return null;
   const goals = ctx.goals;
   if (!goals) return null;
   const go: AskAction[] = [{ op: "open", route: { view: "goals" } }];
@@ -559,12 +561,16 @@ function goalIntent(q: string, ctx: Ctx): AskResult | null {
   const result = (answer: string, actions: AskAction[]): AskResult => ({ answer, actions, source: "local" });
   if (!goals.length) return result("There are no goals here yet. Owners and admins set them in Projects › Goals.", go);
   const noun = (n: number) => plural(n, "goal", "goals");
+  // the person asking is "you", everyone else their first name
+  const myName = ctx.members.find((m) => m.id === ctx.me)?.name;
   const one = (g: AskGoal) => {
     const why = g.pace || (g.status === "at_risk" ? "marked at risk" : g.status === "off_track" ? "marked off track" : `${g.pct}% done`);
-    return `“${g.name}” (${why.charAt(0).toLowerCase()}${why.slice(1)}${g.owner ? `, ${g.owner.split(/\s+/)[0]}` : ""})`;
+    const who = !g.owner ? "" : g.owner === myName ? ", yours" : `, ${g.owner.split(/\s+/)[0]}`;
+    return `“${g.name}” (${why.charAt(0).toLowerCase()}${why.slice(1)}${who})`;
   };
+  // (one left over is named too: "and one more" only hides two or more)
   const list = (xs: AskGoal[], max = 3) => {
-    const shown = xs.slice(0, max).map(one);
+    const shown = xs.slice(0, xs.length === max + 1 ? max + 1 : max).map(one);
     const more = xs.length - shown.length;
     if (more > 0) return `${shown.join(", ")} and ${num(more)} more`;
     return shown.length <= 1 ? shown.join("") : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
@@ -577,7 +583,10 @@ function goalIntent(q: string, ctx: Ctx): AskResult | null {
   const live = goals.filter((g) => g.status !== "done");
   const slipping = live.filter((g) => g.slipping);
   if (SLIPPING_WORDS.test(q) || !/\b(on track|on pace|ahead|achieved|done)\b/.test(q)) {
-    if (!slipping.length) return result(`None of the ${num(live.length)} open ${noun(live.length)} ${plural(live.length, "is", "are")} slipping: ${plural(live.length, "it's", "they're")} on pace or not started yet.`, go);
+    if (!slipping.length) {
+      return result(live.length === 1 ? "The one open goal isn't slipping: it's on pace or not started yet."
+        : `None of the ${num(live.length)} open goals are slipping: they're on pace or not started yet.`, go);
+    }
     const rest = live.length - slipping.length;
     return result(`${num(slipping.length, true)} ${noun(slipping.length)} ${plural(slipping.length, "is", "are")} slipping: ${list(slipping)}.${rest > 0 ? ` The other ${num(rest)} ${plural(rest, "is", "are")} on pace.` : ""}`, go);
   }

@@ -538,7 +538,7 @@ describe("the brief's helpers", () => {
 describe("composeTodayBrief: one goal line (0052)", () => {
   const deck = () => task({ id: "deck", title: "Finalise the launch deck", dueDate: TODAY, aiScore: 90, focusMin: 60 });
   const mail = () => task({ id: "mail", title: "Write the welcome email", dueDate: TODAY, aiScore: 40, focusMin: 30 });
-  const goals: Record<string, { goalId: string; name: string; behind: boolean }> = {
+  const goals: Record<string, { goalId: string; name: string; behind: boolean; icon?: string | null; color?: string | null }> = {
     deck: { goalId: "g-launch", name: "Launch on 18 Nov", behind: true },
     mail: { goalId: "g-ret", name: "Studio retention to 85%", behind: false },
   };
@@ -548,6 +548,11 @@ describe("composeTodayBrief: one goal line (0052)", () => {
     expect(text(b.prose)).toMatch(/\. Finishing it moves Launch on 18 Nov, which is behind pace\.$/);
     expect(ents(b.prose, "goal")).toEqual([{ kind: "goal", text: "Launch on 18 Nov", goalId: "g-launch" }]);
     expect(b.plain).toContain("Finishing it moves Launch on 18 Nov, which is behind pace.");
+  });
+
+  it("the goal wears its own icon and colour, as a project chip does", () => {
+    const b = today2({ tasks: [deck()], goalFor: () => ({ ...goals.deck, icon: "🚀", color: "oklch(0.6 0.15 30)" }) });
+    expect(ents(b.prose, "goal")).toEqual([{ kind: "goal", text: "Launch on 18 Nov", goalId: "g-launch", icon: "🚀", color: "oklch(0.6 0.15 30)" }]);
   });
 
   it("else names the first of today's work that does (one line, never more)", () => {
