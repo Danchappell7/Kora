@@ -147,6 +147,23 @@ describe("posting", () => {
     expect(invoke.mock.calls[2][1].body).toEqual({ action: "test", workspaceId: WS });
   });
 
+  it("0058: a stand-up or Radar post says its text leaves closed work out (an older tab's doesn't, and is asked to reload)", async () => {
+    invoke.mockResolvedValue({ data: { ok: true }, error: null });
+    await postToSlack(WS, { kind: "standup", text: "Done: Launch" });
+    await postToSlack(WS, { kind: "risks", text: "Launch is late" });
+    await postToSlack(WS, { kind: "status", text: "On track", projectId: PROJECT });
+    expect(invoke.mock.calls.map((c) => c[1].body.audience)).toEqual(["open", "open", undefined]);
+    invoke.mockResolvedValueOnce({ data: null, error: httpError(409, { error: "Reload Kanbo to post to Slack.", reason: "invalid" }) });
+    expect(await postToSlack(WS, { kind: "standup", text: "x" })).toMatchObject({ ok: false, reason: "invalid", message: "Reload Kanbo to post to Slack." });
+  });
+
+  it("a passing failure says the server's own sentence ('Try again'), not that posting isn't switched on", async () => {
+    invoke.mockResolvedValueOnce({ data: null, error: httpError(503, { error: "Couldn't check who can see this project. Try again.", reason: "unavailable" }) });
+    expect(await postToSlack(WS, { kind: "status", text: "x", projectId: PROJECT })).toMatchObject({ reason: "unavailable", message: "Couldn't check who can see this project. Try again." });
+    invoke.mockResolvedValueOnce({ data: null, error: httpError(503, { error: "x", reason: "unavailable" }) });
+    expect(await postToSlack(WS, { kind: "status", text: "x", projectId: PROJECT })).toMatchObject({ reason: "unavailable", message: "Posting to Slack isn't switched on yet." });
+  });
+
   it("reads the function's refusal", async () => {
     invoke.mockResolvedValueOnce({ data: null, error: httpError(429, { error: "slow down", reason: "rate_limited", retryAfter: 120 }) });
     expect(await postToSlack(WS, { kind: "standup", text: "x" })).toEqual({

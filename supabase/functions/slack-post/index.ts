@@ -24,6 +24,10 @@
 //        is private, so it isn't posted to the team channel.": Project access
 //        is on and it's Members only or Private, 0058) · 503 unavailable
 //        (who can see it couldn't be checked: nothing is posted)
+//        post_standup / post_risks: the app (wave 4 on) sends audience: "open"
+//        (its text leaves out Members only and Private work). Without it,
+//        where Project access is on: 409 invalid "Reload Kanbo to post to
+//        Slack." (a tab from before, whose text lists every task it saw)
 //
 // Who may do what (decided by the database's own slack_status(), called as
 // the caller, so it's the same rule as everywhere else):
@@ -55,7 +59,7 @@ import {
 } from "../_shared/slack.ts";
 import { clearStandupFailure, loadAutopostHealth } from "../_shared/slackHealth.ts";
 import { projectAccess } from "../_shared/projectAccess.ts";
-import { statusPostProject } from "../_shared/slackAccess.ts";
+import { standupAudienceCheck, statusPostProject } from "../_shared/slackAccess.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -153,6 +157,11 @@ Deno.serve(async (req) => {
       const check = await statusPostProject(asUser, projectAccess(admin), workspaceId, projectId);
       if (!check.ok) return refuse(check.status, check.reason, check.error);
       projectName = check.projectName;
+    }
+    // ---- a stand-up or Radar post: from an app that leaves closed work out (0058) ----
+    if (kind === "standup" || kind === "risks") {
+      const check = await standupAudienceCheck(admin, workspaceId, b.audience);
+      if (!check.ok) return refuse(check.status, check.reason, check.error);
     }
 
     // ---- how often ----

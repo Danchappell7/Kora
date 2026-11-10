@@ -8,7 +8,9 @@
    Edge-function contract (POST /functions/v1/slack-post, user JWT):
      body  { action: "test" | "post_standup" | "post_status" | "post_risks",
              workspaceId: uuid, text?: string, projectId?: string,
-             status?: StatusKind, title?: string }
+             status?: StatusKind, title?: string,
+             audience?: "open" }   (post_standup / post_risks: the text leaves
+                                     out Members only and Private work, 0058)
      200   { ok: true }
      4xx/5xx { error: string, reason: SlackFailure, retryAfter?: number, detail?: string }
      body  { action: "status", workspaceId }   (owners/admins; read-only)
@@ -275,7 +277,8 @@ export function slackFailureMessage(reason: SlackFailure, opts: { detail?: strin
           return "Slack didn't accept the message. Try again in a moment.";
       }
     case "invalid": return opts.serverMessage && /^[A-Z].{3,200}[.]$/.test(opts.serverMessage) ? opts.serverMessage : "That couldn't be posted.";
-    case "unavailable": return "Posting to Slack isn't switched on yet.";
+    // (a passing failure: the server's own sentence, which says to try again)
+    case "unavailable": return opts.serverMessage && /^[A-Z].{3,200}[.]$/.test(opts.serverMessage) ? opts.serverMessage : "Posting to Slack isn't switched on yet.";
     // 0058: slack-post refuses a Members only or Private project's update (the server's words)
     case "private_project": return "This project is private, so it isn't posted to the team channel.";
     case "network": return isOffline() ? SLACK_COPY.offline : "Couldn't reach Kanbo. Check your connection and try again.";
@@ -365,6 +368,9 @@ export async function postToSlack(workspaceId: string, input: SlackPostInput): P
   return invokeSlack(workspaceId, {
     action,
     text: text.slice(0, SLACK_LIMITS.text),
+    // 0058: every stand-up and Radar text this app builds leaves out Members only and Private work
+    // (TeamPulse, WinsRecap); slack-post asks a tab from before this to reload rather than post its list
+    ...(input.kind !== "status" ? { audience: "open" } : {}),
     ...(input.projectId ? { projectId: input.projectId } : {}),
     ...(input.status ? { status: input.status } : {}),
     ...(input.title?.trim() ? { title: input.title.trim().slice(0, SLACK_LIMITS.title) } : {}),

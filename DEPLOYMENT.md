@@ -916,6 +916,9 @@ steps; nothing breaks while you wait.
    - `slack-post`, `slack-standup`, `slack-app`: only Whole workspace projects
      are posted, stood up or unfurled with their titles (a private one is a
      count, "+3 tasks in private projects", or "A private Kanbo project").
+     Where it's switched on, a stand-up or Radar post from a Kanbo tab opened
+     before the website update (whose text lists every task it saw) is
+     refused with "Reload Kanbo to post to Slack."
    - `public-form`: a private project's form shows the form's name, never the
      project's.
    - `invite-member`: a guest's invite says they'll see only the projects
@@ -951,7 +954,11 @@ steps; nothing breaks while you wait.
    saying what would change for each guest. Admins and members don't see it.
    Every project, lock-free, reads as before.
 4. **Turn it on for one business first.** Pick the one with the fewest guests.
-   In each guest's projects, open About › Contributors and tick them (a guest is
+   A day or so before, ask everyone in it to reload Kanbo (or close and reopen
+   the app) on every computer and phone they use: a tab left open since before
+   the website update keeps the old screens, which don't know which projects are
+   private (its Slack stand-up and Radar posts are refused until it's
+   reloaded). In each guest's projects, open About › Contributors and tick them (a guest is
    added as a commenter), until the preview names every guest with the projects
    they should keep, and no longer says a guest has open tasks they won't see
    (the preview names them: add the guest to that project, or hand the task

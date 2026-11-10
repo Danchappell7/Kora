@@ -4,7 +4,7 @@
 // work. Before 0058 (no access functions) everything is open, as today.
 import { describe, expect, it, vi } from "vitest";
 import { projectAccess } from "./projectAccess.ts";
-import { PRIVATE_PROJECT_COPY, splitStandupTasks, statusPostProject } from "./slackAccess.ts";
+import { PRIVATE_PROJECT_COPY, RELOAD_TO_POST_COPY, splitStandupTasks, standupAudienceCheck, statusPostProject } from "./slackAccess.ts";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 const OTHER_WS = "22222222-2222-4222-8222-222222222222";
@@ -65,5 +65,35 @@ describe("slack-standup: open work and private work", () => {
     expect(open.map((t) => t.id)).toEqual(["a", "c", "d"]);
     expect(hidden.map((t) => t.id)).toEqual(["b"]);
     expect(splitStandupTasks(tasks, new Set()).hidden).toEqual([]);
+  });
+});
+
+describe("slack-post: a stand-up or Radar post from a tab opened before wave 4", () => {
+  /** workspaces as the service role reads them */
+  const admin = (row: Record<string, unknown> | null, error: unknown = null) => {
+    const from = vi.fn(() => {
+      const q = { select: () => q, eq: () => q, maybeSingle: async () => ({ data: error ? null : row, error }) };
+      return q;
+    });
+    return { from };
+  };
+  it("the app says its text leaves closed work out: it goes, nothing is read", async () => {
+    const db = admin({ project_access: true });
+    expect(await standupAudienceCheck(db, WS, "open")).toEqual({ ok: true });
+    expect(db.from).not.toHaveBeenCalled();
+  });
+  it("no word from the app, and the switch is on: it's asked to reload (409, the only refusal an old tab reads out)", async () => {
+    expect(await standupAudienceCheck(admin({ project_access: true }), WS, undefined)).toEqual({ ok: false, status: 409, reason: "invalid", error: RELOAD_TO_POST_COPY });
+    expect(RELOAD_TO_POST_COPY).toMatch(/^[A-Z].{3,200}[.]$/);
+    expect(await standupAudienceCheck(admin({ project_access: true }), WS, "everyone")).toMatchObject({ ok: false, status: 409 });
+  });
+  it("the switch off, or before 0058 (no column): it goes, as today", async () => {
+    expect(await standupAudienceCheck(admin({ project_access: false }), WS, undefined)).toEqual({ ok: true });
+    expect(await standupAudienceCheck(admin({ name: "Wellverse" }), WS, undefined)).toEqual({ ok: true });
+    expect(await standupAudienceCheck(admin(null, { code: "42703", message: "column workspaces.project_access does not exist" }), WS, undefined)).toEqual({ ok: true });
+  });
+  it("when the switch can't be read, nothing is posted (503)", async () => {
+    expect(await standupAudienceCheck(admin(null, { code: "57014", message: "canceling statement due to statement timeout" }), WS, undefined))
+      .toMatchObject({ ok: false, status: 503, reason: "unavailable" });
   });
 });
