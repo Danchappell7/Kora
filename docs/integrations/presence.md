@@ -135,7 +135,10 @@ presence quietly stays off (one console note) — 0048's VERIFY has a
 `live_presence` column for exactly this. Read = see who's there and
 receive; write = `presence` (say you're there) or `broadcast` (typing on a
 task; edits, carets, "saved", "stale" and the order check on a doc; nothing
-on a project). Guests read docs live and show as there, but never send
+on a project). Once 0056 is in, a meeting's room (`kanbo:meeting:<id>`) is
+presence only, for the people who may read the meeting (0056 makes the same
+function with that branch, and 0048 carries it too, so re-running either
+keeps it). Guests read docs live and show as there, but never send
 edits; an archived doc sends nothing; suspended or unapproved people get
 nothing. Where Realtime has no Authorization (no `realtime.messages`) the
 section skips the policies.

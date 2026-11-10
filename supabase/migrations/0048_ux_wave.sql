@@ -67,7 +67,7 @@
 --      to the workspace's owner (personal ones go with the person).
 --  10. Realtime: saved_views, kudos and notification_snoozes.
 --  15. Live presence (u5): Realtime Authorization for the private
---      "kanbo:task|doc|project:<id>" channels — who's viewing, typing, doc
+--      "kanbo:task|doc|project:<id>" channels (and 0056's "kanbo:meeting:<id>") — who's viewing, typing, doc
 --      co-editing. kanbo_realtime_allowed() and two policies on
 --      realtime.messages (skipped where Realtime has no Authorization).
 --      Without them every join is refused and presence stays off.
