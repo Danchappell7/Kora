@@ -582,7 +582,7 @@ const ROLE_FILTER: Record<RoleFilter, (r: Role) => boolean> = {
 /** One invite's outcome in a multi-invite: ok, refused (with the reason) or not an email. */
 type InviteResult = { email: string; ok: boolean; text: string };
 
-export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened }: {
+export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened, inviteProjects }: {
   tasks: Task[];
   workspace: string | null;
   workspaces?: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -618,6 +618,9 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   /** 0057: open on the invite sheet (Get set up's "Invite your pilot group"); said back once it's open */
   inviteNow?: boolean;
   onInviteOpened?: () => void;
+  /** 0058: with project access on, a guest's invite chooses the projects they'll see (the projects you can
+   *  manage); `preset`: chosen already (About › People & access › Invite a guest). Omit: not asked. */
+  inviteProjects?: { projects: { id: string; name: string; emoji?: string }[]; preset?: string[]; onSet: (memberId: string, projectIds: string[]) => Promise<void> };
   /** The workspace settings moved to Settings › Workspace (WorkspaceSettingsPanel);
       these are still accepted so older hosts compile, and are ignored. */
   onUpdateWorkspace?: (workspaceId: string, name: string, logoUrl: string | null) => void;
@@ -626,6 +629,14 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
 }) {
   const [emails, setEmails] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("member");
+  // 0058: the projects a guest's invite brings
+  const [guestProjects, setGuestProjects] = useState<string[]>([]);
+  const askProjects = !!inviteProjects && inviteRole === "guest";
+  const giveProjects = async (memberId: string | undefined): Promise<string> => {
+    if (!askProjects || !memberId || !guestProjects.length) return "";
+    try { await inviteProjects!.onSet(memberId, guestProjects); return ""; }
+    catch { return " Their projects couldn't be saved: add them in each project's About tab."; }
+  };
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [results, setResults] = useState<{ items: InviteResult[]; kept: number } | null>(null);
@@ -713,10 +724,11 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
         // no promise → no way to know how it went: claim nothing, just clear the field
         if (!isThenable(r)) { setEmails(""); return; }
         const res = await r;
+        const projectsNote = await giveProjects((res as InvitedMember | undefined)?.id);
         setEmails("");
         setResendFor(v, existing ? "sent" : "fresh");
         const as = withArticle(ROLE_META[inviteRole].label.toLowerCase());
-        const ok = existing ? `Refreshed the invite for ${v} (as ${as}).` : `Invited ${v} as ${as}. They'll join when they sign up or sign in with that email.`;
+        const ok = (existing ? `Refreshed the invite for ${v} (as ${as}).` : `Invited ${v} as ${as}. They'll join when they sign up or sign in with that email.`) + projectsNote;
         // the invite stands either way; say so when its email didn't go
         const note = inviteEmailNotice((res as InvitedMember | undefined)?.inviteEmail);
         setInviteMsg(note?.tone === "error" ? { kind: "error", text: note.text } : { kind: "ok", text: note ? `${ok} ${note.text}` : ok });
@@ -741,9 +753,10 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
         const r = onInvite(workspace, v, inviteRole);
         if (!isThenable(r)) { silent = true; continue; }
         const res = await r;
+        const projectsNote = await giveProjects((res as InvitedMember | undefined)?.id);
         setResendFor(v, existing ? "sent" : "fresh");
         const note = inviteEmailNotice((res as InvitedMember | undefined)?.inviteEmail);
-        out.push({ email: v, ok: true, text: `${existing ? "Invite refreshed" : "Invited"}${note ? ` — ${note.text}` : ""}` });
+        out.push({ email: v, ok: true, text: `${existing ? "Invite refreshed" : "Invited"}${note ? ` — ${note.text}` : ""}${projectsNote}` });
       } catch (e) {
         out.push({ email: v, ok: false, text: inviteErrorText(e, v) });
         keep.push(v);
@@ -809,6 +822,8 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   const openInvite = () => { setInviteMsg(null); setResults(null); setInviteOpen(true); };
   useEffect(() => {
     if (!inviteNow) return;
+    // (0058: from a project's People & access: a guest, onto that project)
+    if (inviteProjects?.preset?.length) { setInviteRole("guest"); setGuestProjects(inviteProjects.preset); }
     if (canManage) openInvite();
     onInviteOpened?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -901,6 +916,21 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
               </select>
               <span className="kinvite-help"><b>{ROLE_META[inviteRole]?.label}</b> · {roleBlurb(inviteRole, workspace)}</span>
             </label>
+            {askProjects && (
+              <fieldset className="kinvite-field kinvite-projects">
+                <legend className="kinvite-label">Projects they can see</legend>
+                {inviteProjects!.projects.length === 0
+                  ? <span className="kinvite-help">No projects here yet. Add them to one from its About tab once they've joined.</span>
+                  : inviteProjects!.projects.map((p) => (
+                    <label key={p.id} className="kinvite-project">
+                      <input type="checkbox" checked={guestProjects.includes(p.id)}
+                        onChange={() => setGuestProjects((cur) => (cur.includes(p.id) ? cur.filter((x) => x !== p.id) : [...cur, p.id]))} />
+                      <span>{p.emoji ? `${p.emoji} ` : ""}{p.name}</span>
+                    </label>
+                  ))}
+                <span className="kinvite-help">They can comment on these projects' tasks. They won't see anything else here.</span>
+              </fieldset>
+            )}
             <p className="kinvite-note"><Icon name="lock" size={14} sw={1.75} />
               <span>
                 An invite lets them skip the waitlist: they join {ws?.name ?? "the workspace"} as soon as they sign up or sign in with the invited email.
@@ -1020,6 +1050,10 @@ const PEOPLE_CSS = `
 .kinvite { display: flex; flex-direction: column; gap: 16px; }
 .kinvite-field { display: flex; flex-direction: column; gap: 6px; }
 .kinvite-label { font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }
+.kinvite-projects { margin: 0; padding: 0; border: 0; min-width: 0; }
+.kinvite-projects > legend { padding: 0; margin-bottom: 6px; }
+.kinvite-project { display: flex; align-items: center; gap: 8px; min-height: 28px; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); cursor: pointer; }
+.kinvite-project > input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .kinvite textarea { width: 100%; min-height: 96px; resize: vertical; padding: 8px 10px; border-radius: var(--r-md, 8px); border: 1px solid var(--field-border, var(--hairline-strong));
   background: var(--field-bg, var(--surface)); color: var(--ink); font: 500 13px/20px var(--font-ui, var(--font-display)); }
 .kinvite textarea:hover { border-color: var(--field-border-hover, var(--hairline-strong)); }

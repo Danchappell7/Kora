@@ -945,8 +945,9 @@ steps; nothing breaks while you wait.
    projects private, then switch it on and confirm. Then mark that business's
    HR, finance and leadership projects Members only or Private (About › People &
    access › Manage); it asks before anyone loses access and names them. Check
-   it as a guest would (or ask one): they see only their projects. Do the other
-   businesses on later days, one at a time.
+   it as a guest would (or ask one): they see only their projects. From now on,
+   inviting a guest (Team › People › Invite people, role Guest) asks "Projects
+   they can see". Do the other businesses on later days, one at a time.
 5. **Rollback, if you need it.** Switch Project access off in Settings ›
    Workspace: instant, and the people, visibility and settings are kept for next
    time. If the app can't be reached, in the SQL editor:

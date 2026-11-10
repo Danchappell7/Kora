@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act, within } from "@testing-library/react";
+import { render, screen, fireEvent, act, within, waitFor } from "@testing-library/react";
 import { TeamView, WorkspaceSettingsPanel } from "./TeamView";
 import type { Task, WorkspaceMember } from "../../data/types";
 import { WORKSPACES, setReferenceData } from "../../data/data";
@@ -224,6 +224,22 @@ describe("TeamView", () => {
     openInvite();
     fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "guest" } });
     expect(screen.getByText("Sees only the projects they're added to and can comment on their tasks, but can't change anything.", { exact: false })).toBeInTheDocument();
+  });
+
+  it("0058: a guest's invite brings the projects they'll see, chosen in the sheet (or arriving from a project)", async () => {
+    const onSet = vi.fn(async () => undefined);
+    const onInvite = vi.fn(async () => ({ id: "wm-new", workspaceId: WS, userId: null, email: "ana@studioruiz.co", name: "", role: "guest" as const, status: "invited" as const }));
+    team([], { onInvite, inviteNow: true, inviteProjects: { projects: [{ id: "p-brand", name: "Brand Refresh" }, { id: "p-seed", name: "Seed round" }], preset: ["p-brand"], onSet } });
+    expect(screen.getByLabelText("Invite as role")).toHaveValue("guest");
+    const group = screen.getByRole("group", { name: "Projects they can see" });
+    expect(within(group).getByRole("checkbox", { name: "Brand Refresh" })).toBeChecked();
+    fireEvent.click(within(group).getByRole("checkbox", { name: "Seed round" }));
+    fireEvent.change(screen.getByLabelText("Emails"), { target: { value: "ana@studioruiz.co" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send 1 invite" }));
+    await waitFor(() => expect(onSet).toHaveBeenCalledWith("wm-new", ["p-brand", "p-seed"]));
+    // a member's invite isn't asked
+    fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "member" } });
+    expect(screen.queryByRole("group", { name: "Projects they can see" })).toBeNull();
   });
 
   it("warns what someone leaves behind before removing them, and that they come off tasks they follow", () => {

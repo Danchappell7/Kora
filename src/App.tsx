@@ -58,7 +58,7 @@ import { store, keepOnScreen, getStrippedColumns, stampCreator, type NewProject,
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, editableProjects as accessEditable, peopleFor as accessPeople, projectRank, taskRank, visibilityOf, VISIBILITY_LABEL, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, peopleFor as accessPeople, projectRank, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -3686,6 +3686,8 @@ export default function App() {
   const rolloutRef = useRef<{ openPackGallery: () => void; updateProject?: Project; notePack?: (workspaceId: string) => void }>({ openPackGallery: () => setNewProjectOpen(true) });
   // Get set up's "Invite your pilot group": Team › People opens on its invite sheet
   const [inviteNow, setInviteNow] = useState(false);
+  // 0058: the project a guest's invite starts on (About › People & access › Invite a guest)
+  const [invitePreset, setInvitePreset] = useState<string[] | null>(null);
 
   /** Inbox › Archived › Move back to Inbox: the items archived here come back. */
   const unarchiveInbox = useCallback((ids: string[]) => {
@@ -4477,7 +4479,13 @@ export default function App() {
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
         onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined}
         onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} healthSlot={rollout.healthSlot ?? undefined}
-        inviteNow={inviteNow} onInviteOpened={() => setInviteNow(false)} />;
+        inviteNow={inviteNow} onInviteOpened={() => { setInviteNow(false); setInvitePreset(null); }}
+        // 0058: with project access on, a guest's invite brings the projects they'll see
+        inviteProjects={wsGated && isAdmin ? {
+          projects: wsProjects.filter((p) => !p.id.startsWith("tmp-") && canManageAccess(p, accessCtx)).map((p) => ({ id: p.id, name: p.name, emoji: p.emoji })),
+          preset: invitePreset ?? undefined,
+          onSet: (memberId, ids) => store.setInviteProjects(memberId, ids.map((projectId) => ({ projectId, role: "commenter" as const }))).then(() => undefined),
+        } : undefined} />;
       case "tasks":
       case "project": {
         const inProject = !!openProject;
@@ -4534,7 +4542,7 @@ export default function App() {
                 access={accessSchema() && projectMembers !== null && openProject!.workspaceId ? {
                   ctx: accessCtx, workspaceName: activeWsName, open: accessOpenFor === openProject!.id,
                   onSetVisibility: setProjectVisibility, onSetMember: setProjectMember, onRemoveMember: removeProjectMember,
-                  onInviteGuest: isAdmin ? () => { setRoute({ view: "team" }); toastInfo("Invite them as a guest here, then add them to the project in its About tab."); } : undefined,
+                  onInviteGuest: isAdmin ? (pid) => { setInvitePreset([pid]); setInviteNow(true); setRoute({ view: "team" }); } : undefined,
                 } : undefined} /></Suspense>
             ),
             notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={activeReadOnly ? [] : risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,
