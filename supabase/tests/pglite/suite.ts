@@ -2451,9 +2451,11 @@ async function updateConversationSuite(w: World) {
 /* ============================================================ 0055: shared capacity, working hours, time off, bill rates */
 
 /** A person's week at a business (you set yours, owners and admins anyone's; the team reads it, guests
- *  don't), time off (the person's own, read by everyone who works beside them; the reason only by the
- *  person and their owners and admins, in any business they share), and bill rates (owners and admins
- *  only). Every table is written by its functions only. Then migrating twice, and re-running 0041. */
+ *  don't), time off (recorded at a business: what the person records is read by everyone on a team with
+ *  them, what a lead records stays with that business's team; the reason only by the person and the
+ *  owners and admins of the business it was recorded at; a guest, on either side, shares nothing), and
+ *  bill rates (owners and admins only). Every table is written by its functions only. Then migrating
+ *  twice, and re-running 0041. */
 async function availabilitySuite(w: World) {
   const has0055 = (await w.pg.query<{ on: boolean }>(`select exists (select 1 from public.schema_migrations where version = '0055') as "on"`)).rows[0].on;
   if (!has0055) return;
@@ -2474,9 +2476,10 @@ async function availabilitySuite(w: World) {
     asPerson<Hours>(w.pg, u, `select (r).weekly_hours::text as weekly_hours, (r).work_days::int[] as work_days, (r).day_start::int as day_start, (r).day_end::int as day_end
       from (select public.set_member_availability($1::uuid, $2::uuid, $3::numeric, $4::smallint[], $5::smallint, $6::smallint) as r) x`, [ws, who, h, days, s, e]);
   const hoursSeen = (u: string, ws: string) => asPerson<{ user_id: string }>(w.pg, u, `select user_id::text as user_id from public.member_availability where workspace_id = $1::uuid order by user_id`, [ws]);
-  const saveOff = (u: string, who: string, from: string, to: string, half: string | null = null, reason: string | null = null, id: string | null = null) =>
-    asPerson<{ id: string; user_id: string; half_day: string | null }>(w.pg, u, `select (r).id::text as id, (r).user_id::text as user_id, (r).half_day as half_day
-      from (select public.save_time_off($1::uuid, $2::uuid, $3::date, $4::date, $5, $6) as r) x`, [id, who, from, to, half, reason]);
+  const saveOff = (u: string, ws: string | null, who: string, from: string, to: string, half: string | null = null, reason: string | null = null, id: string | null = null) =>
+    asPerson<{ id: string; user_id: string; half_day: string | null; workspace_id: string | null }>(w.pg, u, `select (r).id::text as id, (r).user_id::text as user_id, (r).half_day as half_day,
+        (r).workspace_id::text as workspace_id
+      from (select public.save_time_off($1::uuid, $2::uuid, $3::uuid, $4::date, $5::date, $6, $7) as r) x`, [id, ws, who, from, to, half, reason]);
   const offSeen = (u: string, who: string) => asPerson<{ id: string }>(w.pg, u, `select id::text as id from public.time_off where user_id = $1::uuid`, [who]);
   const reasonsSeen = (u: string, who: string) => asPerson<{ reason: string }>(w.pg, u, `select reason from public.time_off_notes where user_id = $1::uuid order by reason`, [who]);
   const rate = (u: string, ws: string, project: string | null, r: number | null) =>
@@ -2528,13 +2531,13 @@ async function availabilitySuite(w: World) {
   });
 
   let bobsOff = "";
-  await test("0055: the person records their time off and a private reason", async () => {
-    const r = (await saveOff(w.bob, w.bob, day(3), day(7), null, "  Family wedding  "))[0];
-    eq(r.user_id, w.bob, "bob's");
+  await test("0055: the person records their time off and a private reason, at the business on screen", async () => {
+    const r = (await saveOff(w.bob, w.w1, w.bob, day(3), day(7), null, "  Family wedding  "))[0];
+    eq([r.user_id, r.workspace_id], [w.bob, w.w1], "bob's, recorded at Foundry");
     bobsOff = r.id;
     eq((await reasonsSeen(w.bob, w.bob)).map((x) => x.reason), ["Family wedding"], "trimmed, and his to read");
   });
-  await test("0055: everyone who works beside them sees they're off; only their owners and admins see why", async () => {
+  await test("0055: everyone who works beside them sees they're off; only that business's owners and admins see why", async () => {
     eq((await offSeen(w.alice, w.bob)).length, 1, "owner sees it");
     eq((await offSeen(hal, w.bob)).length, 1, "a member sees it");
     eq((await reasonsSeen(w.alice, w.bob)).length, 1, "the owner reads the reason");
@@ -2546,53 +2549,114 @@ async function availabilitySuite(w: World) {
     eq((await reasonsSeen(w.gus, w.bob)).length, 0, "guest's reason");
     eq((await offSeen(w.carol, w.bob)).length, 0, "outsider");
     eq((await reasonsSeen(w.carol, w.bob)).length, 0, "outsider's reason");
-    eq((await asPerson(w.pg, w.carol, `select public.shares_team_with($1::uuid) as a, public.leads_person($1::uuid) as b`, [w.bob]))[0], { a: false, b: false }, "the helpers say no");
+    eq((await asPerson(w.pg, w.carol, `select public.shares_team_with($1::uuid) as a, public.leads_at($2::uuid, $1::uuid) as b, public.team_at($2::uuid, $1::uuid) as c`, [w.bob, w.w1]))[0],
+      { a: false, b: false, c: false }, "the helpers say no");
+    await raises(asPerson(w.pg, w.carol, `select public.on_team_at($1::uuid, $2::uuid)`, [w.w1, w.bob]), /permission denied/);
   });
-  await test("0055: time off is the person's in every business they're in; each business's leads read the reason", async () => {
-    await saveOff(hal, hal, day(1), day(1), "pm", "Dentist");
-    eq((await offSeen(w.carol, hal)).length, 1, "carol (Elsewhere's owner) sees hal's");
-    eq((await reasonsSeen(w.carol, hal)).map((x) => x.reason), ["Dentist"], "and why");
-    eq((await reasonsSeen(w.alice, hal)).map((x) => x.reason), ["Dentist"], "so does Foundry's owner");
+  await test("0055: what you record shows in every business you're on the team of; the reason only to where it was recorded", async () => {
+    await saveOff(hal, w.w1, hal, day(1), day(1), "pm", "Dentist");
+    await saveOff(hal, w.w2, hal, day(12), day(13), null, "Course");
+    eq((await offSeen(w.carol, hal)).length, 2, "carol (Elsewhere's owner) sees both");
+    eq((await reasonsSeen(w.carol, hal)).map((x) => x.reason), ["Course"], "but only Elsewhere's reason");
+    eq((await reasonsSeen(w.alice, hal)).map((x) => x.reason), ["Dentist"], "and Foundry's owner only Foundry's");
     eq((await reasonsSeen(w.bob, hal)).length, 0, "not a fellow member");
     eq((await offSeen(w.carol, w.bob)).length, 0, "carol still doesn't see bob's");
   });
-  await test("0055: a lead records and changes someone's time off; the morning and afternoon of one day can both be off", async () => {
-    const r = (await saveOff(w.alice, hal, day(1), day(1), "am"))[0];
-    eq(r.half_day, "am", "the morning too");
-    await saveOff(dee, w.bob, day(3), day(8), null, "", bobsOff);
+  await test("0055: a lead records and changes someone's time off at their business; it stays with that business", async () => {
+    const r = (await saveOff(w.alice, w.w1, hal, day(1), day(1), "am"))[0];
+    eq([r.half_day, r.workspace_id], ["am", w.w1], "the morning too, recorded at Foundry");
+    await saveOff(dee, w.w1, w.bob, day(3), day(8), null, "", bobsOff);
     eq(await n(`select count(*)::int as n from public.time_off_notes where time_off_id = $1::uuid`, [bobsOff]), 0, "a blank reason clears it");
     eq((await w.pg.query<{ e: string }>(`select ends_on::text as e from public.time_off where id = $1::uuid`, [bobsOff])).rows[0].e, day(8), "moved");
-    await saveOff(w.carol, hal, day(20), day(21));
+    const c = (await saveOff(w.carol, w.w2, hal, day(20), day(21), null, "Offsite"))[0];
+    ok((await offSeen(w.carol, hal)).some((x) => x.id === c.id), "Elsewhere sees what its owner recorded");
+    ok((await offSeen(hal, hal)).some((x) => x.id === c.id), "so does hal");
+    ok(!(await offSeen(w.alice, hal)).some((x) => x.id === c.id), "Foundry doesn't: a lead's entry stays at their business");
+    // and alice's for hal (recorded at Foundry) stays at Foundry
+    ok(!(await offSeen(w.carol, hal)).some((x) => x.id === r.id), "Elsewhere doesn't see Foundry's lead-recorded morning");
   });
-  await test("0055 attack: a member, guest or outsider can't record or change someone else's time off", async () => {
-    await raises(saveOff(hal, w.bob, day(30), day(31)), /not authorized/);
-    await raises(saveOff(w.gus, w.bob, day(30), day(31)), /not authorized/);
-    await raises(saveOff(w.carol, w.bob, day(30), day(31)), /not authorized/);
-    await raises(saveOff(hal, w.bob, day(3), day(4), null, null, bobsOff), /not authorized/);
+  await test("0055 attack: a member, guest or outsider can't record or change someone else's time off; a lead only at their business", async () => {
+    await raises(saveOff(hal, w.w1, w.bob, day(30), day(31)), /not authorized/);
+    await raises(saveOff(w.gus, w.w1, w.bob, day(30), day(31)), /not authorized/);
+    await raises(saveOff(w.carol, w.w1, w.bob, day(30), day(31)), /not authorized/);
+    await raises(saveOff(w.carol, w.w2, w.bob, day(30), day(31)), /not authorized/);     // bob isn't at Elsewhere
+    await raises(saveOff(w.carol, null, w.bob, day(30), day(31)), /not authorized/);
+    await raises(saveOff(hal, w.w1, w.bob, day(3), day(4), null, null, bobsOff), /not authorized/);
     // an id that isn't the person's can't be pointed at someone else
-    await raises(saveOff(w.alice, w.alice, day(3), day(4), null, null, bobsOff), /not authorized/);
+    await raises(saveOff(w.alice, w.w1, w.alice, day(3), day(4), null, null, bobsOff), /not authorized/);
+    // a lead elsewhere can't change what was recorded here (hal is at both: carol leads him at Elsewhere)
+    const hals = (await offSeen(hal, hal)).map((x) => x.id);
+    const dentist = (await w.pg.query<{ id: string }>(`select id::text as id from public.time_off where user_id = $1::uuid and workspace_id = $2::uuid and half_day = 'pm'`, [hal, w.w1])).rows[0].id;
+    ok(hals.includes(dentist), "hal's Foundry entry");
+    await raises(saveOff(w.carol, w.w2, hal, day(1), day(1), "pm", "x", dentist), /not authorized/);
+    await raises(asPerson(w.pg, w.carol, `select public.delete_time_off($1::uuid)`, [dentist]), /not authorized/);
     await raises(asPerson(w.pg, hal, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
     await raises(asPerson(w.pg, w.carol, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
     await raises(asPerson(w.pg, w.gus, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
+    // you can't record your own at a business you're only a guest of
+    await raises(saveOff(w.gus, w.w1, w.gus, day(30), day(31)), /not authorized/);
     eq((await offSeen(w.bob, w.bob)).length, 1, "still there");
   });
+  await test("0055 attack: a guest's own time off reaches nobody, and their business's leads don't read why", async () => {
+    const g = (await saveOff(w.gus, null, w.gus, day(9), day(9), null, "IVF appointment"))[0];
+    eq((await offSeen(w.alice, w.gus)).length, 0, "Foundry's owner (gus is her guest)");
+    eq((await reasonsSeen(w.alice, w.gus)).length, 0, "nor why");
+    eq((await offSeen(w.bob, w.gus)).length, 0, "a member");
+    await raises(saveOff(w.alice, w.w1, w.gus, day(10), day(10)), /not authorized/);
+    await raises(asPerson(w.pg, w.alice, `select public.delete_time_off($1::uuid)`, [g.id]), /not authorized/);
+    await asPerson(w.pg, w.gus, `select public.delete_time_off($1::uuid)`, [g.id]);
+  });
+  await test("0055 attack: inviting someone as a guest (claimed on their next load) shares none of their time off", async () => {
+    await w.pg.query(`update auth.users set email_confirmed_at = now() where id = $1::uuid`, [w.bob]);
+    try {
+      await asPerson(w.pg, w.carol, `select public.invite_member($1::uuid, 'bob@example.org', 'Bob', 'guest')`, [w.w2]);
+      eq((await asPerson<{ n: number }>(w.pg, w.bob, `select public.claim_invites() as n`))[0].n, 1, "claimed");
+      eq((await offSeen(w.carol, w.bob)).length, 0, "carol sees no time off");
+      eq((await reasonsSeen(w.carol, w.bob)).length, 0, "nor any reason");
+      await raises(saveOff(w.carol, w.w2, w.bob, day(40), day(300)), /not authorized/);
+      await raises(saveOff(w.carol, w.w2, w.bob, day(300), day(301), null, null, bobsOff), /not authorized/);
+      await raises(asPerson(w.pg, w.carol, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
+    } finally {
+      await w.pg.query(`delete from public.workspace_members where workspace_id = $1::uuid and lower(email) = 'bob@example.org'`, [w.w2]);
+    }
+  });
+  await test("0055 attack: invited as a member, the inviter sees only the days off, never why, and can't change or crowd them", async () => {
+    try {
+      await asPerson(w.pg, w.carol, `select public.invite_member($1::uuid, 'bob@example.org', 'Bob', 'member')`, [w.w2]);
+      eq((await asPerson<{ n: number }>(w.pg, w.bob, `select public.claim_invites() as n`))[0].n, 1, "claimed");
+      eq((await offSeen(w.carol, w.bob)).map((x) => x.id), [bobsOff], "the days bob recorded himself");
+      eq((await reasonsSeen(w.carol, w.bob)).length, 0, "never Foundry's reason");
+      await raises(saveOff(w.carol, w.w2, w.bob, day(300), day(301), null, null, bobsOff), /not authorized/);
+      await raises(asPerson(w.pg, w.carol, `select public.delete_time_off($1::uuid)`, [bobsOff]), /not authorized/);
+      // what carol records for him stays at Elsewhere: Foundry never sees it, and it doesn't block bob there
+      const fake = (await saveOff(w.carol, w.w2, w.bob, day(40), day(60), null, "gone"))[0];
+      ok(!(await offSeen(w.alice, w.bob)).some((x) => x.id === fake.id), "alice doesn't see carol's entry");
+      const mine = (await saveOff(w.bob, w.w1, w.bob, day(45), day(46), null, "Long weekend"))[0];
+      ok(!!mine.id, "bob still records his own over it");
+      await asPerson(w.pg, w.bob, `select public.delete_time_off($1::uuid)`, [fake.id]);
+      await asPerson(w.pg, w.bob, `select public.delete_time_off($1::uuid)`, [mine.id]);
+    } finally {
+      await w.pg.query(`delete from public.workspace_members where workspace_id = $1::uuid and lower(email) = 'bob@example.org'`, [w.w2]);
+      await w.pg.query(`update auth.users set email_confirmed_at = null where id = $1::uuid`, [w.bob]);
+    }
+  });
   await test("0055 attack: time off in any other shape, or on days already off, is refused", async () => {
-    await raises(saveOff(w.bob, w.bob, day(5), day(4)), /invalid time off/);
-    await raises(saveOff(w.bob, w.bob, day(40), day(41), "am"), /invalid time off/);
-    await raises(saveOff(w.bob, w.bob, day(40), day(40), "evening"), /invalid time off/);
-    await raises(saveOff(w.bob, w.bob, day(40), day(40), null, "x".repeat(201)), /invalid time off/);
-    await raises(saveOff(w.bob, w.bob, day(-500), day(-499)), /invalid time off/);
-    await raises(saveOff(w.bob, w.bob, day(800), day(801)), /invalid time off/);
-    await raises(saveOff(w.bob, w.bob, day(8), day(10)), /already off then/);
-    await raises(saveOff(hal, hal, day(1), day(1), "pm"), /already off then/);
+    await raises(saveOff(w.bob, w.w1, w.bob, day(5), day(4)), /invalid time off/);
+    await raises(saveOff(w.bob, w.w1, w.bob, day(40), day(41), "am"), /invalid time off/);
+    await raises(saveOff(w.bob, w.w1, w.bob, day(40), day(40), "evening"), /invalid time off/);
+    await raises(saveOff(w.bob, w.w1, w.bob, day(40), day(40), null, "x".repeat(201)), /invalid time off/);
+    await raises(saveOff(w.bob, w.w1, w.bob, day(-500), day(-499)), /invalid time off/);
+    await raises(saveOff(w.bob, w.w1, w.bob, day(800), day(801)), /invalid time off/);
+    await raises(saveOff(w.bob, w.w1, w.bob, day(8), day(10)), /already off then/);
+    await raises(saveOff(hal, w.w1, hal, day(1), day(1), "pm"), /already off then/);
     await raises(w.pg.query(`insert into public.time_off (user_id, starts_on, ends_on, half_day) values ($1::uuid, current_date, current_date + 1, 'am')`, [w.bob]), /time_off_shape/);
   });
-  await test("0055: the person takes their time off back (the reason goes with it); 200 entries at most", async () => {
-    const r = (await saveOff(w.bob, w.bob, day(50), day(50), null, "Course"))[0];
+  await test("0055: the person takes their time off back (the reason goes with it); 200 entries at most from one author", async () => {
+    const r = (await saveOff(w.bob, w.w1, w.bob, day(50), day(50), null, "Course"))[0];
     await asPerson(w.pg, w.bob, `select public.delete_time_off($1::uuid)`, [r.id]);
     eq(await n(`select count(*)::int as n from public.time_off_notes where time_off_id = $1::uuid`, [r.id]), 0, "reason gone");
-    await w.pg.query(`insert into public.time_off (user_id, starts_on, ends_on) select $1::uuid, current_date + 100 + g, current_date + 100 + g from generate_series(1, 200) g`, [w.gus]);
-    await raises(saveOff(w.gus, w.gus, day(400), day(400)), /too much time off/);
+    await w.pg.query(`insert into public.time_off (user_id, starts_on, ends_on, created_by) select $1::uuid, current_date + 100 + g, current_date + 100 + g, $1::uuid from generate_series(1, 200) g`, [w.gus]);
+    await raises(saveOff(w.gus, null, w.gus, day(400), day(400)), /too much time off/);
     await w.pg.query(`delete from public.time_off where user_id = $1::uuid`, [w.gus]);
   });
   await test("0055 attack: a suspended person reads nothing and saves nothing", async () => {
@@ -2600,7 +2664,7 @@ async function availabilitySuite(w: World) {
     try {
       eq((await offSeen(hal, w.bob)).length, 0, "time off");
       eq((await hoursSeen(hal, w.w1)).length, 0, "hours");
-      await raises(saveOff(hal, hal, day(60), day(60)), /not authorized/);
+      await raises(saveOff(hal, w.w1, hal, day(60), day(60)), /not authorized/);
       await raises(setHours(hal, w.w1, hal, 10), /not authorized/);
     } finally {
       await w.pg.query(`update public.profiles set suspended = false where id = $1::uuid`, [hal]);
@@ -2739,6 +2803,18 @@ async function meetingsSuite(w: World) {
     await raises(start(w.alice, w.w1, "leadership", { wss: [w.w2] }), /not authorized/);
     await raises(start(w.carol, w.w2, "leadership", { wss: [w.w1] }), /not authorized/);
     await asPerson(w.pg, max, `select public.delete_meeting($1::uuid)`, [group.id]);
+  });
+  await test("0056: a Group meeting is the one over the same businesses, whichever hosts it: one live at a time, and the next carries the last one's actions", async () => {
+    const a = await start(max, w.w1, "leadership", { wss: [w.w1, w.w2] });
+    await raises(start(max, w.w2, "leadership", { wss: [w.w2, w.w1] }), /already running/);
+    await end(max, a.id);
+    const b = await start(max, w.w2, "leadership", { wss: [w.w1, w.w2], previous: a.id });
+    eq(b.previous_id, a.id, "hosted by the other business this time, still the meeting before");
+    // and one left running 12 hours under the other host is closed by the next start
+    await w.pg.query(`update public.meetings set started_at = now() - interval '13 hours' where id = $1::uuid`, [b.id]);
+    const c = await start(max, w.w1, "leadership", { wss: [w.w2, w.w1] });
+    eq((await w.pg.query<{ s: string }>(`select status as s from public.meetings where id = $1::uuid`, [b.id])).rows[0].s, "ended", "the old one closed");
+    for (const id of [a.id, b.id, c.id]) await asPerson(w.pg, max, `select public.delete_meeting($1::uuid)`, [id]);
   });
   await test("0056: only the presenter moves the agenda; anyone in it can take over; nobody else can", async () => {
     eq((await move(w.bob, team, 2, "wrap"))[0].place, 2, "bob moves");

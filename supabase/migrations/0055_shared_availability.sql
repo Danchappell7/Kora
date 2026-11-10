@@ -16,16 +16,21 @@
 --      set yours, owners and admins set anyone's. Guests carry no team
 --      capacity, so they have none.
 --   2. time_off: a person's days away (from, to, optionally half a single
---      day: "am" or "pm"). It's the person's, not one business's: anyone
---      who works beside them (an owner, admin or member of a workspace they
---      belong to) reads it, so every business they're in sees "Off" without
---      it being entered twice. Guests and outsiders read nothing.
+--      day: "am" or "pm"), recorded at one business (workspace_id: the one
+--      on screen when it was added). Entered once, seen everywhere it
+--      should be: an entry the person records themselves is read by
+--      everyone who works beside them (an owner, admin or member of a
+--      business where the person is an owner, admin or member too); one an
+--      owner or admin records for them stays with that business's team.
+--      Guests and outsiders read nothing, and being someone's guest (or
+--      having them as one) shares nothing.
 --      time_off_notes: the private reason. Only the person and the owners
---      and admins of a workspace they belong to read it; everyone else
---      sees just "Off". Both written only through save_time_off() and
---      delete_time_off(): by the person, or by an owner or admin of a
---      workspace they're in. At most 200 entries per person; entries that
---      ended more than 400 days ago are cleared as new ones are saved.
+--      and admins of the business it was recorded at (where the person is
+--      on the team) read it; everyone else sees just "Off". Both written
+--      only through save_time_off() and delete_time_off(): by the person,
+--      or by an owner or admin of the business it's recorded at. At most
+--      200 entries per person from any one author; entries that ended more
+--      than 400 days ago are cleared as new ones are saved.
 --   3. bill_rates: an hourly rate per project, and a workspace default (the
 --      row with no project). Read and set (set_bill_rate()) by the
 --      workspace's owners and admins only: members never see a rate, guests
@@ -54,32 +59,45 @@ begin
 end $pre$;
 
 -- ---------- helpers: who works beside whom ----------
--- The caller and p_user are both in a workspace where the caller is an owner, admin or member
--- (an active membership each; a workspace's owner counts as in it).
+-- (internal) p_user is on p_ws's team: an active owner, admin or member there (or its owner). A guest isn't.
+create or replace function public.on_team_at(p_ws uuid, p_user uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select p_ws is not null and p_user is not null and (
+    exists (select 1 from public.workspace_members m
+             where m.workspace_id = p_ws and m.user_id = p_user and m.status = 'active' and m.role in ('owner', 'admin', 'member'))
+    or exists (select 1 from public.workspaces w where w.id = p_ws and w.owner_id = p_user));
+$$;
+revoke execute on function public.on_team_at(uuid, uuid) from public, anon, authenticated;
+
+-- The caller and p_user are on the same team somewhere: a workspace where both are an owner, admin or
+-- member (never a guest, on either side).
 create or replace function public.shares_team_with(p_user uuid)
 returns boolean language sql security definer stable set search_path = public as $$
-  select p_user is not null and (
-    exists (select 1 from public.workspace_members m
-             where m.user_id = p_user and m.status = 'active'
-               and public.ws_role(m.workspace_id) in ('owner', 'admin', 'member'))
-    or exists (select 1 from public.workspaces w
-                where w.owner_id = p_user and public.ws_role(w.id) in ('owner', 'admin', 'member')));
+  select p_user is not null and exists (
+    select 1 from (select m.workspace_id as ws from public.workspace_members m
+                    where m.user_id = p_user and m.status = 'active' and m.role in ('owner', 'admin', 'member')
+                   union
+                   select w.id from public.workspaces w where w.owner_id = p_user) x
+     where public.ws_role(x.ws) in ('owner', 'admin', 'member'));
 $$;
 
--- The caller is an owner or admin of a workspace p_user is in.
-create or replace function public.leads_person(p_user uuid)
+-- At this business: the caller is on its team and so is p_user.
+create or replace function public.team_at(p_ws uuid, p_user uuid)
 returns boolean language sql security definer stable set search_path = public as $$
-  select p_user is not null and (
-    exists (select 1 from public.workspace_members m
-             where m.user_id = p_user and m.status = 'active'
-               and public.ws_role(m.workspace_id) in ('owner', 'admin'))
-    or exists (select 1 from public.workspaces w
-                where w.owner_id = p_user and public.ws_role(w.id) in ('owner', 'admin')));
+  select p_ws is not null and public.ws_role(p_ws) in ('owner', 'admin', 'member') and public.on_team_at(p_ws, p_user);
+$$;
+
+-- At this business: the caller is an owner or admin, and p_user is on its team.
+create or replace function public.leads_at(p_ws uuid, p_user uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select p_ws is not null and public.ws_role(p_ws) in ('owner', 'admin') and public.on_team_at(p_ws, p_user);
 $$;
 revoke execute on function public.shares_team_with(uuid) from public, anon;
-revoke execute on function public.leads_person(uuid) from public, anon;
+revoke execute on function public.team_at(uuid, uuid) from public, anon;
+revoke execute on function public.leads_at(uuid, uuid) from public, anon;
 grant execute on function public.shares_team_with(uuid) to authenticated;
-grant execute on function public.leads_person(uuid) to authenticated;
+grant execute on function public.team_at(uuid, uuid) to authenticated;
+grant execute on function public.leads_at(uuid, uuid) to authenticated;
 
 -- Working days as stored: 1–7 days, each 1..7 (ISO), none twice.
 create or replace function public.work_days_ok(d smallint[])
@@ -161,27 +179,33 @@ grant execute on function public.set_member_availability(uuid, uuid, numeric, sm
 
 -- ---------- 2. time off, and its private reason ----------
 create table if not exists public.time_off (
-  id         uuid primary key default gen_random_uuid(),
-  user_id    uuid not null references auth.users (id) on delete cascade,
-  starts_on  date not null,
-  ends_on    date not null,
-  half_day   text,
-  created_by uuid references auth.users (id) on delete set null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  workspace_id uuid references public.workspaces (id) on delete set null,
+  starts_on    date not null,
+  ends_on      date not null,
+  half_day     text,
+  created_by   uuid references auth.users (id) on delete set null,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
 );
+-- (a database that ran an earlier draft of this file has the table without the business it was recorded at)
+alter table public.time_off add column if not exists workspace_id uuid references public.workspaces (id) on delete set null;
 alter table public.time_off drop constraint if exists time_off_shape;
 alter table public.time_off add constraint time_off_shape check (
   ends_on >= starts_on and ends_on - starts_on <= 366
   and (half_day is null or (half_day in ('am', 'pm') and starts_on = ends_on)));
 create index if not exists time_off_user_idx on public.time_off (user_id, ends_on);
+create index if not exists time_off_ws_idx on public.time_off (workspace_id) where workspace_id is not null;
 alter table public.time_off enable row level security;
 
 create table if not exists public.time_off_notes (
-  time_off_id uuid primary key references public.time_off (id) on delete cascade,
-  user_id     uuid not null references auth.users (id) on delete cascade,
-  reason      text not null
+  time_off_id  uuid primary key references public.time_off (id) on delete cascade,
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  workspace_id uuid references public.workspaces (id) on delete set null,
+  reason       text not null
 );
+alter table public.time_off_notes add column if not exists workspace_id uuid references public.workspaces (id) on delete set null;
 alter table public.time_off_notes drop constraint if exists time_off_notes_shape;
 alter table public.time_off_notes add constraint time_off_notes_shape check (char_length(btrim(reason)) between 1 and 200);
 create index if not exists time_off_notes_user_idx on public.time_off_notes (user_id);
@@ -194,53 +218,72 @@ begin
     execute format('drop policy %I on public.%I', pol.policyname, pol.tablename);
   end loop;
 end $off$;
--- "Off" is for the person and the people they work beside (owners, admins and members; never guests)
+-- (an earlier draft's helper: a lead anywhere the person was, a guest included; its policies are gone above)
+drop function if exists public.leads_person(uuid);
+-- "Off" is for the person and the people they work beside (owners, admins and members; never guests): what
+-- they record themselves, everywhere they're on the team; what a lead records for them, at that business
 create policy "time off: the person and their team read" on public.time_off
-  for select using (public.can_act() and (user_id = auth.uid() or public.shares_team_with(user_id)));
--- the reason is for the person and their owners and admins only
-create policy "time off reasons: the person and their leads read" on public.time_off_notes
-  for select using (public.can_act() and (user_id = auth.uid() or public.leads_person(user_id)));
+  for select using (public.can_act() and (user_id = auth.uid()
+    or (created_by = user_id and public.shares_team_with(user_id))
+    or public.team_at(workspace_id, user_id)));
+-- the reason is for the person, and the owners and admins of the business it was recorded at
+create policy "time off reasons: the person and that business's leads read" on public.time_off_notes
+  for select using (public.can_act() and (user_id = auth.uid() or public.leads_at(workspace_id, user_id)));
 revoke all on public.time_off, public.time_off_notes from public, anon, authenticated;
 grant select on public.time_off, public.time_off_notes to authenticated;
 grant select, insert, update, delete on public.time_off, public.time_off_notes to service_role;
 
--- Record (p_id null) or change a person's time off: yours, or that of someone in a workspace you
--- own or run. p_half ("am" / "pm") only on a single day. p_reason: private (blank = none).
--- Two entries can't cover the same day (the morning and the afternoon of one day can).
-create or replace function public.save_time_off(p_id uuid, p_user uuid, p_starts date, p_ends date, p_half text, p_reason text)
+-- Record (p_id null) or change a person's time off at a business (p_ws: the one on screen). Yours (p_ws
+-- null, or a business where you're on the team), or, as an owner or admin of p_ws, that of someone on its
+-- team; a lead changes only what was recorded at their business. p_half ("am" / "pm") only on a single
+-- day. p_reason: private (blank = none). Two entries the same people see can't cover the same day (the
+-- morning and the afternoon of one day can).
+drop function if exists public.save_time_off(uuid, uuid, date, date, text, text);
+create or replace function public.save_time_off(p_id uuid, p_ws uuid, p_user uuid, p_starts date, p_ends date, p_half text, p_reason text)
 returns public.time_off language plpgsql security definer set search_path = public as $$
 declare
   me uuid := auth.uid();
+  cur public.time_off;
   r public.time_off;
+  ws uuid := p_ws;
   half text := nullif(btrim(coalesce(p_half, '')), '');
   why text := nullif(btrim(coalesce(p_reason, '')), '');
 begin
-  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
-  if p_user is null or (p_user <> me and not public.leads_person(p_user)) then raise exception 'not authorized'; end if;
+  if me is null or not public.can_act() or p_user is null then raise exception 'not authorized'; end if;
+  if p_user = me then
+    if p_ws is not null and public.ws_role(p_ws) not in ('owner', 'admin', 'member') then raise exception 'not authorized'; end if;
+  elsif not public.leads_at(p_ws, p_user) then
+    raise exception 'not authorized';
+  end if;
   if p_starts is null or p_ends is null or p_ends < p_starts or p_ends - p_starts > 366
      or (half is not null and (half not in ('am', 'pm') or p_starts <> p_ends))
      or p_starts < current_date - 400 or p_ends > current_date + 732
      or (why is not null and char_length(why) > 200) then
     raise exception 'invalid time off';
   end if;
-  if p_id is not null and not exists (select 1 from public.time_off t where t.id = p_id and t.user_id = p_user) then
-    raise exception 'not authorized';
+  if p_id is not null then
+    select * into cur from public.time_off t where t.id = p_id and t.user_id = p_user;
+    -- (a lead's change is to what was recorded at their business; it stays recorded there)
+    if not found or (p_user <> me and cur.workspace_id is distinct from p_ws) then raise exception 'not authorized'; end if;
+    ws := cur.workspace_id;
   end if;
   -- one person's entries are saved one at a time
   perform pg_advisory_xact_lock(hashtext('kanbo.time_off:' || p_user::text));
+  -- (an entry clashes with what's seen in the same places: the person's own, and this business's)
   if exists (select 1 from public.time_off t
               where t.user_id = p_user and t.id is distinct from p_id
+                and (t.created_by = t.user_id or t.workspace_id is not distinct from ws)
                 and t.starts_on <= p_ends and t.ends_on >= p_starts
                 and not (half is not null and t.half_day is not null and t.half_day <> half)) then
     raise exception 'already off then';
   end if;
   delete from public.time_off where user_id = p_user and ends_on < current_date - 400;
-  if p_id is null and (select count(*) from public.time_off t where t.user_id = p_user) >= 200 then
+  if p_id is null and (select count(*) from public.time_off t where t.user_id = p_user and t.created_by = me) >= 200 then
     raise exception 'too much time off on record';
   end if;
   if p_id is null then
-    insert into public.time_off (user_id, starts_on, ends_on, half_day, created_by)
-      values (p_user, p_starts, p_ends, half, me) returning * into r;
+    insert into public.time_off (user_id, workspace_id, starts_on, ends_on, half_day, created_by)
+      values (p_user, ws, p_starts, p_ends, half, me) returning * into r;
   else
     update public.time_off set starts_on = p_starts, ends_on = p_ends, half_day = half, updated_at = now()
       where id = p_id returning * into r;
@@ -248,23 +291,23 @@ begin
   if why is null then
     delete from public.time_off_notes where time_off_id = r.id;
   else
-    insert into public.time_off_notes (time_off_id, user_id, reason) values (r.id, p_user, why)
-      on conflict (time_off_id) do update set reason = excluded.reason;
+    insert into public.time_off_notes (time_off_id, user_id, workspace_id, reason) values (r.id, p_user, r.workspace_id, why)
+      on conflict (time_off_id) do update set reason = excluded.reason, workspace_id = excluded.workspace_id;
   end if;
   return r;
 end; $$;
-revoke execute on function public.save_time_off(uuid, uuid, date, date, text, text) from public, anon;
-grant execute on function public.save_time_off(uuid, uuid, date, date, text, text) to authenticated;
+revoke execute on function public.save_time_off(uuid, uuid, uuid, date, date, text, text) from public, anon;
+grant execute on function public.save_time_off(uuid, uuid, uuid, date, date, text, text) to authenticated;
 
--- Take time off back: the person's own, or as an owner or admin of a workspace they're in.
+-- Take time off back: the person's own, or as an owner or admin of the business it was recorded at.
 -- An entry the caller can't change gets the same answer as one that isn't there.
 create or replace function public.delete_time_off(p_id uuid)
 returns void language plpgsql security definer set search_path = public as $$
-declare who uuid;
+declare t public.time_off;
 begin
   if auth.uid() is null or not public.can_act() then raise exception 'not authorized'; end if;
-  select user_id into who from public.time_off where id = p_id;
-  if not found or (who <> auth.uid() and not public.leads_person(who)) then raise exception 'not authorized'; end if;
+  select * into t from public.time_off where id = p_id;
+  if not found or (t.user_id <> auth.uid() and not public.leads_at(t.workspace_id, t.user_id)) then raise exception 'not authorized'; end if;
   delete from public.time_off where id = p_id;
 end; $$;
 revoke execute on function public.delete_time_off(uuid) from public, anon;
@@ -359,8 +402,12 @@ insert into public.schema_migrations (version) values ('0055') on conflict (vers
 --     and not has_table_privilege('anon', 'public.bill_rates', 'select')                                      as anon_reads_nothing,
 --   has_function_privilege('authenticated', 'public.set_member_availability(uuid,uuid,numeric,smallint[],smallint,smallint)', 'execute')
 --     and not has_function_privilege('anon', 'public.set_member_availability(uuid,uuid,numeric,smallint[],smallint,smallint)', 'execute') as hours_fn,
---   has_function_privilege('authenticated', 'public.save_time_off(uuid,uuid,date,date,text,text)', 'execute')
---     and not has_function_privilege('anon', 'public.save_time_off(uuid,uuid,date,date,text,text)', 'execute')                       as time_off_fn,
+--   has_function_privilege('authenticated', 'public.save_time_off(uuid,uuid,uuid,date,date,text,text)', 'execute')
+--     and not has_function_privilege('anon', 'public.save_time_off(uuid,uuid,uuid,date,date,text,text)', 'execute')                       as time_off_fn,
+--   not has_function_privilege('authenticated', 'public.on_team_at(uuid,uuid)', 'execute')
+--     and to_regprocedure('public.leads_person(uuid)') is null                                                as helpers,
+--   (select count(*) from information_schema.columns where table_schema = 'public' and column_name = 'workspace_id'
+--     and table_name in ('time_off', 'time_off_notes')) = 2                                                    as recorded_at,
 --   has_function_privilege('authenticated', 'public.set_bill_rate(uuid,uuid,numeric)', 'execute')
 --     and not has_function_privilege('anon', 'public.set_bill_rate(uuid,uuid,numeric)', 'execute')                                    as rates_fn,
 --   (not exists (select 1 from pg_publication where pubname = 'supabase_realtime')

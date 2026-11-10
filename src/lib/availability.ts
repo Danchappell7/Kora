@@ -3,9 +3,10 @@
    (0055), the app's side.
    One copy for everyone, where each browser used to keep its own:
    a person's week at a business (capacity, working days, start and
-   end), their time off (the reason only for them and their owners
-   and admins: everyone else sees "Off"), and bill rates (owners and
-   admins only). Workload, Radar, Pulse, the AI planner, Time &
+   end), their time off (recorded at a business: the reason only for
+   them and that business's owners and admins, shown only there;
+   everyone else sees "Off"), and bill rates (owners and admins
+   only). Workload, Radar, Pulse, the AI planner, Time &
    billing and Today's working day all read from here.
    Before 0055 is run (status "off") every reader falls back to what
    it did before: capacities saved on this device, 08:00–18:00, the
@@ -39,10 +40,13 @@ export interface MemberWeek {
   dayEnd: number;
 }
 
-/** A person's days away (time_off). `reason` only reaches the person and their owners and admins. */
+/** A person's days away (time_off), recorded at a business. `reason` only reaches the person and the
+ *  owners and admins of the business it was recorded at. */
 export interface TimeOff {
   id: string;
   userId: string;
+  /** the business it was recorded at (null: the person's own, recorded outside any) */
+  workspaceId?: string | null;
   /** YYYY-MM-DD, both days included */
   startsOn: string;
   endsOn: string;
@@ -210,13 +214,13 @@ export interface AwayNote {
 export function awayNote(user: string, todayISO: string, opts: { ws?: string | null; soonDays?: number } = {}, s: AvailabilityState = state): AwayNote | null {
   const soonDays = opts.soonDays ?? 7;
   const now = timeOffOn(user, todayISO, s);
-  const reasonPart = (t: TimeOff) => (t.reason ? ` · ${t.reason}` : "");
+  const reasonPart = (t: TimeOff) => { const why = reasonHere(t, opts.ws, s); return why ? ` · ${why}` : ""; };
   if (now) {
     // the whole stretch they're off from today (back-to-back entries read as one)
     let last = now.endsOn;
     if (now.halfDay) {
       const label = now.halfDay === "am" ? "Off this morning" : "Off this afternoon";
-      return { label, title: `${label}${reasonPart(now)}`, now: true, reason: now.reason ?? undefined };
+      return { label, title: `${label}${reasonPart(now)}`, now: true, reason: reasonHere(now, opts.ws, s) };
     }
     for (let i = 0; i < 40; i++) {
       const next = isoOf(addDays(localDay(last)!, 1));
@@ -230,7 +234,7 @@ export function awayNote(user: string, todayISO: string, opts: { ws?: string | n
     // "until" names the day they're back
     const label = last === todayISO ? "Off today" : firstBack < 7 ? `Off until ${WEEKDAY[isoWeekday(backDay)]}` : `Off until ${fmtDayMonth(backDay)}`;
     const span = last === todayISO ? "Off today" : `Off ${spanWords({ startsOn: now.startsOn < todayISO ? now.startsOn : todayISO, endsOn: last, halfDay: null })}`;
-    return { label, title: `${span} · back ${WEEKDAY_LONG[isoWeekday(backDay)]} ${fmtDayMonth(backDay)}${reasonPart(now)}`, now: true, reason: now.reason ?? undefined };
+    return { label, title: `${span} · back ${WEEKDAY_LONG[isoWeekday(backDay)]} ${fmtDayMonth(backDay)}${reasonPart(now)}`, now: true, reason: reasonHere(now, opts.ws, s) };
   }
   const today = localDay(todayISO);
   if (!today) return null;
@@ -243,7 +247,26 @@ export function awayNote(user: string, todayISO: string, opts: { ws?: string | n
   const label = single
     ? `Off ${when}${soon.halfDay === "am" ? " morning" : soon.halfDay === "pm" ? " afternoon" : ""}`
     : `Off from ${when}`;
-  return { label, title: `Off ${spanWords(soon)}${reasonPart(soon)}`, now: false, reason: soon.reason ?? undefined };
+  return { label, title: `Off ${spanWords(soon)}${reasonPart(soon)}`, now: false, reason: reasonHere(soon, opts.ws, s) };
+}
+
+/** Someone's whole days away now, or starting within `soonDays` (back-to-back entries read as one): the
+ *  first day and the last. Null when there's no such stretch. */
+export function awayStretch(user: string, todayISO: string, soonDays = 7, s: AvailabilityState = state): { from: string; to: string } | null {
+  const today = localDay(todayISO);
+  if (!today) return null;
+  const horizon = isoOf(addDays(today, soonDays));
+  const first = s.timeOff.filter((t) => t.userId === user && !t.halfDay && t.endsOn >= todayISO && t.startsOn <= horizon)
+    .sort((a, b) => a.startsOn.localeCompare(b.startsOn))[0];
+  if (!first) return null;
+  let to = first.endsOn;
+  for (let i = 0; i < 40; i++) {
+    const next = isoOf(addDays(localDay(to)!, 1));
+    const t = s.timeOff.find((x) => x.userId === user && !x.halfDay && x.startsOn <= next && x.endsOn >= next);
+    if (!t) break;
+    to = t.endsOn;
+  }
+  return { from: first.startsOn, to };
 }
 
 /** The assignee picker's warning: is the person off on the day the work's due? "Off Thu",
@@ -326,11 +349,26 @@ export function canEditWeek(ws: string | null | undefined, user: string, s: Avai
   if (!onTeam(theirs)) return false;
   return user === s.me ? onTeam(mine) : leads(mine);
 }
-/** Your own time off, or that of someone in a business you own or run. */
-export function canEditTimeOff(user: string, s: AvailabilityState = state): boolean {
+/** Add time off for someone at this business: your own (where you're on the team, or in Personal), or,
+ *  as its owner or admin, someone on its team. (The server's rule, 0055 save_time_off.) */
+export function canAddTimeOff(ws: string | null | undefined, user: string, s: AvailabilityState = state): boolean {
   if (!availabilityOn(s) || !s.me) return false;
-  if (user === s.me) return true;
-  return Object.values(s.roles).some((people) => leads(people[s.me]) && !!people[user]);
+  if (user === s.me) return !ws || onTeam(roleOf(ws, s.me, s));
+  return leads(roleOf(ws, s.me, s)) && onTeam(roleOf(ws, user, s));
+}
+/** Change or remove this entry from the business on screen: it's yours, or it was recorded here and you
+ *  own or run this business (a lead elsewhere doesn't, even when the server would let them). */
+export function canChangeTimeOff(t: Pick<TimeOff, "userId" | "workspaceId">, ws: string | null | undefined, s: AvailabilityState = state): boolean {
+  if (!availabilityOn(s) || !s.me) return false;
+  if (t.userId === s.me) return true;
+  return !!ws && (t.workspaceId ?? null) === ws && leads(roleOf(ws, s.me, s)) && onTeam(roleOf(ws, t.userId, s));
+}
+/** The reason, where it may show: always your own; someone else's only at the business it was recorded at,
+ *  for its owners and admins (and only when it reached you at all). */
+export function reasonHere(t: Pick<TimeOff, "userId" | "workspaceId" | "reason">, ws: string | null | undefined, s: AvailabilityState = state): string | undefined {
+  if (!t.reason) return undefined;
+  if (t.userId === s.me) return t.reason;
+  return ws && (t.workspaceId ?? null) === ws && leads(roleOf(ws, s.me, s)) ? t.reason : undefined;
 }
 /** Does this person see others' time off at this business (not as a guest)? */
 export const seesTimeOff = (ws: string | null | undefined, s: AvailabilityState = state): boolean =>

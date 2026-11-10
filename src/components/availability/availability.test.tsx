@@ -17,8 +17,8 @@ const team = (o: Partial<AvailabilityState> = {}): Partial<AvailabilityState> =>
   ...EMPTY_AVAILABILITY, status: "on", me: "me", activeWs: "ws",
   roles: { ws: { me: "owner", sana: "member", theo: "member", gus: "guest" } },
   timeOff: [
-    { id: "o1", userId: "sana", startsOn: "2026-11-11", endsOn: "2026-11-13", halfDay: null, reason: "Family wedding" },
-    { id: "o2", userId: "theo", startsOn: "2026-11-10", endsOn: "2026-11-10", halfDay: null },
+    { id: "o1", userId: "sana", workspaceId: "ws", startsOn: "2026-11-11", endsOn: "2026-11-13", halfDay: null, reason: "Family wedding" },
+    { id: "o2", userId: "theo", workspaceId: "ws", startsOn: "2026-11-10", endsOn: "2026-11-10", halfDay: null },
   ],
   ...o,
 });
@@ -106,13 +106,26 @@ describe("a person's week and time off, in their profile", () => {
     fireEvent.change(within(form).getByLabelText("To"), { target: { value: "2026-12-24" } });
     expect(within(form).queryByLabelText("Part")).toBeNull();   // half days are for a single day
     fireEvent.change(within(form).getByLabelText("Note (optional)"), { target: { value: "Christmas" } });
-    expect(within(form).getByText("Only you and the owners and admins see the note. Everyone else sees “Off”.")).toBeInTheDocument();
+    expect(within(form).getByText("Only you and this business's owners and admins see the note. Everyone else sees “Off”.")).toBeInTheDocument();
     fireEvent.click(within(form).getByRole("button", { name: "Add" }));
     await waitFor(() => expect(screen.getByText("21–24 Dec")).toBeInTheDocument());
     expect(screen.getByText("Christmas")).toBeInTheDocument();
-    expect(getAvailability().timeOff.find((t) => t.userId === "me")).toMatchObject({ startsOn: "2026-12-21", endsOn: "2026-12-24", halfDay: null, reason: "Christmas" });
+    expect(getAvailability().timeOff.find((t) => t.userId === "me")).toMatchObject({ workspaceId: "ws", startsOn: "2026-12-21", endsOn: "2026-12-24", halfDay: null, reason: "Christmas" });
+    // removed at once, with Undo that records it again (reason and all)
     fireEvent.click(screen.getByRole("button", { name: "Remove time off 21–24 Dec" }));
     await waitFor(() => expect(screen.queryByText("21–24 Dec")).toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(screen.getByText("21–24 Dec")).toBeInTheDocument());
+    expect(getAvailability().timeOff.find((t) => t.userId === "me")).toMatchObject({ workspaceId: "ws", reason: "Christmas" });
+  });
+  it("at a business where you're a member, a teammate's time off is just “Off”, even when you lead them elsewhere", () => {
+    // Daniel leads Sana at Foundrise (where her wedding was recorded) and is a member at Harbour, Sana's own business
+    updateAvailability(team({ activeWs: "harbour", roles: { ws: { me: "owner", sana: "member" }, harbour: { sana: "owner", me: "member" } } }));
+    panel({ workspaceId: "harbour", myRole: "member" });
+    const row = screen.getByText("11–13 Nov").closest("li")!;
+    expect(row).toHaveTextContent("Off");
+    expect(row).not.toHaveTextContent("Family");
+    expect(screen.queryByRole("button", { name: /Add time off|Remove time off/ })).toBeNull();
   });
   it("a guest carries no week; before 0055 owners are told it isn't on, and nobody else sees anything", () => {
     updateAvailability(team());
@@ -121,7 +134,7 @@ describe("a person's week and time off, in their profile", () => {
     act(() => resetAvailability());
     act(() => updateAvailability({ status: "off" }));
     const { unmount } = panel();
-    expect(screen.getAllByText("Shared hours and time off aren't switched on yet. They need the 0055 database update.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Shared hours and time off aren't switched on yet. Once they are, everyone here sees the same week and who's away.").length).toBeGreaterThan(0);
     unmount();
   });
 });

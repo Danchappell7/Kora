@@ -4,9 +4,11 @@
    business (you set yours; owners and admins set anyone's; guests
    carry none), and their time off: what's coming up, and a way to
    add some (from, to, half a day, and a private reason only they and
-   the owners and admins see). Everyone on the team reads it; the
-   reason only reaches those it's for. Before 0055 is run it says so
-   to owners and admins, and shows nothing to anyone else.
+   this business's owners and admins see). Everyone on the team reads
+   it; the reason, and the way to change it, only show at the
+   business it was recorded at, to its owners and admins (and always
+   to the person). Before 0055 is run it says so to owners and
+   admins, and shows nothing to anyone else.
    ============================================================ */
 import { useEffect, useId, useMemo, useState } from "react";
 import { Button, IconButton, SectionLabel } from "../primitives";
@@ -14,8 +16,8 @@ import { useToast } from "../Toast";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Role } from "../../data/types";
 import {
-  availabilityOn, canEditTimeOff, canEditWeek, clockOf, DEFAULT_WEEKLY_HOURS, hoursWords, MAX_WEEKLY_HOURS, MIN_WEEKLY_HOURS,
-  roleOf, seesTimeOff, spanWords, weekOf, workDaysWords, type MemberWeek, type TimeOff,
+  availabilityOn, canAddTimeOff, canChangeTimeOff, canEditWeek, clockOf, DEFAULT_WEEKLY_HOURS, hoursWords, MAX_WEEKLY_HOURS, MIN_WEEKLY_HOURS,
+  reasonHere, roleOf, seesTimeOff, spanWords, weekOf, workDaysWords, type MemberWeek, type TimeOff,
 } from "../../lib/availability";
 import { deleteTimeOff, saveTimeOff, saveWeek } from "../../lib/availabilitySync";
 import { useAvailability } from "./useAvailability";
@@ -44,7 +46,7 @@ export function AvailabilityPanel({ workspaceId, userId, name, isSelf, myRole }:
     return (
       <div className="kprof-field">
         <SectionLabel>Working week</SectionLabel>
-        <p className="kav-quiet">Shared hours and time off aren't switched on yet. They need the 0055 database update.</p>
+        <p className="kav-quiet">Shared hours and time off aren't switched on yet. Once they are, everyone here sees the same week and who's away.</p>
       </div>
     );
   }
@@ -58,7 +60,7 @@ export function AvailabilityPanel({ workspaceId, userId, name, isSelf, myRole }:
   return (
     <>
       {!guest && <WeekEditor key={`${workspaceId}:${userId}`} workspaceId={workspaceId} userId={userId} first={first} isSelf={isSelf} say={say} />}
-      <TimeOffList userId={userId} first={first} isSelf={isSelf} today={today} say={say} />
+      <TimeOffList workspaceId={workspaceId} userId={userId} first={first} isSelf={isSelf} today={today} say={say} toast={toast} />
     </>
   );
 }
@@ -156,18 +158,25 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 /** a form's values as one comparable string (days in order, hours as a number) */
 const keyOf = (f: { hours: string; days: number[]; start: string; end: string }) => `${round1(Number(f.hours))}|${[...f.days].sort((a, b) => a - b).join()}|${f.start}|${f.end}`;
 
-function TimeOffList({ userId, first, isSelf, today, say }: {
-  userId: string; first: string; isSelf: boolean; today: string;
+function TimeOffList({ workspaceId, userId, first, isSelf, today, say, toast }: {
+  workspaceId: string; userId: string; first: string; isSelf: boolean; today: string;
   say: (r: { ok: boolean; message?: string }, done: string) => void;
+  toast: ReturnType<typeof useOptionalToast>;
 }) {
   const s = useAvailability();
-  const editable = canEditTimeOff(userId, s);
+  const editable = canAddTimeOff(workspaceId, userId, s);
   const coming = useMemo(() => s.timeOff.filter((t) => t.userId === userId && t.endsOn >= today).sort((a, b) => a.startsOn.localeCompare(b.startsOn)), [s.timeOff, userId, today]);
   const [adding, setAdding] = useState(false);
   if (!editable && !coming.length) return null;
+  // removed at once, with Undo (it's recorded again, at the business it was recorded at, reason and all)
   const remove = async (t: TimeOff) => {
     const r = await deleteTimeOff(t.id);
-    say(r, `Removed time off ${spanWords(t)}`);
+    if (!toast) return;
+    if (!r.ok) { toast.error(r.message); return; }
+    toast.action(`Removed time off ${spanWords(t)}`, "Undo", () => {
+      void saveTimeOff({ userId: t.userId, workspaceId: t.workspaceId ?? null, startsOn: t.startsOn, endsOn: t.endsOn, halfDay: t.halfDay, reason: t.reason ?? null })
+        .then((b) => { if (!b.ok) toast.error(b.message ?? "Couldn't put that back."); });
+    }, {});
   };
   return (
     <div className="kprof-field">
@@ -178,22 +187,25 @@ function TimeOffList({ userId, first, isSelf, today, say }: {
       {coming.length === 0 && !adding && <p className="kprof-hint">{isSelf ? "Nothing booked. Add your holidays so the team plans around them." : `Nothing booked for ${first}.`}</p>}
       {coming.length > 0 && (
         <ul className="kav-offs">
-          {coming.map((t) => (
-            <li key={t.id} className="kav-off">
-              <span className="kav-off-when">{spanWords(t)}{t.startsOn <= today && <span className="kav-off-now"> · now</span>}</span>
-              <span className="kav-off-why" data-private={t.reason ? "" : undefined}>{t.reason ?? "Off"}</span>
-              {editable && <IconButton icon="x" size="sm" label={`Remove time off ${spanWords(t)}`} onClick={() => void remove(t)} />}
-            </li>
-          ))}
+          {coming.map((t) => {
+            const why = reasonHere(t, workspaceId, s);
+            return (
+              <li key={t.id} className="kav-off">
+                <span className="kav-off-when">{spanWords(t)}{t.startsOn <= today && <span className="kav-off-now"> · now</span>}</span>
+                <span className="kav-off-why" data-private={why ? "" : undefined}>{why ?? "Off"}</span>
+                {canChangeTimeOff(t, workspaceId, s) && <IconButton icon="x" size="sm" label={`Remove time off ${spanWords(t)}`} onClick={() => void remove(t)} />}
+              </li>
+            );
+          })}
         </ul>
       )}
-      {adding && <TimeOffForm userId={userId} first={first} isSelf={isSelf} today={today} onDone={() => setAdding(false)} say={say} />}
+      {adding && <TimeOffForm workspaceId={workspaceId} userId={userId} first={first} isSelf={isSelf} today={today} onDone={() => setAdding(false)} say={say} />}
     </div>
   );
 }
 
-function TimeOffForm({ userId, first, isSelf, today, onDone, say }: {
-  userId: string; first: string; isSelf: boolean; today: string; onDone: () => void;
+function TimeOffForm({ workspaceId, userId, first, isSelf, today, onDone, say }: {
+  workspaceId: string; userId: string; first: string; isSelf: boolean; today: string; onDone: () => void;
   say: (r: { ok: boolean; message?: string }, done: string) => void;
 }) {
   const id = useId();
@@ -207,7 +219,7 @@ function TimeOffForm({ userId, first, isSelf, today, onDone, say }: {
   const add = async () => {
     if (problem || busy) return;
     setBusy(true);
-    const r = await saveTimeOff({ userId, startsOn: from, endsOn: to, halfDay: single && half ? half : null, reason: reason.trim() || null });
+    const r = await saveTimeOff({ userId, workspaceId, startsOn: from, endsOn: to, halfDay: single && half ? half : null, reason: reason.trim() || null });
     setBusy(false);
     say(r, `Time off added: ${spanWords({ startsOn: from, endsOn: to, halfDay: single && half ? half : null })}`);
     if (r.ok) onDone();
@@ -237,7 +249,7 @@ function TimeOffForm({ userId, first, isSelf, today, onDone, say }: {
       <div className="kav-field">
         <label className="kprof-label" htmlFor={`${id}-r`}>Note (optional)</label>
         <input id={`${id}-r`} className="kfield-input" value={reason} maxLength={200} placeholder="e.g. Holiday" aria-describedby={`${id}-rh`} onChange={(e) => setReason(e.target.value)} />
-        <span className="kprof-hint" id={`${id}-rh`}>{isSelf ? "Only you and the owners and admins see the note. Everyone else sees “Off”." : `Only ${first} and the owners and admins see the note. Everyone else sees “Off”.`}</span>
+        <span className="kprof-hint" id={`${id}-rh`}>{isSelf ? "Only you and this business's owners and admins see the note. Everyone else sees “Off”." : `Only ${first} and this business's owners and admins see the note. Everyone else sees “Off”.`}</span>
       </div>
       <div className="kav-week-foot">
         <span className="kprof-hint" role={problem ? "alert" : undefined} data-tone={problem ? "signal" : undefined}>{problem ?? ""}</span>

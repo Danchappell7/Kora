@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  availabilityOn, awayNote, backOn, canEditTimeOff, canEditWeek, canSeeRates, capacityInWeek, capacityUploads, daysOffInWeek, EMPTY_AVAILABILITY,
-  getAvailability, hoursWords, myWorkingDay, offOnDayNote, offShare, rateFor, resetAvailability, seesTimeOff, spanWords, updateAvailability,
+  availabilityOn, awayNote, backOn, canAddTimeOff, canChangeTimeOff, canEditWeek, canSeeRates, capacityInWeek, capacityUploads, daysOffInWeek, EMPTY_AVAILABILITY,
+  getAvailability, hoursWords, myWorkingDay, offOnDayNote, offShare, rateFor, reasonHere, resetAvailability, seesTimeOff, spanWords, updateAvailability,
   weekCapacities, workDaysWords, type AvailabilityState, type TimeOff,
 } from "./availability";
 
@@ -45,7 +45,7 @@ describe("capacity", () => {
 describe("time off in words", () => {
   const today = "2026-11-10";
   it("says Off today for one day, and names the day they're back for longer", () => {
-    expect(awayNote("sana", today, {}, state({ timeOff: [off("sana", today, today, null, "Dentist")] }))).toMatchObject({ label: "Off today", now: true, reason: "Dentist" });
+    expect(awayNote("sana", today, { ws: "ws" }, state({ timeOff: [{ ...off("sana", today, today, null, "Dentist"), workspaceId: "ws" }] }))).toMatchObject({ label: "Off today", now: true, reason: "Dentist" });
     // Tue–Fri: back on Monday
     const long = awayNote("sana", today, {}, state({ timeOff: [off("sana", "2026-11-09", "2026-11-13")] }))!;
     expect(long.label).toBe("Off until Mon");
@@ -95,11 +95,34 @@ describe("who may see and change what", () => {
     expect(canEditWeek("other", "me", s)).toBe(true);
     expect(canEditWeek("ws", "maya", state({ status: "off" }))).toBe(false);
   });
-  it("you record your own time off, and that of anyone in a business you own or run", () => {
+  it("you record your own time off, and, at a business you own or run, that of someone on its team", () => {
     const s = state();
-    expect(canEditTimeOff("me", s)).toBe(true);
-    expect(canEditTimeOff("sana", s)).toBe(true);
-    expect(canEditTimeOff("tom", s)).toBe(false);   // only a fellow member at "other"
+    expect(canAddTimeOff("ws", "me", s)).toBe(true);
+    expect(canAddTimeOff(null, "me", s)).toBe(true);
+    expect(canAddTimeOff("ws", "sana", s)).toBe(true);
+    expect(canAddTimeOff("ws", "gus", s)).toBe(false);     // a guest here
+    expect(canAddTimeOff("other", "tom", s)).toBe(false);  // only a fellow member at "other"
+    expect(canAddTimeOff("other", "maya", s)).toBe(false); // you lead Maya at "ws", not here
+  });
+  it("an entry is changed (and its reason read) only at the business it was recorded at, by its owners and admins", () => {
+    const s = state();
+    const sanas = { ...off("sana", "2026-11-11", "2026-11-13", null, "Family wedding"), workspaceId: "ws" };
+    const mayas = { ...off("maya", "2026-11-11", "2026-11-11", null, "Dentist"), workspaceId: "other" };
+    const mine = { ...off("me", "2026-11-20", "2026-11-20", null, "Hospital"), workspaceId: "other" };
+    expect(canChangeTimeOff(sanas, "ws", s)).toBe(true);
+    expect(reasonHere(sanas, "ws", s)).toBe("Family wedding");
+    // the same entry on another business's screen, or in Personal: "Off", no reason, no remove
+    expect(canChangeTimeOff(sanas, "other", s)).toBe(false);
+    expect(reasonHere(sanas, "other", s)).toBeUndefined();
+    expect(reasonHere(sanas, null, s)).toBeUndefined();
+    // Maya's was recorded where you're a member: never yours to read or change, even though you lead her at "ws"
+    expect(canChangeTimeOff(mayas, "ws", s)).toBe(false);
+    expect(canChangeTimeOff(mayas, "other", s)).toBe(false);
+    expect(reasonHere(mayas, "ws", s)).toBeUndefined();
+    expect(awayNote("maya", "2026-11-11", { ws: "ws" }, state({ timeOff: [mayas] }))).toMatchObject({ label: "Off today", title: "Off today · back Thursday 12 Nov" });
+    // your own, everywhere
+    expect(canChangeTimeOff(mine, "ws", s)).toBe(true);
+    expect(reasonHere(mine, null, s)).toBe("Hospital");
   });
   it("time off shows to the team, never to a guest; rates only to owners and admins", () => {
     const s = state({ roles: { ws: { me: "member" }, g: { me: "guest" }, lead: { me: "admin" } }, rates: [{ workspaceId: "lead", projectId: null, rate: 80 }, { workspaceId: "lead", projectId: "p1", rate: 95 }] });

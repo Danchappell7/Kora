@@ -10,8 +10,8 @@ week, day off, reason and rate.
 | Part | Table / function | Who can see and do what |
 |---|---|---|
 | A person's week at a business | `member_availability`, `set_member_availability(ws, user, hours, days, start, end)` | Weekly capacity (blank = 40h), working days and the working day's start and end. The workspace's owners, admins and members read everyone's; guests read none. You set your own; owners and admins set anyone's. Guests carry no team capacity, so they have none. |
-| Time off | `time_off`, `save_time_off(…)`, `delete_time_off(id)` | Days away (from, to, or the morning or afternoon of one day). It's the person's, not one business's: anyone who works beside them (an owner, admin or member of a workspace they're in) sees it, so it's entered once. Guests and outsiders see nothing. Recorded, changed and taken back by the person, or by an owner or admin of a workspace they're in. No two entries cover the same day (a morning and an afternoon can). At most 200 per person. |
-| The reason | `time_off_notes` | Private: only the person and the owners and admins of a workspace they're in read it. Everyone else sees "Off". |
+| Time off | `time_off`, `save_time_off(…)`, `delete_time_off(id)` | Days away (from, to, or the morning or afternoon of one day), recorded at a business (the one on screen). What the person records themselves is seen everywhere they're on the team (by the owners, admins and members of each business where they're an owner, admin or member too), so it's entered once. What an owner or admin records for someone stays with that business's team. Being someone's guest, or having them as one, shares nothing; outsiders see nothing. Changed and taken back by the person, or by an owner or admin of the business it was recorded at. No two entries the same people see cover the same day (a morning and an afternoon can). At most 200 per person from any one author. |
+| The reason | `time_off_notes` | Private: only the person and the owners and admins of the business it was recorded at read it (and the app shows it only there). Everyone else sees "Off". |
 | Bill rates | `bill_rates`, `set_bill_rate(ws, project, rate)` | A project's own hourly rate, and the workspace's default (no project). Only the workspace's owners and admins read or set them. Members see hours only; guests nothing. |
 | Live | realtime on `member_availability` and `time_off` | A teammate's change shows without a reload (RLS decides who hears). Reasons and rates are read again when time off changes, never streamed. |
 
@@ -47,18 +47,21 @@ No functions to deploy, no new secrets and no new schedule.
   assignee pickers say "Off Thu" beside anyone off the day the work's due, and
   New task says it under the field. Workload marks "Off 3 days", and "Off" for
   a week away.
-- **Kanbo noticed.** When work is due while someone's away (yours anywhere, or
-  a teammate's in a business you own or run), Today offers to move it to the
-  day they're back, with Undo.
+- **Kanbo noticed.** When work is due while someone's away (yours, except where
+  you're a guest, or a teammate's in a business you own or run), Today offers
+  to give it to the teammate with the most room that week (when someone has
+  room), or to move it to the day they're back, with Undo.
 - **Setting it.** Team › People › a person: their working week (hours, days,
-  start and end) and their time off (with an optional note). Workload's open
-  row sets capacity too. Your own week also sets Today's working day (it was
-  always 08:00–18:00).
+  start and end) and their time off (with an optional note, which only they
+  and that business's owners and admins see). Removing time off has Undo.
+  Workload's open row sets capacity too. Your own week also sets Today's
+  working day (it was always 08:00–18:00).
 - **Workload you can act on.** Drag a task onto a person (it's theirs) or one
   of their weeks (theirs, due that week, never on a day they're off), or use
-  the task's Move menu. "Preview rebalance" shows Kanbo's moves for the week
-  and everyone's hours before and after; Apply saves them all, Undo puts them
-  back.
+  the task's Move menu (it says "Off Thu" beside anyone off the day it's due).
+  "Preview rebalance" shows Kanbo's moves for the week and everyone's hours
+  before and after (never to someone off the day it's due, and someone around
+  all week comes first); Apply saves them all, Undo puts them back.
 - **Rates.** Team › Insights › Trends › Time & billing: owners and admins set
   the default rate and each project's own; the total prices each project at its
   rate. Members see hours only.

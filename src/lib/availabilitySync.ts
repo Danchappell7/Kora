@@ -2,7 +2,8 @@
    KANBO — loading and saving the shared weeks, time off and rates
    (0055). Reads with select("*") (RLS decides what comes back: a
    member gets no rates, a guest no weeks or time off, and a reason
-   only reaches the person and their owners and admins); writes only
+   only reaches the person and the owners and admins of the business
+   it was recorded at); writes only
    through the migration's functions. Before 0055 is run the tables
    and functions aren't there: the load says "off" and every reader
    falls back (lib/availability). In the demo (no Supabase) the same
@@ -23,7 +24,7 @@ import { readLocalCapacities } from "./radar";
 /* ---------- rows ---------- */
 
 interface WeekRow { workspace_id: string; user_id: string; weekly_hours: number | string | null; work_days: number[] | null; day_start: number | null; day_end: number | null }
-interface TimeOffRow { id: string; user_id: string; starts_on: string; ends_on: string; half_day: string | null }
+interface TimeOffRow { id: string; user_id: string; workspace_id?: string | null; starts_on: string; ends_on: string; half_day: string | null }
 interface NoteRow { time_off_id: string; reason: string }
 interface RateRow { workspace_id: string; project_id: string | null; hourly_rate: number | string }
 
@@ -34,7 +35,7 @@ export const rowToWeek = (r: WeekRow): MemberWeek => ({
   dayStart: r.day_start ?? 480, dayEnd: r.day_end ?? 1080,
 });
 export const rowToTimeOff = (r: TimeOffRow, reason?: string | null): TimeOff => ({
-  id: r.id, userId: r.user_id, startsOn: String(r.starts_on).slice(0, 10), endsOn: String(r.ends_on).slice(0, 10),
+  id: r.id, userId: r.user_id, workspaceId: r.workspace_id ?? null, startsOn: String(r.starts_on).slice(0, 10), endsOn: String(r.ends_on).slice(0, 10),
   halfDay: r.half_day === "am" || r.half_day === "pm" ? r.half_day : null, ...(reason ? { reason } : {}),
 });
 const rowToRate = (r: RateRow): BillRate => ({ workspaceId: r.workspace_id, projectId: r.project_id, rate: Number(r.hourly_rate) });
@@ -50,7 +51,7 @@ export function isMissingSchema(e: unknown): boolean {
 
 /** What a refused save says, in the app's words. */
 export function saveErrorText(e: unknown): string {
-  if (isMissingSchema(e)) return "Shared hours aren't switched on yet. Ask the workspace owner to run the 0055 update.";
+  if (isMissingSchema(e)) return "Shared hours and time off aren't switched on yet.";
   const msg = String((e as { message?: unknown })?.message ?? "");
   if (/already off then/.test(msg)) return "They're already off on one of those days.";
   if (/carry capacity/.test(msg)) return "Guests don't carry team capacity.";
@@ -113,6 +114,17 @@ export async function refreshAvailability(todayISO: string): Promise<Availabilit
 
 /* ---------- live: a teammate's change arrives ---------- */
 
+type Change = { eventType?: string; old?: Record<string, unknown> | null };
+/** Is this change news here? A new or changed row only reaches those RLS lets read it, but a delete
+ *  reaches everyone (it carries just the id): only a day off this person has on screen is worth a reload,
+ *  and a week is only ever deleted with its business or person. */
+export function changeMatters(table: "member_availability" | "time_off", p: Change, s: AvailabilityState = getAvailability()): boolean {
+  if (p.eventType !== "DELETE") return true;
+  if (table === "member_availability") return false;
+  const id = p.old?.id;
+  return typeof id === "string" && s.timeOff.some((t) => t.id === id);
+}
+
 let channelSeq = 0;
 /** Calls `onChange` when a week or a day off changes (RLS decides who hears). Off in the demo. */
 export function subscribeAvailabilityChanges(onChange: () => void): () => void {
@@ -121,8 +133,8 @@ export function subscribeAvailabilityChanges(onChange: () => void): () => void {
   let channel: RealtimeChannel | null = null;
   try {
     channel = client.channel(`kanbo-availability-${++channelSeq}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "member_availability" }, () => onChange())
-      .on("postgres_changes", { event: "*", schema: "public", table: "time_off" }, () => onChange())
+      .on("postgres_changes", { event: "*", schema: "public", table: "member_availability" }, (p: Change) => { if (changeMatters("member_availability", p)) onChange(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "time_off" }, (p: Change) => { if (changeMatters("time_off", p)) onChange(); })
       .subscribe();
   } catch (e) { reportError(e, { op: "availability-realtime" }); }
   return () => { if (channel) void client.removeChannel(channel).catch(() => undefined); };
@@ -155,12 +167,15 @@ export async function saveWeek(week: MemberWeek): Promise<SaveResult> {
   return { ok: true };
 }
 
-/** Record (no id) or change someone's time off, with an optional private reason. */
+/** Record (no id) or change someone's time off at a business (the one on screen; null: your own, in
+ *  Personal), with an optional private reason. A change keeps the business it was recorded at. */
 export async function saveTimeOff(entry: Omit<TimeOff, "id"> & { id?: string }): Promise<SaveResult & { id?: string }> {
   const before = getAvailability().timeOff;
   const reason = entry.reason?.trim() || null;
   const temp = entry.id ?? `off-new-${++demoSeq}`;
-  const next: TimeOff = { id: temp, userId: entry.userId, startsOn: entry.startsOn, endsOn: entry.endsOn, halfDay: entry.halfDay, ...(reason ? { reason } : {}) };
+  const was = entry.id ? before.find((t) => t.id === entry.id) : undefined;
+  const workspaceId = was ? was.workspaceId ?? null : entry.workspaceId ?? null;
+  const next: TimeOff = { id: temp, userId: entry.userId, workspaceId, startsOn: entry.startsOn, endsOn: entry.endsOn, halfDay: entry.halfDay, ...(reason ? { reason } : {}) };
   updateAvailability({ timeOff: [...before.filter((t) => t.id !== temp), next] });
   if (!supabase) {
     const d = demoDb();
@@ -171,7 +186,7 @@ export async function saveTimeOff(entry: Omit<TimeOff, "id"> & { id?: string }):
     return { ok: true, id: temp };
   }
   const { data, error } = await supabase.rpc("save_time_off", {
-    p_id: entry.id ?? null, p_user: entry.userId, p_starts: entry.startsOn, p_ends: entry.endsOn, p_half: entry.halfDay, p_reason: reason,
+    p_id: entry.id ?? null, p_ws: entry.workspaceId ?? null, p_user: entry.userId, p_starts: entry.startsOn, p_ends: entry.endsOn, p_half: entry.halfDay, p_reason: reason,
   });
   if (error || !data) { updateAvailability({ timeOff: before }); return fail(error ?? new Error("no row"), "availability-save-off"); }
   const saved = rowToTimeOff(data as TimeOffRow, reason);
