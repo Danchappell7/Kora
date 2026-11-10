@@ -34,6 +34,8 @@ export interface GroupViewProps {
   currentUserId: string;
   /** every live task you can see, in every workspace */
   tasks: Task[];
+  /** the same, archived projects' tasks included (a goal linked to one keeps its %) */
+  goalTasks?: Task[];
   projects: Project[];
   goals: Goal[];
   statusUpdates: StatusUpdate[];
@@ -253,11 +255,11 @@ function BusinessSection({ d, onOpen }: { d: BusinessDigest; onOpen: GroupViewPr
   );
 }
 
-export function GroupView({ workspaces, members, currentUserId, tasks, projects, goals, statusUpdates, approvals, today, onOpen, pace, signals }: GroupViewProps) {
+export function GroupView({ workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, onOpen, pace, signals }: GroupViewProps) {
   // worked out once per change of what it reads (App re-renders every second while the focus timer runs)
   const digests = useMemo(
-    () => groupDigest({ workspaces, members, me: currentUserId, tasks, projects, goals, statusUpdates, approvals, today, capacities: readCapacities(), pace, signals }),
-    [workspaces, members, currentUserId, tasks, projects, goals, statusUpdates, approvals, today, pace, signals],
+    () => groupDigest({ workspaces, members, me: currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, capacities: readCapacities(), pace, signals }),
+    [workspaces, members, currentUserId, tasks, goalTasks, projects, goals, statusUpdates, approvals, today, pace, signals],
   );
   return (
     <div className="kpj-page">

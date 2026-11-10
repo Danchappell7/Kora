@@ -23,6 +23,7 @@ import { PRIORITY_META, getMember } from "../data/data";
 import { goalProgressMap, projectHealth, type GoalProgress, type HealthKind } from "../components/views/reportingUtils";
 import { indexTasks, isStale, oldestTaskAge, statusFacts, STALE_DAYS } from "./statusDraft";
 import { computeRisks, type Risk } from "./radar";
+import { projectProgressOf } from "./countRules";
 import { localDay, startOfWeekMon, addDays } from "./weekMath";
 import { approvalsEverywhere, businessesYouRun, businessLead, roleInWorkspace, wsKey, type WorkspaceSignal } from "./businesses";
 
@@ -67,6 +68,9 @@ export interface GroupInput {
   me: string;
   /** every live task you can see, in every workspace */
   tasks: readonly Task[];
+  /** the same, archived projects' tasks included: a goal linked to an archived project keeps
+   *  its % (as on the Goals page). Defaults to `tasks`. */
+  goalTasks?: readonly Task[];
   projects: readonly Project[];
   goals: readonly Goal[];
   statusUpdates: readonly StatusUpdate[];
@@ -121,10 +125,9 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
 
   // goals: progress from linked projects (this business's tasks), sub-goal roll-ups, or their own numbers
   const goals = allGoals.filter((g) => (g.workspaceId ?? null) === wsId);
-  const pctOf = (pid: string) => {
-    const list = idx.byProject.get(pid) ?? [];
-    return list.length ? Math.round((list.filter((t) => t.status === "done").length / list.length) * 100) : 0;
-  };
+  // (lib/countRules: top-level tasks, the rule the Goals page and each project's header use)
+  const goalTasks = (input.goalTasks ?? all).filter((t) => (t.workspaceId ?? null) === wsId) as Task[];
+  const pctOf = (pid: string) => projectProgressOf(goalTasks, pid).pct;
   const behind = goalsBehind(goals, goalProgressMap(goals, pctOf), today, input.pace);
 
   // projects: Kanbo's read of the work, the latest update's call, or an update that's gone quiet

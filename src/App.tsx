@@ -4072,7 +4072,7 @@ export default function App() {
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
-      case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} projects={projects} goals={goals}
+      case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
         statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)

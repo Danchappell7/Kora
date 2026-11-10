@@ -63,6 +63,19 @@ describe("the Group page's businesses", () => {
     expect(alpha.goals.total).toBe(5);
   });
 
+  it("a goal linked to a project reads the Goals page's %: top-level tasks only, and an archived project keeps its own", () => {
+    const linked = [goal({ id: "g-pa2", status: "at_risk", projectId: "pa2" }), goal({ id: "g-old", status: "at_risk", projectId: "pa-old" })];
+    const tasks = [
+      task({ id: "p1", projectId: "pa2", status: "done" }), task({ id: "p2", projectId: "pa2" }),
+      task({ id: "p1-sub", projectId: "pa2", parentId: "p1" }), task({ id: "p2-sub", projectId: "pa2", parentId: "p2" }),
+    ];
+    const old = [task({ id: "o1", projectId: "pa-old", status: "done" }), task({ id: "o2", projectId: "pa-old", status: "done" })];
+    const pct = (o: Partial<GroupInput>) => Object.fromEntries(groupDigest(input({ goals: linked, tasks, ...o }))[0].goals.behind.map((g) => [g.goal.id, g.pct]));
+    // (1 of 2 top-level tasks done: the sub-tasks don't drag it to 25%)
+    expect(pct({})).toEqual({ "g-pa2": 50, "g-old": 0 });
+    expect(pct({ goalTasks: [...tasks, ...old] })).toEqual({ "g-pa2": 50, "g-old": 100 });
+  });
+
   it("wave 2's pace line plugs in: a goal it says is behind counts, and its line rides along", () => {
     const pace = (g: Goal) => (g.id === "g-fine" ? { behind: true, line: "Needs 12 a week; doing 8" } : g.id === "g-risk" ? { behind: false, line: "On pace since Tuesday" } : null);
     const behind = goalsBehind(input().goals.filter((g) => g.workspaceId === "w-a"), new Map(), TODAY, pace);
