@@ -234,8 +234,8 @@ div.kwlc-goal-open { cursor: default; }
 .kwlc-person { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .kwlc-person-text { display: grid; min-width: 0; }
 .kwlc-person-name { font: 600 13px/18px var(--font-ui, var(--font-display)); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kwlc-person-role { display: flex; align-items: center; gap: 6px; min-width: 0; font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
-.kwlc-person-rtext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kwlc-person-role { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kwlc-person-rtext { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kwlc-link {
   margin: 8px 0 0; padding: 0; border: 0; background: none; cursor: pointer; color: var(--accent-text, var(--accent));
   font: 500 12px/16px var(--font-ui, var(--font-display));
