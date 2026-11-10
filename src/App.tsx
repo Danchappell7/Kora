@@ -59,7 +59,7 @@ import { MemberProjects, type MemberProjectRow } from "./components/project/Memb
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, copyPeople, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -2587,11 +2587,8 @@ export default function App() {
     const gated = accessOn(workspacesRef.current.find((w) => w.id === wsId));
     const vis = gated ? visibilityOf(src) : undefined;
     if (vis === "private" && !mayMakePrivateHere(wsId, accessNow())) { toastInfo("You can't make private projects here. Ask an owner."); return; }
-    // (its owner too, when the copy is someone else's: an owner has no row of their own, and would lose a closed copy)
-    const people = accessSchema() && projectMembersRef.current
-      ? [...new Set([...projectMembersRef.current.filter((m) => m.projectId === projectId).map((m) => m.userId),
-          ...(src.ownerId && src.ownerId !== me && accessRoleOf(accessNow(), wsId, src.ownerId) ? [src.ownerId] : [])])]
-      : undefined;
+    // (its owner too, while the switch is on, when the copy is someone else's: lib/projectAccess copyPeople)
+    const people = accessSchema() && projectMembersRef.current ? copyPeople(src, accessNow()) : undefined;
     try {
       const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId, ...(vis ? { visibility: vis } : {}), ...(people?.length ? { memberIds: people } : {}) }, me);
       noteCreated(np.id); // a reload already under way doesn't know about it yet
@@ -4604,7 +4601,8 @@ export default function App() {
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPlanProject={activeReadOnly ? undefined : () => openPlanner({ mode: "new" })}
-        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject}
+        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} canPostTo={(pid) => projectRank(pid, accessNow()) >= 3}
+        aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject}
         goalChip={(pid) => <GoalServes goals={goalFlow.forProject(pid)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />}
         asks={activeReadOnly ? undefined : updateAsks} />;
       // 0047: deleted tasks and projects, 30 days (rows come back through the realtime reload too)

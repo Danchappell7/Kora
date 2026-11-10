@@ -77,11 +77,14 @@ export function memberRole(ctx: Pick<AccessCtx, "members">, projectId: string, u
   return ctx.members?.find((m) => m.projectId === projectId && m.userId === userId)?.role ?? null;
 }
 
-/** A person's rank on a project in a team workspace. An unknown project id there is loose. */
+/** A person's rank on a project in a team workspace. An unknown project id there is loose. Your own
+ *  role in one of your workspaces that couldn't be read (the member list didn't load) is today's while
+ *  the switch is off, or before 0058: not a guest, so the server decides, as it always has. With it on,
+ *  it's nothing (view only), never a writer. */
 export function rankFor(ctx: AccessCtx, userId: string, wsId: string | null | undefined, projectId: string | null | undefined): Rank {
   if (!wsId) return 3; // Personal: your own space (only you can see it)
   const ws = wsOf(ctx, wsId);
-  const role = roleOf(ctx, wsId, userId);
+  const role = roleOf(ctx, wsId, userId) ?? (userId === ctx.me && ws && !accessOn(ws) ? "member" : null);
   const p = projectId ? ctx.projects.find((x) => x.id === projectId && (x.workspaceId ?? null) === wsId) : undefined;
   return rankCore(accessOn(ws), role, p ? visibilityOf(p) : null, !!p && !!p.ownerId && p.ownerId === userId, p ? memberRole(ctx, p.id, userId) : null);
 }
@@ -95,6 +98,16 @@ export function projectRank(projectId: string | null | undefined, ctx: AccessCtx
 export function taskRank(task: Pick<Task, "workspaceId" | "projectId">, ctx: AccessCtx): Rank {
   const ws = task.workspaceId ?? ctx.projects.find((p) => p.id === task.projectId)?.workspaceId ?? null;
   return rankFor(ctx, ctx.me, ws, task.projectId);
+}
+
+/** Who a project's copy starts with: its people, and, while the switch is on, its owner when the copy is
+ *  someone else's (an owner has no row of their own, and would lose a closed copy). With it off, its
+ *  people as they are: today's contributors, nobody added. */
+export function copyPeople(src: Pick<Project, "id" | "workspaceId" | "ownerId">, ctx: AccessCtx): string[] {
+  const wsId = src.workspaceId ?? null;
+  const own = (ctx.members ?? []).filter((m) => m.projectId === src.id).map((m) => m.userId);
+  const owner = accessOn(wsOf(ctx, wsId)) && src.ownerId && src.ownerId !== ctx.me && roleOf(ctx, wsId, src.ownerId) ? [src.ownerId] : [];
+  return [...new Set([...own, ...owner])];
 }
 
 /** Who may change a project's people (D12): with the switch off, on a Whole workspace project,

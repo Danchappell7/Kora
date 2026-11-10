@@ -96,7 +96,7 @@ interface Row {
   atRisk: boolean;
 }
 
-export function ProjectsView({ projects, tasks, statusUpdates, members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, aiStatus, risksByProject, onPlanProject, goalChip, asks }: {
+export function ProjectsView({ projects, tasks, statusUpdates, members, currentUserId, canCreate, onOpenProject, onNewProject, onPostUpdate, canPostTo, aiStatus, risksByProject, onPlanProject, goalChip, asks }: {
   projects: Project[];
   tasks: Task[];
   statusUpdates: StatusUpdate[];
@@ -108,6 +108,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members, currentU
   /** 0047: "Plan it with Kanbo" in the empty state (the AI project planner) */
   onPlanProject?: () => void;
   onPostUpdate?: (projectId: string, summary: string, status: StatusKind) => Promise<boolean> | void;
+  /** (0058) may you post an update on this project (edit rights)? None given: every one */
+  canPostTo?: (projectId: string) => boolean;
   aiStatus?: (facts: unknown) => Promise<AiOutcome<{ summary: string; status: StatusKind }>>;
   risksByProject?: Record<string, number>;
   /** 0052: the goal a project serves ("Serves: Q4 · Grow weekly actives"), on its card and its row */
@@ -181,6 +183,8 @@ export function ProjectsView({ projects, tasks, statusUpdates, members, currentU
   // the composer: one at a time, anchored to the row button that opened it (the draft is the
   // project's shared one, so it's the same words the project header's composer shows)
   const canPost = !!onPostUpdate;
+  // (0058: per row, only where you can change the project; Ask needs only to see it)
+  const postsTo = (r: Row) => canPost && (canPostTo?.(r.p.id) ?? true);
   const anchorRef = useRef<HTMLElement | null>(null);
   const [composer, setComposer] = useState<{ id: string; open: boolean; mode: "draft" | "post"; seq: number } | null>(null);
   const openComposerAt = (anchor: HTMLElement | null, id: string, mode: "draft" | "post") => {
@@ -260,11 +264,11 @@ export function ProjectsView({ projects, tasks, statusUpdates, members, currentU
   const canAsk = (r: Row) => !!asks?.canAsk(r.p);
   // on a card, asking is offered where the update's due or missing (the table's row offers it always)
   const askOnCard = (r: Row) => canAsk(r) && (r.fresh.kind === "missing" || r.fresh.kind === "due");
-  const rowActions = (r: Row) => canPost || canAsk(r) ? (
+  const rowActions = (r: Row) => postsTo(r) || canAsk(r) ? (
     <div className="kpj-rowacts" data-open={composer?.open && composer.id === r.p.id ? "true" : undefined} onClick={(e) => e.stopPropagation()}>
       {/* (a leader asks whoever owns it; Ask stays put once asked, so it reads "Asked") */}
       <AskForUpdateButton project={r.p} asks={asks} compact />
-      {canPost && updateButtons(r)}
+      {postsTo(r) && updateButtons(r)}
     </div>
   ) : null;
 
@@ -375,13 +379,13 @@ export function ProjectsView({ projects, tasks, statusUpdates, members, currentU
                       )}
                     </div>
                   </div>
-                  {(canPost || askOnCard(r)) && (touch ? (
+                  {(postsTo(r) || askOnCard(r)) && (touch ? (
                     <div className="kpj-gcard-more">
                       <IconButton icon="more" size="sm" label={`Update ${r.p.name}`} aria-haspopup="menu"
                         aria-expanded={cardMenu === r.p.id || (!!composer?.open && composer.id === r.p.id)}
                         onClick={(e) => { e.stopPropagation(); cardMenuRef.current = e.currentTarget; setCardMenu((m) => (m === r.p.id ? null : r.p.id)); }} />
                     </div>
-                  ) : <div className="kpj-gcard-acts">{askOnCard(r) && <AskForUpdateButton project={r.p} asks={asks} compact />}{canPost && updateButtons(r)}</div>)}
+                  ) : <div className="kpj-gcard-acts">{askOnCard(r) && <AskForUpdateButton project={r.p} asks={asks} compact />}{postsTo(r) && updateButtons(r)}</div>)}
                 </li>
               );
             })}
@@ -412,7 +416,7 @@ export function ProjectsView({ projects, tasks, statusUpdates, members, currentU
       </div>
       <Popover open={!!cardMenu} anchorRef={cardMenuRef} onClose={() => setCardMenu(null)} role="menu" label={`Update ${cardMenuName}`}
         align="end" minWidth={200} className="kpj-pop" style={{ ...POP_STYLE, padding: 4 }}>
-        {canPost && <>
+        {canPost && !!cardMenu && (canPostTo?.(cardMenu) ?? true) && <>
           <button type="button" role="menuitem" className="kpj-menu-item" onClick={() => pickFromCardMenu("draft")}>
             <AiMark size={16} />Draft update
           </button>

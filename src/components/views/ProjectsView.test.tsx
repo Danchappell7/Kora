@@ -265,6 +265,13 @@ describe("ProjectsView (the directory as a table)", () => {
     expect(screen.queryByRole("button", { name: /Post update for/ })).not.toBeInTheDocument();
   });
 
+  it("(0058) offers Draft and Post update only on projects you can change", () => {
+    render(<ProjectsView {...props({ onPostUpdate: vi.fn(), canPostTo: (id) => id !== "p-brand" })} />);
+    expect(screen.queryByRole("button", { name: "Post update for Brand" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Draft update for Brand" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Post update for Infra" })).toBeInTheDocument();
+  });
+
   it("shows an empty state with New project, and none for guests", () => {
     const onNewProject = vi.fn();
     const { unmount } = render(<ProjectsView {...props({ projects: [], onNewProject })} />);

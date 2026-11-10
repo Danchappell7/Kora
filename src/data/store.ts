@@ -1628,7 +1628,11 @@ async function syncProjectPeople(client: SupabaseClient, projectId: string, want
   if (error) throw error;
   const have = new Set(((data as { user_id: string }[] | null) ?? []).map((r) => r.user_id));
   const want = new Set(wanted);
-  for (const u of want) if (!have.has(u) && !accessFnsGone()) await store.setProjectMember(projectId, u, "editor");
+  for (const u of want) {
+    if (have.has(u) || accessFnsGone()) continue;
+    // (an old list can name someone who's left the workspace since: they stay off, and the rest still go on)
+    try { await store.setProjectMember(projectId, u, "editor"); } catch (e) { if (!/not a member of this workspace/.test(String((e as Error)?.message ?? ""))) throw e; }
+  }
   for (const u of have) if (!want.has(u) && !accessFnsGone()) await store.removeProjectMember(projectId, u);
 }
 

@@ -4,8 +4,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import MATRIX from "./projectAccessMatrix.json";
 import {
-  accessErrorText, accessOn, accessSchema, canManagePeople, canSetVisibility, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
-  noteAccessSchema, peopleFor, projectRank, rankCore, resetAccessSchema, seesCount, taskRank, turnOnPreview, type AccessCtx,
+  accessErrorText, accessOn, accessSchema, canManagePeople, canSetVisibility, copyPeople, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
+  noteAccessSchema, peopleFor, projectRank, rankCore, rankFor, resetAccessSchema, seesCount, taskRank, turnOnPreview, type AccessCtx,
 } from "./projectAccess";
 import type { Project, ProjectMember, ProjectVisibility, Workspace, WorkspaceMember } from "../data/types";
 import { DEMO_PROJECT_MEMBERS, PROJECTS } from "../data/data";
@@ -72,6 +72,19 @@ describe("projectRank and taskRank", () => {
     expect(taskRank({ workspaceId: W, projectId: "pm" }, world(true, "mv"))).toBe(1);
     // Personal is your own
     expect(taskRank({ workspaceId: null, projectId: "p-personal" }, world(true, "gc"))).toBe(3);
+  });
+  it("your own role that couldn't be read (the member list didn't load): today's while the switch is off or before 0058, view only while it's on", () => {
+    const unread = (on: boolean): AccessCtx => ({ ...world(on, "me"), wsMembers: [] });
+    noteAccessSchema(true);
+    expect(["pw", "pm", "pp"].map((p) => projectRank(p, unread(false)))).toEqual([3, 3, 3]);
+    expect(taskRank({ workspaceId: W, projectId: "pm" }, unread(false))).toBe(3);
+    expect(["pw", "pm"].map((p) => projectRank(p, unread(true)))).toEqual([0, 0]);
+    noteAccessSchema(false);
+    expect(projectRank("pm", unread(true))).toBe(3);
+    // (someone else with no row is still nobody, and a workspace that isn't yours gives you nothing)
+    noteAccessSchema(true);
+    expect(rankFor(unread(false), "stranger", W, "pw")).toBe(0);
+    expect(rankFor({ ...unread(false), workspaces: [] }, "me", W, "pw")).toBe(0);
   });
   it("before 0058 (or before it's known in a live session) nothing is switched on", () => {
     expect(accessSchema()).toBe(true);               // the demo: no backend in tests
@@ -173,7 +186,16 @@ describe("people, projects and previews", () => {
     const noRow = { ...c, wsMembers: c.wsMembers.filter((m) => m.userId !== "o") };
     expect(projectRank("pp", noRow)).toBe(3);
     expect(projectRank("pp", { ...world(true, "o"), wsMembers: [] })).toBe(3);
-    expect(projectRank("pp", { ...world(false, "m2"), wsMembers: [] })).toBe(0);
+    // (your own row unread with the switch off: today's, not view only; see below)
+    expect(projectRank("pp", { ...world(false, "m2"), wsMembers: [] })).toBe(3);
+    expect(projectRank("pp", { ...world(true, "m2"), wsMembers: [] })).toBe(0);
+  });
+  it("copyPeople: a copy starts with the project's people, and its owner only while the switch is on (off, it's today's contributors)", () => {
+    noteAccessSchema(true);
+    expect(copyPeople(proj("pm", "members", "a"), world(false, "me")).sort()).toEqual(["gc", "me", "mv"]);
+    expect(copyPeople(proj("pm", "members", "a"), world(true, "me")).sort()).toEqual(["a", "gc", "me", "mv"]);
+    expect(copyPeople(proj("pq", "private", "me"), world(true, "me"))).toEqual([]);           // your own: you own the copy
+    expect(copyPeople(proj("pw", "workspace", "gone"), world(true, "me"))).toEqual(["gc"]);   // an owner who's left isn't added
   });
   it("narrowingLoss says who'd lose sight of it and their open tasks there", () => {
     noteAccessSchema(true);

@@ -29,7 +29,9 @@ function fakeClient(db0: Db) {
   const answer = (c: Call): { data: unknown; error: unknown } => {
     if (c.op === "rpc") {
       if (db === "0050" || (db === "undone" && c.table !== "claim_invites")) return { data: null, error: { code: "PGRST202", message: "Could not find the function public." + c.table + " in the schema cache" } };
-      if (c.table === "set_project_member") return { data: "editor", error: null };
+      if (c.table === "set_project_member") {
+        return (c.payload as Row).p_user === "gone-person" ? { data: null, error: { code: "P0001", message: "not a member of this workspace" } } : { data: "editor", error: null };
+      }
       if (c.table === "remove_project_member") return { data: true, error: null };
       if (c.table === "set_project_access") return { data: { on: true, default: "private", member_private: true, changed_at: "2026-11-10T09:00:00Z" }, error: null };
       if (c.table === "set_project_visibility") return { data: "private", error: null };
@@ -176,6 +178,18 @@ describe("at 0058 with the switch off", () => {
     expect(fake.calls.find((c) => c.table === "projects" && c.op === "insert")?.payload).not.toHaveProperty("visibility");
     await store.updateTask(T1, { title: "Renamed" });
     expect(fake.calls.find((c) => c.table === "tasks" && c.op === "update")?.returning).toBeFalsy();
+  });
+});
+
+describe("at 0058, an old list that names someone who's left", () => {
+  it("leaves them off and still adds the rest (the edit isn't undone)", async () => {
+    const fake = fakeClient("off");
+    const { store, data } = await load(fake);
+    const b = await store.bootstrap({ id: ME });
+    data.setReferenceData({ workspaces: b.workspaces });
+    await expect(store.updateProject(P1, { contributorIds: ["gone-person", "new-person"] })).resolves.not.toThrow();
+    expect(rpcs(fake).filter((t) => t === "set_project_member")).toHaveLength(2);
+    expect(fake.calls.filter((c) => c.table === "set_project_member").map((c) => (c.payload as Row).p_user)).toEqual(["gone-person", "new-person"]);
   });
 });
 
