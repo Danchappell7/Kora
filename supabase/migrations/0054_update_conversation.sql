@@ -122,16 +122,18 @@ alter table public.status_updates drop constraint if exists status_updates_secti
 alter table public.status_updates add constraint status_updates_sections_shape
   check (public.update_sections_ok(sections) and cardinality(ask_user_ids) <= 20);
 
--- Who posted it, where and when never change after it's posted (from the app or the API);
--- an edit of what it says is marked; the people an Ask names are only ever people who can
--- read it (never its author). Server-side writers (account deletion's hand-over) keep theirs.
+-- Where and when it was posted never change afterwards (from the app or the API; its author
+-- is 0051's to keep); an edit of what it says is marked; the people an Ask names are only ever
+-- people who can read it (never its author). Server-side writers keep theirs. (user_id, the
+-- row's keeper, isn't locked: account deletion hands it to the workspace's owner, sometimes from
+-- a signed-in admin's call, and the permissive policies already keep a personal row its owner's.)
 create or replace function public.status_update_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare client boolean := coalesce(auth.role(), '') in ('authenticated', 'anon');
 begin
   if tg_op = 'UPDATE' and client then
     new.project_id := old.project_id; new.workspace_id := old.workspace_id;
-    new.created_at := old.created_at; new.user_id := old.user_id;
+    new.created_at := old.created_at;
   end if;
   -- the named: distinct, someone who can read it, not the author, 20 at most
   select coalesce(array_agg(x order by x), '{}') into new.ask_user_ids
@@ -236,7 +238,10 @@ begin
   else
     new.update_id := old.update_id; new.workspace_id := old.workspace_id;
     if client then
-      new.user_id := old.user_id; new.author_name := old.author_name; new.created_at := old.created_at;
+      -- (the writer empties once their account is deleted: the foreign key's SET NULL runs after the
+      --  auth.users row has gone, even when a signed-in admin deleted it)
+      if not (new.user_id is null and not exists (select 1 from auth.users u where u.id = old.user_id)) then new.user_id := old.user_id; end if;
+      new.author_name := old.author_name; new.created_at := old.created_at;
       new.edited_at := case when new.body is distinct from old.body then now() else old.edited_at end;
     end if;
   end if;
@@ -531,7 +536,9 @@ begin
   else
     new.portfolio_id := old.portfolio_id; new.workspace_id := old.workspace_id;
     if client then
-      new.author_id := old.author_id; new.created_at := old.created_at;
+      -- (empties once the author's account is deleted, as above)
+      if not (new.author_id is null and not exists (select 1 from auth.users u where u.id = old.author_id)) then new.author_id := old.author_id; end if;
+      new.created_at := old.created_at;
       new.edited_at := case when (new.summary, new.status, new.sections) is distinct from (old.summary, old.status, old.sections)
                             then now() else old.edited_at end;
     end if;

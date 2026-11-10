@@ -1948,6 +1948,22 @@ async function updateConversationSuite(w: World) {
     await raises(asPerson(w.pg, w.bob, `insert into public.portfolio_updates (portfolio_id, summary, status) values ($1::uuid, 'x', 'great')`, [pf]), /portfolio_updates_shape/);
   });
 
+  await test("0054: when a Kanbo admin deletes an account (a signed-in call), its team update stays with the owner and its replies stay, authors emptied", async () => {
+    const eve = await makeUser(w.pg, "eve54@example.org", "Eve");
+    await w.pg.query(`update public.profiles set approved = true where id = $1::uuid`, [eve]);
+    await w.pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'eve54@example.org', 'eve', 'member', 'active')`, [w.w1, eve]);
+    const u = await post(eve, { summary: "Eve's last update" });
+    const c = await one(asPerson<{ id: string }>(w.pg, eve, `insert into public.status_update_comments (update_id, user_id, body) values ($1::uuid, $2::uuid, 'Eve signs off') returning id::text as id`, [bobs, eve]));
+    const pu = await one(asPerson<{ id: string }>(w.pg, eve, `insert into public.portfolio_updates (portfolio_id, summary) values ($1::uuid, 'Eve on the portfolio') returning id::text as id`, [pf]));
+    await w.pg.query(`update public.profiles set is_admin = true where id = $1::uuid`, [w.carol]);
+    await asPerson(w.pg, w.carol, `select public.admin_delete_user($1::uuid)`, [eve]);
+    await w.pg.query(`update public.profiles set is_admin = false where id = $1::uuid`, [w.carol]);
+    const r = (await w.pg.query<{ user_id: string; author_id: string | null }>(`select user_id::text as user_id, author_id::text as author_id from public.status_updates where id = $1::uuid`, [u.id])).rows[0];
+    eq(r, { user_id: w.alice, author_id: null }, "the update stays, kept by the owner, author emptied");
+    eq((await w.pg.query<{ user_id: string | null }>(`select user_id::text as user_id from public.status_update_comments where id = $1::uuid`, [c.id])).rows[0], { user_id: null }, "the reply stays");
+    eq((await w.pg.query<{ author_id: string | null }>(`select author_id::text as author_id from public.portfolio_updates where id = $1::uuid`, [pu.id])).rows[0], { author_id: null }, "the portfolio update stays");
+  });
+
   await test("0054: migrating twice keeps everything; re-running 0041 puts the authors-only rules back" + (has0048 ? " (and 0048, then this file)" : ""), async () => {
     const counts = async () => [await n(`select count(*)::int as n from public.status_update_comments`), await n(`select count(*)::int as n from public.status_update_reactions`),
       await n(`select count(*)::int as n from public.status_update_views`), await n(`select count(*)::int as n from public.portfolio_updates`),
