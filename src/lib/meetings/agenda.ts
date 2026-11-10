@@ -178,7 +178,7 @@ export function agendaFacts(input: AgendaInput): AgendaFacts {
       const offDue = off?.to ? tasks.filter((t) => t.workspaceId === ws && t.assigneeId === p.id && open(t) && !t.isMilestone && !!t.dueDate
         && t.dueDate.slice(0, 10) >= from && t.dueDate.slice(0, 10) <= off.to!).length : 0;
       // others' open work waiting on theirs
-      const holding = tasks.filter((t) => t.workspaceId === ws && open(t) && t.assigneeId !== p.id
+      const holding = tasks.filter((t) => t.workspaceId === ws && open(t) && !t.isMilestone && t.assigneeId !== p.id
         && (t.dependencies ?? []).some((id) => { const b = byId.get(id); return !!b && b.assigneeId === p.id && open(b); }))
         .slice(0, 3).map((t) => ({ taskId: t.id, title: clip(t.title.replace(/\s+/g, " ").trim(), 120), whoId: t.assigneeId ?? null }));
       return {

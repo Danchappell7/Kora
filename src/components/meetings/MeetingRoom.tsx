@@ -65,7 +65,8 @@ export interface MeetingRoomProps {
   meetingId: string;
   data: MeetingData;
   onClose: () => void;
-  createTasks?: (rows: Array<Partial<Task> & { title: string }>) => string[] | void;
+  /** (quiet: the room says it itself, with Undo) */
+  createTasks?: (rows: Array<Partial<Task> & { title: string }>, opts?: { quiet?: boolean }) => string[] | void;
   /** take back a task the room just made (Make task's Undo) */
   deleteTask?: (id: string) => void;
   aiExtract?: (text: string, context?: string) => Promise<AiOutcome<ExtractedTask[]>>;
@@ -289,7 +290,7 @@ export function MeetingRoom({ meetingId, data, onClose: close, createTasks, dele
   const quickTask = (body: string, ownerId: string | null, due: string | null): { id: string; project: string } | null => {
     const projectId = taskProjectFor(ownerId);
     if (!createTasks || !projectId) return null;
-    const ids = createTasks([{ title: body, projectId, ...(ownerId ? { assigneeId: ownerId } : {}), ...(due ? { dueDate: due } : {}) }]);
+    const ids = createTasks([{ title: body, projectId, ...(ownerId ? { assigneeId: ownerId } : {}), ...(due ? { dueDate: due } : {}) }], { quiet: true });
     const id = Array.isArray(ids) ? ids[0] : undefined;
     return id ? { id, project: hostProjects.find((p) => p.id === projectId)?.name ?? "the project" } : null;
   };
@@ -437,13 +438,13 @@ export function MeetingRoom({ meetingId, data, onClose: close, createTasks, dele
   const budget = meeting ? PRESETS[meeting.preset].minutes : 15;
 
   return createPortal(
-    <div ref={roomRef} className="kmtg-room" role="dialog" aria-modal="true" aria-label={meeting?.title ?? "Meeting"} data-phone={phone || undefined} data-ended={meeting && !live ? "" : undefined} data-kdnd-ignore="">
+    <div ref={roomRef} className="kmtg-room" role="dialog" aria-modal="true" aria-label={meeting?.title ?? "Meeting"} data-phone={phone || undefined} data-presenting={presenting || undefined} data-ended={meeting && !live ? "" : undefined} data-kdnd-ignore="">
       <style>{BUSINESS_CSS}</style>
       <header className="kmtg-top">
         {meeting && meeting.workspaceIds.length > 1 ? (
           // a Group meeting is every business's, not its host's
           <span className="kmtg-marks" aria-hidden="true">
-            {meeting.workspaceIds.map((id) => workspaces.find((w) => w.id === id)).filter((w): w is NonNullable<typeof w> => !!w).slice(0, 3)
+            {workspaces.filter((w) => !!w.id && meeting.workspaceIds.includes(w.id)).slice(0, 3)
               .map((w) => <WorkspaceMark key={w.id} workspace={w} size={20} />)}
           </span>
         ) : host && <WorkspaceMark workspace={host} size={28} />}

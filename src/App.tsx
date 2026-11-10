@@ -2663,7 +2663,7 @@ export default function App() {
   // and Retry never re-inserts a row that already made it. Rows nested under
   // another row become its sub-tasks; sections and tags the file names that
   // don't exist yet are created.
-  const importTasks = useCallback((rows: ImportRow[], opts: { verb?: "Imported" | "Added" } = {}) => {
+  const importTasks = useCallback((rows: ImportRow[], opts: { verb?: "Imported" | "Added"; quiet?: boolean } = {}) => {
     if (!rows.length) return;
     const verb = opts.verb ?? "Imported";
     const me = userIdRef.current, base = Date.now();
@@ -2728,7 +2728,8 @@ export default function App() {
       if (saved.length) log("created", { id: saved[0], title: `${verb} ${plural(saved.length, "task")}` }, `${verb} ${plural(saved.length, "task")}`);
     });
     const projs = [...new Set(built.map((t) => t.projectId))];
-    toastSuccess(`${verb} ${plural(built.length, "task")}${projs.length === 1 ? ` ${verb === "Added" ? "to" : "into"} “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
+    // (quiet: the caller says it, with its own Undo: a meeting's one-click Make task)
+    if (!opts.quiet) toastSuccess(`${verb} ${plural(built.length, "task")}${projs.length === 1 ? ` ${verb === "Added" ? "to" : "into"} “${getProject(projs[0])?.name ?? "Personal"}”` : ""}`);
     noteElsewhere(projs);
     // (0056: a meeting links its actions to the tasks it made)
     return built.map((t) => t.id);
@@ -4545,7 +4546,7 @@ export default function App() {
           <Suspense fallback={null}>
             <MeetingsHost me={currentUserId} workspaces={workspaces} members={wsMembers} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
               statusUpdates={statusUpdates} loadEvents={(ws, since) => store.listWorkspaceEventsSince(ws, since)}
-              createTasks={(rows) => importTasks(rows, { verb: "Added" })} deleteTask={deleteTask} onCreateProject={createProject}
+              createTasks={(rows, o) => importTasks(rows, { verb: "Added", quiet: o?.quiet })} deleteTask={deleteTask} onCreateProject={createProject}
               aiExtract={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined} onOpenTask={setDetailId}
               onOpenDoc={(projectId, docId) => { const p = projects.find((x) => x.id === projectId); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId, tab: "docs", docId }); }} />
           </Suspense>

@@ -98,7 +98,7 @@ export function RoomWrap({ items, ctx, live, canEnd, recipients, shared, docLabe
         {hasDoc ? (onOpenDoc && <Button variant="secondary" icon="notes" onClick={onOpenDoc}>Open notes doc</Button>)
           : onSaveDoc && docLabel && <Button variant="secondary" icon="notes" onClick={onSaveDoc} loading={docBusy}>Save notes to {docLabel}</Button>}
       </div>
-      {!hasDoc && onSaveDoc && docLabel && docAudience && <p className="kmtg-hint">{docAudience}</p>}
+      {!hasDoc && onSaveDoc && docLabel && docAudience && <p className="kmtg-hint kmtg-doc-hint">{docAudience}</p>}
       {live && canEnd && onEnd && (
         <div className="kmtg-end">
           <p className="kmtg-end-line">
@@ -157,7 +157,7 @@ export function RoomRecap({ meeting, items, ctx, ranBy, docLabel, docAudience, h
         {onExtract && (actions.some((a) => !a.taskId) || notes.length > 0 || decisions.length > 0) && <Button variant="secondary" icon="sparkles" onClick={onExtract}>Turn into tasks</Button>}
         {onOpenPrevious && <Button variant="ghost" icon="arrowLeft" onClick={onOpenPrevious}>The meeting before</Button>}
       </div>
-      {!hasDoc && onSaveDoc && docLabel && docAudience && <p className="kmtg-hint">{docAudience}</p>}
+      {!hasDoc && onSaveDoc && docLabel && docAudience && <p className="kmtg-hint kmtg-doc-hint">{docAudience}</p>}
       <section className="kmtg-wrap-sec">
         <h3 className="kmtg-col-h">On the agenda</h3>
         <ol className="kmtg-plan kmtg-plan-quiet">

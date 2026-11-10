@@ -190,6 +190,7 @@
   font: 600 12px/28px var(--font-ui, var(--font-display)); }
 .kmtg-open:hover { background: var(--fill-2); color: var(--ink); }
 .kmtg-acts { display: inline-flex; gap: 6px; flex-shrink: 0; }
+.kmtg-doc-hint { margin-top: 8px; }
 /* a goal's key results that are behind too, inside its row */
 .kmtg-krs { display: grid; gap: 4px; margin-top: 8px; padding: 8px 0 0 12px; border-left: 2px solid var(--hairline); }
 .kmtg-krs-h { font: 600 11px/16px var(--font-ui, var(--font-display)); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
@@ -204,7 +205,7 @@
 .kmtg-holding-t:disabled { cursor: default; text-decoration: none; }
 /* a Group meeting's businesses, in the header */
 .kmtg-marks { display: inline-flex; flex-shrink: 0; }
-.kmtg-marks > * + * { margin-left: -6px; box-shadow: 0 0 0 2px var(--paper, var(--surface)); border-radius: 7px; }
+.kmtg-marks > * + * { margin-left: -4px; box-shadow: 0 0 0 2px var(--paper, var(--surface)); border-radius: 7px; }
 
 /* the wrap-up and the recap */
 .kmtg-wrap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
@@ -285,7 +286,8 @@
 .kmtg-room[data-phone] .kmtg-recap-wrap { padding: 24px 16px 48px; }
 .kmtg-room[data-phone] .kmtg-help { display: none; }
 .kmtg-room[data-phone] .kmtg-load { justify-items: start; }
-.kmtg-room[data-phone] .kmtg-acts { margin-left: 40px; }
+/* (presenting on a phone: Hand over lists who's here, so the faces make way for the title) */
+.kmtg-room[data-phone][data-presenting] .kmtg-inroom { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .kmtg-room, .kmtg-livedot { animation: none; }

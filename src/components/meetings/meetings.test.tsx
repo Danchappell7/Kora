@@ -249,7 +249,7 @@ describe("the room", () => {
     const line = within(notes).getByText("Book the load test").closest("li")!;
     expect(within(line as HTMLElement).queryByRole("button", { name: "Follow-up task" })).toBeNull();
     fireEvent.click(within(line as HTMLElement).getByRole("button", { name: "Make task" }));
-    expect(props.createTasks).toHaveBeenCalledWith([{ title: "Book the load test", projectId: "p-launch", assigneeId: "m-2" }]);
+    expect(props.createTasks).toHaveBeenCalledWith([{ title: "Book the load test", projectId: "p-launch", assigneeId: "m-2" }], { quiet: true });
     expect(screen.queryByRole("dialog", { name: /tasks/i })).toBeNull();
     await waitFor(async () => expect((await listItems(m.id)).find((i) => i.kind === "action")?.taskId).toBe("t-new"));
     expect(await screen.findByText("Task made for Theo in Q3 Product Launch")).toBeInTheDocument();
@@ -287,7 +287,7 @@ describe("the room", () => {
       .toEqual([["Print the launch one-pager", "m-1", "actions", null]]));
     expect(await screen.findByText("Carried over")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Make a task: Chase legal on the pricing page copy" }));
-    expect(props.createTasks).toHaveBeenCalledWith([{ title: "Chase legal on the pricing page copy", projectId: "p-launch", assigneeId: "m-3" }]);
+    expect(props.createTasks).toHaveBeenCalledWith([{ title: "Chase legal on the pricing page copy", projectId: "p-launch", assigneeId: "m-3" }], { quiet: true });
     await waitFor(async () => expect((await listItems(r.data.id)).find((i) => i.body.startsWith("Chase legal"))?.taskId).toBe("t-new"));
     expect(screen.queryByRole("button", { name: /Carry over: Chase legal/ })).toBeNull();
   });

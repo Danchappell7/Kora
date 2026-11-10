@@ -157,13 +157,15 @@ export function RebalancePreview({ plan, nameOf, capacityOf, weekLabel, workspac
           <li key={m.taskId} className="kav-reb-move">
             <span className="kav-reb-title truncate">{m.title}</span>
             <span className="kav-reb-hours">{fmtH(m.hours)}</span>
-            <span className="kav-reb-who">{firstName(nameOf(m.from))} <Icon name="arrowRight" size={12} sw={2} /> {firstName(nameOf(m.to))}<OffChip userId={m.to} workspaceId={workspaceId} size="xs" /></span>
+            <span className="kav-reb-who">{firstName(nameOf(m.from))} <Icon name="arrowRight" size={12} sw={2} /> {firstName(nameOf(m.to))}</span>
           </li>
         ))}
       </ul>
       <p className="kav-reb-after">
         {people.map((id, i) => (
-          <span key={id}>{i > 0 && " · "}{firstName(nameOf(id))} <span className="kav-reb-num">{fmtH(plan.before[id] ?? 0)} → {fmtH(plan.after[id] ?? 0)}</span> of {fmtH(capacityOf(id))}</span>
+          <span key={id}>{i > 0 && " · "}{firstName(nameOf(id))} <span className="kav-reb-num">{fmtH(plan.before[id] ?? 0)} → {fmtH(plan.after[id] ?? 0)}</span> of {fmtH(capacityOf(id))}
+            {/* (who's away this week, once each) */}
+            <span className="kav-reb-off"><OffChip userId={id} workspaceId={workspaceId} size="xs" /></span></span>
         ))}
       </p>
       <span className="kav-reb-actions">

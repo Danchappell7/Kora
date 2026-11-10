@@ -33,7 +33,7 @@ export interface MeetingsHostProps extends MeetingData {
   /** a business's change history since a moment (Pulse's "done since" and Radar's slips) */
   loadEvents: (workspaceId: string, sinceISO: string) => Promise<WorkspaceEvent[]>;
   /** make the reviewed tasks (Extract tasks): their ids in order, or nothing when they weren't made */
-  createTasks?: (rows: Array<Partial<Task> & { title: string }>) => string[] | void;
+  createTasks?: (rows: Array<Partial<Task> & { title: string }>, opts?: { quiet?: boolean }) => string[] | void;
   /** take back a task the room just made (Make task's Undo) */
   deleteTask?: (id: string) => void;
   /** make a project (the "Meetings" project for a team meeting's notes) */

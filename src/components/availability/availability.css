@@ -66,5 +66,6 @@
 .kav-reb-hours, .kav-reb-num { font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .kav-reb-who { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--ink-2); }
 .kav-reb-who svg { color: var(--ink-4, var(--ink-3)); }
+.kav-reb-off:not(:empty) { display: inline-flex; margin-left: 6px; vertical-align: 1px; }
 .kav-reb-after { margin: 0; font: 500 12px/18px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kav-reb-actions { display: flex; justify-content: flex-end; gap: 8px; }

@@ -4,10 +4,10 @@
    planRebalance: for the week on show, each teammate over capacity
    hands on the work they haven't started (biggest first) to the
    teammate with the most room, who stays under 90% of their own
-   capacity and isn't off the day it's due (someone around the whole
-   time before it's due comes ahead of someone off for part of it, and
-   the business's owner, who usually carries other businesses' work
-   too, comes last). A few moves at most, so
+   capacity and isn't off the day it's due (the business's owner, who
+   usually carries other businesses' work too, is asked last, and
+   someone around the whole time before it's due comes ahead of
+   someone off for part of it). A few moves at most, so
    the preview reads at a glance; nothing is written here (Workload
    shows the preview, Apply saves it, Undo puts it back).
    moveIntoWeek: a task dropped on a person's week keeps its weekday
@@ -86,7 +86,7 @@ export function planRebalance(input: {
       const last = (id: string) => (input.lastResort?.(id) ? 1 : 0);
       const to = team
         .filter((id) => id !== from && capOf[id] > 0 && load[id] + item.hours <= capOf[id] * ROOM && !(due && input.isOff?.(id, due)))
-        .sort((a, b) => away(a) - away(b) || last(a) - last(b) || (capOf[b] * ROOM - load[b]) - (capOf[a] * ROOM - load[a]) || a.localeCompare(b))[0];
+        .sort((a, b) => last(a) - last(b) || away(a) - away(b) || (capOf[b] * ROOM - load[b]) - (capOf[a] * ROOM - load[a]) || a.localeCompare(b))[0];
       if (!to) continue;
       moves.push({ taskId: item.task.id, title: item.task.title, from, to, due: due ?? null, hours: round1(item.hours) });
       load[from] = round1(load[from] - item.hours);
