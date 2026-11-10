@@ -61,9 +61,33 @@ describe("the Goals page: the summary and the quarter", () => {
     expect(open("Open in Leeds")).toBeDefined();
     expect(open("Launch on 30 Nov")).toBeUndefined();
     fireEvent.click(q.getByRole("button", { name: "Q3" }));
-    expect(screen.getByText(/Nothing runs in Q3 yet\./)).toBeInTheDocument();
+    // said once (no summary sentence over an empty quarter)
+    expect(screen.getByText(/Nothing planned for Q3 yet\./)).toBeInTheDocument();
+    expect(document.querySelector(".kgp-summary")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show every goal" }));
     expect([open("Open in Leeds"), open("Launch on 30 Nov")].every(Boolean)).toBe(true);
+  });
+});
+
+describe("the Goals page: planning another quarter", () => {
+  it("a new goal goes in the quarter on show (and says so), so planning next quarter keeps it in view", () => {
+    const { props } = renderGoals(ALL);
+    fireEvent.click(within(screen.getByRole("group", { name: "Quarter" })).getByRole("button", { name: "Q1 2027" }));
+    fireEvent.click(screen.getByRole("button", { name: "New goal for Q1 2027" }));
+    fireEvent.change(screen.getByLabelText("New goal for Q1 2027"), { target: { value: "Hire a head of sales" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(props.onCreate).toHaveBeenCalledWith("Hire a head of sales", { kind: "objective", ownerId: "m-self", period: "2027-Q1", periodStart: "2027-01-01", periodEnd: "2027-03-31" });
+  });
+
+  it("the quarter you're in keeps an open goal whose time ran out (carried over); a long name stays inside the sentence", () => {
+    const late = goal({ id: "late", name: "Move every customer to the new billing system before the auditors arrive", period: null, periodStart: null, periodEnd: null,
+      createdAt: "2026-07-01T09:00:00Z", due: "2026-09-15", target: 100, current: 10, startValue: 0 });
+    renderGoals([grow, late]);
+    expect(within(row(late.name)).getByText("Carried over")).toBeInTheDocument();
+    expect(within(row(late.name)).getAllByText(/Past due at 10%/).length).toBeGreaterThan(0);
+    const named = within(document.querySelector(".kgp-summary") as HTMLElement).getByRole("button", { name: /^Move every customer/ });
+    expect(named.textContent!.length).toBeLessThanOrEqual(40);
+    expect(named).toHaveAttribute("title", late.name);
   });
 });
 
@@ -84,6 +108,12 @@ describe("the Goals page: groups and rows", () => {
     expect(win.getByRole("progressbar", { name: "Win back 120 lapsed accounts progress" })).toHaveAttribute("aria-valuenow", "10");
     expect(row("Win back 120 lapsed accounts").querySelector(".kmeter-marker")).not.toBeNull();
     expect(win.getAllByText(/Behind pace by 34%/).length).toBeGreaterThan(0);
+    // the owner's call shows beside the pace, and where they differ the row says so on hover
+    expect(win.getAllByText("On track").length).toBeGreaterThan(0);
+    expect(win.getAllByTitle("Marked on track; the pace says behind pace by 34%").length).toBeGreaterThan(0);
+    // its own number in words, so the % by the bar reads as how far along it is
+    expect(win.getByText("12 of 120 accounts")).toBeInTheDocument();
+    expect(win.getByTitle("10% of the way")).toHaveTextContent("10%");
     expect(win.getByTitle("Last check-in 9 days ago")).toHaveTextContent("9d");
     // Launch reads its % from p1, whose task is overdue: an amber dot, named
     expect(within(row("Launch on 30 Nov")).getByRole("img", { name: "Launch: 0% done, work overdue" })).toBeInTheDocument();
@@ -128,7 +158,7 @@ describe("the Goals page: who sees and makes what", () => {
   it("an owner's new goal is a company goal, theirs, this quarter", () => {
     const { props } = renderGoals([grow]);
     fireEvent.click(screen.getByRole("button", { name: "New goal" }));
-    fireEvent.change(screen.getByLabelText("New goal name"), { target: { value: "Hire two engineers" } });
+    fireEvent.change(screen.getByLabelText("New goal for Q4"), { target: { value: "Hire two engineers" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(props.onCreate).toHaveBeenCalledWith("Hire two engineers", { kind: "objective", ownerId: "m-self", ...Q4 });
   });

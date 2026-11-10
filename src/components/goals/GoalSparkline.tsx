@@ -25,13 +25,16 @@ const shortDay = (iso: string) => { const [, m, d] = iso.slice(0, 10).split("-")
 
 interface Point { x: number; y: number; pct: number; label: string; when: string; now?: boolean }
 
-export function GoalSparkline({ goal, checkins, pct, today }: {
+export function GoalSparkline({ goal, checkins, pct, today, valueLabel }: {
   goal: Goal;
   /** this goal's, newest first */
   checkins: GoalCheckin[];
   /** where the goal stands now, 0–100 */
   pct: number;
   today: Date;
+  /** a goal that tracks its own number: its value now ("60%", "3,760"), which ends the line in
+   *  place of how far along it is (that's the height), so a % goal never shows two percentages */
+  valueLabel?: string;
 }) {
   const [hot, setHot] = useState<number | null>(null);
   const win = paceWindow(goal);
@@ -86,18 +89,19 @@ export function GoalSparkline({ goal, checkins, pct, today }: {
         {model.todayX != null && (
           <>
             <line className="kgs-today" x1={model.todayX} x2={model.todayX} y1={PAD.top - 6} y2={H - PAD.bottom} />
-            <text className="kgs-label" x={model.todayX} y={PAD.top - 8} textAnchor="middle">Today</text>
+            {/* (a goal made today has today at its very start: the word sits inside the chart, not off its edge) */}
+            <text className="kgs-label" x={model.todayX} y={PAD.top - 8} textAnchor={model.todayX < PAD.left + 16 ? "start" : model.todayX > W - PAD.right - 16 ? "end" : "middle"}>Today</text>
           </>
         )}
         {pts.length > 1 && <path className="kgs-line" d={line} />}
         {pts.map((p, i) => <circle key={i} className="kgs-dot" cx={p.x} cy={p.y} r={4} data-hot={hot === i || undefined} />)}
-        {lastPt && <text className="kgs-value" x={Math.min(lastPt.x + 8, W - 4)} y={lastPt.y + 4}>{lastPt.pct}%</text>}
+        {lastPt && <text className="kgs-value" x={Math.min(lastPt.x + 8, W - 4)} y={lastPt.y + 4}>{valueLabel ?? `${lastPt.pct}%`}</text>}
         <text className="kgs-label" x={PAD.left} y={H - 4}>{shortDay(model.start)}</text>
         <text className="kgs-label" x={W - PAD.right} y={H - 4} textAnchor="end">{shortDay(model.end)}</text>
       </svg>
       {tip && (
         <span className="kgs-tip" role="presentation" style={{ left: `${(tip.x / W) * 100}%`, top: `${(tip.y / H) * 100}%` }}>
-          {tip.now ? `${tip.pct}% today` : `${tip.label} · ${tip.pct}%`}<span>{tip.now ? (paced ? `${model.expected}% expected by now` : "Where it stands") : `Checked in ${tip.when}`}</span>
+          {tip.now ? (valueLabel ? `${valueLabel} today · ${tip.pct}% of the way` : `${tip.pct}% today`) : `${tip.label} · ${tip.pct}%${valueLabel ? " of the way" : ""}`}<span>{tip.now ? (paced ? `${model.expected}% expected by now` : "Where it stands") : `Checked in ${tip.when}`}</span>
         </span>
       )}
       <figcaption className="kgs-legend">

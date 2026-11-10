@@ -31,7 +31,14 @@ describe("Serves: a goal chip", () => {
     fireEvent.click(chip);
     expect(onOpen).toHaveBeenCalledWith("ret");
     expect(onRow).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("and 1 more: Grow actives")).toHaveTextContent("+1");
+    // "+1" is a button: by tap or key it lists the rest, each of which opens (and not the card)
+    const more = screen.getByRole("button", { name: "1 more goal: Grow actives" });
+    expect(more).toHaveTextContent("+1");
+    fireEvent.click(more);
+    expect(onRow).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("menu", { name: "More goals it serves" })).getByRole("menuitem", { name: /Q4 · Grow actives/ }));
+    expect(onOpen).toHaveBeenLastCalledWith("act");
+    expect(onRow).not.toHaveBeenCalled();
   });
 
   it("on a phone's header, just the goal's tile and pip; nothing at all when a project serves no goal", () => {
@@ -57,12 +64,21 @@ describe("the Team place: goals this quarter", () => {
     render(<TeamGoals goals={[onPace, behind, kr, goal({ id: "next", name: "Next year", period: "2027-Q1", periodStart: "2027-01-01", periodEnd: "2027-03-31" })]}
       reads={readGoals([onPace, behind, kr], [], TODAY)} today={TODAY} onOpenGoal={onOpenGoal} onOpenGoals={onOpenGoals} />);
     const card = screen.getByRole("region", { name: "Goals this quarter" });
-    expect(within(card).getByText("2 of 3 goals on pace; Studio retention 85% is behind.")).toBeInTheDocument();
+    // the sentence counts what the card lists (the business's goals, not their key results too)
+    expect(within(card).getByText("1 of 2 goals on pace; Studio retention 85% is behind.")).toBeInTheDocument();
     expect(within(card).getAllByRole("listitem").map((li) => li.querySelector("button")!.textContent)).toEqual(["Studio retention 85%", "Grow actives"]);
     fireEvent.click(within(card).getByRole("button", { name: "Studio retention 85%" }));
     expect(onOpenGoal).toHaveBeenCalledWith("ret");
     fireEvent.click(within(card).getByRole("link", { name: "All goals" }), { button: 0 });
     expect(onOpenGoals).toHaveBeenCalled();
+  });
+
+  it("keeps a goal that's past its date and still open in view (carried over), not only this quarter's", () => {
+    const late = goal({ id: "late", name: "Ship the old thing", period: null, periodStart: null, periodEnd: null, createdAt: "2026-07-01T09:00:00Z", due: "2026-09-15", target: 100, current: 10, startValue: 0 });
+    render(<TeamGoals goals={[late, onPace]} reads={readGoals([late, onPace], [], TODAY)} today={TODAY} onOpenGoal={vi.fn()} onOpenGoals={vi.fn()} />);
+    const card = screen.getByRole("region", { name: "Goals this quarter" });
+    expect(within(card).getByText("1 of 2 goals on pace; Ship the old thing is behind.")).toBeInTheDocument();
+    expect(within(card).getByText("Past due at 10%")).toBeInTheDocument();
   });
 
   it("isn't there when nothing runs this quarter", () => {
@@ -119,7 +135,7 @@ describe("useGoalFlow: goals for the rest of the app", () => {
     expect(result.current.goals.map((x) => x.id)).toEqual(["g", "kr"]);
     expect(result.current.forProject("p1").map((x) => x.id)).toEqual(["g"]);
     expect(result.current.forTask(tasks[1]).map((x) => x.id)).toEqual(["kr"]);
-    expect(result.current.briefGoal(tasks[1])).toEqual({ goalId: "kr", name: "Win back 120", behind: true });
+    expect(result.current.briefGoal(tasks[1])).toEqual({ goalId: "kr", name: "Win back 120", behind: true, icon: null, color: null });
     expect(result.current.behind().map((b) => b.goalId)).toEqual(["kr"]);
     expect(result.current.behind("other")).toEqual([]);
     expect(result.current.behind("ws")).toBe(result.current.behind("ws"));   // the same array while nothing's changed

@@ -70,12 +70,13 @@ export function GoalAdder({ label, placeholder, onAdd, onCancel, className }: { 
   );
 }
 
-/** A goal's numbers in words: "3,760 of 5,000 users, from 3,200" or "6.6%, down to 5%, from 8%". */
-export function numbersLine(g: Goal): string {
+/** A goal's numbers in words: "3,760 of 5,000 users, from 3,200" or "6.6%, down to 5%, from 8%"
+ *  (`from: false`: without where it started, for a row). */
+export function numbersLine(g: Goal, { from = true }: { from?: boolean } = {}): string {
   const now = g.current ?? g.startValue ?? 0;
   const head = g.direction === "lower" ? `${withUnit(now, g.unit)}, down to ${withUnit(g.target, g.unit)}`
     : g.unit && !/^[£$€%]/.test(g.unit) ? `${withUnit(now)} of ${withUnit(g.target, g.unit)}` : `${withUnit(now, g.unit)} of ${withUnit(g.target, g.unit)}`;
-  return g.startValue != null && g.startValue !== 0 ? `${head}, from ${withUnit(g.startValue, g.unit)}` : head;
+  return from && g.startValue != null && g.startValue !== 0 ? `${head}, from ${withUnit(g.startValue, g.unit)}` : head;
 }
 
 /** The project a goal reads its % from, archived ones included (they keep their progress). */
@@ -413,11 +414,13 @@ function LinkChip({ icon, emoji, label, dot, onOpen, onRemove }: {
 
 /** Kind, which way is better, the start value, the pace, its weight, who helps and who can
  *  see it. Each part only for whoever may change it. */
-export function GoalDetails({ goal, members, canEdit, canHandOver, onUpdate }: {
+export function GoalDetails({ goal, members, canEdit, canHandOver, startInNumbers = false, onUpdate }: {
   goal: Goal;
   members: WorkspaceMember[];
   canEdit: boolean;
   canHandOver: boolean;
+  /** where it started is set beside its target ("From 8 to 5"), not here */
+  startInNumbers?: boolean;
   onUpdate: (patch: Partial<Goal>) => void;
 }) {
   const personal = (goal.workspaceId ?? null) === null;
@@ -436,18 +439,19 @@ export function GoalDetails({ goal, members, canEdit, canHandOver, onUpdate }: {
         <>
           <div className="kgl-field">
             <span>Better when it's</span>
+            {/* (never takes the current value as the start: a new goal's 0 isn't where it started) */}
             {canEdit ? (
               <Segmented ariaLabel={`Which way is better for ${goal.name}`} value={goal.direction ?? "higher"}
                 options={[{ value: "higher", label: "Higher" }, { value: "lower", label: "Lower" }]}
-                onChange={(d) => onUpdate(d === "lower" && goal.startValue == null ? { direction: d, startValue: goal.current ?? null } : { direction: d })} />
+                onChange={(d) => onUpdate({ direction: d })} />
             ) : <b>{goal.direction === "lower" ? "Lower" : "Higher"}</b>}
           </div>
-          <label className="kgl-field">
+          {!startInNumbers && <label className="kgl-field">
             <span>Started at</span>
             <input type="number" inputMode="decimal" className="kpj-field kpj-mono kgl-num" data-size="sm" disabled={!canEdit}
               defaultValue={goal.startValue ?? ""} key={`start-${goal.startValue ?? ""}`} placeholder={goal.direction === "lower" ? "Where it was" : "0"}
               onBlur={(e) => { const v = numOrNull(e.target.value); if (v !== (goal.startValue ?? null)) onUpdate({ startValue: v }); }} />
-          </label>
+          </label>}
         </>
       )}
       <label className="kgl-field">

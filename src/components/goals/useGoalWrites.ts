@@ -3,7 +3,9 @@
    check-in, link work to a goal or unlink it. Each shows at once and
    is put back if the server says no (the database decides who may:
    0052). A check-in moves the goal's current value and confidence, as
-   the server does; taking back the newest puts the one before back.
+   the server does; taking back the newest puts the one before back
+   (the only one: the value before it). Taking one back waits out an
+   Undo first, so a stray tap never loses someone's record.
    ============================================================ */
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { Goal, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind } from "../../data/types";
@@ -24,23 +26,25 @@ export interface GoalWriteDeps {
   denyGuest: (wsIds: (string | null | undefined)[]) => boolean;
   /** an error handler that reports and tells the person, once in a while */
   saveFailed: (op: string, msg?: string) => (e: unknown) => void;
+  /** an Undo toast (the app's toast.action): `onExpire` sends what it held back. Without it, at once. */
+  offerUndo?: (message: string, label: string, run: () => void, opts: { onExpire: () => void }) => void;
 }
 
 const tmpId = (kind: string) => `tmp-${kind}-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
 const newestFirst = (a: GoalCheckin, b: GoalCheckin) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id);
 
-export function useGoalWrites({ store, setGoals, setExtras, userIdRef, denyGuest, saveFailed }: GoalWriteDeps) {
+export function useGoalWrites({ store, setGoals, setExtras, userIdRef, denyGuest, saveFailed, offerUndo }: GoalWriteDeps) {
   const setGoal = useCallback((id: string, patch: Partial<Goal>) => setGoals((gs) => gs.map((g) => (g.id === id ? { ...g, ...patch } : g))), [setGoals]);
   const editExtras = useCallback((fn: (x: GoalExtras) => GoalExtras) => setExtras((x) => (x ? fn(x) : x)), [setExtras]);
 
   const checkin = useCallback((goal: Goal, value: number, confidence: number | null, note: string) => {
     if (denyGuest([goal.workspaceId]) || goal.id.startsWith("tmp-")) return;
     const before = { current: goal.current, confidence: goal.confidence };
-    const tmp: GoalCheckin = { id: tmpId("checkin"), goalId: goal.id, workspaceId: goal.workspaceId ?? null, authorId: userIdRef.current, value, confidence, ...(note ? { note } : {}), createdAt: new Date().toISOString() };
+    const tmp: GoalCheckin = { id: tmpId("checkin"), goalId: goal.id, workspaceId: goal.workspaceId ?? null, authorId: userIdRef.current, value, confidence, ...(note ? { note } : {}), createdAt: new Date().toISOString(), prevValue: goal.current ?? null };
     editExtras((x) => ({ ...x, checkins: [tmp, ...x.checkins] }));
     setGoal(goal.id, { current: value, ...(confidence ? { confidence } : {}) });
     store.addGoalCheckin({ goalId: goal.id, workspaceId: goal.workspaceId ?? null, value, confidence, note }, userIdRef.current)
-      .then((saved) => editExtras((x) => ({ ...x, checkins: x.checkins.map((c) => (c.id === tmp.id ? saved : c)) })))
+      .then((saved) => editExtras((x) => ({ ...x, checkins: x.checkins.map((c) => (c.id === tmp.id ? { ...saved, prevValue: saved.prevValue ?? tmp.prevValue } : c)) })))
       .catch((e) => {
         editExtras((x) => ({ ...x, checkins: x.checkins.filter((c) => c.id !== tmp.id) }));
         setGoal(goal.id, before);
@@ -55,15 +59,25 @@ export function useGoalWrites({ store, setGoals, setExtras, userIdRef, denyGuest
     if (!gone) return;
     const before = { current: goal.current, confidence: goal.confidence };
     editExtras((x) => ({ ...x, checkins: x.checkins.filter((c) => c.id !== id) }));
-    // the newest taken back: the one before it is the value again
-    const next = mine[0]?.id === id ? mine[1] : undefined;
-    if (next) setGoal(goal.id, { current: next.value, ...(next.confidence ? { confidence: next.confidence } : {}) });
-    store.deleteGoalCheckin(id).catch((e) => {
-      editExtras((x) => ({ ...x, checkins: [...x.checkins, gone].sort(newestFirst) }));
+    // the newest taken back: the one before it is the value again (the only one: the value before it)
+    if (mine[0]?.id === id) {
+      const next = mine[1];
+      if (next) setGoal(goal.id, { current: next.value, ...(next.confidence ? { confidence: next.confidence } : {}) });
+      else if (gone.prevValue != null) setGoal(goal.id, { current: gone.prevValue });
+    }
+    const putBack = () => {
+      editExtras((x) => (x.checkins.some((c) => c.id === id) ? x : { ...x, checkins: [...x.checkins, gone].sort(newestFirst) }));
       setGoal(goal.id, before);
-      saveFailed("goalCheckinDelete", "Couldn't take back the check-in.")(e);
-    });
-  }, [denyGuest, editExtras, saveFailed, setGoal, store]);
+    };
+    let state: "waiting" | "sent" | "undone" = "waiting";
+    const send = () => {
+      if (state !== "waiting") return;
+      state = "sent";
+      store.deleteGoalCheckin(id).catch((e) => { putBack(); saveFailed("goalCheckinDelete", "Couldn't take back the check-in.")(e); });
+    };
+    if (!offerUndo) { send(); return; }
+    offerUndo("Check-in taken back", "Undo", () => { if (state !== "waiting") return; state = "undone"; putBack(); }, { onExpire: send });
+  }, [denyGuest, editExtras, saveFailed, setGoal, store, offerUndo]);
 
   const link = useCallback((goal: Goal, kind: GoalLinkKind, targetId: string) => {
     if (denyGuest([goal.workspaceId]) || goal.id.startsWith("tmp-")) return;

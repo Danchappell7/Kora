@@ -9,7 +9,7 @@
 /* ---------------- the page ---------------- */
 .kgp-summary { margin: 20px 0 4px; max-width: 760px; font: 500 18px/28px var(--font-display, var(--kpj-font)); color: var(--ink); text-wrap: pretty; }
 .kgp-sum-goal {
-  display: inline; margin: 0; padding: 0 2px; border: 0; border-radius: var(--kpj-r-xs); background: none; cursor: pointer;
+  display: inline; margin: 0; padding: 0 2px; border: 0; border-radius: var(--kpj-r-xs); background: none; cursor: pointer; text-align: inherit;
   font: inherit; color: inherit; text-decoration: underline; text-decoration-color: var(--hairline-strong); text-underline-offset: 4px;
 }
 .kgp-sum-goal:hover { text-decoration-color: currentColor; background: var(--kpj-hover); }
@@ -21,7 +21,7 @@
 .kgp-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hairline); }
 .kgp-row {
   position: relative; display: grid; align-items: center; column-gap: 16px; min-height: 56px; padding: 8px 12px;
-  grid-template-columns: 28px minmax(0, 1fr) 24px 176px 40px 88px;
+  grid-template-columns: 28px minmax(0, 1fr) 24px 184px 40px 112px;
   grid-template-areas: "tile main owner pace age dots";
   border-bottom: 1px solid var(--hairline); border-radius: 0;
   transition: background var(--d-1, 90ms) var(--ease);
@@ -44,8 +44,16 @@
 .kgp-noface { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 99px; border: 1px dashed var(--hairline-strong, var(--hairline)); color: var(--kpj-icon); }
 .kgp-pace { grid-area: pace; display: grid; grid-template-columns: minmax(0, 1fr) 36px; align-items: center; column-gap: 8px; row-gap: 2px; min-width: 0; }
 .kgp-pct { font: 500 12px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; }
-.kgp-pace-say { grid-column: 1 / -1; font: 500 11px/14px var(--kpj-font); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kgp-pace-say[data-state="behind"], .kgp-pace-say[data-state="late"] { color: var(--kpj-warn); }
+.kgp-pace-say { grid-column: 1 / -1; display: flex; min-width: 0; font: 500 11px/14px var(--kpj-font); color: var(--ink-3); white-space: nowrap; }
+.kgp-pace-words { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.kgp-pace-words::before { content: "·"; margin: 0 6px; color: var(--ink-4); }
+.kgp-pace-say[data-state="behind"] .kgp-pace-words, .kgp-pace-say[data-state="late"] .kgp-pace-words { color: var(--kpj-warn); }
+/* the owner's call (the goal's status), beside Kanbo's read of the pace */
+.kgp-status { flex: none; font-weight: 600; color: var(--ink-2); }
+.kgp-status[data-tone="ok"] { color: var(--kpj-ok); }
+.kgp-status[data-tone="warn"] { color: var(--kpj-warn); }
+.kgp-status[data-tone="signal"] { color: var(--kpj-signal); }
+.kgp-status[data-tone="accent"] { color: var(--accent-text, var(--accent)); }
 .kgp-age { grid-area: age; font: 500 11px/16px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-3); text-align: right; }
 .kgp-age[data-none="true"] { color: var(--ink-4); }
 .kgp-dots { grid-area: dots; display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
@@ -54,18 +62,18 @@
 .kgp-dot[data-tone="warn"] { background: var(--kpj-warn); }
 .kgp-dot[data-tone="signal"] { background: var(--kpj-signal); }
 .kgp-dots-more { font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
-.kgp-nowork { font: 500 11px/14px var(--kpj-font); color: var(--kpj-warn); text-align: right; }
+.kgp-nowork { font: 500 11px/14px var(--kpj-font); color: var(--kpj-warn); text-align: right; white-space: nowrap; }
 .kgp-checkin { display: none; }
 .kgp-adder { margin-top: 8px; }
 .kgp-empty-q { padding: 24px 12px; font: 400 13px/20px var(--kpj-font); color: var(--ink-3); }
 /* the rows read the room they have (a docked panel, a phone): the quiet columns go first */
 .kgp-groups { container: kgp-list / inline-size; }
 @container kgp-list (max-width: 760px) {
-  .kgp-row { grid-template-columns: 28px minmax(0, 1fr) 24px 152px 40px; grid-template-areas: "tile main owner pace age"; }
+  .kgp-row { grid-template-columns: 28px minmax(0, 1fr) 24px 168px 40px; grid-template-areas: "tile main owner pace age"; }
   .kgp-dots { display: none; }
 }
 @container kgp-list (max-width: 620px) {
-  .kgp-row { grid-template-columns: 28px minmax(0, 1fr) 24px 132px; grid-template-areas: "tile main owner pace"; }
+  .kgp-row { grid-template-columns: 28px minmax(0, 1fr) 24px 148px; grid-template-areas: "tile main owner pace"; }
   .kgp-age { display: none; }
 }
 /* phones: a compact read mode, each row a little card to read, with its one-tap check-in */
@@ -122,7 +130,7 @@
 .kgx-big-num { font: 600 24px/32px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); letter-spacing: -0.01em; }
 .kgx-big-of { font: 500 13px/20px var(--kpj-font); color: var(--ink-3); }
 .kgx-meter { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
-.kgx-meter > .kpj-mono { font-size: 12px; color: var(--ink-2); min-width: 36px; text-align: right; }
+.kgx-meter > .kpj-mono { font-size: 12px; color: var(--ink-2); min-width: 36px; text-align: right; white-space: nowrap; }
 .kgx-source { margin: 6px 0 0; font: 500 12px/16px var(--kpj-font); color: var(--ink-3); }
 .kgx-krs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .kgx-kr { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr) 72px 32px; align-items: center; column-gap: 10px; min-height: 36px; margin: 0 -8px; padding: 4px 8px; border-radius: var(--kpj-r-sm); }
@@ -140,6 +148,15 @@
 .kgx-fields > dd { margin: 0; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 32px; }
 .kgx-fields .kpj-field { max-width: 100%; }
 .kgx-delete { margin-top: 24px; }
+.kgx-menu-note { max-width: 240px; margin: 0; padding: 2px 10px 8px 34px; font: 400 12px/16px var(--kpj-font); color: var(--ink-3); text-wrap: pretty; }
+.kgx-del:disabled { opacity: 0.5; cursor: default; }
+.kgx-meter-way { font-family: var(--kpj-font); color: var(--ink-3); }
+.kgx-num-word { font: 500 12px/16px var(--kpj-font); color: var(--ink-3); }
+/* "From [52] to [80] [%]" fits the panel (and wraps on a phone) */
+.kgx-nums { flex-wrap: wrap; row-gap: 6px; }
+.kgx-nums .kpj-field { width: 72px; }
+.kgx-nums .kpj-field:not(.kpj-mono) { width: 88px; }
+.kgx-num-note { flex-basis: 100%; font: 400 12px/16px var(--kpj-font); color: var(--ink-3); }
 @media (max-width: 599px) { .kgx-fields { grid-template-columns: 96px minmax(0, 1fr); } }
 
 /* ---------------- the sparkline: check-ins against the pace line ---------------- */
@@ -178,6 +195,7 @@
 .kgl-pace-line { color: var(--ink-2); }
 .kgl-pace[data-state="behind"] .kgl-pace-line, .kgl-pace[data-state="late"] .kgl-pace-line { color: var(--kpj-warn); }
 .kgl-pace[data-state="ahead"] .kgl-pace-line, .kgl-pace[data-state="done"] .kgl-pace-line { color: var(--kpj-ok); }
+.kgl-pace[data-state="needs"] .kgl-pace-line { color: var(--ink-3); }
 .kgl-pace-say { color: var(--ink-2); }
 .kgl-pace .kbtn { margin-left: -4px; }
 .kgl-checkins { margin-top: 4px; }
@@ -239,7 +257,8 @@
 .kgf-chip[data-compact] { flex: none; padding-right: 6px; }
 .kgf-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kgf-lead { flex: none; color: var(--ink-3); }
-.kgf-more { flex: none; font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
+.kgf-more { position: relative; z-index: 1; flex: none; min-width: 24px; height: 24px; margin: 0; padding: 0 4px; border: 0; border-radius: 99px; background: none; cursor: pointer; font: 500 11px/16px var(--font-mono); color: var(--ink-3); }
+.kgf-more:hover, .kgf-more[aria-expanded="true"] { background: var(--kpj-hover); color: var(--ink); }
 .kgf-chip[data-state="behind"] .kgf-pip, .kgf-chip[data-state="late"] .kgf-pip { background: var(--kpj-warn); }
 .kgf-pip { width: 6px; height: 6px; border-radius: 99px; background: var(--kpj-ok); flex: none; }
 .kgf-pip[data-none="true"] { background: var(--ink-4); }

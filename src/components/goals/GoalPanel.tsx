@@ -19,8 +19,8 @@ import type { Goal, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, GoalStatus, P
 import { goalDescendants, goalTree } from "../views/reportingUtils";
 import { DraftInput } from "../project/DraftInput";
 import { IdentityFields, IdentityPreview } from "../project/IdentityPicker";
-import { checkinsOf, hasWorkBehind, projectDot, readGoals, takesCheckins, type GoalRead } from "../../lib/goalFlow";
-import { canEditGoal, canHandOverGoal, canMakeCompanyGoal, canPlaceGoal } from "../../lib/goalRules";
+import { checkinsOf, hasWorkBehind, NEEDS_LINE, projectDot, readGoals, takesCheckins, type GoalRead } from "../../lib/goalFlow";
+import { canDeleteGoal, canEditGoal, canHandOverGoal, canMakeCompanyGoal, canPlaceGoal } from "../../lib/goalRules";
 import { GOAL_TONE, GoalAdder, GoalCheckins, GoalDetails, GoalLinks, GoalMetaRow, GoalPaceLine, GoalSource, GOAL_STATUS_LABEL, KIND_LABEL, fmtGoalValue, fmtNum, goalTile, linkedOf, numbersLine } from "./GoalParts";
 import { GoalSparkline } from "./GoalSparkline";
 import "../project/projects.css";
@@ -71,6 +71,15 @@ export function GoalPanel(props: GoalPanelProps) {
   const isMobile = useMediaQuery("(max-width: 859px)");
   const isDocked = docked && !isMobile;
   const trapRef = useFocusTrap<HTMLDivElement>(!isDocked, onClose);
+  // docked there's no focus trap to hand focus back: closed, it goes back to whatever opened the
+  // panel (a row, a chip), not to the top of the page. (Read while rendering the open: by the
+  // time an effect runs, focus may be inside.)
+  const opener = useRef<Element | null>(typeof document === "undefined" ? null : document.activeElement);
+  const dockedRef = useRef(isDocked); dockedRef.current = isDocked;
+  useEffect(() => () => {
+    const el = opener.current, now = document.activeElement;
+    if (dockedRef.current && el instanceof HTMLElement && el.isConnected && (!now || now === document.body)) el.focus({ preventScroll: true });
+  }, []);
   return (
     <>
       {!isDocked && !isMobile && <div className="kgx-scrim" aria-hidden="true" onClick={onClose} />}
@@ -112,6 +121,8 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
   const meta = GOAL_TONE[g.status] ?? GOAL_TONE.on_track;
   const isAdmin = role === "owner" || role === "admin";
   const ownNumber = prog.source === "manual";
+  // with 0052 a goal's own number moves by check-ins only (each one a record of who, when and why)
+  const viaCheckins = v2 && !!props.onCheckin;
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
@@ -132,21 +143,42 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
   const parentValue = g.parentId && goals.some((x) => x.id === g.parentId) ? g.parentId : "";
   const childCount = goals.filter((x) => x.parentId === g.id && x.id !== g.id).length;
   const numOr0 = (v: string) => { const n = Number(v); return v.trim() === "" || !isFinite(n) ? 0 : n; };
+  const numOrNull = (v: string) => (v.trim() === "" || !isFinite(Number(v)) ? null : Number(v));
   const saveNum = (key: "current" | "target", v: string) => {
     const n = numOr0(v);
     if (n !== (g[key] ?? 0)) update(key === "current" ? { current: n } : { target: n });
     return String(n);
+  };
+  // "From 8 to 5": the numbers say which way is better, so Lower is never left behind a start of 0
+  const directionFor = (start: number | null | undefined, target: number | null | undefined): GoalPatch =>
+    start == null || target == null || start === target || (start > target ? "lower" : "higher") === (g.direction ?? "higher")
+      ? {} : { direction: start > target ? "lower" : "higher" };
+  // before its first check-in a goal stands where it started, so its start moves its value with it
+  const atStart = !checkins.length && (g.current == null || g.current === (g.startValue ?? 0));
+  const saveStart = (v: string) => {
+    const n = numOrNull(v);
+    if (n !== (g.startValue ?? null)) update({ startValue: n, ...(atStart && n != null ? { current: n } : {}), ...directionFor(n, g.target) });
+    return n == null ? "" : String(n);
+  };
+  const saveTarget = (v: string) => {
+    const n = numOrNull(v);
+    if (n !== (g.target ?? null) && n != null) update({ target: n, ...directionFor(g.startValue, n) });
+    return n == null ? String(g.target ?? "") : String(n);
   };
   const create = (name: string) => {
     const team = !personal;
     props.onCreate(name, { parentId: g.id, kind: "key_result", ...(team ? { ownerId: me } : {}), period: g.period ?? null, periodStart: g.periodStart ?? null, periodEnd: g.periodEnd ?? null });
     setAddingUnder(false);
   };
+  // a team goal's key results would become company goals: only owners and admins set those (0052)
+  const deleteBlocked = !canDeleteGoal(g, childCount, who);
   const remove = () => {
     setMenuOpen(false);
+    if (deleteBlocked) return;
+    const keep = v2 ? " To keep its check-ins and history, archive it instead." : "";
     const msg = childCount
-      ? `Delete goal “${g.name}”? Its ${childCount === 1 ? "key result" : `${childCount} key results`} will move up a level. This can't be undone.`
-      : `Delete goal “${g.name}”? This can't be undone.`;
+      ? `Delete goal “${g.name}” and its check-ins? Its ${childCount === 1 ? "key result stays, as a goal" : `${childCount} key results stay, as goals`} of ${childCount === 1 ? "its" : "their"} own. This can't be undone.${keep}`
+      : `Delete goal “${g.name}”${v2 ? " and its check-ins" : ""}? This can't be undone.${keep}`;
     if (window.confirm(msg)) { onDelete(g.id); onClose(); }
   };
   const dotOf = (pid: string) => {
@@ -184,9 +216,11 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
                   <Icon name={g.archivedAt ? "undo" : "archive"} size={16} sw={1.75} />{g.archivedAt ? "Restore goal" : "Archive goal"}
                 </button>
               )}
-              <button type="button" role="menuitem" className="kpj-menu-item" data-tone="danger" onClick={remove}>
+              <button type="button" role="menuitem" className="kpj-menu-item kgx-del" data-tone="danger" onClick={remove} disabled={deleteBlocked}
+                aria-describedby={deleteBlocked ? "kgx-del-note" : undefined}>
                 <Icon name="trash" size={16} sw={1.75} />Delete goal…
               </button>
+              {deleteBlocked && <p id="kgx-del-note" className="kgx-menu-note">Its key results would become the business's goals: move them first, or ask an owner or admin.</p>}
             </Popover>
           </>
         )}
@@ -221,6 +255,7 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
           {overdue && <Pill tone="signal">Overdue</Pill>}
         </div>
         <GoalPaceLine goal={g} read={read.pace} canEdit={editable} onAccept={(status) => update({ status })} />
+        {read.needs && <p className="kgl-pace" data-state="needs"><span className="kgl-pace-line">{NEEDS_LINE[read.needs]}{editable ? " under Settings › Numbers" : ""} to see how it's going.</span></p>}
 
         <section className="kgx-sec" aria-label="Where it stands">
           <div className="kgx-big">
@@ -230,10 +265,14 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
           </div>
           <div className="kgx-meter">
             <Meter value={read.pct} height={6} tone={meterTone} marker={expected} label={`${g.name} progress`} />
-            <span className="kpj-mono">{read.pct}%</span>
+            {/* its own number is above: this % is how far along the way it is ("60% of 80%" is 29% of the way from 52%) */}
+            <span className="kpj-mono">{read.pct}%{ownNumber && <span className="kgx-meter-way"> of the way</span>}</span>
           </div>
           <GoalSource prog={prog} linked={linkedProject} weighted={goals.some((x) => x.parentId === g.id && !x.archivedAt && x.weight != null && x.weight !== 1)} />
-          <div style={{ marginTop: 12 }}><GoalSparkline goal={g} checkins={ownNumber ? checkins : []} pct={read.pct} today={today} /></div>
+          <div style={{ marginTop: 12 }}>
+            <GoalSparkline goal={g} checkins={ownNumber ? checkins : []} pct={read.pct} today={today}
+              valueLabel={ownNumber && !read.needs ? (unitWord(g.unit) ? fmtNum(g.current ?? g.startValue ?? 0) : fmtGoalValue(g.current ?? g.startValue ?? 0, g.unit)) : undefined} />
+          </div>
         </section>
 
         {v2 && (checkins.length > 0 || (takesCheckins(read) && editable && !!props.onCheckin)) && (
@@ -290,7 +329,22 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
           <section className="kgx-sec" aria-label="Settings">
             <h3 className="kgx-h">Settings</h3>
             <dl className="kgx-fields">
-              {ownNumber && (
+              {ownNumber && viaCheckins && (
+                <>
+                  <dt>Numbers</dt>
+                  <dd>
+                    <span className="kpj-goal-nums kgx-nums">
+                      <span className="kgx-num-word">From</span>
+                      <DraftInput type="number" value={g.startValue ?? ""} placeholder={g.direction === "lower" ? "Where it was" : "0"} label={`Where ${g.name} started`} onCommit={saveStart} className="kpj-field kpj-mono" />
+                      <span className="kgx-num-word">to</span>
+                      <DraftInput type="number" value={g.target ?? ""} label={`Target for ${g.name}`} onCommit={saveTarget} className="kpj-field kpj-mono" />
+                      <DraftInput value={g.unit ?? ""} placeholder="unit" label={`Unit for ${g.name}`} onCommit={(v) => update({ unit: v })} className="kpj-field" />
+                    </span>
+                    <span className="kgx-num-note">Check-ins move where it stands.</span>
+                  </dd>
+                </>
+              )}
+              {ownNumber && !viaCheckins && (
                 <>
                   <dt>Numbers</dt>
                   <dd>
@@ -327,7 +381,7 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
                 <DateChip size="sm" label={`Due date for ${g.name}`} value={g.due} placeholder="Add a due date" tone="plain" onChange={(d) => update({ due: d || undefined })} />
               </dd>
             </dl>
-            {v2 && <GoalDetails goal={g} members={members} canEdit={editable} canHandOver={canHandOver} onUpdate={update} />}
+            {v2 && <GoalDetails goal={g} members={members} canEdit={editable} canHandOver={canHandOver} startInNumbers={ownNumber && viaCheckins} onUpdate={update} />}
           </section>
         )}
         {!editable && ownNumber && (g.target ?? 0) !== 0 && <p className="kgx-source">{numbersLine(g)}{g.kind && g.kind !== "objective" ? ` · ${KIND_LABEL[g.kind]}` : ""}</p>}

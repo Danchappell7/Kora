@@ -19,12 +19,13 @@ import { KANBO_TODAY, toLocalISO } from "../../data/data";
 import type { Goal, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Project, Role, StatusUpdate, Task, WorkspaceMember } from "../../data/types";
 import { goalTree, useStableOrder, type GoalProgress } from "../views/reportingUtils";
 import { periodRange, quarterOf } from "../../lib/goalPeriods";
+import { paceDisagrees } from "../../lib/goalPace";
 import { canEditGoal, canMakeCompanyGoal, canSeeGoal, COMPANY_GOALS_RULE } from "../../lib/goalRules";
 import {
-  checkinAge, checkinsOf, goalGroup, goalInRange, goalProjectIds, goalsSummary, GROUP_LABEL, hasWorkBehind, periodShort, projectDot, quarterOptions, readGoals, takesCheckins,
+  checkinAge, checkinsOf, goalCarriedOver, goalGroup, goalProjectIds, goalsInQuarter, goalsSummary, GROUP_LABEL, hasWorkBehind, paceWords, periodShort, projectDot, quarterOptions, readGoals, takesCheckins,
   type GoalGroup, type GoalRead,
 } from "../../lib/goalFlow";
-import { GOAL_STATUS_LABEL, GOAL_TONE, GoalAdder, GoalSource, KIND_LABEL, daysAgo, goalTile, linkedOf, personName } from "./GoalParts";
+import { GOAL_STATUS_LABEL, GOAL_TONE, GoalAdder, GoalSource, KIND_LABEL, daysAgo, goalTile, linkedOf, numbersLine, personName } from "./GoalParts";
 import { GoalPanel } from "./GoalPanel";
 import "../project/projects.css";
 import "./goals.css";
@@ -64,6 +65,10 @@ export interface GoalsViewProps {
   openGoalId?: string | null;
 }
 
+/** A goal named in the summary sentence keeps it one sentence: a long name is cut (in full on hover). */
+const SUM_NAME = 40;
+const clip = (name: string) => (name.length > SUM_NAME ? `${name.slice(0, SUM_NAME - 1).trimEnd()}…` : name);
+
 export function GoalsView(props: GoalsViewProps) {
   const { goals, projects, tasks, onCreate, readOnly = false, extras, me = "", role = null, statusUpdates = [], today = KANBO_TODAY } = props;
   const v2 = !!extras;
@@ -75,7 +80,7 @@ export function GoalsView(props: GoalsViewProps) {
   const [ownOpen, setOwnOpen] = useState<{ id: string; checkin: boolean } | null>(null);
   const realProjects = projects.filter((p) => p.id !== "p-personal");
   // a leadership-only goal you can't see never reaches you live; in the demo it's held back here
-  const visible = v2 ? goals.filter((g) => canSeeGoal(g, who)) : goals;
+  const visible = useMemo(() => (v2 ? goals.filter((g) => canSeeGoal(g, { me, role })) : goals), [v2, goals, me, role]);
   const stable = useStableOrder(visible);
   const reads = useMemo(() => readGoals(visible, tasks, today), [visible, tasks, today]);
   const links = extras?.links ?? [];
@@ -86,7 +91,8 @@ export function GoalsView(props: GoalsViewProps) {
   const explainer = "Goals track a number you want to hit. Link one to a project and its progress fills in automatically.";
   const quarters = useMemo(() => quarterOptions(today), [today]);
   const range = quarters.find((q) => q.value === quarter)?.range ?? null;
-  const inQuarter = stable.filter((g) => !range || goalInRange(g, range));
+  // (the quarter you're in also carries over open goals whose time ran out before it)
+  const inQuarter = goalsInQuarter(stable, reads, range, today);
   const archivedCount = inQuarter.filter((g) => g.archivedAt).length;
   const listed = showArchived ? inQuarter : inQuarter.filter((g) => !g.archivedAt);
   const summary = goalsSummary(listed.filter((g) => !g.archivedAt).map((g) => reads.get(g.id)!).filter(Boolean));
@@ -99,11 +105,15 @@ export function GoalsView(props: GoalsViewProps) {
 
   if (readOnly) return <GoalsReadOnly ordered={goalTree(stable)} reads={reads} projects={realProjects} todayIso={toLocalISO(today)} />;
 
-  const qr = periodRange(quarterOf(today))!;
+  // a new goal goes in the quarter on show (with every goal showing, the one you're in)
+  const newQuarter = quarter === "all" ? quarterOf(today) : quarter;
+  const newQuarterName = quarters.find((q) => q.value === newQuarter)?.label ?? "";
+  const qr = periodRange(newQuarter)!;
   const create = (name: string) => {
     if (!v2) { onCreate(name); return; }
-    onCreate(name, { kind: "objective", ...(personal ? {} : { ownerId: me }), period: quarterOf(today), periodStart: qr.start, periodEnd: qr.end });
+    onCreate(name, { kind: "objective", ...(personal ? {} : { ownerId: me }), period: newQuarter, periodStart: qr.start, periodEnd: qr.end });
   };
+  const newLabel = v2 && newQuarter !== quarterOf(today) ? `New goal for ${newQuarterName}` : "New goal";
 
   // the groups, each in the goals' own order (a key result straight after its goal's)
   const ordered = goalTree(listed).map((o) => o.g);
@@ -132,10 +142,12 @@ export function GoalsView(props: GoalsViewProps) {
             action={canNew ? <Button variant="primary" icon="plus" onClick={() => setAdding(true)}>New goal</Button> : undefined} />
         ) : (
           <>
-            <p className="kgp-summary" aria-live="polite">
-              {summary.parts.map((p, i) => typeof p === "string" ? <span key={i}>{p}</span>
-                : <button key={i} type="button" className="kgp-sum-goal" onClick={() => openGoal(p.goalId)}>{p.text}</button>)}
-            </p>
+            {groups.length > 0 && (
+              <p className="kgp-summary" aria-live="polite">
+                {summary.parts.map((p, i) => typeof p === "string" ? <span key={i}>{p}</span>
+                  : <button key={i} type="button" className="kgp-sum-goal" title={p.text.length > SUM_NAME ? p.text : undefined} onClick={() => openGoal(p.goalId)}>{clip(p.text)}</button>)}
+              </p>
+            )}
             <div className="kgp-bar">
               <Segmented ariaLabel="Quarter" value={quarter} onChange={setQuarter} options={quarters.map((q) => ({ value: q.value, label: q.label }))} />
               <span className="kpj-spacer" />
@@ -144,12 +156,15 @@ export function GoalsView(props: GoalsViewProps) {
                   {showArchived ? "Hide archived" : `Show archived (${archivedCount})`}
                 </Button>
               )}
-              {canNew && <Button variant="primary" size="sm" icon="plus" onClick={() => setAdding(true)}>New goal</Button>}
+              {canNew && <Button variant="primary" size="sm" icon="plus" onClick={() => setAdding(true)}>{newLabel}</Button>}
             </div>
-            {adding && <GoalAdder label="New goal name" placeholder="Goal name, e.g. Reach 1,000 active users" onAdd={(n) => { create(n); setAdding(false); }} onCancel={() => setAdding(false)} />}
+            {adding && (
+              <GoalAdder label={v2 ? `New goal for ${newQuarterName}` : "New goal name"} placeholder={v2 ? `Goal for ${newQuarterName}, e.g. Reach 1,000 active users` : "Goal name, e.g. Reach 1,000 active users"}
+                onAdd={(n) => { create(n); setAdding(false); }} onCancel={() => setAdding(false)} />
+            )}
             {groups.length === 0 ? (
               <p className="kgp-empty-q">
-                Nothing runs in {quarter === "all" ? "any quarter" : quarterName} yet.{" "}
+                {quarter === "all" ? "Nothing planned yet." : `Nothing planned for ${quarterName} yet.`}{" "}
                 {quarter !== "all" && <Button size="sm" variant="ghost" onClick={() => setQuarter("all")}>Show every goal</Button>}
               </p>
             ) : (
@@ -161,6 +176,7 @@ export function GoalsView(props: GoalsViewProps) {
                       {rows.map((g) => (
                         <GoalRow key={g.id} r={reads.get(g.id)!} all={visible} links={links} checkins={checkins} projects={realProjects} tasks={tasks}
                           statusUpdates={statusUpdates} members={props.members ?? []} today={today} personal={personal} v2={v2} open={openId === g.id}
+                          carried={!!range && goalCarriedOver(reads.get(g.id)!, range)}
                           canCheckin={v2 && !g.archivedAt && takesCheckins(reads.get(g.id)) && canEditGoal(g, who) && !!props.onCheckin}
                           onOpen={() => openGoal(g.id)} onCheckin={() => openGoal(g.id, { checkin: true })} />
                       ))}
@@ -183,9 +199,12 @@ export function GoalsView(props: GoalsViewProps) {
 }
 
 /** One goal: its identity, owner, pace bar, last check-in and the health of the work behind it. */
-function GoalRow({ r, all, links, checkins, projects, tasks, statusUpdates, members, today, personal, v2, open, canCheckin, onOpen, onCheckin }: {
+function GoalRow({ r, all, links, checkins, projects, tasks, statusUpdates, members, today, personal, v2, open, carried, canCheckin, onOpen, onCheckin }: {
   r: GoalRead; all: Goal[]; links: GoalLink[]; checkins: GoalCheckin[]; projects: Project[]; tasks: Task[]; statusUpdates: StatusUpdate[];
-  members: WorkspaceMember[]; today: Date; personal: boolean; v2: boolean; open: boolean; canCheckin: boolean;
+  members: WorkspaceMember[]; today: Date; personal: boolean; v2: boolean; open: boolean;
+  /** open from an earlier quarter, shown in this one */
+  carried: boolean;
+  canCheckin: boolean;
   onOpen: () => void; onCheckin: () => void;
 }) {
   const g = r.goal;
@@ -197,19 +216,26 @@ function GoalRow({ r, all, links, checkins, projects, tasks, statusUpdates, memb
   const dots = projectIds.map((id) => projectDot(projects.find((p) => p.id === id)!, tasks, statusUpdates, today));
   const noWork = v2 && !personal && !hasWorkBehind(g, all, links);
   const period = periodShort(g, today);
+  // a goal that tracks its own number says it ("60% of 80%"), so its % beside the bar reads as how far along it is
+  const numbers = r.progress.source === "manual" && !r.needs && g.target != null ? numbersLine(g, { from: false }) : "";
   const sub = [
     parent ? `${g.kind && g.kind !== "objective" ? KIND_LABEL[g.kind] : "Under"} · ${parent.name}` : g.kind && g.kind !== "objective" ? KIND_LABEL[g.kind] : "",
     period,
+    carried ? "Carried over" : "",
+    numbers,
     kids ? `${kids} key ${kids === 1 ? "result" : "results"}` : "",
     g.visibility === "leadership" ? "Leadership only" : "",
     g.archivedAt ? "Archived" : "",
-    g.status === "done" ? "Achieved" : "",
   ].filter(Boolean);
   const state = r.pace?.state;
   const tone = state === "behind" ? "warn" : state === "late" ? "signal" : state === "done" ? "ok" : "accent";
   const expected = r.pace && r.pace.state !== "early" ? r.pace.expected : undefined;
   const ownerName = g.ownerId ? personName(g.ownerId, members) : "";
-  const say = r.pace?.line ?? (r.progress.source === "project" ? "From its project" : "");
+  const say = paceWords(r) || (r.progress.source === "project" ? "From its project" : "");
+  // the owner's call beside Kanbo's read: "At risk · Behind pace by 13%" (and when they differ, it shows)
+  const status = GOAL_STATUS_LABEL[g.status] ?? "On track";
+  const statusTone = (GOAL_TONE[g.status] ?? GOAL_TONE.on_track).tone;
+  const statusTip = paceDisagrees(g.status, r.pace) ? `Marked ${status.toLowerCase()}; the pace says ${r.pace.line.toLowerCase()}` : undefined;
   return (
     <li className="kgp-row" data-open={open || undefined} data-archived={g.archivedAt ? "true" : undefined}>
       <ProjectTile project={goalTile(g)} size={28} className="kgp-tile" />
@@ -224,8 +250,11 @@ function GoalRow({ r, all, links, checkins, projects, tasks, statusUpdates, memb
       </span>
       <div className="kgp-pace">
         <Meter value={r.pct} height={4} tone={tone} marker={expected} label={`${g.name} progress`} />
-        <span className="kgp-pct">{r.pct}%</span>
-        {say && <span className="kgp-pace-say" data-state={state}>{say}</span>}
+        <span className="kgp-pct" title={numbers ? `${r.pct}% of the way` : undefined}>{r.pct}%</span>
+        <span className="kgp-pace-say" data-state={state} title={statusTip}>
+          <span className="kgp-status" data-tone={statusTone}>{status}</span>
+          {say && <span className="kgp-pace-words">{say}</span>}
+        </span>
       </div>
       <span className="kgp-age" data-none={!age || undefined} title={latest ? `Last check-in ${daysAgo(latest.createdAt, today)}` : "No check-ins yet"}>
         {age ?? "–"}
@@ -240,8 +269,9 @@ function GoalRow({ r, all, links, checkins, projects, tasks, statusUpdates, memb
         ) : noWork ? <span className="kgp-nowork">No work behind this</span> : null}
       </span>
       <div className="kgp-checkin">
-        <span className="kgp-checkin-say" data-state={state}>
-          {[say, latest ? `checked in ${daysAgo(latest.createdAt, today)}` : "", noWork ? "no work behind this" : ""].filter(Boolean).join(" · ")}
+        <span className="kgp-checkin-say" data-state={state} title={statusTip}>
+          <span className="kgp-status" data-tone={statusTone}>{status}</span>
+          {[say, latest ? `checked in ${daysAgo(latest.createdAt, today)}` : "", noWork ? "no work behind this" : ""].filter(Boolean).map((x) => ` · ${x}`).join("")}
         </span>
         {canCheckin && <Button size="sm" variant="secondary" icon="check" aria-label={`Check in on ${g.name}`} onClick={onCheckin}>Check in</Button>}
       </div>

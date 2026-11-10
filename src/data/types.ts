@@ -241,6 +241,8 @@ export interface GoalCheckin {
   confidence?: number | null;
   note?: string;
   createdAt: string;
+  /** the goal's value just before it (the server's): taking back the only check-in puts it back */
+  prevValue?: number | null;
 }
 /** 0052's check-ins and links, loaded beside the goals. Null in a bootstrap means the
  *  tables aren't there yet (owners, quarters and check-ins are not switched on). */

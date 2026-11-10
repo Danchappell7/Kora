@@ -121,6 +121,49 @@ describe("the goal panel: where it stands", () => {
   });
 });
 
+describe("the goal panel: its numbers", () => {
+  it("with 0052 they're set as From → To; the value moves by check-ins only (never edited behind the history's back)", () => {
+    const { props } = renderPanel(goal({ id: "g", name: "Grow", startValue: 3200, target: 5000, current: 3760, unit: "users" }),
+      { extras: { checkins: [{ id: "c1", goalId: "g", workspaceId: "ws", authorId: "m-1", value: 3760, createdAt: "2026-11-08T17:00:00Z" }], links: [] } });
+    expect(screen.queryByLabelText("Current value for Grow")).toBeNull();
+    expect(screen.getByText("Check-ins move where it stands.")).toBeInTheDocument();
+    const from = screen.getByLabelText("Where Grow started");
+    fireEvent.change(from, { target: { value: "3000" } });
+    fireEvent.blur(from);
+    expect(props.onUpdate).toHaveBeenLastCalledWith("g", { startValue: 3000 });   // checked in already: its value stays
+    // how far along, said as such beside the bar (its own number is the big one above)
+    expect(screen.getByText("of the way")).toBeInTheDocument();
+  });
+
+  it("a new goal: From 8 to 5 says lower is better and starts it at 8, so it reads 0%, never 'Target reached'", () => {
+    const fresh = goal({ id: "n", name: "Cut no-shows", target: 100, current: 0 });
+    const { props, rerender } = renderPanel(fresh);
+    const from = screen.getByLabelText("Where Cut no-shows started");
+    fireEvent.change(from, { target: { value: "8" } });
+    fireEvent.blur(from);
+    expect(props.onUpdate).toHaveBeenLastCalledWith("n", { startValue: 8, current: 8 });
+    const next = { ...fresh, startValue: 8, current: 8 };
+    rerender(<GoalPanel {...props} goal={next} goals={[next]} />);
+    const to = screen.getByLabelText("Target for Cut no-shows");
+    fireEvent.change(to, { target: { value: "5" } });
+    fireEvent.blur(to);
+    expect(props.onUpdate).toHaveBeenLastCalledWith("n", { target: 5, direction: "lower" });
+    const done = { ...next, target: 5, direction: "lower" as const };
+    rerender(<GoalPanel {...props} goal={done} goals={[done]} />);
+    expect(screen.getByRole("progressbar", { name: "Cut no-shows progress" })).toHaveAttribute("aria-valuenow", "0");
+    expect(screen.queryByText("Target reached")).toBeNull();
+  });
+
+  it("Lower picked first never takes a new goal's 0 as where it started; until it's set, the goal asks for it instead of a pace", () => {
+    const g0 = goal({ id: "n", name: "Cut no-shows", target: 5, current: 8, direction: "lower" });
+    const { props } = renderPanel(g0);
+    expect(screen.getByText(/^Set where it started under Settings › Numbers/)).toBeInTheDocument();
+    expect(screen.queryByText(/Kanbo suggests/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Higher" }));
+    expect(props.onUpdate).toHaveBeenLastCalledWith("n", { direction: "higher" });
+  });
+});
+
 describe("the goal panel: check-ins", () => {
   const checkins: GoalCheckin[] = [
     { id: "c2", goalId: "g", workspaceId: "ws", authorId: "m-1", value: 3760, confidence: 3, note: "Onboarding fix is in", createdAt: "2026-11-08T17:00:00Z" },
@@ -216,7 +259,7 @@ describe("the goal panel: its menu", () => {
     expect(props.onUpdate).toHaveBeenLastCalledWith("g", { icon: "📦", color: expect.stringMatching(/^oklch\(.* 158\)$/) });
     fireEvent.click(screen.getByRole("button", { name: "Goal actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Delete goal/ }));
-    expect(window.confirm).toHaveBeenCalledWith("Delete goal “Grow”? Its key result will move up a level. This can't be undone.");
+    expect(window.confirm).toHaveBeenCalledWith("Delete goal “Grow” and its check-ins? Its key result stays, as a goal of its own. This can't be undone. To keep its check-ins and history, archive it instead.");
     expect(props.onDelete).toHaveBeenCalledWith("g");
     expect(props.onClose).toHaveBeenCalled();
     unmount();
@@ -225,6 +268,31 @@ describe("the goal panel: its menu", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Restore goal" }));
     expect(restored.props.onUpdate).toHaveBeenCalledWith("old", { archivedAt: null });
     confirm.mockRestore();
+  });
+
+  it("a member can't delete their goal while key results sit under it (they'd become the business's goals): the menu says why", () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const top = goal({ id: "b", name: "Mine", ownerId: "m-1", target: 10, current: 2, parentId: "x" });
+    const { props } = renderPanel(top, { me: "m-1", role: "member", goals: [top, goal({ id: "k", name: "KR", parentId: "b", ownerId: "m-1" })] });
+    fireEvent.click(screen.getByRole("button", { name: "Goal actions" }));
+    const del = screen.getByRole("menuitem", { name: /Delete goal/ });
+    expect(del).toBeDisabled();
+    expect(del).toHaveAccessibleDescription(/move them first, or ask an owner or admin/);
+    fireEvent.click(del);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("docked, closing hands focus back to what opened it", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { unmount } = renderPanel(goal({ id: "g", name: "Grow" }), { docked: true });
+    (screen.getByRole("button", { name: "Close goal" }) as HTMLElement).focus();
+    unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
   });
 
   it("closes on Escape when docked, and from its close button", () => {

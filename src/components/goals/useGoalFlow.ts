@@ -58,6 +58,12 @@ export function useGoalFlow({ goals, extras, tasks, me, roleIn, members, today }
     return hit;
   }, [behindAll, behindIn, seen]);
   const nameOf = useCallback((id: string | null | undefined) => (id ? getMember(id)?.name ?? members.find((m) => m.userId === id)?.name ?? "" : ""), [members]);
-  const ask = useCallback((ws: string | null) => askGoals(seen.filter((g) => (g.workspaceId ?? null) === ws), links, reads, today, nameOf), [seen, links, reads, today, nameOf]);
+  // (worked out once per workspace while nothing's changed: the app asks on every render)
+  const askIn = useMemo(() => new Map<string, AskGoal[]>(), [seen, links, reads, today, nameOf]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ask = useCallback((ws: string | null) => {
+    let hit = askIn.get(ws ?? "");
+    if (!hit) { hit = askGoals(seen.filter((g) => (g.workspaceId ?? null) === ws), links, reads, today, nameOf); askIn.set(ws ?? "", hit); }
+    return hit;
+  }, [askIn, seen, links, reads, today, nameOf]);
   return useMemo(() => ({ goals: seen, reads, forProject, forTask, briefGoal: brief, behind, ask }), [seen, reads, forProject, forTask, brief, behind, ask]);
 }

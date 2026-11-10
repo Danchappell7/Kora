@@ -1,13 +1,14 @@
 /* ============================================================
    KANBO — the business's goals in the Team place (Pulse, under the
-   Radar): the summary sentence, then this quarter's company goals,
-   the ones behind pace first, each opening the goal panel. "All
+   Radar): this quarter's company goals (and any still open from
+   before it), the ones behind pace first, each opening the goal
+   panel, with a sentence about the same goals the card lists. "All
    goals" goes to Projects › Goals.
    ============================================================ */
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { Meter, ProjectTile } from "../primitives";
 import type { Goal } from "../../data/types";
-import { goalInRange, goalsSummary, type GoalRead } from "../../lib/goalFlow";
+import { goalsInQuarter, goalsSummary, type GoalRead } from "../../lib/goalFlow";
 import { periodRange, quarterOf } from "../../lib/goalPeriods";
 import { pathOf } from "../../lib/nav";
 import { goalTile } from "./GoalParts";
@@ -24,12 +25,13 @@ export function TeamGoals({ goals, reads, today, onOpenGoal, onOpenGoals }: {
   onOpenGoals: () => void;
 }) {
   const q = periodRange(quarterOf(today))!;
-  const live = goals.filter((g) => !g.archivedAt && goalInRange(g, q));
+  const live = goalsInQuarter(goals.filter((g) => !g.archivedAt), reads, q, today);
   if (!live.length) return null;
   const top = live.filter((g) => !g.parentId || !live.some((p) => p.id === g.parentId));
   const rows = top.map((g) => reads.get(g.id)).filter((r): r is GoalRead => !!r)
     .sort((a, b) => Number(b.standing === "behind") - Number(a.standing === "behind") || (a.pace?.gap ?? 0) - (b.pace?.gap ?? 0));
-  const summary = goalsSummary(live.map((g) => reads.get(g.id)).filter((r): r is GoalRead => !!r));
+  // (the sentence counts what the card lists: "2 of 3 goals on pace" over three rows, not six)
+  const summary = goalsSummary(rows);
   const toAll = (e: ReactMouseEvent<HTMLAnchorElement>) => {
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault(); onOpenGoals();
