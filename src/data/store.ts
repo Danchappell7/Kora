@@ -860,7 +860,13 @@ async function loadAllRows<T extends { id: string }>(client: SupabaseClient, tab
    minutes (as task_user_state is), so a reload doesn't ask again and log a 404 each time. */
 let accessTableMissingAt = 0;
 const ACCESS_RECHECK_MS = 10 * 60_000;
+/* After 0058's undo file its tables and columns stay but its functions go: the first member call that
+   finds them missing says so, and for ten minutes the app works as before 0058 (a project's people are
+   contributor_ids again, which 0058 brings project_members back to when it's run again). */
+let accessFnsGoneAt = 0;
+const accessFnsGone = () => accessFnsGoneAt > 0 && Date.now() - accessFnsGoneAt < ACCESS_RECHECK_MS;
 async function loadProjectMembers(client: SupabaseClient): Promise<ProjectMember[] | null | undefined> {
+  if (accessFnsGone()) return null;
   if (accessTableMissingAt && Date.now() - accessTableMissingAt < ACCESS_RECHECK_MS) return null;
   try {
     const rows = await loadAllRows<ProjectMemberRow>(client, "project_members");
@@ -1597,13 +1603,31 @@ const visibilityOfDemo = (p: Project): ProjectVisibility => p.visibility ?? "wor
 const demoInviteGrants = new Map<string, { projectId: string; role: ProjectRole }[]>();
 /** An old-style "these are its contributors" edit, as 0058's member calls: who's added (as editors;
  *  the server makes guests commenters) and who's taken off. */
+/** 0058's member calls answered "missing" where its schema was read: the undo file's state. From
+ *  here (for ten minutes) the app is as before 0058. Answers whether that's what this was. */
+function noteAccessFnsGone(e: unknown): boolean {
+  if ((e as { code?: string })?.code !== "access_missing" || !(accessSchema() || accessFnsGone())) return false;
+  accessFnsGoneAt = Date.now();
+  noteAccessSchema(false);
+  return true;
+}
+/** A project's people the way it was before 0058 (and is again after its undo file): contributor_ids. */
+async function writeContributors(client: SupabaseClient, projectId: string, change: (ids: string[]) => string[]): Promise<void> {
+  const { data, error } = await client.from("projects").select("contributor_ids").eq("id", projectId).single();
+  if (error) throw error;
+  const ids = ((data as { contributor_ids?: string[] | null } | null)?.contributor_ids) ?? [];
+  const next = change(ids);
+  if (next.length === ids.length && next.every((x, i) => x === ids[i])) return;
+  const { error: upErr } = await client.from("projects").update({ contributor_ids: next }).eq("id", projectId);
+  if (upErr) throw upErr;
+}
 async function syncProjectPeople(client: SupabaseClient, projectId: string, wanted: string[]): Promise<void> {
   const { data, error } = await client.from("project_members").select("user_id").eq("project_id", projectId);
   if (error) throw error;
   const have = new Set(((data as { user_id: string }[] | null) ?? []).map((r) => r.user_id));
   const want = new Set(wanted);
-  for (const u of want) if (!have.has(u)) await store.setProjectMember(projectId, u, "editor");
-  for (const u of have) if (!want.has(u)) await store.removeProjectMember(projectId, u);
+  for (const u of want) if (!have.has(u) && !accessFnsGone()) await store.setProjectMember(projectId, u, "editor");
+  for (const u of have) if (!want.has(u) && !accessFnsGone()) await store.removeProjectMember(projectId, u);
 }
 
 /* ============================================================
@@ -1788,8 +1812,13 @@ export const store = {
     // update days are read and set once 0053 is run (the column comes back, even when it's empty)
     noteRhythmSchema(wsRows.some((w) => "update_rhythm" in w) || ((projData as ProjectRow[] | null) ?? []).some((p) => "update_rhythm" in p));
     if (wsRows.length) noteRolloutSchema(wsRows.some((w) => "rollout" in w));
-    // 0058: project access is read and set once the switch's column comes back
-    if (wsRows.length) noteAccessSchema(wsRows.some((w) => "project_access" in w));
+    // 0058: project access is read and set once the switch's column comes back (and then its table is
+    // there too: a "missing" remembered from before is forgotten, so the members load with it)
+    if (wsRows.length) {
+      const has = wsRows.some((w) => "project_access" in w);
+      if (has && !accessSchema()) accessTableMissingAt = 0;
+      noteAccessSchema(has && !accessFnsGone());
+    }
     const { data: memData, error: memErr } = await supabase.from("workspace_members").select("*");
     const members = (memErr && failed("members", memErr)?.members)
       || ((memData as MemberRow[] | null) ?? []).map(rowToWsMember);
@@ -2350,7 +2379,12 @@ export const store = {
     }
     offlineGuard();
     const { data, error } = await supabase.rpc("set_project_member", { p_project: projectId, p_user: userId, p_role: role });
-    if (error) throw accessFailure(error);
+    if (error) {
+      const f = accessFailure(error);
+      if (!noteAccessFnsGone(f)) throw f;
+      await writeContributors(supabase, projectId, (ids) => (ids.includes(userId) ? ids : [...ids, userId]));
+      return role;
+    }
     return (data === "owner" || ROLE_SET.has(String(data)) ? data : role) as ProjectRole | "owner";
   },
 
@@ -2367,7 +2401,13 @@ export const store = {
     }
     offlineGuard();
     const { data, error } = await supabase.rpc("remove_project_member", { p_project: projectId, p_user: userId });
-    if (error) throw accessFailure(error);
+    if (error) {
+      const f = accessFailure(error);
+      if (!noteAccessFnsGone(f)) throw f;
+      let gone = false;
+      await writeContributors(supabase, projectId, (ids) => { gone = ids.includes(userId); return ids.filter((x) => x !== userId); });
+      return gone;
+    }
     return data === true;
   },
 
@@ -2420,9 +2460,14 @@ export const store = {
     if ("status" in patch) row.status = patch.status ?? null;
     if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;
     if ("contributorIds" in patch) {
-      // 0058: a project's people are project_members, changed one person at a time (contributor_ids follows)
-      if (accessSchema()) await syncProjectPeople(supabase, id, patch.contributorIds ?? []);
-      else row.contributor_ids = patch.contributorIds ?? [];
+      // 0058: a project's people are project_members, changed one person at a time (contributor_ids follows);
+      // after 0058's undo file (its functions gone) the column again
+      let synced = false;
+      if (accessSchema() && !accessFnsGone()) {
+        await syncProjectPeople(supabase, id, patch.contributorIds ?? []);
+        synced = !accessFnsGone();   // (its first call found the functions gone: the whole list goes in the column below)
+      }
+      if (!synced) row.contributor_ids = patch.contributorIds ?? [];
     }
     if ("updateRhythm" in patch) row.update_rhythm = patch.updateRhythm ? rhythmRow(patch.updateRhythm) : null;   // 0053
     if (Object.keys(row).length === 0) return;

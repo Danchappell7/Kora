@@ -7,23 +7,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Row = Record<string, unknown>;
 interface Call { table: string; op: string; payload?: unknown; filters: [string, unknown][]; returning?: boolean; single?: boolean }
-type Db = "0050" | "off" | "on";
+/** "undone": 0058's undo file ran (its columns and tables kept, its functions gone, every switch off) */
+type Db = "0050" | "off" | "on" | "undone";
 
 const WS = "11111111-1111-4111-8111-111111111111";
 const ME = "22222222-2222-4222-8222-222222222222";
 const P1 = "33333333-3333-4333-8333-333333333333";
 const T1 = "44444444-4444-4444-8444-444444444444";
 
-function fakeClient(db: Db) {
+function fakeClient(db0: Db) {
+  let db = db0;
   const calls: Call[] = [];
   let refuseUpdates = false;
-  const wsRow: Row = { id: WS, name: "Foundrise", owner_id: "someone-else", created_at: "2026-01-01T00:00:00Z" };
-  if (db !== "0050") Object.assign(wsRow, { project_access: db === "on", project_access_default: "members", project_access_member_private: false, project_access_changed_at: null });
-  const project: Row = { id: P1, name: "Seed round", emoji: "📊", color: "c", workspace_id: WS, owner_id: ME, contributor_ids: [] };
+  const wsRow = (): Row => {
+    const r: Row = { id: WS, name: "Foundrise", owner_id: "someone-else", created_at: "2026-01-01T00:00:00Z" };
+    if (db !== "0050") Object.assign(r, { project_access: db === "on", project_access_default: "members", project_access_member_private: false, project_access_changed_at: null });
+    return r;
+  };
+  const project: Row = { id: P1, name: "Seed round", emoji: "📊", color: "c", workspace_id: WS, owner_id: ME, contributor_ids: db0 === "undone" ? ["old-person"] : [] };
   if (db !== "0050") project.visibility = db === "on" ? "members" : "workspace";
   const answer = (c: Call): { data: unknown; error: unknown } => {
     if (c.op === "rpc") {
-      if (db === "0050") return { data: null, error: { code: "PGRST202", message: "Could not find the function public." + c.table + " in the schema cache" } };
+      if (db === "0050" || (db === "undone" && c.table !== "claim_invites")) return { data: null, error: { code: "PGRST202", message: "Could not find the function public." + c.table + " in the schema cache" } };
       if (c.table === "set_project_member") return { data: "editor", error: null };
       if (c.table === "remove_project_member") return { data: true, error: null };
       if (c.table === "set_project_access") return { data: { on: true, default: "private", member_private: true, changed_at: "2026-11-10T09:00:00Z" }, error: null };
@@ -34,7 +39,7 @@ function fakeClient(db: Db) {
       if (db === "0050") return { data: null, error: { code: "PGRST205", message: "Could not find the table 'public.project_members' in the schema cache" } };
       if (c.op === "select") return { data: [{ id: "pm-1", project_id: P1, workspace_id: WS, user_id: "old-person", role: "editor", created_at: "2026-11-01T00:00:00Z" }], error: null };
     }
-    if (c.table === "workspaces") return { data: [wsRow], error: null };
+    if (c.table === "workspaces") return { data: [wsRow()], error: null };
     if (c.table === "workspace_members") return { data: [{ id: "wm-1", workspace_id: WS, user_id: ME, email: "me@x.co", name: "Me", role: "member", status: "active" }], error: null };
     if (c.table === "projects") {
       if (c.op === "insert") {
@@ -42,7 +47,9 @@ function fakeClient(db: Db) {
         if (db === "0050" && "visibility" in p) return { data: null, error: { code: "PGRST204", message: "Could not find the 'visibility' column of 'projects' in the schema cache" } };
         return { data: { id: "55555555-5555-4555-8555-555555555555", contributor_ids: [], ...p }, error: null };
       }
+      if (c.op === "select" && c.single) return { data: project, error: null };
       if (c.op === "select") return { data: [project], error: null };
+      if (c.op === "update" && c.payload && "contributor_ids" in (c.payload as Row)) project.contributor_ids = (c.payload as Row).contributor_ids;
       return { data: null, error: null };
     }
     if (c.table === "tasks") {
@@ -82,7 +89,7 @@ function fakeClient(db: Db) {
     removeChannel: async () => "ok",
     getChannels: () => [],
   };
-  return { client, calls, refuse(on: boolean) { refuseUpdates = on; } };
+  return { client, calls, refuse(on: boolean) { refuseUpdates = on; }, upgrade(to: Db) { db = to; if (to !== "0050") project.visibility ??= "workspace"; }, project };
 }
 
 async function load(fake: ReturnType<typeof fakeClient>) {
@@ -163,6 +170,48 @@ describe("at 0058 with the switch off", () => {
     expect(fake.calls.find((c) => c.table === "projects" && c.op === "insert")?.payload).not.toHaveProperty("visibility");
     await store.updateTask(T1, { title: "Renamed" });
     expect(fake.calls.find((c) => c.table === "tasks" && c.op === "update")?.returning).toBeFalsy();
+  });
+});
+
+describe("between 0050 and 0058", () => {
+  it("a tab that found the table missing before 0058 reads the members as soon as the switch's column comes back", async () => {
+    const fake = fakeClient("0050");
+    const { store, access } = await load(fake);
+    expect((await store.bootstrap({ id: ME })).projectMembers).toBeNull();
+    fake.upgrade("off");   // 0058 is run (well inside the ten minutes)
+    const b = await store.bootstrap({ id: ME });
+    expect(access.accessSchema()).toBe(true);
+    expect(b.projectMembers?.map((m) => m.userId)).toEqual(["old-person"]);
+  });
+});
+
+describe("after 0058's undo file (its functions gone, its tables kept)", () => {
+  it("a contributors edit falls back to the column, as before 0058, and the app stops using project access", async () => {
+    const fake = fakeClient("undone");
+    const { store, data, access } = await load(fake);
+    const b = await store.bootstrap({ id: ME });
+    data.setReferenceData({ workspaces: b.workspaces });
+    expect(access.accessSchema()).toBe(true);   // (the columns are there: only a call can tell)
+    // About's checklist: a member call, missing, so the column is written instead
+    expect(await store.setProjectMember(P1, "new-person", "editor")).toBe("editor");
+    expect(fake.project.contributor_ids).toEqual(["old-person", "new-person"]);
+    expect(access.accessSchema()).toBe(false);
+    expect(await store.listProjectMembers()).toBeNull();
+    // and from here, as before 0058: the whole list in the column, no member calls
+    const before = rpcs(fake).length;
+    await store.updateProject(P1, { contributorIds: ["new-person"] });
+    expect(fake.project.contributor_ids).toEqual(["new-person"]);
+    expect(rpcs(fake).length).toBe(before);
+    expect(await store.removeProjectMember(P1, "new-person")).toBe(true);
+    expect(fake.project.contributor_ids).toEqual([]);
+  });
+
+  it("an old-style edit whose first call finds the functions gone saves the whole list in the column", async () => {
+    const fake = fakeClient("undone");
+    const { store, data } = await load(fake);
+    data.setReferenceData({ workspaces: (await store.bootstrap({ id: ME })).workspaces });
+    await store.updateProject(P1, { contributorIds: ["a", "b"] });
+    expect(fake.project.contributor_ids).toEqual(["a", "b"]);
   });
 });
 
