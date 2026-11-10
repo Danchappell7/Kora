@@ -1,7 +1,7 @@
 /* Settings › Workspace › History in demo mode (lib/audit's fakes), plus the
    paging and failure states with the page query mocked. */
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const { downloadCsv } = vi.hoisted(() => ({ downloadCsv: vi.fn() }));
@@ -18,7 +18,13 @@ const renderLog = (canSeeAll = true) => render(
   <StrictMode><HistoryLog workspaceId="ws-foundrise" workspaceName="Foundrise" members={MEMBERS} currentUserId="m-self" canSeeAll={canSeeAll} /></StrictMode>,
 );
 
-beforeEach(() => { resetAuditDemo({ demoDelayMs: 0 }); downloadCsv.mockReset(); vi.restoreAllMocks(); });
+// the demo history is stamped relative to now, so pin the clock to midday: just after
+// midnight nothing would be "Today" yet
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-09T12:00:00Z"));
+  resetAuditDemo({ demoDelayMs: 0 }); downloadCsv.mockReset(); vi.restoreAllMocks();
+});
+afterEach(() => { vi.useRealTimers(); });
 
 describe("helpers", () => {
   it("date ranges are UK days, inclusive; a backwards custom range is turned round", () => {

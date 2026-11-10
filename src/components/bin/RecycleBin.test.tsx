@@ -1,6 +1,6 @@
 /* Projects › Recycle bin in demo mode (lib/trash's in-memory fakes). */
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RecycleBin, agoWords, binBucket, binContents, daysLeftLabel, listWords } from "./RecycleBin";
 import { ToastProvider } from "../Toast";
@@ -27,7 +27,10 @@ function renderBin(role: Role | null = "owner", over: Partial<Parameters<typeof 
   return { ...utils, onRestored, onOpenProject };
 }
 
-beforeEach(() => resetTrashDemo({ demoDelayMs: 0 }));
+// the demo bin is stamped relative to now, so pin the clock to midday: just after
+// midnight nothing would be "Today" yet
+beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-09T12:00:00Z")); resetTrashDemo({ demoDelayMs: 0 }); });
+afterEach(() => { vi.useRealTimers(); });
 
 describe("words", () => {
   it("contents, lists, days left and ages", () => {
