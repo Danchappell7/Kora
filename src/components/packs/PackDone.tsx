@@ -88,7 +88,9 @@ export function PackDone({ flow, host, onOpen }: { flow: PackFlow; host: Pick<Pa
         <span className="kbpk-dmark" aria-hidden="true"><Icon name="check" size={18} sw={2.25} /></span>
         <div>
           <h3 className="kbpk-dtitle">{packOutcomeTitle(o.pack.name, a)}</h3>
-          <p className="kbpk-dsub">Everything is assigned to you. Rename, move or delete anything afterwards.</p>
+          <p className="kbpk-dsub">{a.tasks.some((t) => !t.assigneeId)
+            ? "Your starter tasks are assigned to you, and the daily routines are left for the team. Rename, move or delete anything afterwards."
+            : "Everything is assigned to you. Rename, move or delete anything afterwards."}</p>
         </div>
       </div>
       <ul className="kbpk-made" aria-label={`What ${o.pack.name} set up`}>
@@ -136,13 +138,15 @@ export function PackDoneFooter({ flow, onDone, canUndo = true }: { flow: PackFlo
   const [asking, setAsking] = useState(false);
   if (canUndo && !flow.undone && flow.outcome && (asking || undoing)) {
     return (
-      <>
+      <div className="kbpk-undo">
         <p className="kbpk-undo-q" role="status">{undoQuestion(flow.outcome)}</p>
-        <Button variant="ghost" onClick={() => setAsking(false)} disabled={undoing}>Keep it</Button>
-        <Button variant="danger" icon="undo" loading={undoing} onClick={() => { void flow.takeBack().finally(() => setAsking(false)); }}>
-          {undoing ? "Taking it back…" : "Remove it all"}
-        </Button>
-      </>
+        <span className="kbpk-undo-acts">
+          <Button variant="ghost" onClick={() => setAsking(false)} disabled={undoing}>Keep it</Button>
+          <Button variant="danger" icon="undo" loading={undoing} onClick={() => { void flow.takeBack().finally(() => setAsking(false)); }}>
+            {undoing ? "Taking it back…" : "Remove it all"}
+          </Button>
+        </span>
+      </div>
     );
   }
   return (

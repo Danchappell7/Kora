@@ -112,7 +112,11 @@ describe("Workspace health for a workspace that's only just started", () => {
   it("only you, nothing in it yet: not started, and nothing counted as fine", () => {
     const h = workspaceHealth(base({ members: [member("dan", "owner")], tasks: [], projects: [], statusUpdates: [], goals: [], checkins: [] }));
     expect(h.solo).toBe(true);
-    expect(h.counts).toEqual({ projects: 0, openTasks: 0, goals: 0 });
+    expect(h.counts).toEqual({ projects: 0, openTasks: 0, goals: 0, workers: 1 });
+    // a pack's routines are nobody's yet: on your own there's nobody else to give them to, so no nudge about it
+    const alone = workspaceHealth(base({ members: [member("dan", "owner")], tasks: [task("r1", { assigneeId: "" })] }));
+    expect(alone.loose.noOwner).toBe(1);
+    expect(healthNudge(alone, { workspaceId: "ws", workspaceName: "Acme", memberName: (m) => m.name, today: TODAY })).toBeNull();
     expect(h.started).toBe(false);
   });
   it("someone invited, or a teammate, and a project: under way", () => {
@@ -120,7 +124,7 @@ describe("Workspace health for a workspace that's only just started", () => {
     expect(workspaceHealth(base({ members: [member("dan", "owner"), member("maya", "member")], projects: [] })).started).toBe(false);
     const h = workspaceHealth(base());
     expect([h.solo, h.started]).toEqual([false, true]);
-    expect(h.counts).toEqual({ projects: 1, openTasks: 2, goals: 0 });
+    expect(h.counts).toEqual({ projects: 1, openTasks: 2, goals: 0, workers: 4 });
   });
   it("activity keeps the workspace's first day", () => {
     expect(parseActivity({ today: "2026-11-10", since: "2026-11-08", members: [], days: [] })?.since).toBe("2026-11-08");

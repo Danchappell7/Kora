@@ -125,8 +125,8 @@ export interface WorkspaceHealth {
   missing: Project[];
   /** goals with no check-in for two weeks (null: goals 2.0 isn't in) */
   quietGoals: Goal[] | null;
-  /** what's there at all: an empty line is "not yet", never "all good" */
-  counts: { projects: number; openTasks: number; goals: number };
+  /** what's there at all: an empty line is "not yet", never "all good"; `workers`: people here who can take work */
+  counts: { projects: number; openTasks: number; goals: number; workers: number };
   /** under way: someone else is here (or invited) and there's a project; until then the card is "getting started" */
   started: boolean;
   /** how many lines need a look (the card's count) */
@@ -183,7 +183,8 @@ export function workspaceHealth(input: HealthInput): WorkspaceHealth {
       })());
   }
 
-  const counts = { projects: projects.length, openTasks: tasks.filter((t) => isOpen(t) && !t.parentId).length, goals: wsGoals.length };
+  const counts = { projects: projects.length, openTasks: tasks.filter((t) => isOpen(t) && !t.parentId).length, goals: wsGoals.length,
+    workers: people.filter((m) => m.role !== "guest").length };
   const issues = Number(invited.length > 0) + Number(loose.length > 0) + Number(missing.length > 0) + Number(!!quietGoals?.length)
     + Number(!!active && active.of > 1 && active.count < Math.ceil(active.of / 2));
   return {
@@ -217,7 +218,8 @@ export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; work
       actions: [{ kind: "fix", label: n === 1 ? "Resend invite" : "Resend all", fix: "resend" }, { kind: "fix", label: "See health", fix: "health" }],
     };
   }
-  if (h.loose.noOwner > 0) {
+  // (work nobody owns, while there's somebody else to give it to: on your own, it's yours)
+  if (h.loose.noOwner > 0 && h.counts.workers > 1) {
     const n = h.loose.noOwner;
     return {
       id: `rollout:owner:${ctx.workspaceId}:${n}`, kind: "rollout", tone: "warn", icon: "user",

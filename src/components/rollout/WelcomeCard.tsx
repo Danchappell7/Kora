@@ -193,7 +193,7 @@ function GoalRow({ goal, read, onOpen }: { goal: Goal; read?: { pct: number; lin
 
 const WELCOME_CSS = `
 .kwlc {
-  container-type: inline-size; position: relative; max-width: 920px; margin-top: 16px; padding: 18px 18px 14px 20px;
+  container-type: inline-size; position: relative; max-width: 920px; margin-top: 16px; padding: 18px 18px 14px 20px; scroll-margin-top: 96px;
   border-radius: var(--r-lg, 12px); background: var(--surface, var(--surface-raised)); box-shadow: var(--e1, 0 0 0 1px var(--hairline));
 }
 .kwlc::before {
@@ -240,6 +240,8 @@ div.kwlc-goal-open { cursor: default; }
 .kwlc-goal-pace { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .kwlc-ask { display: flex; align-items: flex-start; gap: 10px; margin: 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
 .kwlc-ask > :first-child { flex-shrink: 0; }
+/* (focused by the brief's "Show me", for a screen reader: the scroll is what the eye follows) */
+.kwlc:focus { outline: none; }
 .kwlc-asknote { margin: 8px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
 .kwlc-task-dot { width: 14px; height: 14px; flex-shrink: 0; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ink-4); }
 .kwlc-task-due { flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); font-variant-numeric: tabular-nums; }
