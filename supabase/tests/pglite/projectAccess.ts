@@ -1233,6 +1233,19 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq([got.row.assignee_id, got.row.collaborators], [w.id.M2, []], "Moe keeps it; Gail, who can't see it there, drops off");
   });
 
+  await test("0058, switch on: re-parenting a task (parent_id alone) takes its sub-tasks to its new parent's project too", async () => {
+    const got = await scenario(async (run) => {
+      const mk = async (title: string, parent: string | null) => (await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid, $5::uuid) returning id::text as id`,
+        [w.id.ME, title, w.proj.PW, w.ws, parent]))[0].id as string;
+      const t = await mk("Zebra parent", null), c = await mk("Zebra child", t);
+      await run(w.id.ME, `update public.tasks set parent_id = $2::uuid where id = $1::uuid`, [t, w.task.PP]);
+      const at = async (id: string) => (await run(null, `select parent_id::text as parent, project_id as project from public.tasks where id = $1::uuid`, [id]))[0];
+      return { t: await at(t), c: await at(c), c2: t };
+    });
+    eq(got.t, { parent: w.task.PP, project: w.proj.PP }, "the task has its new parent's project");
+    eq(got.c, { parent: got.c2, project: w.proj.PP }, "and so does its sub-task");
+  });
+
   await test("0058, switch on: a guest who owns a project (made a guest after making it) keeps it as a commenter, and sees its people", async () => {
     const got = await scenario(async (run, _exec, tryRun) => {
       const gp = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Gil', $2::uuid, 'private') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
@@ -1260,6 +1273,24 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq(got.m2, 0, "it's still Private to everyone else");
     eq(got.asMember, "owner", "Gil stays its owner");
     ok(/not authorized/.test(got.manages), `Gil can't change who sees it: ${got.manages || "changed"}`);
+  });
+
+  await test("0058: a signed-out request reads none of a workspace's rows, and no error (the switch on and off)", async () => {
+    const tables = ["tasks", "projects", "profiles", "workspace_members", "comments", "sections", "status_updates", "forms"];
+    const read = async () => {
+      const out: Record<string, unknown> = {};
+      for (const tb of tables) {
+        const r = await attempt(null, `select count(*)::int as n from public.${tb}`, [],
+          [[`select set_config('role', 'anon', true), set_config('request.jwt.claims', '{"role":"anon"}', true)`, []]]);
+        out[tb] = "rows" in r ? r.rows[0].n : errOf(r);
+      }
+      return out;
+    };
+    const zero = Object.fromEntries(tables.map((tb) => [tb, 0]));
+    eq(await read(), zero, "switch on");
+    await sw(false);
+    eq(await read(), zero, "switch off");
+    await sw(true);
   });
 
   // ---------------------------------------------------------------- 14. what the database queues: the Inbox, held notices, webhooks
@@ -1606,33 +1637,43 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     await spotChecks("undo + 0058");
   });
 
-  await test("0058's undo, people changed the old way meanwhile, then 0058 again: project_members follows contributor_ids (nobody taken off comes back, nor anyone who left)", async () => {
+  await test("0058's undo, people changed the old way meanwhile, then 0058 again: project_members follows contributor_ids (nobody taken off comes back, nor anyone who left, nor anyone who listed themselves on a closed project)", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const undo = readFileSync(join(process.cwd(), "supabase", "rollback", "0058_project_access_undo.sql"), "utf8");
     const back = new Map(Object.entries(w.id).map(([k, v]) => [v as string, k]));
     const pmPeople = (rows: Record<string, unknown>[]) => rows.map((r) => `${back.get(r.u as string) ?? r.u}:${r.role}`).sort();
+    const peopleOf = async (run: Run, p: string) => pmPeople(await run(null, `select user_id::text as u, role from public.project_members where project_id = $1::uuid`, [p]));
     const got = await scenario(async (run, exec) => {
-      const before = pmPeople(await run(null, `select user_id::text as u, role from public.project_members where project_id = $1::uuid`, [w.proj.PM]));
+      const before = await peopleOf(run, w.proj.PM);
       await exec(undo);
-      // the app as before 0058: PM's people are contributor_ids again (Gail off, Gil on); Gwen leaves the workspace
+      // the app as before 0058: PM's people are contributor_ids again (Gail off, Gil on); Gil goes on PW too;
+      // Gwen leaves the workspace; and Moe, with no rules in the way, lists himself on Private PP
       await run(w.id.O, `update public.projects set contributor_ids = array_append(array_remove(contributor_ids, $2::uuid), $3::uuid) where id = $1::uuid`, [w.proj.PM, w.id.GC, w.id.G2]);
+      await run(w.id.O, `update public.projects set contributor_ids = array_append(contributor_ids, $2::uuid) where id = $1::uuid`, [w.proj.PW, w.id.G2]);
       await run(null, `delete from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [w.ws, w.id.GV]);
+      const selfAdd = (await run(w.id.M2, `update public.projects set contributor_ids = array_append(contributor_ids, $2::uuid) where id = $1::uuid returning id`, [w.proj.PP, w.id.M2])).length;
       const stale = (await run(null, `select count(*)::int as n from public.project_members where project_id = $1::uuid and user_id in ($2::uuid, $3::uuid)`, [w.proj.PM, w.id.GC, w.id.GV]))[0].n;
       await exec(migrationSql("0058_project_access.sql"));
       // Gwen is invited back as a guest, and the switch goes on again
       await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'gv.pa@example.org', 'Gwen', 'guest', 'active')`, [w.ws, w.id.GV]);
       await run(w.id.O, `select public.set_project_access($1::uuid, true)`, [w.ws]);
-      const reads = async (who: Who) => (await run(w.id[who], `select id from public.projects where id = $1::uuid`, [w.proj.PM])).length;
+      const reads = async (who: Who, p: string) => (await run(w.id[who], `select id from public.projects where id = $1::uuid`, [p])).length;
       return {
-        before, stale, GC: await reads("GC"), GV: await reads("GV"), G2: await reads("G2"),
-        people: pmPeople(await run(null, `select user_id::text as u, role from public.project_members where project_id = $1::uuid`, [w.proj.PM])),
+        before, stale, selfAdd, GC: await reads("GC", w.proj.PM), GV: await reads("GV", w.proj.PM), G2: await reads("G2", w.proj.PM), G2PW: await reads("G2", w.proj.PW), M2PP: await reads("M2", w.proj.PP),
+        people: await peopleOf(run, w.proj.PM), pw: await peopleOf(run, w.proj.PW), pp: await peopleOf(run, w.proj.PP),
+        listed: (await run(null, `select $2::uuid = any (contributor_ids) as g2pm from public.projects where id = $1::uuid`, [w.proj.PM, w.id.G2]))[0],
+        listedPP: (await run(null, `select $2::uuid = any (contributor_ids) as m2 from public.projects where id = $1::uuid`, [w.proj.PP, w.id.M2]))[0].m2,
         intact: (await run(null, `select public.project_access_intact() as ok`))[0].ok,
       };
     });
     eq(got.stale, 2, "while it's out, nothing keeps project_members in step");
-    eq([got.GC, got.GV, got.G2], [0, 0, 1], "Gail (taken off) and Gwen (left, back as a guest) don't read PM; Gil (added) does");
-    eq(got.people, [...got.before.filter((x) => !x.startsWith("GC:") && !x.startsWith("GV:")), "G2:commenter"].sort(), "PM's people, the others' roles kept");
+    eq(got.selfAdd, 1, "while it's out, Moe could list himself on PP");
+    eq([got.GC, got.GV, got.G2], [0, 0, 0], "Gail (taken off) and Gwen (left, back as a guest) don't read Members only PM, nor Gil (added there meanwhile)");
+    eq(got.people, got.before.filter((x) => !x.startsWith("GC:") && !x.startsWith("GV:")), "PM's people, the others' roles kept");
+    eq([got.G2PW, got.pw.includes("G2:commenter")], [1, true], "Gil added to Whole workspace PW meanwhile is on it");
+    eq([got.M2PP, got.pp.some((x) => x.startsWith("M2:")), got.listedPP], [0, false, false], "Moe isn't on Private PP, nor listed");
+    eq(got.listed.g2pm, false, "PM's list follows its people");
     eq(got.intact, true, "every rule back");
   });
 

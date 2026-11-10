@@ -14,8 +14,10 @@
 -- project's people in contributor_ids again (as before 0058) and nothing keeps project_members
 -- in step. Running 0058 again afterwards puts every rule back and brings project_members back
 -- to contributor_ids (people taken off meanwhile, or who left the workspace, lose their rows;
--- people added meanwhile get one), so nobody who was taken off a project comes back. Then switch
--- each workspace on again.
+-- people added meanwhile get one on a Whole workspace project, and are added again in People &
+-- access on a Members only or Private one), so nobody who was taken off a project comes back, and
+-- nobody gets into a closed one by listing themselves while the rules were out. Then switch each
+-- workspace on again.
 --
 -- Safe to run more than once. Nothing here needs 0058's own functions to be working.
 -- ============================================================

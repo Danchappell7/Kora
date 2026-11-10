@@ -786,14 +786,18 @@ end $internal$;
 -- Not on a re-run. After the undo file (not recorded, but project_members kept), contributor_ids was
 -- the app's list of a project's people again, with nothing keeping project_members in step: the rows
 -- are brought back to it (whoever was taken off, left the workspace or became its owner meanwhile
--- loses their row; whoever was added gets one; a guest's editor row becomes commenter), and the
--- grants of invites claimed meanwhile go (their projects were never given). Nobody who was taken off
--- a project comes back.
+-- loses their row; a guest's editor row becomes commenter), and the grants of invites claimed
+-- meanwhile go (their projects were never given). Whoever was added meanwhile gets a row only on a
+-- Whole workspace project: with the rules out, anyone could add themselves to a Members only or
+-- Private one's list, so there they're added again in People & access. Nobody who was taken off a
+-- project comes back.
 do $seed$
+declare resync boolean;
 begin
   if exists (select 1 from public.schema_migrations where version = '0058') then return; end if;
   perform set_config('kanbo.pa_sync', 'on', true);
-  if exists (select 1 from public.project_members) then
+  resync := exists (select 1 from public.project_members);
+  if resync then
     delete from public.project_members m
      using public.projects p
      where p.id = m.project_id
@@ -818,7 +822,16 @@ begin
    where p.workspace_id is not null
      and c.uid is distinct from p.owner_id
      and public.user_ws_role(c.uid, p.workspace_id) in ('owner', 'admin', 'member', 'guest')
+     and (not resync or p.visibility = 'workspace')
   on conflict (project_id, user_id) do nothing;
+  if resync then
+    -- (contributor_ids follows: anyone listed meanwhile on a Members only or Private project drops off it)
+    update public.projects p set contributor_ids = coalesce(array(select m.user_id from public.project_members m
+                                                                  where m.project_id = p.id order by m.created_at, m.id), '{}')
+     where p.workspace_id is not null and p.visibility <> 'workspace'
+       and p.contributor_ids is distinct from coalesce(array(select m.user_id from public.project_members m
+                                                            where m.project_id = p.id order by m.created_at, m.id), '{}');
+  end if;
   perform set_config('kanbo.pa_sync', '', true);
 end $seed$;
 
@@ -1369,7 +1382,9 @@ end; $$;
 
 -- tasks, after a move (switch on): the sub-tasks that were in its project move with it. One in another
 -- project (moved there on its own while the switch was off, or back from the bin) isn't the mover's to
--- take: it stays where it is, on its own (D11).
+-- take: it stays where it is, on its own (D11). (It fires on a new parent too: trg_tasks_pa moves a
+-- re-parented task to its parent's project itself, and an UPDATE OF trigger only sees the columns the
+-- statement named.)
 create or replace function public.pa_trg_tasks_after() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
@@ -1914,7 +1929,7 @@ language sql immutable set search_path = pg_catalog as $$
     ('project_members', 'trg_project_members_after', 'after insert or update or delete', 'pa_trg_project_members_after', null),
     ('workspace_members', 'trg_ws_members_pa', 'after update of role, status, user_id or delete', 'pa_trg_ws_members', null),
     ('tasks', 'trg_tasks_pa', 'before insert or update of project_id, parent_id, assignee_id, collaborators, followers, workspace_id', 'pa_trg_tasks', null),
-    ('tasks', 'trg_tasks_pa_after', 'after update of project_id', 'pa_trg_tasks_after', null),
+    ('tasks', 'trg_tasks_pa_after', 'after update of project_id, parent_id, workspace_id', 'pa_trg_tasks_after', null),
     ('tasks', 'trg_tasks_pa_delete', 'before delete', 'pa_trg_tasks_delete', null),
     ('projects', 'trg_projects_pa_delete', 'before delete', 'pa_trg_projects_delete', null),
     ('status_updates', 'trg_status_update_pa', 'before insert or update', 'pa_trg_status_update', 'ask_user_ids'),
@@ -1956,11 +1971,11 @@ declare
   d record;
   n integer := 0;
 begin
-  -- the policies
+  -- the policies (signed-in callers: a signed-out one has no rows here to narrow, and gets none, as before)
   for d in select * from public.pa_policy_defs() loop
     if to_regclass('public.' || d.tbl) is null then continue; end if;
     execute format('drop policy if exists %I on public.%I', d.name, d.tbl);
-    execute format('create policy %I on public.%I as %s for %s%s%s', d.name, d.tbl,
+    execute format('create policy %I on public.%I as %s for %s to authenticated%s%s', d.name, d.tbl,
                    case when d.permissive then 'permissive' else 'restrictive' end, d.cmd,
                    case when d.using_sql is null then '' else ' using (' || d.using_sql || ')' end,
                    case when d.check_sql is null then '' else ' with check (' || d.check_sql || ')' end);
