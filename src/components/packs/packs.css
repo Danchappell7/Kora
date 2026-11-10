@@ -44,6 +44,7 @@
 
 /* ---------------- preview ---------------- */
 .kbpk-preview { display: grid; gap: 20px; min-width: 0; font-family: var(--font-ui, var(--font-display)); color: var(--ink); }
+.kbpk-preview:focus, .kbpk-done:focus { outline: none; }
 .kbpk-phead { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
 .kbpk-phead > .kptile { flex: none; }
 .kbpk-phead-text { display: grid; gap: 4px; min-width: 0; }
@@ -120,8 +121,8 @@ select.kbpk-field { cursor: pointer; }
   font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent));
 }
 .kbpk-tasks > summary::-webkit-details-marker { display: none; }
-.kbpk-tasks > summary::before { content: "▸"; font-size: 10px; transition: transform var(--d-1, 90ms) var(--ease); }
-.kbpk-tasks[open] > summary::before { transform: rotate(90deg); }
+.kbpk-tasks > summary > svg { flex: none; transition: transform var(--d-1, 90ms) var(--ease); }
+.kbpk-tasks[open] > summary > svg { transform: rotate(90deg); }
 .kbpk-tlist { display: grid; gap: 0; margin: 6px 0 0; padding: 0; list-style: none; border-left: 2px solid var(--hairline); }
 .kbpk-tlist > li {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; padding: 4px 0 4px 12px;
@@ -199,5 +200,5 @@ select.kbpk-field { cursor: pointer; }
   .kbpk-check { min-height: var(--h-touch, 44px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .kbpk-card, .kbpk-check, .kbpk-field, .kbpk-tasks > summary::before { transition: none; }
+  .kbpk-card, .kbpk-check, .kbpk-field, .kbpk-tasks > summary > svg { transition: none; }
 }

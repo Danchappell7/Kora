@@ -64,7 +64,7 @@ export function PackDone({ flow, host, onOpen }: { flow: PackFlow; host: Pick<Pa
   if (flow.undone) {
     const failed = flow.undone.failed;
     return (
-      <div ref={top} className="kbpk-done" data-undone="">
+      <div ref={top} tabIndex={-1} className="kbpk-done" data-undone="">
         <div className="kbpk-dhead">
           <span className="kbpk-dmark" data-tone="neutral" aria-hidden="true"><Icon name="undo" size={18} sw={2} /></span>
           <div>
@@ -83,7 +83,7 @@ export function PackDone({ flow, host, onOpen }: { flow: PackFlow; host: Pick<Pa
   const objectives = a.goals.filter((g) => !g.parentId);
   const firstDoc = a.docs[0];
   return (
-    <div ref={top} className="kbpk-done">
+    <div ref={top} tabIndex={-1} className="kbpk-done">
       <div className="kbpk-dhead">
         <span className="kbpk-dmark" aria-hidden="true"><Icon name="check" size={18} sw={2.25} /></span>
         <div>

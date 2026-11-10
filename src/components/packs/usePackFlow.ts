@@ -60,8 +60,9 @@ export function usePackFlow({ context, apply, undo }: {
 
 export type PackFlow = ReturnType<typeof usePackFlow>;
 
-/** A step's root: when it mounts, the sheet it's in scrolls back to the top (the sheet's body is
- *  the same element from step to step, so it would otherwise open where the last step was left). */
+/** A step's root (give it tabIndex -1): when it mounts, the sheet it's in scrolls back to the top
+ *  (the sheet's body is the same element from step to step, so it would otherwise open where the
+ *  last step was left), and focus moves to it (the button that led here is gone). */
 export function useTopOnMount<T extends HTMLElement>() {
   const ref = useRef<T>(null);
   useLayoutEffect(() => {
@@ -69,6 +70,7 @@ export function useTopOnMount<T extends HTMLElement>() {
       const oy = getComputedStyle(el).overflowY;
       if (oy === "auto" || oy === "scroll") { el.scrollTop = 0; break; }
     }
+    ref.current?.focus({ preventScroll: true });
   }, []);
   return ref;
 }

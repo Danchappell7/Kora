@@ -92,7 +92,7 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
   const year = pick.quarter.slice(0, 4);
 
   return (
-    <div ref={top} className="kbpk-preview" aria-busy={busy || undefined}>
+    <div ref={top} tabIndex={-1} className="kbpk-preview" aria-label={`What ${pack.name} sets up`} aria-busy={busy || undefined}>
       <header className="kbpk-phead">
         <ProjectTile project={packAsProject(pack)} size={44} />
         <div className="kbpk-phead-text">
@@ -147,7 +147,7 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
           </Section>
         )}
 
-        <Section title="Projects" count={pack.projects.filter((p) => projOn(p.key)).length} id={`${uid}-projects`}>
+        <Section title="Projects" count={plan.projects.length} id={`${uid}-projects`}>
           <ul className="kbpk-rows">
             {pack.projects.map((p) => {
               const pp = planned.get(p.key);
@@ -163,7 +163,7 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
                   name={p.name} meta={meta}>
                   {pp && pp.tasks.length > 0 && (
                     <details className="kbpk-tasks">
-                      <summary>Show {plural(pp.tasks.length, "task")}</summary>
+                      <summary><Icon name="chevronRight" size={12} sw={2} />Show {plural(pp.tasks.length, "task")}</summary>
                       <ol className="kbpk-tlist">
                         {pp.tasks.map((t, i) => (
                           <li key={i} data-milestone={t.milestone || undefined}>
@@ -178,6 +178,10 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
               );
             })}
           </ul>
+          {pack.perBusiness && (() => {
+            const own = plan.projects.filter((p) => !pack.projects.some((x) => x.key === p.key));
+            return own.length > 0 && <p className="kbpk-hint">And one for each business above, each in a portfolio of its own: {own.map((p) => p.name).join(", ")}.</p>;
+          })()}
         </Section>
 
         {(pack.goals?.length ?? 0) > 0 && (
@@ -203,7 +207,9 @@ export function PackPreview({ flow, context }: { flow: PackFlow; context: PackUi
                 ].filter(Boolean).join(" · ");
                 return (
                   <Row key={g.key} checked={checked} disabled={!context.canSetGoals} onChange={(v) => flow.toggle(packPart.goal(g.key), v)}
-                    lead={<span className="kbpk-glyph" data-kind="goal"><Icon name="target" size={12} sw={2} /></span>}
+                    lead={context.goalsV2 && g.icon
+                      ? <span className="kbpk-glyph" aria-hidden="true">{g.icon}</span>
+                      : <span className="kbpk-glyph" data-kind="goal"><Icon name="target" size={12} sw={2} /></span>}
                     name={g.name} meta={meta ? cap(meta) : undefined}>
                     {(g.keyResults?.length ?? 0) > 0 && (
                       <ul className="kbpk-krs" aria-label={`Key results for ${g.name}`}>
