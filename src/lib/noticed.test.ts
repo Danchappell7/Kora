@@ -74,3 +74,31 @@ describe("Kanbo noticed", () => {
     expect(noticed([task({ dueDate: day(1) })], { nowMin: H(19) })).toEqual([]);
   });
 });
+
+describe("Kanbo noticed: a key result of yours behind pace (0052)", () => {
+  const behind = (o: Partial<{ goalId: string; name: string; noun: string; gap: number; line: string; sinceCheckin: number | null }> = {}) =>
+    ({ goalId: "g-win", name: "Win back 120 lapsed accounts", noun: "key result", gap: 21, line: "Behind pace by 21%", sinceCheckin: 9, ...o });
+
+  it("says how far behind and when it was last checked in, with a one-tap check-in", () => {
+    const [item] = noticed([], { goalsBehind: [behind()] });
+    expect(item).toMatchObject({
+      id: "goal:g-win", kind: "goal", tone: "warn", icon: "target", title: "Your key result is behind pace",
+      body: "Win back 120 lapsed accounts is 21% behind pace. The last check-in was 9 days ago.",
+    });
+    expect(item.actions).toEqual([{ kind: "checkin", label: "Check in", goalId: "g-win" }, { kind: "goal", label: "Open it", goalId: "g-win" }]);
+  });
+
+  it("only the furthest behind, never twice once waved away, and in the words of where it stands", () => {
+    expect(noticed([], { goalsBehind: [behind(), behind({ goalId: "g-2" })] }).filter((n) => n.kind === "goal")).toHaveLength(1);
+    expect(noticed([], { goalsBehind: [behind(), behind({ goalId: "g-2", name: "Other" })], dismissed: ["goal:g-win"] })[0].id).toBe("goal:g-2");
+    expect(noticed([], { goalsBehind: [behind({ noun: "goal", line: "Past due at 40%", sinceCheckin: null })] })[0])
+      .toMatchObject({ title: "Your goal is behind pace", body: "Win back 120 lapsed accounts is past due at 40%. It has no check-ins yet." });
+    expect(noticed([], { goalsBehind: [behind({ sinceCheckin: 0 })] })[0].body).toMatch(/You checked in today\.$/);
+  });
+
+  it("someone blocked on you still comes first", () => {
+    const mine = task({ id: "tok2", title: "Design tokens", status: "review", focusMin: 20 });
+    const theirs = task({ title: "Ship onboarding", assigneeId: "maya", status: "blocked", dependencies: ["tok2"] });
+    expect(noticed([mine, theirs], { goalsBehind: [behind()] }).map((n) => n.kind)).toEqual(["waiting", "goal"]);
+  });
+});

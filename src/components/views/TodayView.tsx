@@ -25,7 +25,7 @@ import type { Task, ExternalEvent, CalEvent } from "../../data/types";
 import {
   composeTodayBrief, ghostCandidates, ghostPlan, freeMinutes, plannedMinutes, placesHint, tomorrowPreview, WORK_START, WORK_END, type BriefFact,
 } from "../../lib/brief";
-import { noticedToday, type Noticed, type NoticedAction } from "../../lib/noticed";
+import { noticedToday, type Noticed, type NoticedAction, type NoticedInput } from "../../lib/noticed";
 import type { Risk } from "../../lib/radar";
 import type { BusinessLead } from "../../lib/businesses";
 import { BusinessLeadLine, useGuestRow } from "../businesses/Businesses";
@@ -89,6 +89,13 @@ export interface TodayViewProps {
   names?: { id: string; name: string }[];
   /** All businesses, open on a workspace you're a guest in: no capture field (a capture adds there) */
   noCapture?: boolean;
+  /* ---- goals (0052; Today works without) ---- */
+  /** the goal of yours a task moves: the brief's one goal line */
+  goalFor?: (task: Task) => { goalId: string; name: string; behind: boolean } | null;
+  /** your key results behind pace: Kanbo noticed offers a one-tap check-in */
+  goalsBehind?: NoticedInput["goalsBehind"];
+  /** open a goal in the goal panel (`checkin`: with the composer out) */
+  onOpenGoal?: (id: string, opts?: { checkin?: boolean }) => void;
 }
 
 /** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
@@ -284,7 +291,7 @@ function TodayDay({
   tasks, allTasks, events, calendarConnected, currentUserId, userName, captureDefaults, onUpdate, onCreate, onOpen,
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
-  setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false,
+  setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false, goalFor, goalsBehind, onOpenGoal,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -346,8 +353,8 @@ function TodayDay({
     return ghostCandidates(tasks, { today: day, me }).filter((t) => skipped.has(t.id)).length;
   }, [tasks, day, me, prefs.skipped]);
   const people = names ?? members;
-  const brief = useMemo(() => composeTodayBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me, members: people, projects, dayClosed }),
-    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me, people, projects, dayClosed]);
+  const brief = useMemo(() => composeTodayBrief({ tasks, events: dayEvents, nowMin, today: day, userName, riskCount, allTasks, me, members: people, projects, dayClosed, goalFor }),
+    [tasks, dayEvents, nowMin, day, userName, riskCount, allTasks, me, people, projects, dayClosed, goalFor]);
   const planned = plannedMinutes(tasks);
   const free = freeMinutes(tasks, dayEvents, nowMin);
   const placedOpen = tasks.filter((t) => isPlaced(t) && t.status !== "done" && !t.archivedAt);
@@ -509,8 +516,8 @@ function TodayDay({
   /* ----- Kanbo noticed ----- */
   const [dismissed, setDismissed] = useState<string[]>(() => readDismissed(me, day));
   useEffect(() => { setDismissed(readDismissed(me, day)); }, [me, day]);
-  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, dismissed }),
-    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, dismissed]);
+  const noticed = useMemo(() => readOnly ? [] : noticedToday({ tasks, allTasks, events: dayEvents, nowMin, today: day, me, members: people, risks, goalsBehind: onOpenGoal ? goalsBehind : undefined, dismissed }),
+    [readOnly, tasks, allTasks, dayEvents, nowMin, day, me, people, risks, goalsBehind, onOpenGoal, dismissed]);
   const dismiss = (n: Noticed) => {
     const next = [...dismissed.filter((x) => x !== n.id), n.id];
     setDismissed(next); writeDismissed(me, day, next);
@@ -521,7 +528,13 @@ function TodayDay({
   const onNoticed = (n: Noticed, a: NoticedAction) => {
     if (a.kind === "open") onOpen(a.taskId);
     else if (a.kind === "risks") onOpenRisks?.();
-    else {
+    else if (a.kind === "goal") onOpenGoal?.(a.goalId);
+    else if (a.kind === "checkin") {
+      // the panel opens on the composer; once you've looked, it's done for today
+      onOpenGoal?.(a.goalId, { checkin: true });
+      const next = [...dismissed.filter((x) => x !== n.id), n.id];
+      setDismissed(next); writeDismissed(me, day, next);
+    } else {
       const t = tasks.find((x) => x.id === a.taskId) ?? allTasks.find((x) => x.id === a.taskId);
       if (!t) return;
       const before = { planToday: !!t.planToday, scheduled: t.scheduled ?? null };
@@ -581,7 +594,7 @@ function TodayDay({
     <section className="ktoday-lede" aria-label="Your day in brief">
       <style>{TODAY_CSS}</style>
       <style>{BRIEF_CSS}</style>
-      <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks}
+      <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks} onOpenGoal={onOpenGoal}
         hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk}
         lead={businessLead && <BusinessLeadLine lead={businessLead.lead} mode={businessLead.mode} focusTaskId={brief.focusTaskId} onOpen={onOpen} onShowAll={businessLead.onShowAll} />} />
       <div className="ktoday-actions">

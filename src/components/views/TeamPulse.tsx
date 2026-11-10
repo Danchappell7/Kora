@@ -67,7 +67,7 @@ const rowsFor = (text: string) =>
 type Person = { id: string; name: string; role?: string; guest?: boolean };
 type WriteUp = { status: "loading" } | { status: "ready"; text: string; ai: boolean; note?: string };
 
-export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople, kudos: kudosProp, onGiveKudos, onDropTasksOnPerson }: {
+export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople, kudos: kudosProp, onGiveKudos, onDropTasksOnPerson, goalsSlot }: {
   tasks: Task[];
   members: WorkspaceMember[];
   currentUserId: string;
@@ -93,6 +93,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   onGiveKudos?: (taskId: string, next: Kudos[]) => void;
   /** (0048) tasks dropped on a person's row (lib/dnd): reassign them (lib/dropActions reassignTasks) */
   onDropTasksOnPerson?: (taskIds: string[], userId: string) => void;
+  /** (0052) the business's goals, after the team (components/goals TeamGoals) */
+  goalsSlot?: ReactNode;
 }) {
   const toast = useOptionalToast();
   const [period, setPeriod] = useState<PulsePeriod>("day");
@@ -279,6 +281,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
               ? <SlackPostButton workspaceId={workspaceId} kind="risks" variant="ghost" getText={() => risksSlackText(risks)} />
               : undefined} />
         </aside>
+        {goalsSlot && <div className="kpulse-goals">{goalsSlot}</div>}
 
         {!loading && facts.people.length === 0 ? (
           <div className="kpt kpt-empty">
@@ -478,7 +481,7 @@ const PULSE_CSS = `
 .kpulse[data-personal] { padding: 0 var(--gutter, 32px); }
 .kpulse[data-personal] { display: grid; place-items: center; }
 .kpulse-grid { display: grid; grid-template-columns: minmax(0, 1fr) var(--radar-w, 380px);
-  grid-template-areas: "bar radar" "lede radar" "table radar"; grid-template-rows: auto auto 1fr; min-height: 100%;
+  grid-template-areas: "bar radar" "lede radar" "table radar" "goals radar"; grid-template-rows: auto auto auto 1fr; min-height: 100%;
   padding: 0 0 48px var(--gutter, 32px); box-sizing: border-box; }
 .kpulse-bar { grid-area: bar; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 48px; padding: 0 32px 0 0; }
 .kpulse-bar-end { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
@@ -492,6 +495,7 @@ const PULSE_CSS = `
 .kpulse-link { padding: 0; border: 0; background: none; color: var(--accent-text, var(--accent)); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .kpulse-radar { grid-area: radar; min-width: 0; padding: 0 var(--gutter, 32px) 24px 24px; border-left: 1px solid var(--hairline); }
 .kpt { grid-area: table; min-width: 0; margin-top: 24px; padding-right: 32px; }
+.kpulse-goals { grid-area: goals; min-width: 0; padding-right: 32px; }
 .kpt-row { display: grid; grid-template-columns: 180px minmax(0, 1fr) minmax(0, 1.35fr) 140px; gap: 0 20px; align-items: start; }
 .kpt-head { min-height: 32px; align-items: center; border-bottom: 1px solid var(--hairline); font: 600 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); }
 .kpt [role="rowgroup"] + [role="rowgroup"] > .kpt-row { min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--hairline); }
@@ -539,8 +543,8 @@ const PULSE_CSS = `
   .kpt-row { grid-template-columns: 148px minmax(0, 1fr) minmax(0, 1.3fr) 120px; gap: 0 16px; }
 }
 @container (max-width: 959px) {
-  .kpulse-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "lede" "radar" "table"; grid-template-rows: auto; padding-right: var(--gutter, 32px); }
-  .kpulse-bar, .kpulse-lede-wrap, .kpt { padding-right: 0; }
+  .kpulse-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "lede" "radar" "table" "goals"; grid-template-rows: auto; padding-right: var(--gutter, 32px); }
+  .kpulse-bar, .kpulse-lede-wrap, .kpt, .kpulse-goals { padding-right: 0; }
   .kpulse-radar { margin-top: 24px; padding: 8px 0 8px; border-left: 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); }
 }
 @container (max-width: 700px) {

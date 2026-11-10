@@ -534,3 +534,32 @@ describe("the brief's helpers", () => {
     expect(p.top.map((t) => t.id)).toEqual(["late", "tod", "tmr"]);
   });
 });
+
+describe("composeTodayBrief: one goal line (0052)", () => {
+  const deck = () => task({ id: "deck", title: "Finalise the launch deck", dueDate: TODAY, aiScore: 90, focusMin: 60 });
+  const mail = () => task({ id: "mail", title: "Write the welcome email", dueDate: TODAY, aiScore: 40, focusMin: 30 });
+  const goals: Record<string, { goalId: string; name: string; behind: boolean }> = {
+    deck: { goalId: "g-launch", name: "Launch on 18 Nov", behind: true },
+    mail: { goalId: "g-ret", name: "Studio retention to 85%", behind: false },
+  };
+
+  it("when the one big thing moves a goal of yours, says so once, right after why", () => {
+    const b = today2({ tasks: [deck(), mail()], goalFor: (t) => goals[t.id] ?? null });
+    expect(text(b.prose)).toMatch(/\. Finishing it moves Launch on 18 Nov, which is behind pace\.$/);
+    expect(ents(b.prose, "goal")).toEqual([{ kind: "goal", text: "Launch on 18 Nov", goalId: "g-launch" }]);
+    expect(b.plain).toContain("Finishing it moves Launch on 18 Nov, which is behind pace.");
+  });
+
+  it("else names the first of today's work that does (one line, never more)", () => {
+    const b = today2({ tasks: [deck(), mail()], goalFor: (t) => (t.id === "mail" ? goals.mail : null) });
+    expect(text(b.prose)).toMatch(/ Finishing Write the welcome email moves Studio retention to 85%\.$/);
+    expect(ents(b.prose, "goal")).toHaveLength(1);
+    expect(ents(b.prose, "task")).toEqual([{ kind: "task", text: "Write the welcome email", taskId: "mail", status: "todo" }]);
+  });
+
+  it("says nothing about goals when none of today's work moves one of yours, or the day is over", () => {
+    expect(ents(today2({ tasks: [deck()], goalFor: () => null }).prose, "goal")).toEqual([]);
+    expect(ents(today2({ tasks: [deck()] }).prose, "goal")).toEqual([]);
+    expect(ents(today2({ tasks: [deck()], nowMin: H(19), goalFor: (t) => goals[t.id] ?? null }).prose, "goal")).toEqual([]);
+  });
+});
