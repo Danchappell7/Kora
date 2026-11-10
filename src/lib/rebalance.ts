@@ -4,7 +4,10 @@
    planRebalance: for the week on show, each teammate over capacity
    hands on the work they haven't started (biggest first) to the
    teammate with the most room, who stays under 90% of their own
-   capacity and isn't off the day it's due. A few moves at most, so
+   capacity and isn't off the day it's due (someone around the whole
+   time before it's due comes ahead of someone off for part of it, and
+   the business's owner, who usually carries other businesses' work
+   too, comes last). A few moves at most, so
    the preview reads at a glance; nothing is written here (Workload
    shows the preview, Apply saves it, Undo puts it back).
    moveIntoWeek: a task dropped on a person's week keeps its weekday
@@ -22,6 +25,8 @@ export interface RebalanceMove {
   title: string;
   from: string;
   to: string;
+  /** its due day (YYYY-MM-DD), when it has one */
+  due?: string | null;
   /** the hours it carries in that week */
   hours: number;
 }
@@ -48,6 +53,8 @@ export function planRebalance(input: {
   today: Date;
   capacityOf: (id: string) => number;
   isOff?: (id: string, iso: string) => boolean;
+  /** asked last (a business's owner, who usually carries other businesses' work too) */
+  lastResort?: (id: string) => boolean;
 }): RebalancePlan {
   const { tasks, weekStart, today } = input;
   const team = input.members.filter((m) => !m.guest).map((m) => m.id);
@@ -56,6 +63,15 @@ export function planRebalance(input: {
   const capOf: Record<string, number> = {};
   for (const id of team) { load[id] = round1(rows.get(id)?.hours ?? 0); capOf[id] = input.capacityOf(id); }
   const before = { ...load };
+  // off on any day from today (or the week's start) until it's due (or the week's end)
+  const weekEnd = addDays(weekStart, 6);
+  const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const awayBefore = (id: string, due: string | undefined): boolean => {
+    if (!input.isOff) return false;
+    const last = due ? localDay(due) ?? weekEnd : weekEnd;
+    for (let d = todayMid > weekStart ? todayMid : weekStart; d <= last && d <= weekEnd; d = addDays(d, 1)) if (input.isOff(id, isoOf(d))) return true;
+    return false;
+  };
   const over = team.filter((id) => load[id] > capOf[id]).sort((a, b) => (load[b] - capOf[b]) - (load[a] - capOf[a]));
   const moves: RebalanceMove[] = [];
   for (const from of over) {
@@ -66,11 +82,13 @@ export function planRebalance(input: {
     for (const item of candidates) {
       if (moves.length >= MAX_MOVES || load[from] <= capOf[from]) break;
       const due = item.task.dueDate?.slice(0, 10);
+      const away = (id: string) => (awayBefore(id, due) ? 1 : 0);
+      const last = (id: string) => (input.lastResort?.(id) ? 1 : 0);
       const to = team
         .filter((id) => id !== from && capOf[id] > 0 && load[id] + item.hours <= capOf[id] * ROOM && !(due && input.isOff?.(id, due)))
-        .sort((a, b) => (capOf[b] * ROOM - load[b]) - (capOf[a] * ROOM - load[a]) || a.localeCompare(b))[0];
+        .sort((a, b) => away(a) - away(b) || last(a) - last(b) || (capOf[b] * ROOM - load[b]) - (capOf[a] * ROOM - load[a]) || a.localeCompare(b))[0];
       if (!to) continue;
-      moves.push({ taskId: item.task.id, title: item.task.title, from, to, hours: round1(item.hours) });
+      moves.push({ taskId: item.task.id, title: item.task.title, from, to, due: due ?? null, hours: round1(item.hours) });
       load[from] = round1(load[from] - item.hours);
       load[to] = round1(load[to] + item.hours);
     }

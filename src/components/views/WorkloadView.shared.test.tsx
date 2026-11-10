@@ -107,6 +107,24 @@ describe("Workload with the team's shared weeks (0055)", () => {
     expect(d.updateTasks).toHaveBeenLastCalledWith([{ id: "copy", patch: { dueDate: "2026-11-17" } }]);
     expect(d.toast.mock.calls[1][0]).toBe("Moved “FAQ copy”, now due Tue 17 Nov");
   });
+  it("the Move menu says who's off the day it's due", () => {
+    share();
+    const t = task({ id: "hero", title: "Hero", dueDate: "2026-11-12", effortHours: 2 });
+    const d = deps([t]);
+    render(<WorkloadView workspaceId="ws" members={members} onOpen={() => {}} tasks={[t]} moveDeps={d.moveDeps} />);
+    fireEvent.click(screen.getByRole("button", { name: /Maya Lin/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Move Hero" }));
+    expect(screen.getByRole("menuitem", { name: /Sana Rao/ })).toHaveTextContent("Off Thu");
+    expect(screen.getByRole("menuitem", { name: /Theo Vance/ })).not.toHaveTextContent("Off");
+  });
+  it("with only started work left over capacity, the banner says what you can still do", () => {
+    share();
+    const busy = task({ id: "busy", title: "Busy", status: "progress", dueDate: "2026-11-12", effortHours: 40 });
+    const d = deps([busy]);
+    render(<WorkloadView workspaceId="ws" members={members} onOpen={() => {}} tasks={[busy]} moveDeps={d.moveDeps} />);
+    expect(document.querySelector(".kload-notice[data-tone='signal']")).toHaveTextContent(/What's left is already under way: drag a task to a later week, or to (Theo|Sana)\b/);
+    expect(screen.queryByRole("button", { name: "Preview rebalance" })).toBeNull();
+  });
   it("without the app's update path (a guest, or no host), nothing can be moved", () => {
     share();
     render(<WorkloadView workspaceId="ws" members={members} onOpen={() => {}} tasks={[task({ dueDate: "2026-11-12", effortHours: 40 })]} />);

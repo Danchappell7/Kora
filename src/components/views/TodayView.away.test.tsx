@@ -30,7 +30,7 @@ describe("Today: work due while someone's away (0055)", () => {
     const { rerender } = render(<ToastProvider><TodayView {...props} /></ToastProvider>);
     expect(screen.getByText("Sana's away when two tasks are due")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Move to Mon" }));
-    expect(onMove).toHaveBeenCalledWith(["a", "b"], "2026-11-16");
+    expect(onMove).toHaveBeenCalledWith(["a", "b"], "2026-11-16", undefined);
     rerender(<ToastProvider><TodayView {...props} /></ToastProvider>);
     expect(screen.queryByText("Sana's away when two tasks are due")).toBeNull();
   });

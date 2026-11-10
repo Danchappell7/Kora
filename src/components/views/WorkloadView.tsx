@@ -25,7 +25,7 @@ import type { MoveDeps } from "../../lib/dropMoves";
 import { usePersonDropTarget } from "../../lib/dropActions";
 import { useTaskDropTarget, type TaskDragPayload } from "../../lib/dnd";
 import {
-  availabilityOn, canEditWeek, capacityInWeek, daysOffInWeek, hasOwnWeek, isOffOn, isoOf, weekOf, workDaysWords, type AvailabilityState,
+  availabilityOn, canEditWeek, capacityInWeek, daysOffInWeek, hasOwnWeek, isOffOn, isoOf, roleOf, weekOf, workDaysWords, type AvailabilityState,
 } from "../../lib/availability";
 import { saveWeek } from "../../lib/availabilitySync";
 import { planRebalance, type RebalancePlan } from "../../lib/rebalance";
@@ -231,7 +231,8 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace,
   const move = useWorkloadMoves({ moveDeps: canMove ? moveDeps : undefined, workspaceId, today, nameOf: nameFn, workDaysOf, isOff: offOn });
   const [preview, setPreview] = useState<RebalancePlan | null>(null);
   const plan = useMemo(() => (canMove && overloaded.length
-    ? planRebalance({ tasks, members, weekStart: focus.start, today, capacityOf: (id) => capIn(id, focus.start), isOff: shared ? (id, iso) => isOffOn(id, iso, avail) : undefined })
+    ? planRebalance({ tasks, members, weekStart: focus.start, today, capacityOf: (id) => capIn(id, focus.start), isOff: shared ? (id, iso) => isOffOn(id, iso, avail) : undefined,
+      lastResort: shared ? (id) => roleOf(workspaceId, id, avail) === "owner" : undefined })
     : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [canMove, overloaded.length, tasks, members, focus.start.getTime(), today, avail, localCaps, shared]);
@@ -293,6 +294,8 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace,
             {overloaded.map((r) => nameOf(r.id)).slice(0, 3).join(", ")}{overloaded.length > 3 ? ` +${overloaded.length - 3} more` : ""} {overloaded.length === 1 ? "is" : "are"} over capacity or carrying a lot of work {thatWeek}.
             {plan && plan.moves.length > 0
               ? <> Kanbo can move {plan.moves.length === 1 ? "a task" : `${plan.moves.length} tasks`} to people with room.</>
+              // (what's left is under way, so Kanbo won't hand it on: say what you can still do)
+              : plan && rebalance ? <> What's left is already under way: drag a task to a later week, or to <strong>{rebalance.to}</strong>, who has room.</>
               : rebalance && <> Consider moving a task or two from <strong>{rebalance.from}</strong> to <strong>{rebalance.to}</strong>, who has room.</>}
           </span>
           {plan && plan.moves.length > 0 && !preview && (
@@ -301,7 +304,7 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace,
         </div>
       )}
       {preview && moveDeps && (
-        <RebalancePreview plan={preview} nameOf={nameOf} capacityOf={capOf} weekLabel={weekWord(focus.offset)}
+        <RebalancePreview plan={preview} nameOf={nameOf} capacityOf={capOf} weekLabel={weekWord(focus.offset)} workspaceId={workspaceId}
           onCancel={() => setPreview(null)}
           onApply={() => { applyRebalance(preview, moveDeps()); setPreview(null); }} />
       )}

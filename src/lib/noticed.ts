@@ -32,8 +32,8 @@ export type NoticedAction =
   | { kind: "goal"; label: string; goalId: string }
   /** open the project's update, Kanbo's draft ready (0053) */
   | { kind: "update"; label: string; projectId: string }
-  /** move the work due while someone's away to the day they're back (0055) */
-  | { kind: "away"; label: string; userId: string; taskIds: string[]; to: string };
+  /** move the work due while someone's away to the day they're back, or (assignTo) give it to someone with room (0055) */
+  | { kind: "away"; label: string; userId: string; taskIds: string[]; to: string; assignTo?: string };
 
 export interface Noticed {
   /** stable for the thing noticed, so "Not now" keeps it away for the day */

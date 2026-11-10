@@ -102,7 +102,7 @@ export interface TodayViewProps {
   updates?: TodayUpdates;
   /* ---- 0055 (Today works without) ---- */
   /** work due while someone's away (components/availability useAwayNoticed): Kanbo noticed offers to move it */
-  away?: { noticed: Noticed[]; onMove: (taskIds: string[], to: string) => void };
+  away?: { noticed: Noticed[]; onMove: (taskIds: string[], to: string, assignTo?: string) => void };
 }
 
 /** How Today folds a card under the brief: beside the rail, each card is one row until you open it (the day
@@ -546,7 +546,7 @@ function TodayDay({
     } else if (a.kind === "update") updates?.open(a.projectId);
     else if (a.kind === "away") {
       // moved (the host's toast says so, with Undo): done for today
-      away?.onMove(a.taskIds, a.to);
+      away?.onMove(a.taskIds, a.to, a.assignTo);
       const next = [...dismissed.filter((x) => x !== n.id), n.id];
       setDismissed(next); writeDismissed(me, day, next);
     } else {

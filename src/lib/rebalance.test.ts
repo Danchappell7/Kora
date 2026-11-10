@@ -22,7 +22,7 @@ describe("planRebalance", () => {
     ];
     const plan = planRebalance({ tasks, members, weekStart: MON, today: TODAY, capacityOf: (id) => (id === "maya" ? 32 : 40) });
     // Maya has 40h against 32h: the 10h "Load test" goes to Sana (most room), and that's enough
-    expect(plan.moves).toEqual([{ taskId: "big", title: "Load test", from: "maya", to: "sana", hours: 10 }]);
+    expect(plan.moves).toEqual([{ taskId: "big", title: "Load test", from: "maya", to: "sana", due: "2026-11-13", hours: 10 }]);
     expect(plan.before).toMatchObject({ maya: 40, theo: 8, sana: 0 });
     expect(plan.after).toMatchObject({ maya: 30, sana: 10 });
     expect(plan.after.gus).toBeUndefined();
@@ -34,6 +34,21 @@ describe("planRebalance", () => {
       isOff: (id, iso) => id === "sana" && iso === "2026-11-12" });
     // Sana is off that day and Theo has room for 18h only: nothing fits
     expect(plan.moves).toEqual([]);
+  });
+  it("puts someone around the whole time before it's due ahead of someone off for part of it", () => {
+    const tasks = [task({ id: "big", dueDate: "2026-11-13", effortHours: 10 }), task({ id: "started", status: "progress", dueDate: "2026-11-13", effortHours: 25 })];
+    // Sana has more room, but she's off today: Theo (around all week) takes it
+    const plan = planRebalance({ tasks, members, weekStart: MON, today: TODAY, capacityOf: (id) => (id === "maya" ? 32 : id === "theo" ? 30 : 40),
+      isOff: (id, iso) => id === "sana" && iso === "2026-11-10" });
+    expect(plan.moves.map((m) => [m.taskId, m.to])).toEqual([["big", "theo"]]);
+    // nobody else with room: she still can
+    expect(planRebalance({ tasks, members: members.filter((m) => m.id !== "theo"), weekStart: MON, today: TODAY, capacityOf: (id) => (id === "maya" ? 32 : 40),
+      isOff: (id, iso) => id === "sana" && iso === "2026-11-10" }).moves.map((m) => m.to)).toEqual(["sana"]);
+  });
+  it("asks the business's owner last", () => {
+    const tasks = [task({ id: "big", dueDate: "2026-11-13", effortHours: 10 }), task({ id: "started", status: "progress", dueDate: "2026-11-13", effortHours: 25 })];
+    const plan = planRebalance({ tasks, members, weekStart: MON, today: TODAY, capacityOf: (id) => (id === "maya" ? 32 : id === "theo" ? 30 : 40), lastResort: (id) => id === "sana" });
+    expect(plan.moves.map((m) => m.to)).toEqual(["theo"]);
   });
   it("leaves sub-tasks, milestones and personal work where they are", () => {
     const tasks = [task({ parentId: "x", dueDate: "2026-11-12", effortHours: 50 }), task({ isMilestone: true, dueDate: "2026-11-12", effortHours: 50 }),

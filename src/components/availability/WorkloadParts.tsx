@@ -20,6 +20,7 @@ import type { MoveDeps } from "../../lib/dropMoves";
 import { useTaskDragSource } from "../../lib/dnd";
 import { moveIntoWeek, rebalancePatches, type RebalancePlan } from "../../lib/rebalance";
 import { addDays, fmtDayMonth, round1 } from "../../lib/weekMath";
+import { OffChip, OffTag } from "./OffChip";
 import "./availability.css";
 
 const quote = (s: string) => `“${s.length > 50 ? s.slice(0, 49) + "…" : s}”`;
@@ -119,6 +120,7 @@ export function WorkloadTask({ task, hours, overdue, estimated, label, onOpen, c
             {toPeople.map((p) => (
               <button key={p.id} type="button" role="menuitem" className="kmenu-item" onClick={() => { setMenu(false); onMove([task.id], p.id, null); }}>
                 <Icon name="user" size={16} sw={1.75} />{p.name}
+                <OffTag userId={p.id} workspaceId={task.workspaceId} due={task.dueDate} />
               </button>
             ))}
             {toPeople.length > 0 && toWeeks.length > 0 && assignee && <hr className="kmenu-sep" />}
@@ -136,8 +138,10 @@ export function WorkloadTask({ task, hours, overdue, estimated, label, onOpen, c
 }
 
 /** Kanbo's rebalance, before it's applied. */
-export function RebalancePreview({ plan, nameOf, capacityOf, weekLabel, onApply, onCancel }: {
+export function RebalancePreview({ plan, nameOf, capacityOf, weekLabel, workspaceId, onApply, onCancel }: {
   plan: RebalancePlan;
+  /** the business on show (who's off, beside whoever takes work on) */
+  workspaceId?: string | null;
   nameOf: (id: string) => string;
   capacityOf: (id: string) => number;
   weekLabel: string;
@@ -153,7 +157,7 @@ export function RebalancePreview({ plan, nameOf, capacityOf, weekLabel, onApply,
           <li key={m.taskId} className="kav-reb-move">
             <span className="kav-reb-title truncate">{m.title}</span>
             <span className="kav-reb-hours">{fmtH(m.hours)}</span>
-            <span className="kav-reb-who">{firstName(nameOf(m.from))} <Icon name="arrowRight" size={12} sw={2} /> {firstName(nameOf(m.to))}</span>
+            <span className="kav-reb-who">{firstName(nameOf(m.from))} <Icon name="arrowRight" size={12} sw={2} /> {firstName(nameOf(m.to))}<OffChip userId={m.to} workspaceId={workspaceId} size="xs" /></span>
           </li>
         ))}
       </ul>
