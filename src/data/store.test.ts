@@ -1653,7 +1653,10 @@ describe("store (demo mode) — the redesign's seed and AI", () => {
     // …and the other businesses' Inbox items (each workspace's Inbox shows only its own)
     const elsewhere = new Set(["a-demo-cs-1", "a-demo-cs-2", "a-demo-rc-1", "a-demo-hb-1"]);
     expect(feed.filter((a) => elsewhere.has(a.id))).toHaveLength(4);
-    expect(feed.filter((a) => !extra.has(a.id) && !elsewhere.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
+    // …and (0054) two project updates: Sana's asks you something, Maya replied on yours
+    const updates = new Set(["a-demo-up-1", "a-demo-up-2"]);
+    expect(feed.filter((a) => updates.has(a.id)).map((a) => [a.kind, a.meta?.ask])).toEqual([["update", false], ["update", true]]);
+    expect(feed.filter((a) => !extra.has(a.id) && !elsewhere.has(a.id) && !updates.has(a.id)).map((a) => a.id).slice(1)).toEqual(["a-new", "a-mid", "a-old"]);
     expect(feed.filter((a) => extra.has(a.id)).map((a) => a.kind).sort()).toEqual(["approval", "approval", "approval", "comment", "comment", "doc_mention", "kudos"]);
     expect(feed[0].kind).toBe("created");                  // logged just now, kept
     await s.clearInbox(["a-new"]);

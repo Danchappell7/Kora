@@ -205,6 +205,27 @@ export interface Portfolio {
   name: string;
   projectIds: string[];
   workspaceId?: string | null;
+  /* 0054 portfolio pages: who runs it, what it's for, when it lands, who follows it, and its look */
+  ownerId?: string | null;
+  description?: string | null;
+  /** "YYYY-MM-DD" */
+  targetDate?: string | null;
+  followerIds?: string[];
+  color?: string | null;
+  emoji?: string | null;
+}
+/** 0054 portfolio_updates: a portfolio-level update its owner posts (Kanbo drafts it from its projects' latest). */
+export interface PortfolioUpdate {
+  id: string;
+  portfolioId: string;
+  workspaceId?: string | null;
+  /** null once the author's account is deleted ("Former member") */
+  authorId: string | null;
+  summary: string;
+  status: StatusKind;
+  sections?: UpdateSections;
+  createdAt: string;
+  editedAt?: string | null;
 }
 export type AutomationActionType = "set_priority" | "set_assignee" | "set_section" | "add_tag";
 export interface AutomationAction { type: AutomationActionType; value: string }
@@ -246,6 +267,28 @@ export interface StatusUpdate {
   recoveryPlan?: string | null;
   /** 0053: the new target date it gives ("YYYY-MM-DD") */
   targetDate?: string | null;
+  /** 0054: set when its author changed what it says (shown as "edited") */
+  editedAt?: string | null;
+  /** 0054: optional Highlights / Risks / Asks / Next */
+  sections?: UpdateSections;
+  /** 0054: the people its Asks name (they get "Needs your reply") */
+  askUserIds?: string[];
+}
+
+/** 0054: an update's optional sections, so roll-ups read the same way. */
+export interface UpdateSections { highlights?: string; risks?: string; asks?: string; next?: string }
+
+/** 0054 status_update_comments: a reply on a project update (anyone who reads it, guests too). */
+export interface UpdateComment {
+  id: string;
+  updateId: string;
+  /** null once the author's account is deleted */
+  authorId: string | null;
+  authorName: string;
+  body: string;
+  mentions?: string[];
+  createdAt: string;
+  editedAt?: string | null;
 }
 
 /** 0053 update_asks: a leader asked a project's owner for an update (read by the two of them). */
@@ -290,8 +333,10 @@ export interface Attachment {
 /** "integration": a notice about one of your integrations, with no task (0046: a webhook switched off after 20 failures)
  *  "approval": an approval request for you, or a decision on yours (0047; meta says which)
  *  "doc_mention": someone @mentioned you in a project doc (0047; no task — meta.docId / meta.projectId)
- *  "kudos": someone thanked you for a finished task (0048; detail = their name; meta.kudosId / emoji / note) */
-export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration" | "approval" | "doc_mention" | "kudos";
+ *  "kudos": someone thanked you for a finished task (0048; detail = their name; meta.kudosId / emoji / note)
+ *  "update": a project update was posted, edited to ask you something, or replied to; or a portfolio update was posted
+ *    (0054; no task — meta.statusUpdateId / projectId, or meta.portfolioId; detail = who) */
+export type ActivityKind = "created" | "status" | "completed" | "reopened" | "comment" | "deleted" | "assigned" | "mention" | "integration" | "approval" | "doc_mention" | "kudos" | "update";
 
 /** activity.meta (0047): what an Inbox item points at beyond its task. Parsed by lib/activityMeta. */
 export interface ActivityMeta {
@@ -311,6 +356,15 @@ export interface ActivityMeta {
   kudosId?: string;
   emoji?: string;
   note?: string | null;
+  /** project updates (0054): which update, what happened, its call, and whether it asks something of you */
+  statusUpdateId?: string;
+  updateEvent?: "posted" | "asked" | "comment" | "portfolio";
+  updateStatus?: StatusKind;
+  ask?: boolean;
+  commentId?: string;
+  /** portfolio updates (0054) */
+  portfolioId?: string;
+  portfolioUpdateId?: string;
 }
 
 export interface Activity {
@@ -676,7 +730,8 @@ export type WebhookEvent =
   | "task.created" | "task.updated" | "task.completed" | "task.deleted"
   | "comment.created" | "project.created" | "project.updated" | "member.joined"
   | "approval.requested" | "approval.decided"
-  | "kudos.given";
+  | "kudos.given"
+  | "status_update.posted";
 /** what a delivery carried: an event, or a test ping */
 export type WebhookDeliveryEvent = WebhookEvent | "ping";
 export interface Webhook {

@@ -24,6 +24,8 @@ export interface Route {
   docId?: string;
   /** 0048: the saved view applied to My tasks or a project (?view=<id>); search views use `list` */
   savedViewId?: string;
+  /** 0054: Projects › Portfolios › one portfolio's page (/projects/portfolios/:id); `tab` "updates" opens its Updates */
+  portfolioId?: string;
 }
 
 export type TaskView = "list" | "board" | "timeline" | "calendar" | "files" | "matrix";

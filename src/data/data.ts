@@ -6,7 +6,7 @@
 import type {
   Member, Workspace, Project, TagDef, Task, CalEvent,
   Status, Priority, EnergyKind, StatusMeta, PriorityMeta, EnergyMeta, Recurrence,
-  Activity, Goal, Portfolio, StatusUpdate, WorkspaceEvent, AutomationRule, FormDef,
+  Activity, Goal, Portfolio, PortfolioUpdate, StatusUpdate, UpdateComment, WorkspaceEvent, AutomationRule, FormDef,
 } from "./types";
 import { isSupabaseConfigured } from "../lib/backend";
 import { demoDayCalendar } from "./demoCalendars";
@@ -602,16 +602,26 @@ export const DEMO_GOALS: Goal[] = [
 ];
 
 export const DEMO_PORTFOLIOS: Portfolio[] = [
-  { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise" },
+  // (0054 portfolio pages: an owner, what it's for, when it lands, who follows it, and its own look)
+  { id: "pf-q3", name: "Q3 launch", projectIds: ["p-launch", "p-brand", "p-infra"], workspaceId: "ws-foundrise",
+    ownerId: "m-self", description: "Everything that has to land for the Q3 launch: the product, the brand and the platform under it.",
+    targetDate: LAUNCH_DAY, followerIds: ["m-1", "m-3"], color: spectrumColor("sky"), emoji: "🚀" },
   // in Personal (only its creator sees it), across businesses; the last project has since gone from view
-  { id: "pf-openings", name: "Every opening this quarter", projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"], workspaceId: null },
+  { id: "pf-openings", name: "Every opening this quarter", projectIds: ["p-launch", "p-onboard", "p-clubhouse", "p-gone-studio"], workspaceId: null,
+    ownerId: "m-self", description: "Every launch and opening I'm part of, across the businesses.", targetDate: dayOffset(45), followerIds: [],
+    color: spectrumColor("amber"), emoji: "🏁" },
 ];
 
 /* Platform Infra has no update at all, so it reads as stale. Each says who posted it;
    the launch's first came from someone who has since left ("Former member"). */
 export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
+  // (0054: Sana's carries sections, asks Daniel something, and she's fixed a typo since)
   { id: "su-brand", projectId: "p-brand", status: "on_track", createdAt: daysAgoAt(2, 16, 5), workspaceId: "ws-foundrise", authorId: "m-3",
-    summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way." },
+    summary: "Tokens v2 are in review and the new colour palette has shipped; the homepage hero is under way.",
+    editedAt: daysAgoAt(2, 16, 40),
+    sections: { highlights: "The new colour palette is live across the web app.", risks: "The homepage hero waits on final copy.",
+      asks: "Daniel, can you approve the hero direction by Thursday?", next: "Tokens v2 review on Wednesday, then the hero build." },
+    askUserIds: ["m-self"] },
   { id: "su-launch", projectId: "p-launch", status: "at_risk", createdAt: daysAgoAt(9, 17, 20), workspaceId: "ws-foundrise", authorId: "m-self",
     summary: "Deck is the critical path; onboarding is blocked on tokens.",
     // 0053: an At risk update's plan to recover and new target date
@@ -628,6 +638,46 @@ export const DEMO_STATUS_UPDATES: StatusUpdate[] = [
   // 0053: On hold is an update of its own, so it stays on hold when the next one comes in
   { id: "su-northwind", projectId: "p-northwind", status: "on_hold", createdAt: daysAgoAt(4, 11, 0), workspaceId: "ws-harbour", authorId: "m-3",
     summary: "Paused while Northwind's board reviews the scope. We pick it up once they've met." },
+];
+
+/* 0054: the conversation on the demo's updates. Sana's brand update asks Daniel something (his
+   Inbox has it under "Needs your reply"); his launch update has two replies and reactions. Who has
+   read each one is "Seen by". */
+export const DEMO_UPDATE_THREADS: Record<string, { comments: UpdateComment[]; reactions: Record<string, string[]>; seenBy: string[] }> = {
+  "su-launch": {
+    comments: [
+      { id: "uc-demo-1", updateId: "su-launch", authorId: "m-1", authorName: "Maya Lin", createdAt: daysAgoAt(9, 17, 48), editedAt: null,
+        body: "I can take the deck review this week if Theo sends the numbers by Wednesday." },
+      { id: "uc-demo-2", updateId: "su-launch", authorId: "m-2", authorName: "Theo Vance", createdAt: daysAgoAt(8, 9, 15), editedAt: null,
+        body: "Numbers will be with you Wednesday morning." },
+    ],
+    reactions: { "👍": ["m-1", "m-2"], "👀": ["m-3"] },
+    seenBy: ["m-1", "m-2", "m-3"],
+  },
+  "su-brand": {
+    comments: [
+      { id: "uc-demo-3", updateId: "su-brand", authorId: "m-1", authorName: "Maya Lin", createdAt: daysAgoAt(2, 17, 2), editedAt: null,
+        body: "The hero copy is in the brand doc now." },
+    ],
+    reactions: { "🎉": ["m-1"] },
+    seenBy: ["m-1", "m-2"],
+  },
+};
+
+/* 0054: project updates in the Inbox (task-less, kind "update"): Sana's asks you something,
+   and Maya replied on your launch update. */
+export const DEMO_UPDATE_ACTIVITY: Activity[] = ([
+  { id: "a-demo-up-1", taskId: null, taskTitle: "Brand Refresh", kind: "update", detail: "Sana Rao", createdAt: daysAgoAt(2, 16, 5),
+    meta: { statusUpdateId: "su-brand", projectId: "p-brand", updateEvent: "posted", updateStatus: "on_track", ask: true } },
+  { id: "a-demo-up-2", taskId: null, taskTitle: "Q3 Product Launch", kind: "update", detail: "Maya Lin", createdAt: minutesAgo(180),
+    meta: { statusUpdateId: "su-launch", projectId: "p-launch", updateEvent: "comment", commentId: "uc-demo-1", ask: false } },
+] satisfies Activity[]).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+
+/* 0054: the Q3 launch portfolio's last update, posted by Daniel a week ago. */
+export const DEMO_PORTFOLIO_UPDATES: PortfolioUpdate[] = [
+  { id: "pu-demo-1", portfolioId: "pf-q3", workspaceId: "ws-foundrise", authorId: "m-self", status: "at_risk", createdAt: daysAgoAt(7, 17, 30), editedAt: null,
+    summary: "2 of 3 projects are on track. The launch itself is at risk: the narrative deck is the critical path and onboarding is blocked on tokens.",
+    sections: { highlights: "The new colour palette shipped.", risks: "The deck review slips into launch week.", next: "Deck review Thursday; tokens v2 review Wednesday." } },
 ];
 
 /* Inbox items in the other businesses (the switcher's unread dots), newest first. Kept

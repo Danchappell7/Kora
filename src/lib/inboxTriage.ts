@@ -4,7 +4,8 @@
      or the task is done)
    · New to you — work handed to you: assignments, and requests
      that arrived through a project's request form assigned to you
-   · FYI — everything else (comments, updates, your own history)
+   · FYI — everything else (comments, updates, your own history);
+     a project update that asks you something is "Needs your reply" (0054)
    Pure: no React, no storage. Order within a group is the feed's
    own order (newest first).
    ============================================================ */
@@ -65,6 +66,8 @@ export function groupOf(a: Activity, ctx: { me?: string; task?: Task }): TriageG
   // reviewer's approval) are FYI: open requests waiting on you show in "Approvals for you".
   if (a.kind === "doc_mention") return "newToYou";
   if (a.kind === "approval") return a.meta?.event === "changes_requested" ? "newToYou" : "fyi";
+  // 0054: a project update that asks you something (an Ask naming you, a reply mentioning you) waits on you; the rest is FYI
+  if (a.kind === "update") return a.meta?.ask ? "reply" : "fyi";
   if (a.kind === "created" && isRequestTask(ctx.task) && (!ctx.me || ctx.task?.assigneeId === ctx.me)) return "newToYou";
   return "fyi";
 }

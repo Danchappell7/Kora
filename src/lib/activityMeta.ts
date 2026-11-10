@@ -4,13 +4,17 @@
      approval      { approval_id, event, status, rule?, comment? }
      doc_mention   { doc_id, project_id }
      kudos         { kudos_id, emoji, note }          (0048)
+     update        { status_update_id, project_id, update_event, update_status, ask, comment_id? }
+                   or { portfolio_id, portfolio_update_id, update_event: "portfolio", … }   (0054)
    Older rows (and rows a client logs for itself) have none.  [architect]
    ============================================================ */
-import type { ActivityMeta, ApprovalEvent, ApprovalRule, ApprovalStatus } from "../data/types";
+import type { ActivityMeta, ApprovalEvent, ApprovalRule, ApprovalStatus, StatusKind } from "../data/types";
 
 const EVENTS = new Set<ApprovalEvent>(["requested", "approved", "changes_requested", "cancelled"]);
 const STATUSES = new Set<ApprovalStatus>(["pending", "approved", "changes_requested", "cancelled"]);
 const RULES = new Set<ApprovalRule>(["any", "all"]);
+const UPDATE_EVENTS = new Set<NonNullable<ActivityMeta["updateEvent"]>>(["posted", "asked", "comment", "portfolio"]);
+const UPDATE_STATUSES = new Set<StatusKind>(["on_track", "at_risk", "off_track", "on_hold"]);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 
 /** activity.meta (snake_case; camelCase also read) → ActivityMeta, or undefined when there's nothing. */
@@ -34,5 +38,19 @@ export function parseActivityMeta(raw: unknown): ActivityMeta | undefined {
   if (typeof r.emoji === "string" && r.emoji) out.emoji = r.emoji;
   if (typeof r.note === "string") out.note = r.note;
   else if (r.note === null && kudosId) out.note = null;
+  // 0054 project and portfolio updates
+  const statusUpdateId = str(g("status_update_id", "statusUpdateId"));
+  if (statusUpdateId) out.statusUpdateId = statusUpdateId;
+  const updateEvent = g("update_event", "updateEvent");
+  if (typeof updateEvent === "string" && UPDATE_EVENTS.has(updateEvent as NonNullable<ActivityMeta["updateEvent"]>)) out.updateEvent = updateEvent as ActivityMeta["updateEvent"];
+  const updateStatus = g("update_status", "updateStatus");
+  if (typeof updateStatus === "string" && UPDATE_STATUSES.has(updateStatus as StatusKind)) out.updateStatus = updateStatus as StatusKind;
+  if (typeof r.ask === "boolean") out.ask = r.ask;
+  const commentId = str(g("comment_id", "commentId"));
+  if (commentId) out.commentId = commentId;
+  const portfolioId = str(g("portfolio_id", "portfolioId"));
+  if (portfolioId) out.portfolioId = portfolioId;
+  const portfolioUpdateId = str(g("portfolio_update_id", "portfolioUpdateId"));
+  if (portfolioUpdateId) out.portfolioUpdateId = portfolioUpdateId;
   return Object.keys(out).length ? out : undefined;
 }

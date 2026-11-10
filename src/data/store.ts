@@ -18,11 +18,12 @@ import type { BoardSettingsChange } from "../components/tasks/otherViewsLogic";
 import {
   TASKS, PROJECTS, MEMBERS, WORKSPACES, energyOf, PLAN_TODAY_IDS, setReferenceData,
   PERSONAL_PROJECT, PERSONAL_WORKSPACE, BUILTIN_TAGS, getMember, getProject, toLocalISO, todayISO, SELF_COLOR,
-  DEMO_ACTIVITY, DEMO_ACTIVITY_ELSEWHERE, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
+  DEMO_ACTIVITY, DEMO_ACTIVITY_ELSEWHERE, DEMO_UPDATE_ACTIVITY, DEMO_GOALS, DEMO_PORTFOLIOS, DEMO_STATUS_UPDATES, DEMO_TASK_EVENTS, DEMO_RULES, DEMO_FORMS,
   EVENTS, KANBO_TODAY,
 } from "./data";
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
+import { parseSections, sectionsAsText } from "../lib/updateSections";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -536,17 +537,31 @@ const rowToCustomField = (r: CustomFieldRow): CustomFieldDef => ({ id: r.id, pro
 interface SavedSearchRow { id: string; name: string; query: unknown }
 interface GoalRow { id: string; workspace_id: string | null; name: string; description: string | null; target: number | null; current: number | null; unit: string | null; due: string | null; status: string; position: number | null; parent_id?: string | null; project_id?: string | null; created_at?: string }
 const rowToGoal = (r: GoalRow): Goal => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, description: r.description ?? undefined, target: r.target ?? undefined, current: r.current ?? undefined, unit: r.unit ?? undefined, due: r.due ?? undefined, status: (r.status as GoalStatus) ?? "on_track", position: r.position ?? undefined, parentId: r.parent_id ?? undefined, projectId: r.project_id ?? undefined });
-interface PortfolioRow { id: string; workspace_id: string | null; name: string; project_ids: string[] | null; created_at?: string }
-const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, projectIds: r.project_ids ?? [] });
+interface PortfolioRow { id: string; workspace_id: string | null; name: string; project_ids: string[] | null; created_at?: string;
+  owner_id?: string | null; description?: string | null; target_date?: string | null; follower_ids?: string[] | null; color?: string | null; emoji?: string | null }
+// owner_id … emoji arrive with 0054 (portfolio pages); absent before, and the page says they aren't switched on
+const rowToPortfolio = (r: PortfolioRow): Portfolio => ({ id: r.id, workspaceId: r.workspace_id, name: r.name, projectIds: r.project_ids ?? [],
+  ...("owner_id" in r ? { ownerId: r.owner_id ?? null, description: r.description ?? null, targetDate: r.target_date ? String(r.target_date).slice(0, 10) : null,
+    followerIds: r.follower_ids ?? [], color: r.color ?? null, emoji: r.emoji ?? null } : {}) });
+/** 0054's portfolio details, as columns (a patch's keys → the row's) */
+const PORTFOLIO_COLUMNS = { ownerId: "owner_id", description: "description", targetDate: "target_date", followerIds: "follower_ids", color: "color", emoji: "emoji" } as const;
+export type PortfolioPatch = { name?: string; projectIds?: string[] } & Partial<Pick<Portfolio, keyof typeof PORTFOLIO_COLUMNS>>;
 // author_id arrives with 0051 (null once the author's account is deleted); before
 // it, user_id is the poster — until an account deletion hands the row to the owner
-interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string; user_id?: string | null; author_id?: string | null; recovery_plan?: string | null; target_date?: string | null }
-const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => ({
-  id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at,
-  authorId: "author_id" in r ? r.author_id ?? null : r.user_id ?? undefined,
-  // 0053: an At risk / Off track update's plan to recover and new target date
-  ...(r.recovery_plan ? { recoveryPlan: r.recovery_plan } : {}), ...(r.target_date ? { targetDate: String(r.target_date).slice(0, 10) } : {}),
-});
+interface StatusUpdateRow { id: string; workspace_id: string | null; project_id: string; summary: string; status: string; created_at: string; user_id?: string | null; author_id?: string | null; recovery_plan?: string | null; target_date?: string | null;
+  edited_at?: string | null; sections?: unknown; ask_user_ids?: string[] | null }
+const rowToStatusUpdate = (r: StatusUpdateRow): StatusUpdate => {
+  const sections = parseSections(r.sections);
+  return {
+    id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, summary: r.summary, status: (r.status as StatusKind) ?? "on_track", createdAt: r.created_at,
+    authorId: "author_id" in r ? r.author_id ?? null : r.user_id ?? undefined,
+    // 0053: an At risk / Off track update's plan to recover and new target date
+    ...(r.recovery_plan ? { recoveryPlan: r.recovery_plan } : {}), ...(r.target_date ? { targetDate: String(r.target_date).slice(0, 10) } : {}),
+    // 0054: edited, its sections and who its Asks name
+    ...(r.edited_at ? { editedAt: r.edited_at } : {}), ...(sections ? { sections } : {}),
+    ...(r.ask_user_ids?.length ? { askUserIds: r.ask_user_ids } : {}),
+  };
+};
 interface AutomationRuleRow { id: string; workspace_id: string | null; project_id: string; name: string; trigger: string; actions: unknown; enabled: boolean }
 const rowToRule = (r: AutomationRuleRow): AutomationRule => ({ id: r.id, workspaceId: r.workspace_id, projectId: r.project_id, name: r.name, trigger: ((r.trigger as AutomationRule["trigger"]) || "task_created"), actions: (Array.isArray(r.actions) ? r.actions : []) as AutomationAction[], enabled: r.enabled });
 interface FormRow { id: string; workspace_id: string | null; project_id: string; name: string; description: string | null; fields: unknown; public_token?: string | null; public_enabled?: boolean | null }
@@ -1476,7 +1491,7 @@ export const store = {
         const docMention: Activity = { id: "a-demo-doc-1", taskId: null, taskTitle: "Launch brief", kind: "doc_mention", detail: "Sana Rao",
           createdAt: new Date(Date.now() - 125 * 60_000).toISOString(), meta: { docId: "doc-launch-brief", projectId: "p-launch" } };
         // 0048: a bundle of three comments on the launch deck and a kudos (lib/notifyDemo)
-        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity()), ...seedCopy(DEMO_ACTIVITY_ELSEWHERE)].filter((a) => !logged.has(a.id))].sort(newestFirst);
+        demoActivity = [...demoActivity, ...[...seedCopy(DEMO_ACTIVITY), ...seedCopy(DEMO_APPROVAL_ACTIVITY), docMention, ...seedCopy(demoNotifyActivity()), ...seedCopy(DEMO_ACTIVITY_ELSEWHERE), ...seedCopy(DEMO_UPDATE_ACTIVITY ?? [])].filter((a) => !logged.has(a.id))].sort(newestFirst);
       }
       return {
         tasks: TASKS.map(withPlanFields).map((t, i) => ({ ...t, position: i })), projects: [...PROJECTS], tags: { ...BUILTIN_TAGS },
@@ -2222,14 +2237,25 @@ export const store = {
     if (error) throw error;
     return rowToPortfolio(data as PortfolioRow);
   },
-  async updatePortfolio(id: string, patch: { name?: string; projectIds?: string[] }): Promise<void> {
+  /** 0054's details (owner, description, target date, followers, look) before 0054 is run: the
+   *  rest of the patch still saves, then it says those aren't switched on yet. */
+  async updatePortfolio(id: string, patch: PortfolioPatch): Promise<void> {
     if (!supabase) return;
-    const row: Record<string, unknown> = {};
+    let row: Record<string, unknown> = {};
     if ("name" in patch) row.name = patch.name;
     if ("projectIds" in patch) row.project_ids = patch.projectIds ?? [];
-    if (Object.keys(row).length === 0) return;
-    const { error } = await supabase.from("portfolios").update(row).eq("id", id);
-    if (error) throw error;
+    for (const [k, col] of Object.entries(PORTFOLIO_COLUMNS)) {
+      if (k in patch) row[col] = k === "followerIds" ? patch.followerIds ?? [] : (patch as Record<string, unknown>)[k] ?? null;
+    }
+    const asked = Object.keys(row).length;
+    for (let i = 0; i < 7 && Object.keys(row).length; i++) {
+      const { error } = await supabase.from("portfolios").update(row).eq("id", id);
+      if (!error) break;
+      const stripped = withoutMissingColumn(row, error.message);
+      if (!stripped) throw error;
+      row = stripped;
+    }
+    if (Object.keys(row).length < asked) throw new Error("Portfolio details aren't switched on yet.");
   },
   async deletePortfolio(id: string): Promise<void> {
     if (!supabase) return;
@@ -2239,23 +2265,65 @@ export const store = {
 
   /* ---------- project status updates ---------- */
   /** `recoveryPlan` / `targetDate` (0053) go in their own columns; before 0053 they're kept in the update's words instead. */
-  async createStatusUpdate(input: { workspaceId: string | null; projectId: string; summary: string; status: StatusKind; recoveryPlan?: string; targetDate?: string }, userId: string): Promise<StatusUpdate> {
-    const extras = { ...(input.recoveryPlan ? { recoveryPlan: input.recoveryPlan } : {}), ...(input.targetDate ? { targetDate: input.targetDate } : {}) };
+  async createStatusUpdate(input: { workspaceId: string | null; projectId: string; summary: string; status: StatusKind; recoveryPlan?: string; targetDate?: string; sections?: UpdateSections; askUserIds?: string[] }, userId: string): Promise<StatusUpdate> {
+    const sections = parseSections(input.sections);
+    const asks = input.askUserIds?.length ? [...new Set(input.askUserIds)].slice(0, 20) : undefined;
+    const extras = { ...(input.recoveryPlan ? { recoveryPlan: input.recoveryPlan } : {}), ...(input.targetDate ? { targetDate: input.targetDate } : {}),
+      ...(sections ? { sections } : {}), ...(asks && input.workspaceId ? { askUserIds: asks.filter((id) => id !== userId) } : {}) };
     if (!supabase) return { id: newId(), workspaceId: input.workspaceId, projectId: input.projectId, summary: input.summary, status: input.status, createdAt: new Date().toISOString(), authorId: userId, ...extras };
     const uid = await authUid(userId);
     let row: Record<string, unknown> = { user_id: uid, workspace_id: input.workspaceId, project_id: input.projectId, summary: input.summary, status: input.status,
-      ...(input.recoveryPlan ? { recovery_plan: input.recoveryPlan } : {}), ...(input.targetDate ? { target_date: input.targetDate } : {}) };
-    for (let i = 0; i < 3; i++) {
+      ...(input.recoveryPlan ? { recovery_plan: input.recoveryPlan } : {}), ...(input.targetDate ? { target_date: input.targetDate } : {}),
+      ...(sections ? { sections } : {}), ...(asks ? { ask_user_ids: asks } : {}) };
+    for (let i = 0; i < 6; i++) {
       const { data, error } = await supabase.from("status_updates").insert(row).select("*").single();
       if (!error) return rowToStatusUpdate(data as StatusUpdateRow);
       const stripped = withoutMissingColumn(row, error.message);
       if (!stripped) throw error;
-      // before 0053: the plan and the date stay with the update, in its words
+      // before 0053 / 0054: the plan, the date and the sections stay with the update, in its words
       const said = [row.summary as string, "recovery_plan" in row && !("recovery_plan" in stripped) ? `Plan to recover: ${input.recoveryPlan}` : "",
-        "target_date" in row && !("target_date" in stripped) ? `New target date: ${input.targetDate}` : ""].filter(Boolean);
+        "target_date" in row && !("target_date" in stripped) ? `New target date: ${input.targetDate}` : "",
+        "sections" in row && !("sections" in stripped) ? sectionsAsText(sections) : ""].filter(Boolean);
       row = { ...stripped, summary: said.join("\n\n") };
     }
     throw new Error("Couldn't post the update.");
+  },
+  /** Change your own update (0054 marks it edited; only its author may). Answers the saved row
+   *  (demo: the patched one); before 0054 the sections are left out. */
+  async editStatusUpdate(u: StatusUpdate, patch: { summary?: string; status?: StatusKind; sections?: UpdateSections | null; askUserIds?: string[]; recoveryPlan?: string | null; targetDate?: string | null }): Promise<StatusUpdate> {
+    const sections = patch.sections === null ? undefined : parseSections(patch.sections);
+    if (!supabase) {
+      const next: StatusUpdate = { ...u, ...patch, sections, editedAt: new Date().toISOString() };
+      if (!sections) delete next.sections;
+      return next;
+    }
+    let row: Record<string, unknown> = {};
+    if ("summary" in patch) row.summary = patch.summary;
+    if ("status" in patch) row.status = patch.status;
+    if ("sections" in patch) row.sections = sections ?? null;
+    if ("askUserIds" in patch) row.ask_user_ids = [...new Set(patch.askUserIds ?? [])].slice(0, 20);
+    if ("recoveryPlan" in patch) row.recovery_plan = patch.recoveryPlan || null;
+    if ("targetDate" in patch) row.target_date = patch.targetDate || null;
+    for (let i = 0; i < 6; i++) {
+      const { data, error } = await supabase.from("status_updates").update(row).eq("id", u.id).select("*");
+      if (!error) {
+        const got = (data as StatusUpdateRow[] | null)?.[0];
+        // nothing came back: it isn't yours to change (or it's gone)
+        if (!got) throw new Error("Only the person who posted an update can change it.");
+        return rowToStatusUpdate(got);
+      }
+      const stripped = withoutMissingColumn(row, error.message);
+      if (!stripped) throw error;
+      row = stripped;
+    }
+    throw new Error("Couldn't save the update.");
+  },
+  /** Delete an update: its author, or the workspace's owners and admins (0054). */
+  async deleteStatusUpdate(id: string): Promise<void> {
+    if (!supabase) return;
+    const { data, error } = await supabase.from("status_updates").delete().eq("id", id).select("id");
+    if (error) throw error;
+    if (!(data as unknown[] | null)?.length) throw new Error("Only the person who posted an update, or a workspace owner or admin, can delete it.");
   },
 
   /* ---------- automation rules ---------- */
@@ -2952,12 +3020,23 @@ export const store = {
     });
   },
 
-  /** Draft a project status update (2–4 sentences and a status) from its facts. */
-  async aiStatus(facts: unknown): Promise<AiOutcome<{ summary: string; status: StatusKind }>> {
+  /** Draft a project status update (2–4 sentences and a status) from its facts, with its
+   *  Highlights / Risks / Asks / Next when the function sends them (0054). */
+  async aiStatus(facts: unknown): Promise<AiOutcome<{ summary: string; status: StatusKind; sections?: UpdateSections }>> {
     if (facts == null) return AI_UNAVAILABLE;
     return callAiMode({ mode: "status", facts, today: toLocalISO(new Date()) }, (d) => {
       const summary = typeof d.summary === "string" ? d.summary.trim() : "";
-      return summary && typeof d.status === "string" && STATUS_KINDS.has(d.status) ? { summary, status: d.status as StatusKind } : null;
+      const sections = parseSections(d.sections);
+      return summary && typeof d.status === "string" && STATUS_KINDS.has(d.status) ? { summary, status: d.status as StatusKind, ...(sections ? { sections } : {}) } : null;
+    });
+  },
+  /** Draft a portfolio update from its projects' latest updates and health (lib/portfolioDraft's facts). */
+  async aiPortfolio(facts: unknown): Promise<AiOutcome<{ summary: string; status: StatusKind; sections?: UpdateSections }>> {
+    if (facts == null) return AI_UNAVAILABLE;
+    return callAiMode({ mode: "portfolio", facts, today: toLocalISO(new Date()) }, (d) => {
+      const summary = typeof d.summary === "string" ? d.summary.trim() : "";
+      const sections = parseSections(d.sections);
+      return summary && typeof d.status === "string" && STATUS_KINDS.has(d.status) ? { summary, status: d.status as StatusKind, ...(sections ? { sections } : {}) } : null;
     });
   },
 
