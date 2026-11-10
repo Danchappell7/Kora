@@ -36,8 +36,8 @@ import {
 import type { GroupTarget } from "./components/views/GroupView";
 // one view across businesses: All businesses on Today, Inbox and My tasks; the switcher's dots; Projects › Group
 import { useBusinessScope } from "./hooks/useBusinessScope";
-import { AllBusinessesToggle, BusinessChipsProvider, BusinessLeadLine, WorkspaceMark } from "./components/businesses/Businesses";
-import { mentionsInWorkspace, roleInWorkspace } from "./lib/businesses";
+import { AllBusinessesToggle, BusinessChipsProvider, WorkspaceMark } from "./components/businesses/Businesses";
+import { canAssignIn, mentionsInWorkspace } from "./lib/businesses";
 import { forgetSlackLink, rememberSlackLink, slackLinkToOpen, slackLinkTokenFromUrl } from "./lib/slackLinkToken";
 import { canPrefetchAhead, prefetchWhenIdle, whenIdle } from "./lib/lazyLoad";
 import { useAuth } from "./auth/AuthProvider";
@@ -359,6 +359,8 @@ export default function App() {
   const rulesRef = useRef<AutomationRule[]>([]); rulesRef.current = automationRules;
   const tagsRef = useRef<Record<string, TagDef>>({}); tagsRef.current = tags;
   const workspacesRef = useRef<Workspace[]>([]); workspacesRef.current = workspaces;
+  // All businesses is on (set where it's worked out, below: useBusinessScope)
+  const allBizRef = useRef(false);
   const workspaceRef = useRef<string | null>(null); workspaceRef.current = workspace;
   const wsMembersRef = useRef<WorkspaceMember[]>([]); wsMembersRef.current = wsMembers;
   const activityRef = useRef<Activity[]>([]); activityRef.current = activity;
@@ -2307,11 +2309,17 @@ export default function App() {
       projectId = projectsRef.current.find((p) => (p.workspaceId ?? null) === wsId && !p.archivedAt && !p.id.startsWith("tmp-"))?.id ?? projectId;
     }
     if (denyGuest([projectWs(projectId)])) return;
+    // (someone named who isn't in the workspace it's saved in couldn't see it: it stays with you)
+    let assigneeId = t.assigneeId || userIdRef.current;
+    if (!canAssignIn(wsMembersRef.current, assigneeId, projectWs(projectId), userIdRef.current)) {
+      toastInfo(`${getMember(assigneeId)?.name || "They"} isn't in ${workspacesRef.current.find((w) => w.id === projectWs(projectId))?.name ?? "Personal"}, so “${t.title}” is yours.`);
+      assigneeId = userIdRef.current;
+    }
     persistTask(unplanIfTheirs(applyAutomation({
-      ...t, id: newTaskId(), projectId, assigneeId: t.assigneeId || userIdRef.current, planToday: t.planToday ?? true,
+      ...t, id: newTaskId(), projectId, assigneeId, planToday: t.planToday ?? true,
     })));
     noteElsewhere([projectId]);
-  }, [denyGuest, persistTask, applyAutomation, noteElsewhere, unplanIfTheirs]);
+  }, [denyGuest, persistTask, applyAutomation, noteElsewhere, unplanIfTheirs, toastInfo]);
 
   /* ---- optimistic tmp-* rows (projects, sections, goals, rules…) ----
      Edits or deletes made before the create returns its real id are queued and
@@ -3130,10 +3138,12 @@ export default function App() {
   const rankMyTasks = useCallback(async (announce = false): Promise<"ai" | "heuristic" | "none"> => {
     const cur = tasksRef.current; if (!cur) return "none";
     const ws = workspaceRef.current;
-    if (denyGuest([ws])) return "none";
+    // (All businesses: yours in every workspace you're more than a guest in, as Today's rail lists them)
+    const across = allBizRef.current;
+    if (!across && denyGuest([ws])) return "none";
     const me = userIdRef.current;
     const archivedP = new Set(projectsRef.current.filter((p) => p.archivedAt).map((p) => p.id));
-    const scope = cur.filter((t) => (t.workspaceId ?? null) === ws && t.status !== "done" && !t.archivedAt && !archivedP.has(t.projectId)
+    const scope = cur.filter((t) => (across ? roleIn(t.workspaceId) !== "guest" : (t.workspaceId ?? null) === ws) && t.status !== "done" && !t.archivedAt && !archivedP.has(t.projectId)
       && (t.assigneeId === me || (t.collaborators ?? []).includes(me)));
     if (!scope.length) { if (announce) toastInfo("Nothing open is assigned to you here yet."); return "none"; }
     // Kanbo AI switched off in Settings: nothing leaves the device, the order stays on-device
@@ -3165,7 +3175,7 @@ export default function App() {
       if (announce) toastError("Couldn't prioritise right now.");
       return "none";
     } finally { setAiBusy(false); }
-  }, [denyGuest, applyLocal, writeTask, toastSuccess, toastError, toastInfo]);
+  }, [denyGuest, roleIn, applyLocal, writeTask, toastSuccess, toastError, toastInfo]);
   const rankForToday = useCallback(() => rankMyTasks(false), [rankMyTasks]);
   // the palette's "Prioritise my tasks": My tasks in Kanbo's order, then rank
   const autoPrioritize = useCallback(() => {
@@ -3591,6 +3601,7 @@ export default function App() {
   /* ---- across businesses (hooks/useBusinessScope): All businesses, the switcher's dots, Projects › Group ---- */
   const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview: myApprovals.toReview, workspaces, members: wsMembers,
     workspace, me: currentUserId, today: dayKey, allChosen: !!onboarding.businesses?.all });
+  allBizRef.current = biz.all;
   // (your choice, on every device: profiles.onboarding)
   const setAllBusinesses = useCallback((all: boolean) => changeOnboarding({ ...onboardingRef.current, businesses: all ? { all: true } : {} }), [changeOnboarding]);
   // the Inbox's "new" across every business while All businesses is on (else this workspace's, as ever)
@@ -3607,21 +3618,33 @@ export default function App() {
     setActivity((xs) => xs.map((a) => (ids.has(a.id) && !a.readAt ? { ...a, readAt: stamp } : a)));
     store.markActivityRead(unread).catch(reportError);
   }, [biz.all, route.view, biz.inbox]);
-  /** In All businesses an assignee picker lists everyone you work with: a task only goes to someone in its own workspace. */
+  /** In All businesses an assignee picker lists everyone you work with: a task only goes to someone who can see it,
+   *  in its own workspace (a Personal task: only you). */
   const assignableHere = useCallback((ids: string[], patch: Partial<Task>): boolean => {
     if (!biz.all || !patch.assigneeId) return true;
     const rows = (tasksRef.current ?? []).filter((t) => ids.includes(t.id));
-    const off = rows.find((t) => t.workspaceId && patch.assigneeId !== userIdRef.current && !roleInWorkspace(wsMembersRef.current, patch.assigneeId!, t.workspaceId));
+    const off = rows.find((t) => !canAssignIn(wsMembersRef.current, patch.assigneeId, t.workspaceId, userIdRef.current));
     if (!off) return true;
-    toastInfo(`${getMember(patch.assigneeId)?.name || "They"} isn't in ${workspacesRef.current.find((w) => w.id === off.workspaceId)?.name ?? "that workspace"}, so “${off.title}” stays with its assignee.`);
+    toastInfo(`${getMember(patch.assigneeId)?.name || "They"} isn't in ${off.workspaceId ? workspacesRef.current.find((w) => w.id === off.workspaceId)?.name ?? "that workspace" : "Personal"}, so “${off.title}” stays with its assignee.`);
     return false;
   }, [biz.all, toastInfo]);
   /** The Group page: switch to that business, then open what was clicked. */
   const openInBusiness = useCallback((wsId: string, to: GroupTarget) => {
-    if (wsId !== workspaceRef.current) setWorkspace(wsId);
+    const from = workspaceRef.current;
+    if (wsId !== from) {
+      setWorkspace(wsId);
+      // (on a phone nothing else says the workspace changed)
+      const back = routeRef.current;
+      toastAction(`Now in ${workspacesRef.current.find((w) => w.id === wsId)?.name ?? "that business"}`, "Back", () => { setWorkspace(from); setDetailId(null); setRoute(back); }, { key: "kgrp-switch" });
+    }
     if (to.kind === "task") setDetailId(to.taskId);
     else setRoute(to.kind === "project" ? { view: "project", projectId: to.projectId } : to.kind === "goals" ? { view: "goals" } : to.kind === "risks" ? { view: "pulse" } : { view: "projects" });
-  }, [setRoute]);
+  }, [setRoute, toastAction]);
+  /** All businesses' "risks need a look": every business you run side by side (Projects › Group), or the one you run's Pulse. */
+  const openRisksEverywhere = useCallback(() => {
+    if (biz.group) setRoute({ view: "group" });
+    else if (biz.runs[0]) openInBusiness(biz.runs[0].id!, { kind: "risks" });
+  }, [biz.group, biz.runs, setRoute, openInBusiness]);
 
   /* ---- 0048 first run: who the tour and the "Get set up" card are for, and what the app can see ---- */
   const roleHere = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role ?? null;
@@ -3877,8 +3900,13 @@ export default function App() {
   const allToggle = biz.offered ? <AllBusinessesToggle on={biz.all} onChange={setAllBusinesses} /> : null;
   const both = (a: React.ReactNode, b: React.ReactNode) => (a && b ? <>{a}{b}</> : a || b || undefined);
   const activeWorkspace = workspaces.find((w) => w.id === workspace) ?? workspaces[0];
-  const scopeLead = isMobile && activeWorkspace ? (biz.all ? <Icon name="layers" size={20} sw={1.75} /> : <WorkspaceMark workspace={activeWorkspace} size={20} />) : undefined;
-  const scoped$ = (meta: string) => (isMobile || biz.all ? `${biz.scopeName} · ${meta}` : meta);
+  // (Today › Week and Month show the open workspace whatever the switch says: only Day goes across)
+  const across = biz.all && (place !== "today" || route.view === "plan");
+  // …and while it's off, the mark wears a dot when another workspace needs you (the switcher is behind More)
+  const scopeLead = isMobile && activeWorkspace ? (across ? <Icon name="layers" size={20} sw={1.75} /> : (
+    <span className="kwsmark-wrap"><WorkspaceMark workspace={activeWorkspace} size={20} />{biz.elsewhere.lead && <span className="kwsmark-ping" />}</span>
+  )) : undefined;
+  const scoped$ = (meta: string) => (isMobile || across ? `${across ? biz.scopeName : activeWsName} · ${meta}` : meta);
   const header: Pick<PageHeaderProps, "title" | "meta" | "leading" | "titleAddon" | "switcher" | "actions" | "tabs" | "tabValue" | "onTab" | "tabsLabel" | "momentum" | "identity"> = (() => {
     switch (place) {
       case "today": {
@@ -3994,10 +4022,14 @@ export default function App() {
         onUpdate={guardedPatch} onCreate={createFromPlan} onOpen={setDetailId} onRank={rankForToday} ranking={aiBusy}
         onStartFocus={startFocus} onShutdown={() => setShutdownOpen(true)} onExtractFromMeeting={(title) => openExtract(undefined, title)}
         onConnectCalendar={() => openSettings("calendar")} setup={setup} showSuggestions={appearance.suggestions !== false}
-        riskCount={isAdmin ? signalRisks : undefined} onOpenRisks={isAdmin ? () => setRoute({ view: "pulse" }) : undefined} readOnly={biz.all ? false : activeReadOnly}
-        members={biz.all ? biz.people : assignees} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
-        briefLead={biz.all ? <BusinessLeadLine lead={biz.lead} onOpen={setDetailId} /> : undefined} busyElsewhere={biz.busy}
-        risks={risks} onAsk={() => openPalette()}
+        // (All businesses: Radar in every business you run; each row keeps its own workspace's rules, and a
+        // capture adds to this one, so it's only offered where you can add)
+        riskCount={biz.all ? (biz.runs.length ? biz.risks.filter((r) => r.severity === "signal").length : undefined) : isAdmin ? signalRisks : undefined}
+        onOpenRisks={biz.all ? (biz.runs.length ? openRisksEverywhere : undefined) : isAdmin ? () => setRoute({ view: "pulse" }) : undefined}
+        readOnly={biz.all ? false : activeReadOnly} noCapture={biz.all && activeReadOnly}
+        members={assignees} names={biz.all ? biz.people : undefined} projects={askProjects} onOpenMyTasks={() => setRoute({ view: "tasks" })}
+        businessLead={biz.all ? { lead: biz.lead, mode: "all" } : biz.elsewhere.lead ? { lead: biz.elsewhere, mode: "elsewhere", onShowAll: () => setAllBusinesses(true) } : undefined}
+        busyElsewhere={biz.busy} risks={biz.all ? biz.risks : risks} onAsk={() => openPalette()}
         dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })}
         // 0048: "/" in the rail's capture field picks a template, as Quick capture's does
         templates={activeReadOnly ? undefined : todayTemplates}
@@ -4041,7 +4073,7 @@ export default function App() {
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={allTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
       case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} projects={projects} goals={goals}
-        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} />;
+        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)
       case "portfolios": return <PortfoliosView portfolios={portfolios.filter((p) => (p.workspaceId ?? null) === workspace)} projects={personal ? projects.filter((p) => !p.archivedAt) : wsProjects}
@@ -4099,7 +4131,8 @@ export default function App() {
         // (keyed by the saved view too, and by whether it has loaded: arriving on one starts the page from it)
         const viewKey = `${route.savedViewId ?? ""}:${appliedView ? 1 : 0}`;
         // My tasks in All businesses: yours from every workspace, each row with its business's chip. Edits go
-        // through each task's own workspace (guests' are refused there); an assignee must be in the task's workspace.
+        // through each task's own workspace (a guest's rows are view-only); an assignee must be able to see the task;
+        // adding a task adds here, so there's no Add row in a workspace you're a guest in.
         const allMy = biz.all && !inProject;
         return <TasksPage key={`${route.view}:${route.projectId ?? ""}:${allMy ? "all" : wsKey}:${viewKey}`} filterScope={openProject ? openProject.id : "my"} readOnly={allMy ? false : activeReadOnly}
           boardScope={openProject ? `project:${openProject.id}` : `my:${wsKey}`}
@@ -4113,7 +4146,7 @@ export default function App() {
             if (position !== undefined) patch.position = position;
             if (Object.keys(patch).length) guardedPatch(id, patch);
           }} onBulkPatch={allMy ? (ids, p) => { if (assignableHere(ids, p)) guardedBulkPatch(ids, p); } : guardedBulkPatch} onBulkDelete={bulkDelete}
-          onPatch={allMy ? (id, p) => { if (assignableHere([id], p)) guardedPatch(id, p); } : guardedPatch} onQuickAdd={quickAddTask} onOpenImport={activeReadOnly ? undefined : () => openImport()} members={allMy ? biz.people : assignees} allTags={tags}
+          onPatch={allMy ? (id, p) => { if (assignableHere([id], p)) guardedPatch(id, p); } : guardedPatch} onQuickAdd={allMy && activeReadOnly ? undefined : quickAddTask} onOpenImport={activeReadOnly ? undefined : () => openImport()} members={allMy ? biz.people : assignees} allTags={tags}
           archivedTasks={archivedTasks}
           sections={route.view === "tasks" ? sections.filter((s) => s.projectId === "__my") : (openProject ? sections.filter((s) => s.projectId === openProject.id) : sections)}
           onCreateSection={createSection} onRenameSection={renameSection} onDeleteSection={deleteSection}
@@ -4255,7 +4288,7 @@ export default function App() {
             onHome={() => setRoute(route.view === "plan" ? { view: "tasks" } : { view: "plan" })} homeLabel={route.view === "plan" ? "Go to My tasks" : "Go to Today"}>
             {/* 0047: every row and card reads its approval chip from here */}
             <ApprovalSummariesProvider summaries={approvalSummaries}>
-              <BusinessChipsProvider on={biz.all && (route.view === "plan" || route.view === "inbox" || route.view === "tasks")} workspaces={workspaces}>
+              <BusinessChipsProvider on={biz.all && (route.view === "plan" || route.view === "inbox" || route.view === "tasks")} workspaces={workspaces} guestIn={biz.guestIn}>
                 <Suspense fallback={<PlaceSkeleton kind={skeletonFor(route, taskView)} label={pageTitle} />}>
                   <RenderView render={renderMain} />
                 </Suspense>
@@ -4282,7 +4315,7 @@ export default function App() {
 
       {/* tasks and projects from every workspace (like Search); opening a project elsewhere switches to its workspace */}
       <Deferred when={cmdOpen}><CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={seen} onOpenTask={setDetailId}
-        projects={projects} workspaces={workspaces} canCreateProject={!activeReadOnly}
+        projects={projects} workspaces={workspaces} canCreateProject={!activeReadOnly} canSeeGroup={biz.group}
         onOpenProject={(id) => {
           const p = projects.find((x) => x.id === id);
           if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null);

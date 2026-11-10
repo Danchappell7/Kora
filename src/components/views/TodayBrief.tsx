@@ -212,7 +212,7 @@ export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisk
   hero?: ReactNode;
   onShowList?: () => void;
   onAsk?: () => void;
-  /** All businesses: the business that needs you most, before the headline */
+  /** across businesses: who needs you most, under the brief's words (before its figures) */
   lead?: ReactNode;
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -230,11 +230,11 @@ export function BriefCard({ brief, nowMin, railFocus, onFact, onOpen, onOpenRisk
           How I got here<Icon name="chevronDown" size={14} sw={2} />
         </button>
       </div>
-      {lead}
       <h2 className="kbrief-head" id={`${uid}-h`}>
         <span>{brief.greeting} </span>{spans(brief.headline, onOpen, onOpenRisks)}
       </h2>
       {brief.prose.length > 0 && <p className="kbrief-prose">{spans(brief.prose, onOpen, onOpenRisks)}</p>}
+      {lead}
       {brief.facts.length > 0 && (
         <div className="kbrief-facts" role="group" aria-label="Today at a glance">
           {brief.facts.map((f) => {

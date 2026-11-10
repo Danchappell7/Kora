@@ -324,6 +324,8 @@ export interface CalEvent {
   /** the connected calendar it came from: its colour (a thin left edge) and name */
   color?: string;
   calendarName?: string;
+  /** time you've planned in another of your workspaces (busy here): which one, and the task */
+  elsewhere?: { workspaceId: string | null; name: string; taskId: string };
 }
 
 /* external calendar integration (Google / Microsoft): several accounts per

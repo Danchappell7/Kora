@@ -49,7 +49,7 @@ import { ScheduleMenu, prefetchPlanMenus } from "../dnd/lazy";
 import { CaptureTemplatePicker, CaptureTemplateStrip, prefetchCaptureTemplates } from "../templates/lazyCapture";
 import type { Lane, SeenMap } from "./planCanvas";
 import { freeGaps as freeGapsOf, isTodaysScope, WORK_START, type GhostBlock } from "../../lib/brief";
-import { WorkspaceChip } from "../businesses/Businesses";
+import { WorkspaceChip, WorkspaceMarkFor, useGuestRow } from "../businesses/Businesses";
 
 const SNAP = 15;            // drags land on the quarter hour
 const RAIL_GRAB = 16;       // px: a row from the rail (or anywhere else) is held near its top edge
@@ -235,6 +235,10 @@ export const PLAN_CSS = `
   padding: 0 6px 0 12px; border-radius: var(--kp-r-sm); }
 .kday-event[data-kind="meeting"] { background: var(--bg-deep); box-shadow: inset 2px 0 0 var(--kp-icon-quiet), inset 0 0 0 1px var(--hairline); }
 .kday-event[data-kind="break"] { border: 1px dashed var(--hairline-strong); }
+/* time planned in another of your workspaces: its mark, and it opens the task */
+.kday-event[data-away] { font: inherit; color: inherit; text-align: left; background: none; cursor: pointer; }
+.kday-event[data-away]:hover { background: var(--fill-1); }
+.kday-event[data-away] .kday-event-title { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
 .kday-event[data-tall="true"] { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; padding-top: 6px; }
 /* the past recedes by its surface, never its words: the canvas's own colour (opaque, so hour
    rules don't run through it), a quiet edge, and text-safe inks */
@@ -534,13 +538,25 @@ function NowLine({ nowMin, win }: { nowMin: number; win: DayWindow }) {
   );
 }
 
-function EventBlock({ ev, lane, win, nowMin, onExtract }: { ev: CalEvent; lane?: Lane; win: DayWindow; nowMin: number; onExtract?: (title: string) => void }) {
+function EventBlock({ ev, lane, win, nowMin, onExtract, onOpen }: { ev: CalEvent; lane?: Lane; win: DayWindow; nowMin: number; onExtract?: (title: string) => void; onOpen?: (id: string) => void }) {
   // (a phone's agenda can start part-way through a meeting)
   const from = Math.max(ev.start, win.from);
   const top = yOf(from, win), h = (ev.end - from) * win.pxm;
   const tall = h >= 44;
   const meeting = ev.kind !== "break";
   const cal = meeting && ev.color ? projectPaint(ev.color).solid : undefined;
+  // time you've planned in another workspace: its mark, and it opens the task (it's busy here, not a calendar's)
+  const away = ev.elsewhere;
+  if (away) {
+    return (
+      <button type="button" className="kday-event" data-kind="break" data-away="" data-tall={tall || undefined} data-past={ev.end <= nowMin || undefined}
+        title={`${ev.title} · planned in ${away.name}`} onClick={onOpen ? () => onOpen(away.taskId) : undefined}
+        style={{ ...inset(top, h), ...laneStyle(lane) }}>
+        <span className="kday-event-title"><WorkspaceMarkFor workspaceId={away.workspaceId} />{ev.title}<span className="sr-only">, planned in {away.name}</span></span>
+        <span className="kday-event-meta">{fmtTimeRange(ev.start, ev.end)} · {away.name}</span>
+      </button>
+    );
+  }
   return (
     <div className="kday-event" data-kind={meeting ? "meeting" : "break"} data-tall={tall || undefined} data-past={ev.end <= nowMin || undefined}
       data-now={(ev.start <= nowMin && ev.end > nowMin) || undefined} data-cal={cal ? "" : undefined}
@@ -737,6 +753,7 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
   openTime: { start: number; end: number }[];
   pulse: boolean;
 }) {
+  const guestRow = useGuestRow();
   const totalH = (win.to - win.from) * win.pxm;
   const hours: number[] = [];
   for (let m = win.from; m <= win.to; m += 60) hours.push(m);
@@ -790,7 +807,7 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
           (blocks by their saved time: a keyboard nudge never moves the focused node) */}
       {[
         ...events.filter((ev) => ev.end > win.from).map((ev) => ({ at: ev.start, node: (
-          <EventBlock key={"e" + ev.id} ev={ev} lane={lanes["ev:" + ev.id]} win={win} nowMin={nowMin} onExtract={readOnly ? undefined : onExtract} />
+          <EventBlock key={"e" + ev.id} ev={ev} lane={lanes["ev:" + ev.id]} win={win} nowMin={nowMin} onExtract={readOnly ? undefined : onExtract} onOpen={onOpen} />
         ) })),
         ...ghosts.flatMap((g) => {
           const t = taskById.get(g.id);
@@ -800,8 +817,8 @@ function DayCanvas({ blocks, ghosts, taskById, events, nowMin, win, helpId, read
           ) }] : [];
         }),
         ...blocks.filter((b) => b.start + b.dur > win.from).map((b) => ({ at: b.task.scheduled ?? b.start, node: (
-          <TaskBlock key={"t" + b.task.id} task={b.task} start={b.start} dur={b.dur} lane={lanes["t:" + b.task.id]} win={win} nowMin={nowMin} helpId={helpId} readOnly={readOnly}
-            lengthLock={readOnly ? null : lengthLock(b.task)}
+          <TaskBlock key={"t" + b.task.id} task={b.task} start={b.start} dur={b.dur} lane={lanes["t:" + b.task.id]} win={win} nowMin={nowMin} helpId={helpId} readOnly={readOnly || guestRow(b.task)}
+            lengthLock={readOnly || guestRow(b.task) ? null : lengthLock(b.task)}
             onPress={onPress} onDragEnd={onDragEnd} onOpen={onOpen} onRemove={onRemove} onKeyMove={onKeyMove} onKeyBlur={onKeyBlur} onToggle={onToggle}
             onStartFocus={onStartFocus} onSchedule={onSchedule} onResizeStart={onResizeStart} resizing={resizingId === b.task.id} landing={landing?.[b.task.id]} />
         ) })),
@@ -1139,6 +1156,8 @@ export interface PlanViewProps {
   landing?: Record<string, number>;
   /** guests: a read-only day (no capture, no dragging, no ticking off) */
   readOnly?: boolean;
+  /** no capture field (All businesses, open on a workspace you're a guest in: a capture adds there) */
+  noCapture?: boolean;
   onStartFocus?: (id: string) => void;
   onExtractFromMeeting?: (meetingTitle: string) => void;
   onConnectCalendar?: () => void;
@@ -1169,7 +1188,7 @@ const FOCUS_LABEL: Record<RailFocusKind, string> = {
 
 export function PlanView({
   tasks, onUpdate, onCreate, onOpen, externalEvents = [], calendarConnected = false, currentUserId, captureDefaults,
-  lede, events: eventsProp, nowMin: nowProp, ghosts = [], tomorrowIds, skipped, onSkip, onUnskip, landing, readOnly = false,
+  lede, events: eventsProp, nowMin: nowProp, ghosts = [], tomorrowIds, skipped, onSkip, onUnskip, landing, readOnly = false, noCapture = false,
   onStartFocus, onExtractFromMeeting, onConnectCalendar, railFocus = null, onRailFocus, freePulse, big3, onOpenMyTasks, onShutdown,
   members: membersProp, projects: projectsProp, railTop, afterHours, templates,
 }: PlanViewProps) {
@@ -1271,7 +1290,9 @@ export function PlanView({
     }));
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
   // a ghost for a task that has since been placed, finished or archived is stale
-  const liveGhosts = readOnly ? [] : ghosts.filter((g) => { const t = taskById.get(g.id); return !!t && !isPlaced(t) && t.status !== "done" && !t.archivedAt; });
+  // (All businesses: a row from a workspace you're a guest in is view-only, as it is there)
+  const guestRow = useGuestRow();
+  const liveGhosts = readOnly ? [] : ghosts.filter((g) => { const t = taskById.get(g.id); return !!t && !isPlaced(t) && t.status !== "done" && !t.archivedAt && !guestRow(t); });
   const ghostById = new Map(liveGhosts.map((g) => [g.id, g]));
 
   // one column shows a single agenda from an hour before now (earlier hours on request) to the evening
@@ -1903,7 +1924,7 @@ export function PlanView({
   const renderGroup = (key: string, label: string, list: Task[], tone?: "signal") => list.length === 0 ? null : (
     <section key={key} className="krail-group" aria-labelledby={`${helpId}-${key}`}>
       <SectionLabel id={`${helpId}-${key}`} tone={tone} count={list.length}>{label}</SectionLabel>
-      {list.map((t) => <RailItem key={t.id} task={t} {...itemProps} canSkip={!!onSkip} slot={ghostById.get(t.id)} tomorrow={tomorrow.has(t.id)} />)}
+      {list.map((t) => <RailItem key={t.id} task={t} {...itemProps} readOnly={readOnly || guestRow(t)} canSkip={!!onSkip} slot={ghostById.get(t.id)} tomorrow={tomorrow.has(t.id)} />)}
     </section>
   );
   // narrowed by the brief's figure: what of it is already on the day (the brief counts that too)
@@ -1913,7 +1934,7 @@ export function PlanView({
   const noCalendar = !calendarConnected && dayEvents.length === 0 && !!onConnectCalendar && !readOnly;
   const hour = Math.floor(nowMin / 60);
 
-  const captureField = readOnly ? null : (
+  const captureField = readOnly || noCapture ? null : (
     <CaptureField onCapture={capture} onCapturePlan={captureAndPlan} inputRef={captureRef} defaults={captureDefaults}
       today={day} projects={projects} members={members} templates={templates} onTemplate={capturedFromTemplate} me={me ?? ""} />
   );
@@ -1923,7 +1944,7 @@ export function PlanView({
       <ol>
         {big3Tasks.map((t) => (
           <li key={t.id} className="krail-big3-row" data-done={t.status === "done" || undefined}>
-            <StatusGlyph status={t.status} label={t.title} celebrateKey={t.id} readOnly={readOnly} onToggle={readOnly ? undefined : () => toggleDone(t)} />
+            <StatusGlyph status={t.status} label={t.title} celebrateKey={t.id} readOnly={readOnly || guestRow(t)} onToggle={readOnly || guestRow(t) ? undefined : () => toggleDone(t)} />
             <button type="button" className="krail-big3-open" onClick={() => onOpen(t.id)}>{t.title}</button>
           </li>
         ))}

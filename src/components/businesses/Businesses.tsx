@@ -6,12 +6,15 @@
      short name), from the context App sets while the mode is on; nothing
      otherwise, so the single-workspace views are as they were.
    · AllBusinessesToggle: the opt-in switch on Today, Inbox and My tasks.
-   · BusinessLeadLine: Today's brief, led by the business that needs you most.
+   · BusinessLeadLine: Today's brief, led by the business that needs you most
+     (All businesses on), or naming the other workspace that needs you (off).
+   · useGuestRow: in All businesses a row from a workspace you're a guest in
+     stays view-only, as it would be there.
    ============================================================ */
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, Fragment, useCallback, useContext, useMemo, type ReactNode } from "react";
 import { Icon, ProjectTile } from "../primitives";
 import { getProject } from "../../data/data";
-import type { Workspace } from "../../data/types";
+import type { Task, Workspace } from "../../data/types";
 import { spectrumColor, SPECTRUM, stableHash } from "../../lib/projectIdentity";
 import { shortName, type BusinessLead } from "../../lib/businesses";
 
@@ -43,19 +46,28 @@ export const BUSINESS_CSS = `
 .kallbiz-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--bg-raised, #fff); box-shadow: 0 1px 1px oklch(0.2 0.03 268 / 0.25); transition: transform var(--d-2, 160ms) var(--ease); }
 .kallbiz[aria-pressed="true"] .kallbiz-sw { background: var(--accent-fill, var(--accent)); }
 .kallbiz[aria-pressed="true"] .kallbiz-sw::after { transform: translateX(10px); }
-@media (max-width: 859px) { .kallbiz { height: 32px; } .kbizlead-rest { padding-left: 0; } }
+@media (max-width: 859px) { .kallbiz { height: 32px; } }
 @media (prefers-reduced-motion: reduce) { .kallbiz-sw::after { transition: none; } }
-/* Today's brief, in All businesses: who needs you most, then the rest */
-.kbizlead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 12px 0 0; padding: 10px 12px; border-radius: var(--r-md, 8px);
-  background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--hairline); font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); max-width: 820px; }
-.kbizlead-lead { display: inline-flex; align-items: flex-start; gap: 8px; min-width: 0; color: var(--ink); }
-.kbizlead-lead > .kwsmark { margin-top: 0; }
-.kbizlead-lead b { font-weight: 600; }
-.kbizlead-task { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-text, var(--accent)); cursor: pointer; text-align: left;
-  text-decoration: underline dotted; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+/* Today's brief, across businesses: one sentence under the brief's words (who needs you most), the rest on a
+   quieter line; no box, so the headline and Plan my day keep their place */
+.kbizlead { display: flex; flex-direction: column; gap: 4px; margin: 14px 0 0; max-width: 760px; }
+.kbizlead-lead { margin: 0; font: 400 15px/24px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kbizlead-lead > .kwsmark { margin-right: 7px; vertical-align: -3px; }
+.kbizlead-lead b { font-weight: 600; color: var(--ink); }
+.kbizlead-task { display: inline; padding: 0; border: 0; background: none; font: inherit; color: var(--accent-text, var(--accent)); cursor: pointer; text-align: left;
+  text-decoration: underline dotted; text-underline-offset: 3px; text-decoration-thickness: 1px; border-radius: 2px; }
 .kbizlead-task:hover { text-decoration-style: solid; }
-.kbizlead-rest { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; flex-basis: 100%; padding-left: 28px; color: var(--ink-3); }
-.kbizlead-one { display: inline-flex; align-items: center; gap: 6px; }
+.kbizlead-all { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; cursor: pointer; white-space: nowrap;
+  font: 600 14px/24px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); border-radius: 4px; vertical-align: baseline; }
+.kbizlead-all:hover { text-decoration: underline; text-underline-offset: 3px; }
+.kbizlead-all > svg { align-self: center; }
+.kbizlead-rest { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; margin: 0; font: 500 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.kbizlead-one { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.kbizlead-one b { font-weight: 500; color: var(--ink-2); }
+@media (max-width: 859px) { .kbizlead { margin-top: 12px; } .kbizlead-what { display: none; } }
+/* a workspace's mark, wearing a dot while another workspace needs you (a phone's header) */
+.kwsmark-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+.kwsmark-ping { position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--bg); }
 `;
 
 /** A workspace's mark: its logo, else its first letter on a tile in a hue of its own. Personal wears the person glyph's Iris. */
@@ -79,18 +91,33 @@ export function WorkspaceMark({ workspace, size = 16, title }: { workspace: Pick
 
 /* ---------- the row chip (All businesses) ---------- */
 
-interface ChipCtx { on: boolean; byId: Map<string, Workspace> }
-const BusinessChips = createContext<ChipCtx>({ on: false, byId: new Map() });
+interface ChipCtx { on: boolean; byId: Map<string, Workspace>; guestIn: ReadonlySet<string> }
+const NO_GUEST: ReadonlySet<string> = new Set();
+const BusinessChips = createContext<ChipCtx>({ on: false, byId: new Map(), guestIn: NO_GUEST });
 
-/** App wraps the page in this while All businesses is on: rows then show which business each task is from. */
-export function BusinessChipsProvider({ on, workspaces, children }: { on: boolean; workspaces: Workspace[]; children: ReactNode }) {
-  const value = useMemo<ChipCtx>(() => ({ on, byId: new Map(workspaces.map((w) => [w.id ?? "personal", w])) }), [on, workspaces]);
+/** App wraps the page in this: while All businesses is on (`on`), rows show which business each task is from,
+ *  and a row from a workspace you're a guest in (`guestIn`) is view-only. */
+export function BusinessChipsProvider({ on, workspaces, guestIn = NO_GUEST, children }: { on: boolean; workspaces: Workspace[]; guestIn?: ReadonlySet<string>; children: ReactNode }) {
+  const value = useMemo<ChipCtx>(() => ({ on, byId: new Map(workspaces.map((w) => [w.id ?? "personal", w])), guestIn }), [on, workspaces, guestIn]);
   // (the chips', the switch's and the lead line's rules, once for the page)
   return <BusinessChips.Provider value={value}><style>{BUSINESS_CSS}</style>{children}</BusinessChips.Provider>;
 }
 
 /** Is All businesses on (a row may need its chip's room)? */
 export const useBusinessChips = (): boolean => useContext(BusinessChips).on;
+
+/** In All businesses: is this row view-only (a task in a workspace you're a guest in)? Off, the page's own
+ *  read-only says so for every row. */
+export function useGuestRow(): (t: Pick<Task, "workspaceId"> | null | undefined) => boolean {
+  const { on, guestIn } = useContext(BusinessChips);
+  return useCallback((t) => on && !!t?.workspaceId && guestIn.has(t.workspaceId), [on, guestIn]);
+}
+
+/** A workspace's mark by its id (null: Personal), whether or not All businesses is on; nothing for one you can't see. */
+export function WorkspaceMarkFor({ workspaceId, size = 16 }: { workspaceId: string | null; size?: 16 | 20 }) {
+  const w = useContext(BusinessChips).byId.get(workspaceId ?? "personal");
+  return w ? <WorkspaceMark workspace={w} size={size} /> : null;
+}
 
 /** The business a row's task (or doc) is from, while All businesses is on; nothing otherwise. `col`: a list row's own
  *  column. `mark`: just its logo (a narrow row, beside the project's own tile), its name said and shown on hover. */
@@ -123,34 +150,66 @@ export function AllBusinessesToggle({ on, onChange }: { on: boolean; onChange: (
   );
 }
 
-/** Today's brief in All businesses: the business that needs you most, its most pressing task (it opens),
- *  then the others in a quieter line. Nothing when no business needs you. */
-export function BusinessLeadLine({ lead, onOpen }: { lead: BusinessLead; onOpen: (taskId: string) => void }) {
+const listWords = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+/** Today's brief across businesses, under its words.
+ *  · "all" (All businesses on): the business that needs you most and what it holds (its most pressing task,
+ *    which opens, left out when the headline already names it), then the others on a quieter line.
+ *  · "elsewhere" (off): the other workspace that needs you most, the rest by name, and a way to see them all.
+ *  Nothing when nothing needs you. */
+export function BusinessLeadLine({ lead, mode = "all", focusTaskId, onOpen, onShowAll }: {
+  lead: BusinessLead; mode?: "all" | "elsewhere"; focusTaskId?: string; onOpen: (taskId: string) => void; onShowAll?: () => void;
+}) {
   if (!lead.lead) return null;
   const l = lead.lead;
-  const [first, ...rest] = l.parts;
+  // (the headline already names it: the sentence says what else there is)
+  const named = !!l.taskId && l.taskId !== focusTaskId;
+  const rest = l.taskId ? l.parts.slice(1) : l.parts;
+  const task = named && l.taskId ? (
+    <><button type="button" className="kbizlead-task" onClick={() => onOpen(l.taskId!)}>{l.parts[0]}</button>{l.taskWhen ? ` (${l.taskWhen})` : ""}</>
+  ) : null;
+  const what = task ? <>{task}{rest.length > 0 && <>{rest.length === 1 ? " and " : ", "}{listWords(rest)}</>}</> : listWords(rest);
+  const hasWhat = !!task || rest.length > 0;
+  if (!hasWhat && !lead.others.length) return null;
+
+  if (mode === "elsewhere") {
+    const names = lead.others.map((o) => o.workspace.name);
+    const too = names.length ? ` ${listWords(names.length > 2 ? [...names.slice(0, 2), `${names.length - 2} more`] : names)} ${names.length === 1 ? "needs" : "need"} you too.` : "";
+    return (
+      <div className="kbizlead" data-mode="elsewhere" role="note" aria-label="Your other workspaces">
+        <p className="kbizlead-lead">
+          <WorkspaceMark workspace={l.workspace} size={16} />
+          <b>{l.workspace.name}</b> needs you{hasWhat ? <>: {what}.</> : "."}{too}{" "}
+          {onShowAll && (
+            <button type="button" className="kbizlead-all" onClick={onShowAll}>Show all businesses<Icon name="arrowRight" size={14} sw={2} /></button>
+          )}
+        </p>
+      </div>
+    );
+  }
   return (
-    <div className="kbizlead" role="note" aria-label="Across your businesses">
-      <span className="kbizlead-lead">
-        <WorkspaceMark workspace={l.workspace} size={20} />
-        <span>
-          <b>{l.workspace.name}</b> needs you most today:{" "}
-          {l.taskId && first
-            ? <button type="button" className="kbizlead-task" onClick={() => onOpen(l.taskId!)}>{first}</button>
-            : first}
-          {rest.length > 0 && <>{rest.length === 1 ? " and " : ", "}{rest.join(", ").replace(/, ([^,]*)$/, " and $1")}</>}.
-        </span>
-      </span>
+    <div className="kbizlead" role="note" aria-label="Across your workspaces">
+      {hasWhat && (
+        <p className="kbizlead-lead">
+          <WorkspaceMark workspace={l.workspace} size={16} />
+          <b>{l.workspace.name}</b> needs you most today: {what}.
+        </p>
+      )}
       {lead.others.length > 0 && (
-        <span className="kbizlead-rest">
+        <p className="kbizlead-rest">
+          {/* (the spaces are for screen readers: a flex row drops them) */}
+          <span>{hasWhat ? "Then" : "Needing you today:"}</span>{" "}
           {lead.others.slice(0, 3).map((o) => (
-            <span key={o.key} className="kbizlead-one">
-              <WorkspaceMark workspace={o.workspace} size={16} />
-              <span>{shortName(o.workspace.name)}: {o.parts.slice(0, 2).join(", ")}</span>
-            </span>
+            <Fragment key={o.key}>
+              <span className="kbizlead-one">
+                <WorkspaceMark workspace={o.workspace} size={16} />
+                <b>{shortName(o.workspace.name)}</b>{" "}
+                <span className="kbizlead-what">· {o.detail}</span>
+              </span>{" "}
+            </Fragment>
           ))}
           {lead.others.length > 3 && <span>+{lead.others.length - 3} more</span>}
-        </span>
+        </p>
       )}
     </div>
   );

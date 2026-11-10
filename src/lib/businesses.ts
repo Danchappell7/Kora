@@ -93,6 +93,13 @@ export function mentionsInWorkspace(mentions: readonly string[] | undefined, wsI
   return mentions.filter((id) => here.has(id));
 }
 
+/** Can this task go to them? Only someone who can see it: an active member of its workspace, or, for a
+ *  Personal task, you alone. (In All businesses the people you can pick span every workspace.) */
+export function canAssignIn(members: readonly WorkspaceMember[], assigneeId: string | null | undefined, wsId: string | null | undefined, me: string): boolean {
+  if (!assigneeId || assigneeId === me) return true;
+  return !!wsId && roleInWorkspace(members, assigneeId, wsId) !== null;
+}
+
 /* ---------- each workspace's signals (the switcher's dots) ---------- */
 
 export interface WorkspaceSignal {
@@ -127,10 +134,12 @@ export function signalDetail(s: Pick<WorkspaceSignal, "approvals" | "overdue" | 
 }
 
 /** Signals for every workspace you're in, by wsKey. `tasks` are every live task you can see (with your own
- *  plan on them); `activity` your Inbox items from every workspace; `approvals` the requests waiting on you. */
+ *  plan on them); `activity` your Inbox items from every workspace; `approvals` the requests waiting on you.
+ *  `allTasks` (archived ones too) tell which workspace an Inbox item is from, as the Inbox itself does. */
 export function workspaceSignals(input: {
   workspaces: readonly Workspace[];
   tasks: readonly Task[];
+  allTasks?: readonly Task[];
   projects: readonly Pick<Project, "id" | "workspaceId">[];
   activity: readonly Activity[];
   approvals: readonly Pick<ApprovalWithTask, "workspaceId" | "task">[];
@@ -154,7 +163,7 @@ export function workspaceSignals(input: {
     if (d < today) s.overdue++; else s.dueToday++;
     if (!s.top || rank(t) > rank(s.top)) { s.top = t; s.topOverdue = d < today; }
   }
-  const wsOfTask = new Map(tasks.map((t) => [t.id, t.workspaceId ?? null] as const));
+  const wsOfTask = new Map((input.allTasks ?? tasks).map((t) => [t.id, t.workspaceId ?? null] as const));
   for (const a of activity) {
     if (a.readAt || SELF_KINDS.has(a.kind)) continue;
     const ws = activityWorkspace(a, wsOfTask, projects);
@@ -173,11 +182,15 @@ export function workspaceSignals(input: {
 export interface BusinessNeed {
   key: string;
   workspace: Workspace;
-  /** "the lighting order", "1 approval", "2 overdue" */
+  /** "the lighting order", "1 approval", "2 more overdue" */
   parts: string[];
   score: number;
   /** the task the lead names first */
   taskId?: string;
+  /** …and when it was due ("overdue", "due today") */
+  taskWhen?: "overdue" | "due today";
+  /** what needs you there, as the switcher says it ("1 approval · 1 overdue") */
+  detail: string;
 }
 export interface BusinessLead {
   /** the business that needs you most today (none when nothing does) */
@@ -195,8 +208,14 @@ export function taskPhrase(title: string, max = 40): string {
   return /^[A-Z][a-z]/.test(cut) ? cut.charAt(0).toLowerCase() + cut.slice(1) : cut;
 }
 
-/** Who needs you most today, across every workspace: requests and overdue work weigh most, then what's
- *  due today, then unread items. The lead names its most pressing task; the others say what they hold. */
+/** How much a workspace needs you (the one score "needs you most" goes by, on Today and on the Group page):
+ *  requests and overdue work weigh most, then what's due today, then a few unread items. */
+export const attentionScore = (s: Pick<WorkspaceSignal, "approvals" | "overdue" | "dueToday" | "unread">): number =>
+  s.approvals * 3 + s.overdue * 3 + s.dueToday * 2 + Math.min(s.unread, 3);
+
+/** Who needs you most today, across the workspaces given (attentionScore). The lead names its most pressing
+ *  task; the others say what they hold. Pass every workspace for All businesses, the others for the line
+ *  Today shows while the switch is off. */
 export function businessLead(signals: ReadonlyMap<string, WorkspaceSignal>, workspaces: readonly Workspace[]): BusinessLead {
   const needs: BusinessNeed[] = [];
   workspaces.forEach((w) => {
@@ -210,7 +229,8 @@ export function businessLead(signals: ReadonlyMap<string, WorkspaceSignal>, work
     const moreToday = s.dueToday - (s.top && !s.topOverdue ? 1 : 0);
     if (moreLate > 0) parts.push(`${moreLate} more overdue`);
     if (moreToday > 0) parts.push(`${moreToday} more due today`);
-    needs.push({ key: wsKey(w.id), workspace: w, parts, score: s.approvals * 3 + s.overdue * 3 + s.dueToday * 2 + Math.min(s.unread, 3), taskId: s.top?.id });
+    needs.push({ key: wsKey(w.id), workspace: w, parts, score: attentionScore(s), taskId: s.top?.id,
+      ...(s.top ? { taskWhen: s.topOverdue ? "overdue" as const : "due today" as const } : {}), detail: s.detail });
   });
   // most first; a tie keeps the switcher's order
   const order = new Map(workspaces.map((w, i) => [wsKey(w.id), i]));
@@ -233,7 +253,8 @@ export function busyElsewhere(tasks: readonly Task[], activeWs: string | null, m
     .filter((t) => isOnCanvas(t) && isYours(t, me) && wsKey(t.workspaceId) !== here)
     .map((t): CalEvent => {
       const name = t.workspaceId ? nameOf(t.workspaceId) : nameOf(null);
-      return { id: `elsewhere-${t.id}`, title: `${name} · ${t.title}`, start: t.scheduled!, end: t.scheduled! + durOf(t), kind: "break", calendarName: name };
+      return { id: `elsewhere-${t.id}`, title: t.title, start: t.scheduled!, end: t.scheduled! + durOf(t), kind: "break",
+        elsewhere: { workspaceId: t.workspaceId ?? null, name, taskId: t.id } };
     })
     .sort((a, b) => a.start - b.start);
 }

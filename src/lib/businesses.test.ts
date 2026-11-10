@@ -2,7 +2,7 @@
    and the time planned in other businesses. Everything reads only what it's given (what you can see). */
 import { describe, it, expect } from "vitest";
 import {
-  activityWorkspace, approvalsEverywhere, busyElsewhere, businessLead, businessesYouRun, hasGroup, inboxEverywhere, liveTasks,
+  activityWorkspace, approvalsEverywhere, attentionScore, busyElsewhere, businessLead, businessesYouRun, canAssignIn, hasGroup, inboxEverywhere, liveTasks,
   mentionsInWorkspace, offersAllBusinesses, roleInWorkspace, shortName, signalDetail, taskPhrase, workspaceSignals, wsKey,
 } from "./businesses";
 import type { Activity, ApprovalWithTask, Project, Task, Workspace, WorkspaceMember } from "../data/types";
@@ -79,6 +79,15 @@ describe("All businesses: the lists", () => {
     expect(mentionsInWorkspace(["ana"], null, MEMBERS)).toEqual([]);                 // a Personal task: nobody else
     expect(mentionsInWorkspace(undefined, "w-a", MEMBERS)).toBeUndefined();
   });
+
+  it("a task only goes to someone who can see it: a member of its workspace; a Personal task, only you", () => {
+    expect(canAssignIn(MEMBERS, "ana", "w-a", "me")).toBe(true);
+    expect(canAssignIn(MEMBERS, "ana", "w-b", "me")).toBe(false);                     // Ana isn't in Beta Padel
+    expect(canAssignIn(MEMBERS, "bo", null, "me")).toBe(false);                       // Personal: nobody else
+    expect(canAssignIn(MEMBERS, "me", null, "me")).toBe(true);
+    expect(canAssignIn(MEMBERS, undefined, "w-b", "me")).toBe(true);                  // unassigned
+    expect(canAssignIn([mem("w-a", "zed", "member", "invited")], "zed", "w-a", "me")).toBe(false);   // not joined yet
+  });
 });
 
 describe("each workspace's signals (the switcher's dots)", () => {
@@ -104,6 +113,16 @@ describe("each workspace's signals (the switcher's dots)", () => {
     expect(sig.get("w-c")).toMatchObject({ attention: 0 });
   });
 
+  it("an Inbox item on an archived task still counts for its workspace (as the Inbox and its badge count it)", () => {
+    const archived = task({ id: "old", workspaceId: "w-b", projectId: "p-b", archivedAt: "2026-10-08" });
+    const s2 = workspaceSignals({ workspaces: WS, tasks: liveTasks([...tasks, archived], PROJECTS), allTasks: [...tasks, archived], projects: PROJECTS,
+      activity: [act("m1", "old")], approvals: [], me: "me", today: TODAY });
+    expect(s2.get("w-b")!.unread).toBe(1);
+    // without the full list it couldn't be placed
+    expect(workspaceSignals({ workspaces: WS, tasks: liveTasks([...tasks, archived], PROJECTS), projects: PROJECTS, activity: [act("m1", "old")], approvals: [], me: "me", today: TODAY })
+      .get("w-b")!.unread).toBe(0);
+  });
+
   it("words for the dot", () => {
     expect(signalDetail({ approvals: 2, overdue: 1, dueToday: 0 })).toBe("2 approvals · 1 overdue");
     expect(signalDetail({ approvals: 0, overdue: 0, dueToday: 0 })).toBe("");
@@ -117,7 +136,7 @@ describe("each workspace's signals (the switcher's dots)", () => {
     const lead = businessLead(more, WS);
     expect(lead.lead?.workspace.name).toBe("Beta Padel");
     expect(lead.lead?.parts).toEqual(["b1", "2 approvals"]);
-    expect(lead.lead?.taskId).toBe("b1");
+    expect(lead.lead).toMatchObject({ taskId: "b1", taskWhen: "due today", detail: "2 approvals · 1 due today", score: attentionScore(more.get("w-b")!) });
     expect(lead.others.map((o) => [o.workspace.name, o.parts])).toEqual([["Alpha Studio", ["late", "1 more due today"]]]);
     expect(lead.plain).toBe("Beta Padel needs you most today: b1 and 2 approvals. Alpha Studio: late, 1 more due today.");
     // nothing needs you: no lead
@@ -145,8 +164,8 @@ describe("time planned in other businesses", () => {
     const names: Record<string, string> = { "w-a": "Alpha Studio", "w-b": "Beta Padel" };
     const busy = busyElsewhere(tasks, "w-a", "me", (id) => (id ? names[id] : "Personal"));
     expect(busy).toEqual([
-      { id: "elsewhere-mine-personal", title: "Personal · mine-personal", start: 780, end: 800, kind: "break", calendarName: "Personal" },
-      { id: "elsewhere-there", title: "Beta Padel · Investor prep", start: 900, end: 945, kind: "break", calendarName: "Beta Padel" },
+      { id: "elsewhere-mine-personal", title: "mine-personal", start: 780, end: 800, kind: "break", elsewhere: { workspaceId: null, name: "Personal", taskId: "mine-personal" } },
+      { id: "elsewhere-there", title: "Investor prep", start: 900, end: 945, kind: "break", elsewhere: { workspaceId: "w-b", name: "Beta Padel", taskId: "there" } },
     ]);
     // seen from Beta Padel, its own block isn't "elsewhere"
     expect(busyElsewhere(tasks, "w-b", "me", (id) => (id ? names[id] : "Personal")).map((e) => e.id)).toEqual(["elsewhere-here", "elsewhere-mine-personal"]);
