@@ -568,7 +568,8 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
 
           <dt>Owner</dt>
           <dd>
-            {canManage ? (
+            {/* (0058: a Members only or Private project changes hands only through its managers, switch on or off) */}
+            {canManage && (!access || canManagePeople(project, access.ctx)) ? (
               <select className="kpj-field" value={ownerId ?? ""} onChange={(e) => onUpdate(project.id, { ownerId: e.target.value || null })} aria-label="Project owner" style={{ minWidth: 200 }}>
                 {!ownerId && <option value="">Select owner…</option>}
                 {ownerId && !members.some((m) => m.id === ownerId) && <option value={ownerId}>{nameOf(ownerId)}</option>}

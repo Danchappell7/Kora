@@ -445,6 +445,18 @@ describe("ProjectPanels", () => {
     expect(screen.queryByRole("button", { name: /Open form/ })).not.toBeInTheDocument();
   });
 
+  it("About, 0058 in with the switch off: a Private project's owner and people stay with its managers; a stored setting is said", () => {
+    const W = "ws-off";
+    const priv = { ...P, workspaceId: W, ownerId: "m-1", visibility: "private" as const };
+    const ctx = { me: "m-self", workspaces: [{ id: W, name: "Reco", kind: "team" as const, ownerId: "o", projectAccess: { on: false, defaultVisibility: "workspace" as const, membersMayMakePrivate: false } }],
+      projects: [priv], members: [], wsMembers: [{ id: "a", workspaceId: W, userId: "m-self", email: "d@x.co", name: "Daniel", role: "admin" as const, status: "active" as const },
+        { id: "b", workspaceId: W, userId: "m-1", email: "m@x.co", name: "Maya", role: "member" as const, status: "active" as const }] };
+    render(<ProjectPanels {...base({ tab: "about", project: priv, access: { ctx, workspaceName: "Reco", onSetVisibility: vi.fn(), onSetMember: vi.fn(), onRemoveMember: vi.fn() } })} />);
+    expect(screen.queryByRole("combobox", { name: "Project owner" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Contributors" })).toBeNull();
+    expect(screen.getByText("Set to Private. It applies once project access is on; until then everyone here sees it.")).toBeInTheDocument();
+  });
+
   it("About: edits the description, owner and contributors", () => {
     const onUpdate = vi.fn();
     render(<ProjectPanels {...base({ tab: "about", onUpdate })} />);
