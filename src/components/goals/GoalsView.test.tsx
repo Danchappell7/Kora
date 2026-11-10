@@ -69,6 +69,26 @@ describe("the Goals page: the summary and the quarter", () => {
   });
 });
 
+describe("the Goals page: which quarter it opens on", () => {
+  const leeds = goal({ id: "next", name: "Open in Leeds", period: "2027-Q1", periodStart: "2027-01-01", periodEnd: "2027-03-31" });
+  const pressed = () => within(screen.getByRole("group", { name: "Quarter" })).getAllByRole("button").find((b) => b.getAttribute("aria-pressed") === "true")!.textContent;
+  it("a business whose goals are all for next quarter (a business pack set up late in this one) opens on next quarter", () => {
+    renderGoals([leeds]);
+    expect(pressed()).toBe("Q1 2027");
+    expect(open("Open in Leeds")).toBeTruthy();
+  });
+  it("with goals this quarter, this quarter; asked for one it offers, that one", () => {
+    const plain = renderGoals([...ALL, leeds]);
+    expect(pressed()).toBe("Q4");
+    plain.unmount();
+    const asked = renderGoals([...ALL, leeds], { quarter: "2027-Q1" });
+    expect(pressed()).toBe("Q1 2027");
+    asked.unmount();
+    renderGoals(ALL, { quarter: "2030-Q2" });
+    expect(pressed()).toBe("Q4");
+  });
+});
+
 describe("the Goals page: planning another quarter", () => {
   it("a new goal goes in the quarter on show (and says so), so planning next quarter keeps it in view", () => {
     const { props } = renderGoals(ALL);

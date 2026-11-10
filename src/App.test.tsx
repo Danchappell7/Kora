@@ -564,14 +564,14 @@ describe("App (demo mode)", () => {
     expect(rule).toHaveBeenCalled();
   });
 
-  it("Projects › New project › From a team template adds its projects here and opens the first", async () => {
+  it("Projects › New project › From a pack or template: a team template adds its projects here and opens the first", async () => {
     await boot();
     key("k", { ctrlKey: true });
     fireEvent.change(await screen.findByRole("combobox"), { target: { value: "new project" } });
     fireEvent.click(screen.getByRole("option", { name: /New project/ }));
     const dialog = await screen.findByRole("dialog", { name: "New project" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "From a team template" }));
-    const gallery = await screen.findByRole("dialog", { name: "From a team template" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "From a pack or template" }));
+    const gallery = await screen.findByRole("dialog", { name: "Packs and templates" });
     const card = within(gallery).getByRole("heading", { name: "Operations" }).closest("li")!;
     fireEvent.click(within(card).getByRole("button", { name: /Start with this/ }));
     expect(await screen.findByText(/^Operations is ready: 3 projects and \d+ starter tasks\.$/)).toBeInTheDocument();

@@ -96,6 +96,8 @@ import { useGoalWrites } from "./components/goals/useGoalWrites";
 import { useGoalFlow } from "./components/goals/useGoalFlow";
 import { GoalServes, GoalServesRow } from "./components/goals/GoalServes";
 import { TeamGoals } from "./components/goals/TeamGoals";
+import { usePackApply } from "./components/packs/usePackApply";
+import type { WorkspaceStart } from "./components/NewWorkspaceModal";
 import { groupGoalPace } from "./lib/goalPace";
 import type { GoalExtras, GoalPatch } from "./data/types";
 import {
@@ -3016,6 +3018,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [denyGuest, applyTeamTemplate]);
 
+  /* ---- business packs (components/packs): New workspace and New project › From a pack or template ---- */
+  const packApply = usePackApply({
+    userIdRef, workspaces, members: wsMembers, goalsV2: goalExtras !== null, workspacesRef, projectsRef, pendingTasksRef, noteCreated, applyProjects,
+    setSections, setTasks, setForms, setRules: setAutomationRules, setGoals, setGoalExtras, setPortfolios,
+    showRhythm: (id, r) => { const next = workspacesRef.current.map((w) => (w.id === id ? { ...w, updateRhythm: r } : w)); setWorkspaces(next); setReferenceData({ workspaces: next }); },
+    requestReload: () => requestReloadRef.current?.(), toastError, denyGuest,
+  });
+  const newProjectPacks = useMemo(() => packApply.hostFor({ workspaceId: workspace, mode: "project", open: setRoute }), [packApply, workspace, setRoute]);
+  const newWorkspacePacks = useMemo(() => packApply.hostFor({ workspaceId: null, mode: "workspace", open: setRoute }), [packApply, setRoute]);
+
   /* ---- 0047: plan a project with Kanbo (the AI planner; on-device when AI is off) ---- */
   /** New mode plans a project in the workspace you're in; append adds tasks to `projectId`. Never for guests. */
   const openPlanner = useCallback((p: { mode: "new" | "append"; projectId?: string; goal?: string }) => {
@@ -3049,9 +3061,9 @@ export default function App() {
   }, [denyGuest, persistTask, unplanIfTheirs, applyAutomation, buildNewTask]);
 
   /* ---- workspaces & people ---- */
-  /** A new workspace; `start` sets it up from a team template once it exists. Resolves when
-   *  everything is done (the dialog shows progress until then). */
-  const createWorkspace = useCallback(async (name: string, start?: { template: WorkspaceTemplate; projectKeys?: string[] }) => {
+  /** A new workspace; `start` sets it up from a team template or a business pack once it exists.
+   *  Resolves when everything is done (the dialog shows progress until then), with what a pack made. */
+  const createWorkspace = useCallback(async (name: string, start?: WorkspaceStart) => {
     const me = getMember(userIdRef.current);
     let w: Workspace;
     try {
@@ -3067,11 +3079,17 @@ export default function App() {
     setReferenceData({ workspaces: [...workspacesRef.current, w] });
     setWorkspace(w.id);
     if (!start || !w.id) { setRoute({ view: "team" }); return; }
+    if ("pack" in start) {
+      // you own it, so everything the pack sets up is yours to create (the dialog shows what it made)
+      const o = await packApply.apply(start.pack, start.pick, w.id, packApply.hostFor({ workspaceId: w.id, mode: "workspace" }).context);
+      setRoute(o?.applied.projects.length ? { view: "projects" } : { view: "team" });
+      return o;
+    }
     // you own it, so the template's projects are yours to create; then show them
     const r = await applyTeamTemplate(start.template, start.projectKeys, w.id);
     setRoute(r?.projects.length ? { view: "projects" } : { view: "team" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toastError, noteCreated, applyTeamTemplate]);
+  }, [toastError, noteCreated, applyTeamTemplate, packApply]);
 
   const updateWorkspace = useCallback((workspaceId: string, name: string, logoUrl: string | null) => {
     const before = workspacesRef.current;
@@ -4186,7 +4204,7 @@ export default function App() {
         views={{ workspaceId: workspace, workspaceName: activeWsName, canShare: canShareViews(myRole ?? null, workspace) }} />;
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
-      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
+      case "goals": return <GoalsView key={route.tab ?? ""} quarter={route.tab} goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
         statusUpdates={statusUpdates} onOpenGoal={openGoal} openGoalId={goalPanel?.id ?? null}
         extras={goalExtras} workspaceId={workspace} me={currentUserId} role={personal ? null : myRole ?? null} members={wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active")}
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
@@ -4533,13 +4551,13 @@ export default function App() {
         onBrowseTemplates={() => { setNewTaskOpen(false); setNewTaskTemplate(null); openTemplateLibrary(); }} /></Deferred>
       <Deferred when={newProjectOpen}><NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects}
         // guests never create from a template (createFromTeamTemplate refuses them too)
-        onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate}
+        onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate} packs={activeReadOnly ? undefined : newProjectPacks}
         onPlanWithKanbo={activeReadOnly ? undefined : (typed) => openPlanner({ mode: "new", goal: typed || undefined })} /></Deferred>
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       {/* (tourAvailable: the TourHost below is mounted when a tour is asked for, so the sheet hands over to it) */}
       <Deferred when={onboardOpen && !welcomeOpen}><OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
         onGoToday={() => setRoute({ view: "plan" })} tourAvailable /></Deferred>
-      <Deferred when={newWorkspaceOpen}><NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} /></Deferred>
+      <Deferred when={newWorkspaceOpen}><NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} packs={newWorkspacePacks} /></Deferred>
       {/* 0047: plan a project with Kanbo (loaded the first time it's opened) */}
       {planner && (() => {
         const planProject = planner.mode === "append" ? projects.find((p) => p.id === planner.projectId) ?? null : null;
