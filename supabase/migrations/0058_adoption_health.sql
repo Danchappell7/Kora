@@ -33,11 +33,17 @@
 --      workspace to them: they become its owner, the admin who set it up
 --      stays as an admin, and what the admin set up there (project owners,
 --      open tasks assigned to them, goals and portfolios they own) becomes
---      theirs.
+--      theirs. Only that invite hands it over (its own row, still an
+--      admin's): withdrawing it, or changing its role, calls the handover
+--      off, so inviting the same address again later never does. The
+--      workspace history names the admin who set it up for the role
+--      changes, not the person joining.
 --      workspace_handovers has no client access at all.
 --   5. admin_workspace_adoption(): per workspace, for platform admins:
---      people, invited, weekly active, tasks done in the last 7 days, the
---      last day anyone worked there, and a pending handover.
+--      people, invited, weekly active (worked there: a task changed,
+--      a comment, an update), tasks done in the last 7 days, the last day
+--      anyone worked there, and a pending handover. The admin who
+--      provisioned a business isn't counted among its people.
 --
 -- Needs 0041 (ws_role, can_act, approved_domains), 0042 (schema_migrations,
 -- is_admin with suspension, access_revoked, claim_invites), 0016 (sessions),
@@ -156,6 +162,8 @@ declare
   week_from date := today - 6;
   month_from date := today - 29;
   floor_ts timestamptz := (today - 30)::timestamp at time zone 'Europe/London';
+  -- the workspace's first day: nobody was active in it before then (sessions are everyone's, not the workspace's)
+  since date := coalesce((select (w.created_at at time zone 'Europe/London')::date from public.workspaces w where w.id = p_ws), month_from);
 begin
   if auth.uid() is null or public.ws_role(p_ws) not in ('owner', 'admin') then raise exception 'not authorized'; end if;
   return (
@@ -184,9 +192,10 @@ begin
         from public.status_updates u
        where u.workspace_id = p_ws and u.created_at >= floor_ts and u.user_id in (select user_id from people)
     ),
-    days as (select x.user_id, x.day from seen x where x.day between month_from and today)
+    days as (select x.user_id, x.day from seen x where x.day between greatest(month_from, since) and today)
     select json_build_object(
       'today', today,
+      'since', since,
       'members', coalesce((
         select json_agg(json_build_object(
                  'user_id', p.user_id,
@@ -213,6 +222,8 @@ create table if not exists public.workspace_handovers (
   done_at        timestamptz,
   new_owner      uuid references auth.users (id) on delete set null
 );
+-- the owner-to-be's own invite (workspace_members.id): only that row's claim hands the workspace over
+alter table public.workspace_handovers add column if not exists member_id uuid;
 alter table public.workspace_handovers drop constraint if exists workspace_handovers_shape;
 alter table public.workspace_handovers add constraint workspace_handovers_shape check (
   email = lower(btrim(email)) and char_length(email) <= 254 and email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
@@ -229,12 +240,20 @@ end $handovers$;
 revoke all on public.workspace_handovers from public, anon, authenticated;
 grant select, insert, update, delete on public.workspace_handovers to service_role;
 
--- Mail domains anyone can sign up with: pre-approving one would let anyone in.
+-- Mail domains anyone can sign up with: pre-approving one would let anyone in. The big providers
+-- under any country ending (outlook.co.uk, yahoo.fr, gmx.de, …), the rest by name, UK ISPs included.
+-- (lib/rolloutApi PUBLIC_MAIL_DOMAINS keeps the console's own copy, to say so before asking.)
 create or replace function public.public_mail_domain(d text)
 returns boolean language sql immutable parallel safe set search_path = pg_catalog as $$
-  select lower(coalesce(d, '')) = any (array['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'hotmail.co.uk', 'live.com',
-    'live.co.uk', 'msn.com', 'yahoo.com', 'yahoo.co.uk', 'icloud.com', 'me.com', 'mac.com', 'aol.com', 'proton.me', 'protonmail.com',
-    'gmx.com', 'mail.com', 'yandex.com', 'zoho.com', 'btinternet.com', 'sky.com']);
+  select lower(coalesce(d, '')) ~ ('^(gmail|googlemail|outlook|hotmail|live|windowslive|msn|yahoo|ymail|rocketmail|aol|aim|icloud'
+      || '|gmx|web|mail|email|yandex|ya|protonmail|proton|zoho|zohomail|tutanota|tuta|tutamail|fastmail|hushmail|mailbox|posteo'
+      || '|qq|163|126|yeah|sina|sohu|naver|daum|hanmail|rediffmail|t-online|freenet|orange|wanadoo|free|laposte|sfr|libero|virgilio'
+      || '|seznam|wp|o2|onet|interia|inbox|mail2world)\.([a-z]{2,6})(\.[a-z]{2,3})?$')
+    or lower(coalesce(d, '')) = any (array['me.com', 'mac.com', 'pm.me', 'hey.com', 'duck.com', 'btinternet.com', 'btopenworld.com',
+      'bt.com', 'sky.com', 'virginmedia.com', 'virgin.net', 'ntlworld.com', 'blueyonder.co.uk', 'talktalk.net', 'tiscali.co.uk',
+      'plus.net', 'plusnet.com', 'aol.co.uk', 'eclipse.co.uk', 'zen.co.uk', 'live.co.uk', 'mail.ru', 'bk.ru', 'list.ru', 'rambler.ru',
+      'comcast.net', 'verizon.net', 'att.net', 'sbcglobal.net', 'cox.net', 'charter.net', 'shaw.ca', 'rogers.com', 'bigpond.com',
+      'optusnet.com.au', 'xtra.co.nz']);
 $$;
 
 create or replace function public.admin_provision_business(p_name text, p_owner_email text, p_domain text default null, p_pack text default null)
@@ -272,7 +291,7 @@ begin
   -- the owner-to-be: an admin until they join, then the owner (the trigger below)
   insert into public.workspace_members (workspace_id, email, name, role, status)
     values (ws, e, '', 'admin', 'invited') returning id into inv;
-  insert into public.workspace_handovers (workspace_id, email, pack, provisioned_by) values (ws, e, pk, me);
+  insert into public.workspace_handovers (workspace_id, email, pack, provisioned_by, member_id) values (ws, e, pk, me, inv);
 
   if d is not null then
     insert into public.approved_domains (domain, added_by) values (d, me) on conflict (domain) do nothing;
@@ -294,7 +313,8 @@ end; $$;
 revoke execute on function public.admin_provision_business(text, text, text, text) from public, anon;
 grant execute on function public.admin_provision_business(text, text, text, text) to authenticated;
 
--- The handover: the invited owner-to-be joins, and the workspace is theirs.
+-- The handover: the invited owner-to-be joins, and the workspace is theirs. Only their own invite
+-- (member_id), still an admin's: anyone else joining, even from the same address, never takes it over.
 create or replace function public.member_handover() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -303,9 +323,14 @@ declare
 begin
   if new.status <> 'active' or old.status = 'active' or new.user_id is null then return null; end if;
   select * into h from public.workspace_handovers
-   where workspace_id = new.workspace_id and done_at is null and email = lower(btrim(new.email))
+   where workspace_id = new.workspace_id and done_at is null and member_id = new.id
    for update;
   if h.workspace_id is null then return null; end if;
+  -- their invite was changed to another role before they joined: the handover's off
+  if new.role <> 'admin' then
+    update public.workspace_handovers set done_at = now() where workspace_id = h.workspace_id;
+    return null;
+  end if;
   update public.workspace_handovers set done_at = now(), new_owner = new.user_id where workspace_id = h.workspace_id;
   -- already handed over by hand (or the admin who set it up has gone): nothing more to do
   select w.owner_id into current_owner from public.workspaces w where w.id = new.workspace_id;
@@ -331,12 +356,37 @@ begin
     execute 'update public.portfolios set owner_id = $1 where workspace_id = $2 and owner_id = $3'
       using new.user_id, new.workspace_id, h.provisioned_by;
   end if;
+  -- the workspace history (0047): the role changes above ran as the person joining; they're the
+  -- handover the admin set up, so they're the admin's, marked as a handover
+  if to_regclass('public.audit_events') is not null and to_regprocedure('public.kanbo_person_name(uuid)') is not null then
+    begin
+      execute 'update public.audit_events set actor_id = $1, actor_name = left(public.kanbo_person_name($1), 200),
+                      detail = detail || jsonb_build_object(''handover'', true)
+                where workspace_id = $2 and action = ''role.changed'' and created_at = now() and actor_id is not distinct from $3'
+        using h.provisioned_by, new.workspace_id, new.user_id;
+    exception when others then
+      raise warning 'history not re-attributed (handover): %', sqlerrm;
+    end;
+  end if;
   return null;
 end; $$;
 revoke execute on function public.member_handover() from public, anon, authenticated;
 drop trigger if exists trg_member_handover on public.workspace_members;
 create trigger trg_member_handover after update of status on public.workspace_members
   for each row execute function public.member_handover();
+
+-- The owner-to-be's invite is withdrawn (or their row goes): the handover's off, for good.
+create or replace function public.member_handover_withdrawn() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.workspace_handovers set done_at = now()
+   where workspace_id = old.workspace_id and member_id = old.id and done_at is null;
+  return null;
+end; $$;
+revoke execute on function public.member_handover_withdrawn() from public, anon, authenticated;
+drop trigger if exists trg_member_handover_withdrawn on public.workspace_members;
+create trigger trg_member_handover_withdrawn after delete on public.workspace_members
+  for each row execute function public.member_handover_withdrawn();
 
 -- ---------- 5. adoption per workspace (the platform console) ----------
 create or replace function public.admin_workspace_adoption()
@@ -348,14 +398,20 @@ begin
   if auth.uid() is null or not public.is_admin() then raise exception 'not authorized'; end if;
   return coalesce((
     select json_agg(row_to_json(x) order by x.created_at desc) from (
+      -- (the admin who provisioned a business helps it start: they're not one of its people)
       select w.id, w.name, w.created_at,
-        (select count(*) from public.workspace_members m where m.workspace_id = w.id and m.status = 'active') as members,
+        (select count(*) from public.workspace_members m where m.workspace_id = w.id and m.status = 'active'
+            and m.user_id is distinct from h.provisioned_by) as members,
         (select count(*) from public.workspace_members m where m.workspace_id = w.id and m.status = 'invited') as invited,
+        -- worked there this week (opening Kanbo isn't counted: sessions belong to no one workspace)
         (select count(distinct m.user_id) from public.workspace_members m
-          where m.workspace_id = w.id and m.status = 'active' and m.user_id is not null
-            and (exists (select 1 from public.sessions s where s.user_id = m.user_id and (s.started_at >= week_ts or s.last_seen_at >= week_ts))
-                 or exists (select 1 from public.task_events e join public.tasks t on t.id = e.task_id
-                             where t.workspace_id = w.id and e.actor_id = m.user_id and e.created_at >= week_ts))) as weekly_active,
+          where m.workspace_id = w.id and m.status = 'active' and m.user_id is not null and m.user_id is distinct from h.provisioned_by
+            and (exists (select 1 from public.task_events e join public.tasks t on t.id = e.task_id
+                          where t.workspace_id = w.id and e.actor_id = m.user_id and e.created_at >= week_ts)
+                 or exists (select 1 from public.comments c join public.tasks t on t.id = c.task_id
+                             where t.workspace_id = w.id and c.user_id = m.user_id and c.created_at >= week_ts)
+                 or exists (select 1 from public.status_updates u
+                             where u.workspace_id = w.id and u.user_id = m.user_id and u.created_at >= week_ts))) as weekly_active,
         (select count(*) from public.tasks t where t.workspace_id = w.id and t.status = 'done' and t.completed_at >= today - 6) as done_week,
         (select (max(e.created_at) at time zone 'Europe/London')::date
            from public.task_events e join public.tasks t on t.id = e.task_id where t.workspace_id = w.id) as last_day,
@@ -390,7 +446,12 @@ insert into public.schema_migrations (version) values ('0058') on conflict (vers
 --     and not has_table_privilege('authenticated', 'public.workspace_handovers', 'insert')             as handovers_no_client_access,
 --   has_function_privilege('authenticated', 'public.admin_provision_business(text,text,text,text)', 'execute')
 --     and not has_function_privilege('anon', 'public.admin_provision_business(text,text,text,text)', 'execute') as provision_signed_in_only,
---   exists (select 1 from pg_trigger where tgname = 'trg_member_handover')                               as handover_trigger,
+--   exists (select 1 from pg_trigger where tgname = 'trg_member_handover')
+--     and exists (select 1 from pg_trigger where tgname = 'trg_member_handover_withdrawn')               as handover_triggers,
+--   exists (select 1 from information_schema.columns where table_schema = 'public'
+--            and table_name = 'workspace_handovers' and column_name = 'member_id')                     as handover_member,
+--   public.public_mail_domain('outlook.co.uk') and public.public_mail_domain('virginmedia.com')
+--     and not public.public_mail_domain('harbourfit.co.uk')                                            as public_domains,
 --   has_function_privilege('authenticated', 'public.admin_workspace_adoption()', 'execute')
 --     and not has_function_privilege('anon', 'public.admin_workspace_adoption()', 'execute')          as adoption_signed_in_only;
 -- ============================================================

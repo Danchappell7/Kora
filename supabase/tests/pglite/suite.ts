@@ -2483,6 +2483,8 @@ async function adoptionSuite(w: World) {
   const ownerOf = async (ws: string) => (await one<{ o: string }>(`select owner_id::text as o from public.workspaces where id = $1::uuid`, [ws])).o;
   const roleOf = async (ws: string, u: string) => (await one<{ r: string } | undefined>(`select role as r from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [ws, u]))?.r;
 
+  // (the two businesses have been going a while: activity counts from a workspace's first day)
+  await w.pg.query(`update public.workspaces set created_at = now() - interval '60 days' where id in ($1::uuid, $2::uuid)`, [w.w1, w.w2]);
   // who did what lately: bob opened Kanbo today and three days ago, quinn last nine days ago,
   // gus (a guest) changed a task today, carol (another business) was on today
   await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now(), now()), ($1::uuid, now() - interval '3 days', now() - interval '3 days')`, [w.bob]);
@@ -2663,13 +2665,72 @@ async function adoptionSuite(w: World) {
     eq((await one<{ done: boolean }>(`select done_at is not null as done from public.workspace_handovers where workspace_id = $1::uuid`, [ws])).done, true, "and the handover's closed");
   });
 
+  await test("0058 attack: a withdrawn owner's invite calls the handover off: the same address invited again (as a guest) takes nothing", async () => {
+    const biz = await provision(root, "Typo Co", "typo58@typo.example");
+    const ws = biz.workspace_id;
+    // root withdraws the invite (a typo, say); a helper admin later invites the same address as a guest
+    await asPerson(w.pg, root, `select public.remove_member($1::uuid)`, [biz.member_id]);
+    eq((await one<{ done: boolean; o: string | null }>(`select done_at is not null as done, new_owner::text as o from public.workspace_handovers where workspace_id = $1::uuid`, [ws])), { done: true, o: null }, "called off, nobody handed it");
+    const helper = await person("helper58@typo.example");
+    await w.pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'helper58@typo.example', 'Helper', 'admin', 'active')`, [ws, helper]);
+    await asPerson(w.pg, helper, `select public.invite_member($1::uuid, 'typo58@typo.example', 'Guesty', 'guest')`, [ws]);
+    const typo = await person("typo58@typo.example", { approved: false });
+    await claim(typo);
+    eq(await ownerOf(ws), root, "the owner is unchanged");
+    eq([await roleOf(ws, typo), await roleOf(ws, root), await roleOf(ws, helper)], ["guest", "owner", "admin"], "the guest stays a guest");
+    eq((await one<{ n: number }>(`select count(*)::int as n from public.projects where workspace_id = $1::uuid and owner_id = $2::uuid`, [ws, typo])).n, 0, "no projects handed over");
+  });
+  await test("0058 attack: an owner-to-be's invite changed to another role before they join hands nothing over", async () => {
+    const biz = await provision(root, "Changed Co", "boss58@changed.example");
+    const ws = biz.workspace_id;
+    await asPerson(w.pg, root, `select public.set_member_role($1::uuid, 'member')`, [biz.member_id]);
+    const boss = await person("boss58@changed.example", { approved: false });
+    await claim(boss);
+    eq(await ownerOf(ws), root, "still the admin's");
+    eq(await roleOf(ws, boss), "member", "joined as the member they were made");
+    eq((await one<{ done: boolean }>(`select done_at is not null as done from public.workspace_handovers where workspace_id = $1::uuid`, [ws])).done, true, "and the handover's closed");
+  });
+  await test("0058: the workspace history names the admin who set it up for a handover's role changes, not the person joining", async () => {
+    const hasAudit = (await one<{ on: boolean }>(`select to_regclass('public.audit_events') is not null as "on"`)).on;
+    if (!hasAudit) return;
+    const biz = await provision(root, "History Co", "boss58@history.example");
+    const boss = await person("boss58@history.example", { approved: false });
+    await claim(boss);
+    eq(await ownerOf(biz.workspace_id), boss, "handed over");
+    const rows = (await w.pg.query<{ actor: string; to: string; handover: boolean }>(
+      `select actor_id::text as actor, detail ->> 'to' as "to", (detail ->> 'handover')::boolean as handover from public.audit_events
+        where workspace_id = $1::uuid and action = 'role.changed' order by detail ->> 'to'`, [biz.workspace_id])).rows;
+    eq(rows, [{ actor: root, to: "admin", handover: true }, { actor: root, to: "owner", handover: true }], "both role changes are the admin's, marked as a handover");
+    eq((await one<{ a: string }>(`select actor_id::text as a from public.audit_events where workspace_id = $1::uuid and action = 'member.joined'`, [biz.workspace_id])).a, boss, "joining is still hers");
+  });
+  await test("0058 attack: public mail domains under any country ending, and UK ISPs, are never pre-approved", async () => {
+    for (const d of ["outlook.co.uk", "yahoo.fr", "hey.com", "fastmail.com", "pm.me", "ymail.com", "gmx.de", "web.de", "qq.com", "virginmedia.com", "talktalk.net", "ntlworld.com", "aol.co.uk", "hotmail.fr", "icloud.com"]) {
+      await raises(provision(root, "Public Co", `boss@${d}`, d), /public email domain/).catch((e) => { throw new Error(`${d}: ${(e as Error).message}`); });
+      eq((await one<{ n: number }>(`select count(*)::int as n from public.approved_domains where domain = $1`, [d])).n, 0, `${d} never approved`);
+    }
+    eq((await one<{ p: boolean }>(`select public.public_mail_domain('harbourfit.co.uk') or public.public_mail_domain('mailchimp.com') or public.public_mail_domain('webflow.io') as p`)).p, false, "a business's own domain is fine");
+  });
+  await test("0058: a new workspace's activity starts on its first day (no one was active in it before)", async () => {
+    const fresh = await provision(root, "Fresh Co", "boss58@fresh.example");
+    await w.pg.query(`update public.workspaces set created_at = now() - interval '2 days' where id = $1::uuid`, [fresh.workspace_id]);
+    await w.pg.query(`insert into public.sessions (user_id, started_at, last_seen_at) values ($1::uuid, now() - interval '5 days', now() - interval '5 days')`, [root]);
+    const a = await activity(root, fresh.workspace_id) as Activity & { since: string };
+    eq(a.since, await dayBefore(2), "since its first day");
+    eq(a.days.filter((d) => d.day < a.since).every((d) => d.people === 0), true, "nobody before it existed");
+    eq(a.members.find((m) => m.user_id === root)?.days, 0, "the admin's session five days ago isn't counted here");
+  });
+
   await test("0058: weekly-active numbers per workspace, for platform admins only", async () => {
     type Row = { id: string; name: string; members: number; invited: number; weekly_active: number; done_week: number; handover_email: string | null; handover_done_at: string | null; pack: string | null };
     const rows = (await asPerson<{ r: Row[] }>(w.pg, root, `select public.admin_workspace_adoption() as r`))[0].r;
     const foundry = rows.find((r) => r.id === w.w1)!;
     ok(foundry, "w1 listed");
-    ok(foundry.weekly_active >= 2, `bob and gus this week (got ${foundry.weekly_active})`);
+    // worked there this week: gus changed a task (bob only opened Kanbo, which belongs to no one workspace)
+    ok(foundry.weekly_active >= 1, `gus this week (got ${foundry.weekly_active})`);
     ok(foundry.members >= 4, "members");
+    // a business still waiting for its owner: the admin who provisioned it isn't one of its people, busy or not
+    const waitingCo = rows.find((r) => r.name === "Fresh Co")!;
+    eq([waitingCo.members, waitingCo.weekly_active, waitingCo.handover_done_at], [0, 0, null], "nobody's in it yet");
     const second = rows.find((r) => r.name === "Second Co")!;
     eq([second.handover_email, !!second.handover_done_at], ["own58@second.example", true], "handover shown");
     eq(rows.find((r) => r.name === "Harbour Fitness")?.pack, "boutique-fitness", "pack shown");
