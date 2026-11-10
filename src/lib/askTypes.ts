@@ -4,6 +4,7 @@
    ============================================================ */
 import type { Task, Priority } from "../data/types";
 import type { Route } from "../app-types";
+import type { AskGoal } from "./goalFlow";
 
 /** The task fields an Ask action may change. */
 export type AskField = "status" | "priority" | "dueDate" | "dueTime" | "assigneeId" | "planToday" | "projectId" | "title";
@@ -33,6 +34,8 @@ export interface AskContext {
   me: string;
   members: { id: string; name: string }[];
   projects: { id: string; name: string }[];
+  /** 0052: the workspace's goals you can see (lib/goalFlow askGoals), slipping first: "which goals are slipping?" */
+  goals?: AskGoal[];
 }
 
 /** A task read out of pasted notes, before the person reviews it. */

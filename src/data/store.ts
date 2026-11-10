@@ -2972,7 +2972,9 @@ export const store = {
     const sent = new Set(payload.map((t) => t.id));
     const me = ctx.members.find((m) => m.id === ctx.me)?.name ?? getMember(ctx.me)?.name ?? "";
     const out = await callAiMode<AskResult>(
-      { mode: "command", question: q.slice(0, 4000), today: ctx.today, me, meId: ctx.me, members: ctx.members, projects: ctx.projects, tasks: payload },
+      { mode: "command", question: q.slice(0, 4000), today: ctx.today, me, meId: ctx.me, members: ctx.members, projects: ctx.projects, tasks: payload,
+        // 0052: the workspace's goals ("which goals are slipping?"); read only, never changed by Ask
+        ...(ctx.goals?.length ? { goals: ctx.goals.slice(0, 60) } : {}) },
       (d) => {
         const answer = typeof d.answer === "string" ? d.answer.trim() : "";
         if (!answer) return null;
