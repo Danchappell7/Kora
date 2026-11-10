@@ -6,7 +6,8 @@
    ============================================================ */
 import { useEffect, useState } from "react";
 import { Button, DateChip, EmptyState, Icon, IconButton, ProjectDot, projectPaint } from "../primitives";
-import { getProject, getMember, TAGS, PRIORITY_META } from "../../data/data";
+import { getProject, getMember, TAGS, PRIORITY_META, WORKSPACES } from "../../data/data";
+import { audienceOpen } from "../../lib/projectAccess";
 import type { Project, Section, AutomationRule, AutomationAction, AutomationActionType, FormDef, FormFieldKey, TagDef, Priority } from "../../data/types";
 import { resolveTagId, useStableOrder } from "./reportingUtils";
 import { DraftInput } from "../project/DraftInput";
@@ -340,8 +341,12 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                           })}
                         </div>
                       )}
-                      {/* anyone with the link can submit (guests only see the link while it's on) */}
-                      <PublicLinkPanel form={f} canEdit={!locked} projectName={proj?.name} projectColor={proj?.color} onChange={(p) => onPublicChange?.(f.id, p)} />
+                      {/* anyone with the link can submit (guests only see the link while it's on). Its poster and QR file
+                          travel as the public page does (D20): a Members only or Private project isn't named on them */}
+                      {(() => {
+                        const named = audienceOpen("team", proj ? WORKSPACES.find((w) => w.id === (proj.workspaceId ?? null)) : undefined, proj);
+                        return <PublicLinkPanel form={f} canEdit={!locked} projectName={named ? proj?.name : undefined} projectColor={named ? proj?.color : undefined} onChange={(p) => onPublicChange?.(f.id, p)} />;
+                      })()}
                       {filling && !locked && (
                         <form className="kpj-form-fill" aria-label={`Fill in ${f.name}`} onSubmit={(e) => { e.preventDefault(); submit(f); }}>
                           {/* eslint-disable-next-line jsx-a11y/no-autofocus */}

@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { AutomationsView, FormsView } from "./RulesForms";
 import type { AutomationRule, FormDef, Project } from "../../data/types";
+import * as data from "../../data/data";
 
 const project: Project = { id: "p-launch", name: "Q3 Product Launch", emoji: "🚀", color: "oklch(0.6 0.2 264)", workspaceId: "ws" };
 const form: FormDef = { id: "33333333-3333-4333-8333-333333333333", projectId: "p-launch", workspaceId: "ws", name: "Launch requests", fields: ["description"] };
@@ -19,6 +20,30 @@ function forms(extra: Partial<Parameters<typeof FormsView>[0]> = {}) {
 }
 
 describe("FormsView › public link", () => {
+  it("0058: a Members only or Private project's QR file isn't named after it (the public page doesn't name it either)", async () => {
+    const saved = data.WORKSPACES;
+    data.setReferenceData({ workspaces: [{ id: "ws", name: "Foundry", kind: "team", projectAccess: { on: true, defaultVisibility: "workspace", membersMayMakePrivate: false } }] });
+    try {
+      const clicks: HTMLAnchorElement[] = [];
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) { clicks.push(this); });
+      // (an id the demo's own data doesn't have, so the card reads this project)
+      const name = async (o: Partial<Project>) => {
+        const p: Project = { ...project, id: "p-rf-closed", ...o };
+        const { unmount } = render(<FormsView forms={[{ ...form, projectId: p.id, publicEnabled: true }]} projects={[p]} members={[]} onCreate={vi.fn()} onUpdate={vi.fn()} onDelete={vi.fn()} onSubmit={vi.fn()} onPublicChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole("button", { name: "QR code" }));
+        fireEvent.click(screen.getByRole("button", { name: "Download SVG" }));
+        unmount();
+        return clicks[clicks.length - 1].download;
+      };
+      expect(await name({ visibility: "private" })).toBe("launch-requests-qr.svg");
+      expect(await name({ visibility: "members" })).toBe("launch-requests-qr.svg");
+      expect(await name({ visibility: "workspace" })).toBe("q3-product-launch-launch-requests-qr.svg");
+    } finally {
+      data.setReferenceData({ workspaces: saved });
+      vi.restoreAllMocks();
+    }
+  });
+
   it("each form card can switch on its public link, and the host hears about it", async () => {
     const props = forms();
     const card = screen.getByRole("article", { name: "Request form Launch requests" });
