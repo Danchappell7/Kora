@@ -119,7 +119,9 @@ describe("Welcome to <workspace>", () => {
     expect(within(card).getByText("50% · Ahead of pace")).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: /Sign 6 new retainer clients/ }));
     expect(onOpenGoal).toHaveBeenCalledWith("g1");
-    expect(within(card).getByText(/Sana runs Harbour Advisory/)).toBeInTheDocument();
+    // the one person here is who to ask: said once, under them, by name
+    expect(within(card).getByText("Ask Sana, who runs Harbour Advisory, anything about how things run here.")).toBeInTheDocument();
+    expect(within(card).queryByRole("heading", { name: "Who to ask" })).toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: /Read the board pack/ }));
     expect(onOpenTask).toHaveBeenCalledWith("t1");
     expect(within(card).getByText("Due 11 Nov")).toBeInTheDocument();
@@ -226,4 +228,91 @@ describe("Workspace health", () => {
     expect(screen.getByRole("combobox", { name: "Champion" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Resend invite" })).toBeEnabled();
   });
+  it("a workspace that's only just started is never \"All good\": each empty line says what's not there yet", () => {
+    try { localStorage.removeItem("kanbo-health-folded"); } catch { /* none */ }
+    const solo = [m("dan", "owner")];
+    const health = workspaceHealth({ workspaceId: "ws", members: solo, tasks: [], projects: [], statusUpdates: [], workspaces: [{ id: "ws", name: "Studio Ops", kind: "team" }], today: NOW,
+      goals: [], checkins: [],
+      activity: { today: "2026-11-10", since: "2026-11-10", members: [{ userId: "dan", days: 1, lastDay: "2026-11-10" }],
+        days: ["04", "05", "06", "07", "08", "09", "10"].map((d) => ({ day: `2026-11-${d}`, people: d === "10" ? 1 : 0 })) } });
+    const onInvite = vi.fn();
+    render(<WorkspaceHealthCard {...healthProps({ health, members: solo, projects: [], rollout: null, workspaceName: "Studio Ops", onInvite })} />);
+    const card = screen.getByRole("region", { name: "Workspace health" });
+    expect(within(card).getByText("Just getting started")).toBeInTheDocument();
+    expect(within(card).queryByText("All good")).toBeNull();
+    expect(within(card).getByText("Nobody invited yet")).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "Invite people" }));
+    expect(onInvite).toHaveBeenCalled();
+    expect(within(card).getByText("Only you so far")).toBeInTheDocument();
+    expect(within(card).queryByRole("img", { name: /People active each day/ })).toBeNull();
+    expect(within(card).getByText("No open tasks yet")).toBeInTheDocument();
+    expect(within(card).getByText("No projects yet")).toBeInTheDocument();
+    expect(within(card).getByText("No goals yet")).toBeInTheDocument();
+    // none of the "fine" ticks for what isn't there
+    for (const ok of ["Everyone you invited has joined", "Every open task has an owner and a date", "No project updates missing", "Every goal has a recent check-in"]) {
+      expect(within(card).queryByText(ok)).toBeNull();
+    }
+  });
+  it("the day strip starts on the workspace's first day; the card folds to its heading, and remembers", () => {
+    try { localStorage.removeItem("kanbo-health-folded"); } catch { /* none */ }
+    const p = healthProps();
+    const health = { ...p.health, active: { ...p.health.active!, since: "2026-11-08" } };
+    const { unmount } = render(<WorkspaceHealthCard {...p} health={health} />);
+    expect(screen.getByRole("img", { name: /^People active each day: Wed before Acme started, Thu before Acme started, Fri before Acme started, Sat before Acme started, Sun 1, Mon 2, Tue 0$/ })).toBeInTheDocument();
+    const fold = screen.getByRole("button", { name: "Workspace health" });
+    expect(fold).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(fold);
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("2 open tasks with no owner or date")).not.toBeVisible();
+    unmount();
+    render(<WorkspaceHealthCard {...p} health={health} />);
+    expect(screen.getByRole("button", { name: "Workspace health" })).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Workspace health" }));
+    expect(screen.getByText("2 open tasks with no owner or date")).toBeVisible();
+  });
+  it("the rollout plan saves as it's shown: a champion who's left and a pilot who's gone drop out, so the save still goes through", () => {
+    try { localStorage.removeItem("kanbo-health-folded"); } catch { /* none */ }
+    const p = healthProps({ rollout: { champion: "gone", pilot: ["maya", "left", "gus"], goLive: "2026-12-01" } });
+    render(<WorkspaceHealthCard {...p} />);
+    expect(screen.getByText("Pick a champion")).toBeInTheDocument();
+    expect(screen.getByText("Pilot group: Maya")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Go-live date"), { target: { value: "2026-12-08" } });
+    // (gus is a guest: never in the pilot group)
+    expect(p.onSaveRollout).toHaveBeenLastCalledWith({ pilot: ["maya"], goLive: "2026-12-08" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Champion" }), { target: { value: "theo" } });
+    expect(p.onSaveRollout).toHaveBeenLastCalledWith({ champion: "theo", pilot: ["maya"], goLive: "2026-12-01" });
+  });
 });
+
+describe("the first run, more", () => {
+  it("Just me can go back to the fork; the dots never grow on the way", () => {
+    render(<OnboardingModal {...base} profile={profile("Sam")} team={host()} />);
+    expect(screen.getByText("A couple of quick questions to set Kanbo up for you.")).toBeInTheDocument();
+    const dots = () => document.querySelectorAll(".konb-dot").length;
+    const before = dots();
+    fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
+    expect(dots()).toBe(before);
+    fireEvent.click(screen.getByRole("button", { name: /Just me/ }));
+    expect(dots()).toBeLessThanOrEqual(before);
+    expect(screen.getByRole("heading", { name: "Create your first project" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("heading", { name: "Who's Kanbo for?" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /A whole business/ }));
+    expect(dots()).toBe(before);
+  });
+  it("the pilot invite keeps what it couldn't read in the box, and says so", async () => {
+    const h = host();
+    render(<OnboardingModal {...base} profile={profile("Sam")} team={h} />);
+    fireEvent.click(screen.getByRole("button", { name: /Get started/ }));
+    fireEvent.click(screen.getByRole("button", { name: /A whole business/ }));
+    fireEvent.change(screen.getByLabelText("Business name"), { target: { value: "Northside" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Create workspace" })); });
+    const box = screen.getByLabelText(/pilot/i) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "sam@northside.co.uk, alex, jo@northside.co.uk" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Invite 2/ })); });
+    expect(h.invite).toHaveBeenCalledWith("ws-new", ["sam@northside.co.uk", "jo@northside.co.uk"]);
+    expect(box.value).toBe("alex");
+    expect(screen.getByText(/Couldn't read “alex”: add the full address\./)).toBeInTheDocument();
+  });
+});
+

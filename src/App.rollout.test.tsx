@@ -34,7 +34,10 @@ describe("App · rolling Kanbo out", () => {
     const card = await screen.findByRole("region", { name: "Welcome to Harbour Advisory" });
     expect(within(card).getByRole("button", { name: /Northwind Review/ })).toBeInTheDocument();
     expect(within(card).getByText("Sana Rao")).toBeInTheDocument();
-    expect(within(card).getByText(/Sana runs Harbour Advisory/)).toBeInTheDocument();
+    expect(within(card).getByText(/Ask Sana, who runs Harbour Advisory, anything/)).toBeInTheDocument();
+    // the brief says it's there (on a phone the brief fills the first screen)
+    expect(screen.getByText(/Here's who's who and where to start\./)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show me" })).toBeInTheDocument();
     // not in a business you own
     await switchTo(/^Foundrise/);
     expect(screen.queryByRole("region", { name: /^Welcome to/ })).toBeNull();

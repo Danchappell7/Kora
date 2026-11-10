@@ -142,7 +142,7 @@ export function NewWorkspaceModal({ open, onClose, onCreate, busy: hostBusy = fa
         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); next(); } }}
         placeholder="e.g. Acme Inc" autoComplete="off" aria-describedby={`${id}-help`} />
       <p id={`${id}-help`} style={{ margin: "12px 0 0", font: "400 13px/20px var(--font-ui, var(--font-display))", color: "var(--ink-3)" }}>
-        A shared space for a team. Next, start it from a team template or empty. Invite people from Team › People, and everyone in it sees its projects and tasks.
+        A shared space for a team. Next, start it from a business pack, a team template or empty. Invite people from Team › People, and everyone in it sees its projects and tasks.
       </p>
     </Sheet>
   );

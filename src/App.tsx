@@ -40,7 +40,7 @@ import { UpdateRhythmPanel } from "./components/updates/UpdateRhythmPanel";
 import type { StatusExtras } from "./components/project/StatusComposer";
 import { ownerCanPost, useAskForUpdate } from "./lib/updateAsks";
 import { askPeopleIn } from "./lib/updateSections";
-import { rhythmOn, type UpdateRhythm } from "./lib/updateRhythm";
+import type { UpdateRhythm } from "./lib/updateRhythm";
 // one view across businesses: All businesses on Today, Inbox and My tasks; the switcher's dots; Projects › Group
 import { useBusinessScope } from "./hooks/useBusinessScope";
 import { AllBusinessesToggle, BusinessChipsProvider, WorkspaceMark } from "./components/businesses/Businesses";
@@ -3091,6 +3091,7 @@ export default function App() {
     if ("pack" in start) {
       // you own it, so everything the pack sets up is yours to create (the dialog shows what it made)
       const o = await packApply.apply(start.pack, start.pick, w.id, packApply.hostFor({ workspaceId: w.id, mode: "workspace" }).context);
+      if (o?.applied.projects.length) rolloutRef.current.notePack?.(w.id);
       setRoute(o?.applied.projects.length ? { view: "projects" } : { view: "team" });
       return o;
     }
@@ -3568,7 +3569,7 @@ export default function App() {
       // 0058: a team's rollout
       case "pick_pack": rolloutRef.current.openPackGallery(); break;
       case "import_work": openImport(); break;
-      case "invite_pilot": setRoute({ view: "team" }); break;
+      case "invite_pilot": setInviteNow(true); setRoute({ view: "team" }); break;
       case "set_update_day": openSettings("workspace"); break;
       case "post_update": {
         const p = rolloutRef.current.updateProject;
@@ -3579,7 +3580,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setRoute]);
   // (onSetupAction is made before the rollout hook runs: it reads the hook's latest through this)
-  const rolloutRef = useRef<{ openPackGallery: () => void; updateProject?: Project }>({ openPackGallery: () => setNewProjectOpen(true) });
+  const rolloutRef = useRef<{ openPackGallery: () => void; updateProject?: Project; notePack?: (workspaceId: string) => void }>({ openPackGallery: () => setNewProjectOpen(true) });
+  // Get set up's "Invite your pilot group": Team › People opens on its invite sheet
+  const [inviteNow, setInviteNow] = useState(false);
 
   /** Inbox › Archived › Move back to Inbox: the items archived here come back. */
   const unarchiveInbox = useCallback((ids: string[]) => {
@@ -3794,7 +3797,7 @@ export default function App() {
     inviteMember, resendInvite: store.configured ? resendInvite : undefined, askForUpdate: updateAsks,
     toast: toastSuccess, toastAction: (m, label, run) => toastAction(m, label, run), toastError,
   });
-  rolloutRef.current = { openPackGallery: rollout.openPackGallery, updateProject: rollout.updateProject };
+  rolloutRef.current = { openPackGallery: rollout.openPackGallery, updateProject: rollout.updateProject, notePack: rollout.notePack };
 
   /* ---- 0048 first run: who the tour and the "Get set up" card are for, and what the app can see ---- */
   const tourRole = tourRoleOf(roleHere, workspace === null);
@@ -3833,7 +3836,8 @@ export default function App() {
     ...rollout.setupFacts,
   });
   // the company domain is a site admin's setting (Personal's list only); update days need 0053
-  const setupHidden = useMemo<SetupItemId[]>(() => [...(adminByFlag ? [] : ["add_domain" as const]), ...(rhythmOn() ? [] : ["set_update_day" as const])], [adminByFlag]);
+  // (a team's rollout list is for a workspace being set up, and its update day needs 0053: useRollout says)
+  const setupHidden = useMemo<SetupItemId[]>(() => [...(adminByFlag ? [] : ["add_domain" as const]), ...rollout.setupHidden], [adminByFlag, rollout.setupHidden]);
   const setupOpts = { hidden: setupHidden, personal: workspace === null, workspaceId: workspace };
   const showSetup = useShowSetupChecklist(tourRole, onboarding, setupFacts, setupOpts);
   // dismissed before it was finished: Help offers it back
@@ -4201,7 +4205,7 @@ export default function App() {
         // 0053: your project update is due (or a lead asked for it): a line under the brief, a nudge, Kanbo's draft ready
         updates={todayUpdates}
         // 0058: a new member's "Welcome to <workspace>", and a rollout's one next fix for its leads
-        welcomeSlot={rollout.welcomeSlot ?? undefined} rollout={biz.all ? undefined : rollout.today}
+        welcomeSlot={rollout.welcomeSlot ?? undefined} welcomeLine={rollout.welcomeLine ?? undefined} rollout={biz.all ? undefined : rollout.today}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
         setupSlot={showSetup ? (fold) => (
@@ -4334,7 +4338,8 @@ export default function App() {
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
         onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined}
-        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} healthSlot={rollout.healthSlot} />;
+        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} healthSlot={rollout.healthSlot ?? undefined}
+        inviteNow={inviteNow} onInviteOpened={() => setInviteNow(false)} />;
       case "tasks":
       case "project": {
         const inProject = !!openProject;

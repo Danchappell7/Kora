@@ -103,8 +103,9 @@ export interface TodayViewProps {
   /** your project updates due today or asked for: a line under the brief, a "Kanbo noticed" nudge, and the sheet they open */
   updates?: TodayUpdates;
   /* ---- 0058 (Today works without) ---- */
-  /** "Welcome to <workspace>" for someone who joined lately: the first card under the brief */
+  /** "Welcome to <workspace>" for someone who joined lately: the first card under the brief, and its line in the brief */
   welcomeSlot?: TodayCardSlot;
+  welcomeLine?: ReactNode;
   /** leading a team's rollout: Kanbo noticed's one next fix (lib/rollout healthNudge), and running it */
   rollout?: { noticed: Noticed[]; onFix: (fix: string) => void };
 }
@@ -303,7 +304,7 @@ function TodayDay({
   onRank, ranking, onStartFocus, onShutdown, onExtractFromMeeting, onConnectCalendar, setup, showSuggestions,
   riskCount, onOpenRisks, readOnly = false, onOpenMyTasks, members, projects, risks, onAsk, dayClosed = false, onPlanTomorrow,
   setupSlot, winsSlot, templates, businessLead, busyElsewhere, names, noCapture = false, goalFor, goalsBehind, onOpenGoal, updates,
-  welcomeSlot, rollout,
+  welcomeSlot, welcomeLine, rollout,
 }: TodayViewProps) {
   const toast = useOptionalToast();
   const { nowMin, day } = useDayClock();
@@ -612,7 +613,8 @@ function TodayDay({
       <style>{BRIEF_CSS}</style>
       <BriefCard brief={brief} nowMin={nowMin} railFocus={railFocus} onFact={onFact} onOpen={onOpen} onOpenRisks={onOpenRisks} onOpenGoal={onOpenGoal}
         hero={hero} onShowList={onOpenMyTasks} onAsk={onAsk}
-        lead={(businessLead || updates?.line) && <>
+        lead={(businessLead || updates?.line || welcomeLine) && <>
+          {welcomeLine}
           {businessLead && <BusinessLeadLine lead={businessLead.lead} mode={businessLead.mode} focusTaskId={brief.focusTaskId} onOpen={onOpen} onShowAll={businessLead.onShowAll} />}
           {/* 0053: your project update is due (or a lead asked for it), Kanbo's draft ready */}
           {updates?.line}

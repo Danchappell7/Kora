@@ -55,6 +55,11 @@ describe("the tour's steps", () => {
     expect(s.find((x) => x.id === "updates")!.route).toEqual({ view: "project", projectId: "p-1", tab: "updates" });
     for (const x of s) if (x.anchor) expect(Object.keys(TOUR_ANCHORS)).toContain(x.anchor);
     for (const role of ["owner", "member", "guest"] as const) for (const x of tourSteps(role, team)) if (x.id !== "invite") expect(x.touchBody, `${role} ${x.id}`).toBeTruthy();
+    // in a team workspace you're already in one: the last step is your pilot group, not the switcher
+    const last = (steps: ReturnType<typeof tourSteps>) => steps[steps.length - 1].body;
+    expect(last(tourSteps("owner", team))).toMatch(/Invite a few people from Team › People/);
+    expect(last(tourSteps("owner", team))).not.toMatch(/switcher/);
+    expect(last(tourSteps("owner"))).toMatch(/switcher/);
     // a guest's words never ask them to post
     expect(tourSteps("guest", team).find((x) => x.id === "updates")!.body).toMatch(/reply/);
     // no project to open: the updates step is a centred card

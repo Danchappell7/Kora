@@ -108,6 +108,27 @@ describe("Workspace health", () => {
   });
 });
 
+describe("Workspace health for a workspace that's only just started", () => {
+  it("only you, nothing in it yet: not started, and nothing counted as fine", () => {
+    const h = workspaceHealth(base({ members: [member("dan", "owner")], tasks: [], projects: [], statusUpdates: [], goals: [], checkins: [] }));
+    expect(h.solo).toBe(true);
+    expect(h.counts).toEqual({ projects: 0, openTasks: 0, goals: 0 });
+    expect(h.started).toBe(false);
+  });
+  it("someone invited, or a teammate, and a project: under way", () => {
+    expect(workspaceHealth(base({ members: [member("dan", "owner"), invitee("sam@acme.co")] })).started).toBe(true);
+    expect(workspaceHealth(base({ members: [member("dan", "owner"), member("maya", "member")], projects: [] })).started).toBe(false);
+    const h = workspaceHealth(base());
+    expect([h.solo, h.started]).toEqual([false, true]);
+    expect(h.counts).toEqual({ projects: 1, openTasks: 2, goals: 0 });
+  });
+  it("activity keeps the workspace's first day", () => {
+    expect(parseActivity({ today: "2026-11-10", since: "2026-11-08", members: [], days: [] })?.since).toBe("2026-11-08");
+    const h = workspaceHealth(base({ activity: { today: "2026-11-10", since: "2026-11-08", members: [], days: [] } }));
+    expect(h.active?.since).toBe("2026-11-08");
+  });
+});
+
 describe("Kanbo noticed: one fix at a time", () => {
   const ctx = { workspaceId: "ws", workspaceName: "Acme", memberName: (m: WorkspaceMember) => m.name || m.email, today: TODAY };
   it("invites that have had two days come first (named people by name; a bare address isn't a name)", () => {
@@ -153,6 +174,13 @@ describe("Welcome to <workspace>", () => {
     expect(shouldWelcome(input({ workspace: { id: null, kind: "personal" } }))).toBe(false);
     expect(shouldWelcome(input({ membership: { role: "member", status: "invited", joinedAt: null } }))).toBe(false);
     expect(shouldWelcome(input({ membership: undefined }))).toBe(false);
+  });
+  it("never for whoever made the workspace, even once they've handed it over (a provisioning admin)", () => {
+    const made = daysAgo(3);
+    const handedOver = { ...ws, ownerId: "nina", createdAt: made };
+    expect(shouldWelcome(input({ me: "dan", workspace: handedOver, membership: { role: "admin", status: "active", joinedAt: made } }))).toBe(false);
+    // someone who joined later still is
+    expect(shouldWelcome(input({ workspace: handedOver, membership: { role: "member", status: "active", joinedAt: daysAgo(1) } }))).toBe(true);
   });
   it("before 0058 knew when people joined: a new account; once it does, people from before aren't welcomed", () => {
     const before = { role: "member" as const, status: "active" as const };

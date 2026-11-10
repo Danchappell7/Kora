@@ -24,13 +24,16 @@ import type { GoalRead } from "../../lib/goalFlow";
 import { quarterOf } from "../../lib/goalPeriods";
 import { rolloutOn } from "../../lib/rolloutPlan";
 import { healthNudge, shouldWelcome, welcomeContent, welcomedNow, workspaceHealth, type TeamKind, type WorkspaceActivity } from "../../lib/rollout";
-import type { SetupFacts } from "../../lib/onboarding";
+import { tickSetupItem, tickedAt, TEAM_SETUP_ITEMS, type SetupFacts } from "../../lib/onboarding";
+import { rhythmOn } from "../../lib/updateRhythm";
+import type { SetupItemId } from "../../data/types";
 import type { PackHost } from "../packs/packTypes";
 import type { TeamStartHost } from "./TeamStart";
 import type { ActivityState } from "./WorkspaceHealth";
 
 // the cards come with their own code, the first time one is shown (the app's first load carries neither)
 const WelcomeCard = lazy(() => import("./WelcomeCard").then((m) => ({ default: m.WelcomeCard })));
+const WelcomeLine = lazy(() => import("./WelcomeCard").then((m) => ({ default: m.WelcomeLine })));
 const WorkspaceHealthCard = lazy(() => import("./WorkspaceHealth").then((m) => ({ default: m.WorkspaceHealthCard })));
 
 export interface RolloutAppHost {
@@ -79,12 +82,33 @@ export interface RolloutAppHost {
 
 const nameOf = (m: WorkspaceMember) => (m.userId ? getMember(m.userId)?.name?.trim() : "") || m.name?.trim() || m.email;
 const lead = (r: Role | null | undefined) => r === "owner" || r === "admin";
+/** a team's "Get set up" rollout list is for a workspace this new (an established one isn't being set up) */
+export const SETUP_FRESH_DAYS = 60;
+/** the team owner's list before 0058 (the company domain was a site admin's only) */
+const OLD_OWNER_ITEMS: readonly SetupItemId[] = ["invite_team", "connect_calendar", "connect_slack"];
+const pad = (n: number) => String(n).padStart(2, "0");
+const localDay = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? undefined : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+/** the first run's import goes into a project of its own, never into a pack's (Court maintenance, say) */
+export const IMPORT_HOME = "Our work";
 
 export function useRollout(h: RolloutAppHost) {
   const ref = useRef(h); ref.current = h;
   const ws = h.workspace;
   const wsRow = h.workspaces.find((w) => w.id === ws);
   const isLead = ws !== null && lead(h.role);
+
+  /* ---------------- "Get set up": ticked when it's done here ---------------- */
+  // (the latest state, so two ticks in a row don't undo each other)
+  const obRef = useRef(h.onboarding);
+  useEffect(() => { obRef.current = h.onboarding; }, [h.onboarding]);
+  const tick = useCallback((workspaceId: string | null | undefined, id: SetupItemId) => {
+    if (!workspaceId) return;
+    const cur = obRef.current;
+    if (tickedAt(cur.checklist, id, { workspaceId })) return;
+    const next = tickSetupItem(cur, id, true, new Date(), { workspaceId });
+    obRef.current = next;
+    ref.current.changeOnboarding(next);
+  }, []);
 
   /* ---------------- the first run's team path ---------------- */
   const [aside, setAside] = useState<"pack" | "import" | null>(null);
@@ -98,12 +122,12 @@ export function useRollout(h: RolloutAppHost) {
     create: (name: string, _kind: Exclude<TeamKind, "solo">) => ref.current.makeWorkspace(name),
     pickPack: () => { setAside("pack"); openPackGallery(); },
     importWork: async (workspaceId: string) => {
-      // the import needs a home in the new workspace: a first project, when there isn't one yet
+      // the import needs a home of its own in the new workspace (never a pack's project): "Our work"
       const cur = ref.current;
-      let home = cur.projects.find((p) => p.workspaceId === workspaceId && !p.archivedAt)?.id ?? null;
+      let home = cur.projects.find((p) => p.workspaceId === workspaceId && !p.archivedAt && p.name === IMPORT_HOME)?.id ?? null;
       if (!home) {
         try {
-          const p = await store.createProject({ name: "Our work", emoji: "📥", color: "oklch(0.74 0.14 230)", workspaceId }, cur.me);
+          const p = await store.createProject({ name: IMPORT_HOME, emoji: "📥", color: "oklch(0.74 0.14 230)", workspaceId }, cur.me);
           cur.adoptProjects([p]);
           home = p.id;
         } catch (e) { reportError(e, { op: "firstRunImportProject" }); cur.toastError("Couldn't get the import ready. Try again in a moment."); return; }
@@ -117,11 +141,11 @@ export function useRollout(h: RolloutAppHost) {
       for (const e of emails) {
         try { await ref.current.inviteMember(workspaceId, e, "member"); invited++; } catch { failed.push(e); }
       }
-      if (invited) setProgress((p) => ({ ...p, invited: (p.invited ?? 0) + invited }));
+      if (invited) { setProgress((p) => ({ ...p, invited: (p.invited ?? 0) + invited })); tick(workspaceId, "invite_pilot"); }
       return { invited, failed };
     },
     progress,
-  }), [progress, openPackGallery]);
+  }), [progress, openPackGallery, tick]);
   // the fork is for someone starting out: not for someone who's already joined a team (decided as the sheet opens)
   const [forkOk, setForkOk] = useState<boolean | null>(null);
   useEffect(() => {
@@ -133,23 +157,37 @@ export function useRollout(h: RolloutAppHost) {
   const onboardingAside = (aside === "pack" && h.newProjectOpen) || (aside === "import" && h.importOpen);
   // closed: the import goes back to its usual default
   useEffect(() => { if (!h.importOpen && aside === "import") setImportInto(null); }, [h.importOpen, aside]);
-  /** New project's packs, noting a pack set up from the first run (the same object back for the same packs) */
-  const wrapped = useRef<{ from: PackHost; to: PackHost } | null>(null);
+  /** A new workspace (no update day, no projects yet, or the first run's own pack): a pack set up in it from
+   *  New project sets the workspace up, update day included, as New workspace's would. */
+  const wsProjects = h.projects.filter((p) => p.workspaceId === ws && !p.archivedAt && p.name !== IMPORT_HOME).length;
+  const newWorkspace = ws !== null && !wsRow?.updateRhythm && (aside === "pack" || wsProjects === 0);
+  /** New project's packs, noting a pack set up (the first run's progress, Get set up's tick); the same object
+   *  back for the same packs */
+  const wrapped = useRef<{ from: PackHost; fresh: boolean; to: PackHost } | null>(null);
   const wrapPacks = useCallback((packs: PackHost): PackHost => {
     if (!packs.apply) return packs;
-    if (wrapped.current?.from === packs) return wrapped.current.to;
+    if (wrapped.current?.from === packs && wrapped.current.fresh === newWorkspace) return wrapped.current.to;
+    const context = newWorkspace && packs.context.canSetUpdateDay ? { ...packs.context, newWorkspace: true } : packs.context;
     const to: PackHost = {
       ...packs,
+      context,
       apply: async (pack, pick) => {
+        const at = ref.current.workspace;
         const o = await packs.apply!(pack, pick);
-        if (o?.applied.projects.length) setProgress((p) => ({ ...p, pack: pack.name }));
+        if (o?.applied.projects.length) { setProgress((p) => ({ ...p, pack: pack.name })); tick(o.workspaceId ?? at, "pick_pack"); }
         return o;
       },
     };
-    wrapped.current = { from: packs, to };
+    wrapped.current = { from: packs, fresh: newWorkspace, to };
     return to;
-  }, []);
-  const noteImport = useCallback((n: number) => { if (n > 0) setProgress((p) => ({ ...p, imported: (p.imported ?? 0) + n })); }, []);
+  }, [newWorkspace, tick]);
+  /** a pack set up through New workspace (it ticks that workspace's "Start from a business pack") */
+  const notePack = useCallback((workspaceId: string) => tick(workspaceId, "pick_pack"), [tick]);
+  const noteImport = useCallback((n: number) => {
+    if (n <= 0) return;
+    setProgress((p) => ({ ...p, imported: (p.imported ?? 0) + n }));
+    tick(ref.current.workspace, "import_work");
+  }, [tick]);
 
   /* ---------------- Welcome to <workspace> ---------------- */
   const membership = h.members.find((m) => m.workspaceId === ws && m.userId === h.me);
@@ -172,6 +210,9 @@ export function useRollout(h: RolloutAppHost) {
     );
   })() : null;
 
+  // (and a line in the brief that says it's there: on a phone the brief fills the first screen)
+  const welcomeLine: ReactNode = welcome && wsRow ? <Suspense fallback={null}><WelcomeLine workspaceName={wsRow.name} /></Suspense> : null;
+
   /* ---------------- Workspace health ---------------- */
   const showHealth = isLead && h.view === "team";
   const [activity, setActivity] = useState<{ ws: string; state: ActivityState; data: WorkspaceActivity | null } | null>(null);
@@ -181,11 +222,13 @@ export function useRollout(h: RolloutAppHost) {
     let alive = true;
     setActivity((a) => (a?.ws === ws ? a : { ws, state: "loading", data: null }));
     // (the console's and the card's server calls load with the card)
-    import("../../lib/rolloutApi").then((m) => m.loadWorkspaceActivity(ws, ref.current.members)).then((r) => {
+    const since = wsRow?.createdAt ? localDay(wsRow.createdAt) : undefined;
+    import("../../lib/rolloutApi").then((m) => m.loadWorkspaceActivity(ws, ref.current.members, since)).then((r) => {
       if (!alive) return;
       setActivity(r === "off" || r === "failed" ? { ws, state: r, data: null } : { ws, state: "ok", data: r });
     });
     return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHealth, ws, memberKey]);
 
   const goalsOn = !!h.goalExtras;
@@ -244,9 +287,9 @@ export function useRollout(h: RolloutAppHost) {
   }, []);
 
   const [focus, setFocus] = useState<{ fix: string; at: number } | null>(null);
-  const healthSlot: ReactNode = showHealth && health && wsRow ? (
+  const healthSlot = showHealth && health && wsRow ? ({ openInvite }: { openInvite?: () => void } = {}): ReactNode => (
     <Suspense fallback={null}>
-      <WorkspaceHealthCard workspaceName={wsRow.name} health={health} activity={activity?.ws === ws ? activity.state : "loading"}
+      <WorkspaceHealthCard workspaceName={wsRow.name} health={health} activity={activity?.ws === ws ? activity.state : "loading"} onInvite={openInvite}
         members={h.members.filter((m) => m.workspaceId === ws && m.status === "active")} nameOf={nameOf}
         projects={h.projects.filter((p) => p.workspaceId === ws && !p.archivedAt)}
         rollout={wsRow.rollout ?? null} rolloutOn={rolloutOn()} onSaveRollout={saveRollout}
@@ -273,6 +316,15 @@ export function useRollout(h: RolloutAppHost) {
   }, [resendAll, askUpdates]);
 
   /* ---------------- "Get set up" for a team's owners ---------------- */
+  // the rollout list is for a workspace being set up: one made lately, or one whose list was started. In one that's long
+  // been going it takes the old owner's list's place only while that wasn't finished (a finished card never comes back).
+  // Update days need 0053.
+  const oldDone = OLD_OWNER_ITEMS.every((id) => !!h.onboarding.checklist?.done?.[id]);
+  const fresh = !!wsRow && ((!!wsRow.createdAt && h.today.getTime() - Date.parse(wsRow.createdAt) < SETUP_FRESH_DAYS * 86_400_000)
+    || !!(ws && h.onboarding.checklist?.teams?.[ws]) || !oldDone);
+  // (read on every render: the sign-in read says whether update days are in only once it's back)
+  const rhythm = rhythmOn();
+  const setupHidden = useMemo<SetupItemId[]>(() => ws === null ? [] : !fresh ? [...TEAM_SETUP_ITEMS] : rhythm ? [] : ["set_update_day"], [ws, fresh, rhythm]);
   const setupFacts: Partial<SetupFacts> = ws === null ? {} : {
     projects: h.projects.filter((p) => p.workspaceId === ws && !p.archivedAt).length,
     tasks: h.tasks.length,
@@ -283,10 +335,10 @@ export function useRollout(h: RolloutAppHost) {
   const updateProject = h.projects.find((p) => p.workspaceId === ws && !p.archivedAt && p.ownerId === h.me)
     ?? h.projects.find((p) => p.workspaceId === ws && !p.archivedAt);
 
+  const today = useMemo(() => (isLead && nudge ? { noticed: [nudge], onFix } : undefined), [isLead, nudge, onFix]);
+
   return {
-    teamStart: forkOk ? teamStart : undefined, onboardingAside, wrapPacks, noteImport, importInto, packMode, openPackGallery,
-    welcomeSlot, healthSlot,
-    today: isLead && nudge ? { noticed: [nudge], onFix } : undefined,
-    setupFacts, updateProject,
+    teamStart: forkOk ? teamStart : undefined, onboardingAside, wrapPacks, noteImport, notePack, importInto, packMode, openPackGallery,
+    welcomeSlot, welcomeLine, healthSlot, today, setupFacts, setupHidden, updateProject,
   };
 }

@@ -82,6 +82,11 @@ const STEP_INVITE: TourStep = {
   id: "invite", anchor: null, title: "Bring your team in",
   body: "Kanbo is better together. Invite people from Team, or start a team workspace from the switcher at the top of the sidebar. Guests can follow along without editing. Your “Get set up” card on Today has the rest.",
 };
+/* (in a team workspace you're already in one: the switcher's not the next step, your pilot group is) */
+const STEP_INVITE_TEAM: TourStep = {
+  id: "invite", anchor: null, title: "Bring your team in",
+  body: "Kanbo is better together. Invite a few people from Team › People to try it with you first. Guests can follow along without editing. Your “Get set up” card on Today has the rest.",
+};
 
 /* guests read, follow and comment: never the steps that create or plan. Their words for the shared steps
    (plain literals: nothing here runs at load, so the module stays out of the shell's first download) */
@@ -121,7 +126,7 @@ export function tourSteps(role: TourRole, ctx: TourContext = {}): TourStep[] {
     return steps.map((s) => ({ ...s, body: GUEST_WORDS[s.id][0], touchBody: GUEST_WORDS[s.id][1] }));
   }
   const member = [STEP_PLACES, STEP_SEARCH, STEP_CAPTURE, STEP_PLAN, STEP_PANEL, STEP_INBOX, ...(ctx.team ? [STEP_WAITING, STEP_PULSE, STEP_GOALS, updates] : [])];
-  return role === "owner" ? [...member, STEP_INVITE] : member;
+  return role === "owner" ? [...member, ctx.team ? STEP_INVITE_TEAM : STEP_INVITE] : member;
 }
 
 /** Where a saved step resumes (its index in the role's tour; 0 when it's not in this role's tour). */
@@ -141,9 +146,11 @@ export interface ChecklistItemView {
   auto?: boolean;
   /** the item's button: what it does ("Invite", "Connect"…) */
   action: string;
+  /** what's said once it's done (a team's rollout items say what's in place) */
+  doneLine?: string;
 }
 
-export const SETUP_COPY: Readonly<Record<SetupItemId, { label: string; hint: string; action: string }>> = {
+export const SETUP_COPY: Readonly<Record<SetupItemId, { label: string; hint: string; action: string; doneLine?: string }>> = {
   invite_team: { label: "Invite your team", hint: "Share projects and see who's doing what.", action: "Invite" },
   connect_calendar: { label: "Connect a calendar", hint: "Your meetings shape the plan Kanbo draws for your day.", action: "Connect" },
   add_domain: { label: "Add your company domain", hint: "Colleagues signing up with your company's email address get in without waiting.", action: "Add" },
@@ -152,11 +159,11 @@ export const SETUP_COPY: Readonly<Record<SetupItemId, { label: string; hint: str
   complete_task: { label: "Complete a task", hint: "Tick the circle beside any task to finish it.", action: "Open" },
   install_app: { label: "Install the app", hint: "Kanbo on your dock or home screen, with notifications.", action: "Install" },
   set_notifications: { label: "Set your notifications", hint: "Choose what reaches you, and when.", action: "Choose" },
-  pick_pack: { label: "Start from a business pack", hint: "Projects, goals and routines for your kind of business, in one step.", action: "Pick" },
-  import_work: { label: "Bring your work in", hint: "Paste a list or a spreadsheet, or upload a CSV.", action: "Import" },
-  invite_pilot: { label: "Invite your pilot group", hint: "Three to five people who'll try it first and tell you what works.", action: "Invite" },
-  set_update_day: { label: "Set your update day", hint: "The day each project's owner posts how it's really going.", action: "Set" },
-  post_update: { label: "Post your first update", hint: "Show the team how it's done. Kanbo drafts it from the week's work.", action: "Post" },
+  pick_pack: { label: "Start from a business pack", hint: "Projects, goals and routines for your kind of business, in one step.", action: "Pick", doneLine: "Your projects are set up." },
+  import_work: { label: "Bring your work in", hint: "Paste a list or a spreadsheet, or upload a CSV.", action: "Import", doneLine: "Your work is in." },
+  invite_pilot: { label: "Invite your pilot group", hint: "Three to five people who'll try it first and tell you what works.", action: "Invite", doneLine: "Your pilot group is invited." },
+  set_update_day: { label: "Set your update day", hint: "The day each project's owner posts how it's really going.", action: "Set", doneLine: "Your update day is set." },
+  post_update: { label: "Post your first update", hint: "Show the team how it's done. Kanbo drafts it from the week's work.", action: "Post", doneLine: "Your first update is out." },
 };
 
 export function checklistView(role: TourRole, state: OnboardingState, signals: SetupSignals, opts: ChecklistOpts = {}): { items: ChecklistItemView[]; done: number; total: number; complete: boolean } {

@@ -175,7 +175,7 @@ export function SetupChecklist({ role, onboarding, signals, onChange, onAction, 
               readOnly={it.auto} onToggle={() => toggle(it.id, it.label, it.done)} />
             <span className="ksetup-text">
               <span className="ksetup-label">{it.label}</span>
-              <span className="ksetup-hint">{it.done ? (it.auto ? "Done: Kanbo can see it's set up." : "Ticked off.") : it.hint}</span>
+              <span className="ksetup-hint">{it.done ? it.doneLine ?? (it.auto ? "Done: Kanbo can see it's set up." : "Ticked off.") : it.hint}</span>
             </span>
             {!it.done && (
               <Button size="sm" variant="secondary" onClick={() => onAction(it.id)} aria-label={`${it.action}: ${it.label}`}>{it.action}</Button>

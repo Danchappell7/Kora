@@ -24,6 +24,8 @@ describe("Get set up", () => {
     expect(within(card).queryByText("Connect Slack")).toBeNull();
     expect(within(card).queryByText("Add your company domain")).toBeNull();
     expect(within(card).getByRole("checkbox", { name: "Done: Start from a business pack" })).toBeChecked();
+    // a done item says what's in place, in its own words
+    expect(within(card).getByText("Your projects are set up.")).toBeInTheDocument();
     // done items have no button; the rest take you there
     expect(within(card).queryByRole("button", { name: "Pick: Start from a business pack" })).toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "Import: Bring your work in" }));

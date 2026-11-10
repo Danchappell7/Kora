@@ -11,7 +11,7 @@ import { offlineQueue, LEGACY_QUEUE_KEY, type QueuedMutation } from "../lib/offl
 import { reportError } from "../lib/monitoring";
 import { parseActivityMeta } from "../lib/activityMeta";
 import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
-import { noteRhythmSchema, parseRhythm, rhythmRow, type UpdateRhythm } from "../lib/updateRhythm";
+import { noteRhythmSchema, parseRhythm, rhythmOn, rhythmRow, type UpdateRhythm } from "../lib/updateRhythm";
 import { noteRolloutSchema, parseRollout, rolloutRow } from "../lib/rolloutPlan";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
 import { demoNotifyActivity } from "../lib/notifyDemo";
@@ -1672,6 +1672,7 @@ export const store = {
     const workspaces: Workspace[] = (wsErr && failed("workspaces", wsErr)?.workspaces) || [
       { ...PERSONAL_WORKSPACE },
       ...wsRows.map((w) => ({ id: w.id, name: w.name, kind: "team" as const, ownerId: w.owner_id, logoUrl: w.logo_url ?? undefined,
+        ...(w.created_at ? { createdAt: w.created_at } : {}),
         // 0053: the team's update day (null: weekly on Friday)
         ...("update_rhythm" in w ? { updateRhythm: parseRhythm(w.update_rhythm) } : {}),
         // 0058: the rollout plan (null: nothing planned yet)
@@ -1850,9 +1851,10 @@ export const store = {
   /* ---------- workspaces & membership ---------- */
   async createWorkspace(name: string, owner: { id: string; email: string; name: string }): Promise<Workspace> {
     if (!supabase) {
-      const w: Workspace = { id: newId(), name, kind: "team", ownerId: owner.id };
+      const at = new Date().toISOString();
+      const w: Workspace = { id: newId(), name, kind: "team", ownerId: owner.id, createdAt: at };
       demoWorkspaces = [...demoWorkspaces, w];
-      demoMembers = [...demoMembers, { id: newId(), workspaceId: w.id!, userId: owner.id, email: owner.email, name: owner.name, role: "owner", status: "active" }];
+      demoMembers = [...demoMembers, { id: newId(), workspaceId: w.id!, userId: owner.id, email: owner.email, name: owner.name, role: "owner", status: "active", joinedAt: at }];
       return w;
     }
     const uid = await authUid(owner.id);
@@ -1863,7 +1865,13 @@ export const store = {
     const { error: mErr } = await supabase.from("workspace_members")
       .insert({ workspace_id: ws.id, user_id: uid, email: owner.email, name: owner.name, role: "owner", status: "active" });
     if (mErr) throw mErr;
-    return { id: ws.id, name: ws.name, kind: "team", ownerId: ws.owner_id, logoUrl: ws.logo_url ?? undefined };
+    // (someone whose first load had no team workspace learns here whether 0053's update days and 0058's rollout plan are in)
+    noteRhythmSchema("update_rhythm" in ws || rhythmOn());
+    noteRolloutSchema("rollout" in ws);
+    return { id: ws.id, name: ws.name, kind: "team", ownerId: ws.owner_id, logoUrl: ws.logo_url ?? undefined,
+      ...(ws.created_at ? { createdAt: ws.created_at } : {}),
+      ...("update_rhythm" in ws ? { updateRhythm: parseRhythm(ws.update_rhythm) } : {}),
+      ...("rollout" in ws ? { rollout: parseRollout(ws.rollout) } : {}) };
   },
 
   // upload a workspace logo (reuses the public avatars bucket; uid-scoped path)

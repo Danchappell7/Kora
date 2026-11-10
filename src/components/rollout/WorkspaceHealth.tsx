@@ -15,7 +15,7 @@
    lib/rollout works the numbers out; the host does the fixes.
    ============================================================ */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Avatar, Button, Icon, ProjectTile, Sheet } from "../primitives";
+import { Avatar, Button, Icon, IconButton, ProjectTile, Sheet } from "../primitives";
 import type { IconName, Project, RolloutPlan, Task, WorkspaceMember } from "../../data/types";
 import { lastActiveWords, namesLine, type WorkspaceHealth } from "../../lib/rollout";
 
@@ -44,11 +44,18 @@ export interface WorkspaceHealthProps {
   onGiveToOwners: (taskIds: string[]) => number;
   /** opened from Kanbo noticed: scroll here, and open this fix's sheet */
   focus?: { fix: string; at: number } | null;
+  /** Team › People's invite sheet (the first line's fix while it's only you) */
+  onInvite?: () => void;
 }
 
 const WEEKDAY = ["S", "M", "T", "W", "T", "F", "S"];
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 const dayOf = (iso: string) => { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d); };
+/** a line's state: fine, needs a look, or nothing there yet (never "all good" for an empty workspace) */
+type RowState = "ok" | "todo" | "empty";
+/** folded to its heading, on this device (it's tall, and People is under it) */
+const FOLD_KEY = "kanbo-health-folded";
+const readFolded = () => { try { return localStorage.getItem(FOLD_KEY) === "1"; } catch { return false; } };
 
 export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
   const { health: h, activity, workspaceName } = props;
@@ -57,10 +64,14 @@ export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
   const [tidyOpen, setTidyOpen] = useState(false);
   const [busy, setBusy] = useState<null | "resend" | "ask">(null);
   const [note, setNote] = useState<{ row: string; text: string } | null>(null);
+  const [folded, setFolded] = useState(readFolded);
+  const fold = (v: boolean) => { setFolded(v); try { localStorage.setItem(FOLD_KEY, v ? "1" : "0"); } catch { /* private mode */ } };
+  const rowsId = headId + "-rows";
 
-  // opened from a nudge: bring the card into view, and its sheet when the fix has one
+  // opened from a nudge: bring the card into view (open), and its sheet when the fix has one
   useEffect(() => {
     if (!props.focus) return;
+    setFolded(false);
     cardRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
     if (props.focus.fix === "assign") setTidyOpen(true);
   }, [props.focus]);
@@ -80,34 +91,46 @@ export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
     } finally { setBusy(null); }
   };
 
-  const joinedOk = h.invited.length === 0;
-  const looseOk = h.loose.tasks.length === 0;
-  const updatesOk = h.missing.length === 0;
-  const goalsOk = !h.quietGoals?.length;
+  const joined: RowState = h.solo ? "empty" : h.invited.length === 0 ? "ok" : "todo";
+  const loose: RowState = h.counts.openTasks === 0 ? "empty" : h.loose.tasks.length === 0 ? "ok" : "todo";
+  const updates: RowState = h.counts.projects === 0 ? "empty" : h.missing.length === 0 ? "ok" : "todo";
+  const goals: RowState = h.counts.goals === 0 ? "empty" : !h.quietGoals?.length ? "ok" : "todo";
   const count = h.issues;
+  const alone = !!h.active && h.active.of <= 1;
+  const pill = !h.started ? "Just getting started" : count === 0 ? "All good" : `${plural(count, "thing")} to look at`;
 
   return (
-    <section ref={cardRef} className="khealth" aria-labelledby={headId}>
+    <section ref={cardRef} className="khealth" aria-labelledby={headId} data-folded={folded || undefined}>
       <style>{HEALTH_CSS}</style>
       <header className="khealth-head">
         <div className="khealth-heading">
           <h2 id={headId} className="khealth-title">Workspace health</h2>
           <p className="khealth-sub">How {workspaceName} is taking to Kanbo. Only owners and admins see this.</p>
         </div>
-        <span className="khealth-count" data-ok={count === 0 || undefined}>{count === 0 ? "All good" : `${plural(count, "thing")} to look at`}</span>
+        <span className="khealth-count" data-ok={(h.started && count === 0) || undefined} data-new={!h.started || undefined}>{pill}</span>
+        <IconButton icon="chevronDown" label="Workspace health" size="sm" className="khealth-fold" aria-expanded={!folded} aria-controls={rowsId}
+          onClick={() => fold(!folded)} />
       </header>
 
+      <div id={rowsId} hidden={folded}>
       <ul className="khealth-rows">
-        <Row id="invited" icon="send" ok={joinedOk}
-          title={joinedOk ? "Everyone you invited has joined" : `${plural(h.invited.length, "person", "people")} invited but not joined`}
-          detail={joinedOk ? undefined : `${namesLine(h.invited.map((m) => props.nameOf(m)))} ${h.invited.length === 1 ? "hasn't" : "haven't"} signed in yet.`}
+        <Row id="invited" icon="send" state={joined}
+          title={joined === "empty" ? "Nobody invited yet" : joined === "ok" ? "Everyone you invited has joined" : `${plural(h.invited.length, "person", "people")} invited but not joined`}
+          detail={joined === "empty" ? "Bring in a few people to try it with you first." : joined === "ok" ? undefined : `${namesLine(h.invited.map((m) => props.nameOf(m)))} ${h.invited.length === 1 ? "hasn't" : "haven't"} signed in yet.`}
           note={note?.row === "invited" ? note.text : undefined}
-          fix={joinedOk ? null : <Button size="sm" variant="secondary" icon="refresh" loading={busy === "resend"} onClick={() => void resend()}>{h.invited.length === 1 ? "Resend invite" : "Resend all"}</Button>} />
+          fix={joined === "empty"
+            ? props.onInvite ? <Button size="sm" variant="secondary" icon="plus" onClick={props.onInvite}>Invite people</Button> : null
+            : joined === "ok" ? null : <Button size="sm" variant="secondary" icon="refresh" loading={busy === "resend"} onClick={() => void resend()}>{h.invited.length === 1 ? "Resend invite" : "Resend all"}</Button>} />
 
-        <li className="khealth-row" data-row="active">
+        <li className="khealth-row" data-row="active" data-empty={alone || undefined}>
           <span className="khealth-icon" aria-hidden="true"><Icon name="pulse" size={16} sw={1.75} /></span>
           <span className="khealth-text">
-            {h.active ? (
+            {h.active && alone ? (
+              <>
+                <span className="khealth-line">Only you so far</span>
+                <span className="khealth-detail">Once people join, you'll see who's been in each day, never by the hour.</span>
+              </>
+            ) : h.active ? (
               <>
                 <span className="khealth-line">{h.active.count} of {plural(h.active.of, "person", "people")} active in the last 7 days</span>
                 <span className="khealth-detail">
@@ -124,29 +147,30 @@ export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
               </>
             )}
           </span>
-          {h.active && <DayStrip days={h.active.days} of={h.active.of} />}
+          {h.active && !alone && <DayStrip days={h.active.days} of={h.active.of} since={h.active.since} workspaceName={workspaceName} />}
         </li>
 
-        <Row id="loose" icon="user" ok={looseOk}
-          title={looseOk ? "Every open task has an owner and a date" : `${plural(h.loose.tasks.length, "open task")} with no owner or date`}
-          detail={looseOk ? undefined : [h.loose.noOwner ? `${h.loose.noOwner} with no owner` : "", h.loose.noDate ? `${h.loose.noDate} with no date` : ""].filter(Boolean).join(" · ")}
-          fix={looseOk ? null : <Button size="sm" variant="secondary" onClick={() => setTidyOpen(true)}>Sort them out</Button>} />
+        <Row id="loose" icon="user" state={loose}
+          title={loose === "empty" ? "No open tasks yet" : loose === "ok" ? "Every open task has an owner and a date" : `${plural(h.loose.tasks.length, "open task")} with no owner or date`}
+          detail={loose === "empty" ? "Once there's work here, Kanbo checks each task has an owner and a date." : loose === "ok" ? undefined : [h.loose.noOwner ? `${h.loose.noOwner} with no owner` : "", h.loose.noDate ? `${h.loose.noDate} with no date` : ""].filter(Boolean).join(" · ")}
+          fix={loose === "todo" ? <Button size="sm" variant="secondary" onClick={() => setTidyOpen(true)}>Sort them out</Button> : null} />
 
-        <Row id="updates" icon="message" ok={updatesOk}
-          title={updatesOk ? "No project updates missing" : `${plural(h.missing.length, "project")} missing an update`}
-          detail={updatesOk ? undefined : namesLine(h.missing.map((p) => p.name))}
+        <Row id="updates" icon="message" state={updates}
+          title={updates === "empty" ? "No projects yet" : updates === "ok" ? "No project updates missing" : `${plural(h.missing.length, "project")} missing an update`}
+          detail={updates === "empty" ? "Each project's owner posts a short update on the update day." : updates === "ok" ? undefined : namesLine(h.missing.map((p) => p.name))}
           note={note?.row === "updates" ? note.text : undefined}
-          fix={updatesOk ? null : <Button size="sm" variant="secondary" loading={busy === "ask"} onClick={() => void ask()}>{h.missing.length === 1 ? "Ask for it" : "Ask for updates"}</Button>} />
+          fix={updates === "todo" ? <Button size="sm" variant="secondary" loading={busy === "ask"} onClick={() => void ask()}>{h.missing.length === 1 ? "Ask for it" : "Ask for updates"}</Button> : null} />
 
         {h.quietGoals && (
-          <Row id="goals" icon="target" ok={goalsOk}
-            title={goalsOk ? "Every goal has a recent check-in" : `${plural(h.quietGoals.length, "goal")} with no check-in for two weeks`}
-            detail={goalsOk ? undefined : namesLine(h.quietGoals.map((g) => g.name))}
-            fix={goalsOk ? null : <Button size="sm" variant="secondary" onClick={props.onOpenGoals}>Open goals</Button>} />
+          <Row id="goals" icon="target" state={goals}
+            title={goals === "empty" ? "No goals yet" : goals === "ok" ? "Every goal has a recent check-in" : `${plural(h.quietGoals.length, "goal")} with no check-in for two weeks`}
+            detail={goals === "empty" ? "A goal or two for the quarter tells everyone what matters." : goals === "ok" ? undefined : namesLine(h.quietGoals.map((g) => g.name))}
+            fix={goals === "ok" ? null : <Button size="sm" variant="secondary" onClick={props.onOpenGoals}>{goals === "empty" ? "Set goals" : "Open goals"}</Button>} />
         )}
       </ul>
 
       <RolloutPlanPart {...props} />
+      </div>
 
       <TidySheet open={tidyOpen} onClose={() => setTidyOpen(false)} tasks={h.loose.tasks} members={props.members} nameOf={props.nameOf}
         projects={props.projects} onPatchTask={props.onPatchTask} onGiveToOwners={props.onGiveToOwners} />
@@ -154,9 +178,10 @@ export function WorkspaceHealthCard(props: WorkspaceHealthProps) {
   );
 }
 
-function Row({ id, icon, ok, title, detail, note, fix }: { id: string; icon: IconName; ok: boolean; title: string; detail?: string; note?: string; fix: React.ReactNode }) {
+function Row({ id, icon, state, title, detail, note, fix }: { id: string; icon: IconName; state: RowState; title: string; detail?: string; note?: string; fix: React.ReactNode }) {
+  const ok = state === "ok";
   return (
-    <li className="khealth-row" data-row={id} data-ok={ok || undefined}>
+    <li className="khealth-row" data-row={id} data-ok={ok || undefined} data-empty={state === "empty" || undefined}>
       <span className="khealth-icon" aria-hidden="true"><Icon name={ok ? "check" : icon} size={16} sw={ok ? 2.25 : 1.75} /></span>
       <span className="khealth-text">
         <span className="khealth-line">{title}</span>
@@ -168,15 +193,17 @@ function Row({ id, icon, ok, title, detail, note, fix }: { id: string; icon: Ico
   );
 }
 
-/** The last seven days: how many people were active each day (a bar each, today last). */
-function DayStrip({ days, of }: { days: { day: string; people: number }[]; of: number }) {
+/** The last seven days: how many people were active each day (a bar each, today last). Days before the
+ *  workspace was made (`since`) have no bar. */
+function DayStrip({ days, of, since, workspaceName }: { days: { day: string; people: number }[]; of: number; since?: string; workspaceName: string }) {
   const max = Math.max(1, of);
-  const words = days.map((d) => `${dayOf(d.day).toLocaleDateString("en-GB", { weekday: "short" })} ${d.people}`).join(", ");
+  const before = (d: string) => !!since && d < since;
+  const words = days.map((d) => `${dayOf(d.day).toLocaleDateString("en-GB", { weekday: "short" })} ${before(d.day) ? `before ${workspaceName} started` : d.people}`).join(", ");
   return (
     <span className="khealth-strip" role="img" aria-label={`People active each day: ${words}`}>
       {days.map((d) => (
-        <span key={d.day} className="khealth-bar">
-          <span className="khealth-bar-fill" style={{ height: `${Math.max(d.people ? 14 : 0, Math.round((d.people / max) * 100))}%` }} />
+        <span key={d.day} className="khealth-bar" data-before={before(d.day) || undefined}>
+          <span className="khealth-bar-fill" style={{ height: before(d.day) ? 0 : `${Math.max(d.people ? 14 : 0, Math.round((d.people / max) * 100))}%` }} />
           <span className="khealth-bar-day" aria-hidden="true">{WEEKDAY[dayOf(d.day).getDay()]}</span>
         </span>
       ))}
@@ -193,10 +220,14 @@ function RolloutPlanPart({ rollout, rolloutOn, members, nameOf, onSaveRollout }:
   const [pilotOpen, setPilotOpen] = useState(false);
   const pilot = (plan.pilot ?? []).filter((id) => byId.has(id));
   const champion = plan.champion ? byId.get(plan.champion) : undefined;
-  const save = (next: RolloutPlan) => {
+  // a change saves the plan as shown: someone who's left (or become a guest) since drops out of it, as the database insists
+  const shown: RolloutPlan = { champion: champion?.userId ?? null, pilot, goLive: plan.goLive ?? null };
+  const save = (change: RolloutPlan) => {
+    const next = { ...shown, ...change };
     const clean: RolloutPlan = {};
-    if (next.champion) clean.champion = next.champion;
-    if (next.pilot?.length) clean.pilot = next.pilot;
+    if (next.champion && byId.has(next.champion)) clean.champion = next.champion;
+    const p = (next.pilot ?? []).filter((id) => byId.has(id));
+    if (p.length) clean.pilot = p;
     if (next.goLive) clean.goLive = next.goLive;
     onSaveRollout(Object.keys(clean).length ? clean : null);
   };
@@ -216,7 +247,7 @@ function RolloutPlanPart({ rollout, rolloutOn, members, nameOf, onSaveRollout }:
             <span className="khealth-detail">The person teammates ask first, who keeps the rollout moving.</span>
           </span>
           <select className="khealth-select" aria-label="Champion" disabled={!rolloutOn} value={champion?.userId ?? ""}
-            onChange={(e) => save({ ...plan, champion: e.target.value || null })}>
+            onChange={(e) => save({ champion: e.target.value || null })}>
             <option value="">No one yet</option>
             {can.map((m) => <option key={m.userId!} value={m.userId!}>{nameOf(m)}</option>)}
           </select>
@@ -232,7 +263,7 @@ function RolloutPlanPart({ rollout, rolloutOn, members, nameOf, onSaveRollout }:
                   const on = pilot.includes(m.userId!);
                   return (
                     <button key={m.userId!} type="button" className="khealth-chip" aria-pressed={on}
-                      onClick={() => save({ ...plan, pilot: on ? pilot.filter((x) => x !== m.userId) : [...pilot, m.userId!] })}>
+                      onClick={() => save({ pilot: on ? pilot.filter((x) => x !== m.userId) : [...pilot, m.userId!] })}>
                       <Avatar id={m.userId!} size={20} />{nameOf(m)}
                     </button>
                   );
@@ -249,7 +280,7 @@ function RolloutPlanPart({ rollout, rolloutOn, members, nameOf, onSaveRollout }:
             <span className="khealth-detail">The day everyone moves their work into Kanbo, and the old lists stop.</span>
           </span>
           <input type="date" className="khealth-select" aria-label="Go-live date" disabled={!rolloutOn} value={plan.goLive ?? ""}
-            onChange={(e) => save({ ...plan, goLive: e.target.value || null })} />
+            onChange={(e) => save({ goLive: e.target.value || null })} />
         </li>
       </ul>
     </div>
@@ -319,6 +350,11 @@ const HEALTH_CSS = `
   background: color-mix(in oklch, var(--warn, var(--st-review)) 12%, transparent); color: var(--warn-text, var(--ink-2));
 }
 .khealth-count[data-ok] { background: color-mix(in oklch, var(--ok, var(--st-done)) 12%, transparent); }
+.khealth-count[data-new] { background: var(--fill-1); color: var(--ink-2); }
+.khealth-fold { flex-shrink: 0; margin: -2px -6px 0 -4px; }
+.khealth-fold svg { transition: transform var(--dur-fast, 120ms) var(--ease-out, ease-out); }
+.khealth[data-folded] .khealth-fold svg { transform: rotate(-90deg); }
+.khealth[data-folded] { padding-bottom: 14px; }
 .khealth-rows { margin: 10px 0 0; padding: 0; list-style: none; }
 .khealth-row { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 0; box-shadow: inset 0 1px 0 var(--hairline); }
 .khealth-icon {
@@ -328,14 +364,16 @@ const HEALTH_CSS = `
 .khealth-row[data-ok] .khealth-icon { color: var(--ok, var(--st-done)); background: color-mix(in oklch, var(--ok, var(--st-done)) 10%, transparent); box-shadow: none; }
 .khealth-text { display: grid; flex: 1; min-width: 0; }
 .khealth-line { font: 600 14px/20px var(--font-ui, var(--font-display)); color: var(--ink); text-wrap: pretty; }
-.khealth-row[data-ok] .khealth-line { font-weight: 500; color: var(--ink-2); }
+.khealth-row[data-ok] .khealth-line, .khealth-row[data-empty] .khealth-line { font-weight: 500; color: var(--ink-2); }
 .khealth-detail { font: 400 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); text-wrap: pretty; }
 .khealth-note { margin-top: 2px; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ok-text, var(--ok, var(--st-done))); }
 .khealth-row > .kbtn, .khealth-row > .khealth-select { flex-shrink: 0; }
-.khealth-strip { display: inline-flex; align-items: flex-end; gap: 4px; height: 40px; flex-shrink: 0; }
-.khealth-bar { display: grid; grid-template-rows: 1fr auto; justify-items: center; gap: 2px; width: 12px; height: 100%; }
+.khealth-strip { display: inline-flex; align-items: flex-end; gap: 3px; height: 44px; flex-shrink: 0; }
+.khealth-bar { display: grid; grid-template-rows: 1fr auto; justify-items: center; gap: 2px; width: 14px; height: 100%; }
 .khealth-bar-fill { align-self: end; width: 8px; min-height: 2px; border-radius: 3px; background: var(--accent-fill, var(--accent)); opacity: 0.85; }
-.khealth-bar-day { font: 600 9px/10px var(--font-ui, var(--font-display)); color: var(--ink-4); }
+.khealth-bar[data-before] .khealth-bar-fill { min-height: 0; }
+.khealth-bar-day { font: 600 11px/12px var(--font-ui, var(--font-display)); color: var(--ink-3); }
+.khealth-bar[data-before] .khealth-bar-day { color: var(--ink-4); }
 .khealth-plan { margin-top: 6px; padding-top: 10px; box-shadow: inset 0 1px 0 var(--hairline-strong, var(--hairline)); }
 .khealth-plan-head { display: flex; align-items: baseline; gap: 10px; }
 .khealth-plan-title { margin: 0; font: 600 13px/20px var(--font-ui, var(--font-display)); color: var(--ink); }

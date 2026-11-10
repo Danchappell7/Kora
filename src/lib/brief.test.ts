@@ -349,6 +349,13 @@ const ents = (spans: ReturnType<typeof composeTodayBrief>["prose"], kind: string
 describe("composeTodayBrief: the variants", () => {
   const deck = () => task({ id: "deck", title: "Finalise the launch deck", dueDate: TODAY, dueTime: "17:00", aiScore: 90, focusMin: 90 });
 
+  it("a long one big thing is shortened, and the sentence doesn't add a full stop after its …", () => {
+    const long = task({ id: "fit", title: "Agree the fit-out plan, budget and handover date with the contractor", dueDate: TODAY, aiScore: 90 });
+    const b = today2({ tasks: [long] });
+    expect(text(b.headline)).toMatch(/^One big thing today: agree the fit-out plan, .*…$/);
+    expect(text(b.headline)).not.toMatch(/…\.$/);
+  });
+
   it("morning: the day's one big thing as the focus phrase, why, and your clearest stretch before its deadline", () => {
     const held = [task({ title: "Hero copy", assigneeId: "maya", dependencies: ["deck"] }), task({ title: "Press kit", assigneeId: "theo", dependencies: ["deck"] })];
     const b = today2({ tasks: [deck()], allTasks: [deck(), ...held], events: [meeting(H(11), H(12)), lunch] });

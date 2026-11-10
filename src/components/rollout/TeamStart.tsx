@@ -114,8 +114,13 @@ export function TeamStartStep({ kind, name, workspaceId, host, onContinue }: {
     setBusy(true); setErr("");
     try {
       const r = await host.invite(workspaceId, valid);
-      setEmails(r.failed.join(", "));
-      if (r.failed.length) setErr(`Couldn't invite ${r.failed.join(", ")}. Check the addresses and try again.`);
+      // what didn't go stays in the box, with what to do about it: an address it couldn't read, and one the invite refused
+      const left = [...invalid, ...r.failed];
+      setEmails(left.join(", "));
+      if (invalid.length || r.failed.length) setErr([
+        invalid.length ? `Couldn't read ${invalid.map((x) => `“${x}”`).join(", ")}: add the full address.` : "",
+        r.failed.length ? `Couldn't invite ${r.failed.join(", ")}. Check the addresses and try again.` : "",
+      ].filter(Boolean).join(" "));
     } catch { setErr("Couldn't send the invites just now. Try again in a moment."); }
     finally { setBusy(false); }
   };

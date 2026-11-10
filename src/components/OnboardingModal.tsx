@@ -123,7 +123,8 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   }, [profFirst, profLast]);
 
   // the team path (0058): which one, and the workspace it made
-  const [kind, setKind] = useState<TeamKind>("solo");
+  // (null until it's asked: the dots count the longest way, so the total never grows mid-way)
+  const [kind, setKind] = useState<TeamKind | null>(null);
   const [made, setMade] = useState<{ id: string; name: string } | null>(null);
 
   // they already told us their name: no need to ask again
@@ -152,7 +153,7 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
   };
   const pick = (k: TeamKind) => { setKind(k); go(k === "solo" ? 2 : TEAM_NAME); };
   const createTeam = async (n: string): Promise<boolean> => {
-    if (!team || kind === "solo") return false;
+    if (!team || !kind || kind === "solo") return false;
     const id = await team.create(n, kind);
     if (!id) return false;
     setMade({ id, name: n });
@@ -201,7 +202,9 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
               <div className="konb-head">
                 <h2 className="konb-title">{hasName ? `Welcome, ${profFirst.trim()}` : "Welcome to Kanbo"}</h2>
                 <p className="konb-lede">
-                  {hasName ? "One quick thing before you dive in: set up your first project." : "The to-do list that plans your day. Let's get you set up in under a minute."}
+                  {hasName
+                    ? team ? "A couple of quick questions to set Kanbo up for you." : "One quick thing before you dive in: set up your first project."
+                    : "The to-do list that plans your day. Let's get you set up in under a minute."}
                 </p>
               </div>
               <div className="konb-acts" data-stack="">
@@ -276,6 +279,8 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
                 </div>
               </div>
               <div className="konb-acts">
+                {/* (after "Who's Kanbo for?": a wrong tap goes back to it) */}
+                {team && <Button variant="ghost" size="lg" icon="arrowLeft" onClick={() => go(FORK)}>Back</Button>}
                 <Button variant="ghost" size="lg" onClick={() => go(3)}>Skip</Button>
                 <Button type="submit" variant="primary" size="lg" iconRight="arrowRight" disabled={!projName.trim()} className="konb-grow">Create project</Button>
               </div>
@@ -284,11 +289,11 @@ export function OnboardingModal({ open, profile, workspaceId, onSaveProfile, onC
 
           {step === FORK && team && <TeamFork key="fork" onPick={pick} />}
 
-          {step === TEAM_NAME && team && kind !== "solo" && (
+          {step === TEAM_NAME && team && kind && kind !== "solo" && (
             <TeamNameStep key={`name-${kind}`} kind={kind} onBack={() => go(FORK)} onCreate={createTeam} />
           )}
 
-          {step === TEAM_START && team && kind !== "solo" && made && (
+          {step === TEAM_START && team && kind && kind !== "solo" && made && (
             <TeamStartStep key="start" kind={kind} name={made.name} workspaceId={made.id} host={team} onContinue={() => go(3)} />
           )}
 

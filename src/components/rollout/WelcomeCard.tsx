@@ -37,16 +37,47 @@ const dueWords = (iso?: string) => {
 };
 
 function askLine(p: WelcomePerson & { why: "champion" | "owner" | "admin" }, workspaceName: string): string {
-  if (p.why === "champion") return `${first(p.name)} is the team's Kanbo champion. Ask them anything about how things run here.`;
-  if (p.why === "owner") return `${first(p.name)} runs ${workspaceName}. Ask them anything about how things run here.`;
-  return `${first(p.name)} helps run ${workspaceName}. Ask them anything about how things run here.`;
+  if (p.why === "champion") return `Ask ${first(p.name)}, the team's Kanbo champion, anything about how things run here.`;
+  if (p.why === "owner") return `Ask ${first(p.name)}, who runs ${workspaceName}, anything about how things run here.`;
+  return `Ask ${first(p.name)}, who helps run ${workspaceName}, anything about how things run here.`;
 }
+
+/** the card's place on Today (one at a time), for the brief's line to bring into view */
+export const WELCOME_CARD_ID = "kanbo-welcome";
+
+/** The brief's line for someone new here: the card is under the day, so this says it's there (and,
+ *  on a phone, where the brief fills the first screen, takes you to it). */
+export function WelcomeLine({ workspaceName }: { workspaceName: string }) {
+  const go = () => {
+    const card = document.getElementById(WELCOME_CARD_ID);
+    card?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    card?.focus({ preventScroll: true });
+  };
+  return (
+    <p className="kwlcl">
+      <style>{LINE_CSS}</style>
+      <span aria-hidden="true">👋 </span>Welcome to <b>{workspaceName}</b>. Here's who's who and where to start.{" "}
+      <button type="button" className="kwlcl-go" onClick={go}>Show me<Icon name="chevronDown" size={14} sw={2} /></button>
+    </p>
+  );
+}
+const LINE_CSS = `
+.kwlcl { margin: 14px 0 0; max-width: 760px; font: 400 15px/24px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
+.kwlcl b { font-weight: 600; color: var(--ink); }
+.kwlcl-go { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; cursor: pointer; white-space: nowrap;
+  font: 600 14px/24px var(--font-ui, var(--font-display)); color: var(--accent-text, var(--accent)); border-radius: 4px; vertical-align: baseline; }
+.kwlcl-go:hover { text-decoration: underline; text-underline-offset: 3px; }
+.kwlcl-go > svg { align-self: center; }
+@media (max-width: 859px) { .kwlcl { margin-top: 12px; } }
+`;
 
 export function WelcomeCard({ workspaceName, logoUrl, content, goalRead, onOpenProject, onOpenTask, onOpenGoal, onOpenPeople, onDismiss }: WelcomeCardProps) {
   const headId = "kwlc" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const { projects, people, morePeople, goal, ask, starters } = content;
+  // one person here, and they're who to ask: say it once, under them
+  const askWithPeople = !!ask && people.length === 1 && people[0].id === ask.id;
   return (
-    <section className="kwlc" aria-labelledby={headId}>
+    <section className="kwlc" aria-labelledby={headId} id={WELCOME_CARD_ID} tabIndex={-1}>
       <style>{WELCOME_CSS}</style>
       <header className="kwlc-head">
         {logoUrl
@@ -92,6 +123,7 @@ export function WelcomeCard({ workspaceName, logoUrl, content, goalRead, onOpenP
               ))}
             </ul>
           ) : <p className="kwlc-none">It's just you here so far.</p>}
+          {askWithPeople && <p className="kwlc-asknote">{askLine(ask!, workspaceName)}</p>}
           <button type="button" className="kwlc-link" onClick={onOpenPeople}>{morePeople > 0 ? `and ${morePeople} more in People` : "See everyone in People"}</button>
         </div>
 
@@ -102,7 +134,7 @@ export function WelcomeCard({ workspaceName, logoUrl, content, goalRead, onOpenP
           </div>
         )}
 
-        {ask && (
+        {ask && !askWithPeople && (
           <div className="kwlc-part">
             <h3 className="kwlc-label">Who to ask</h3>
             <p className="kwlc-ask">
@@ -208,6 +240,7 @@ div.kwlc-goal-open { cursor: default; }
 .kwlc-goal-pace { font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .kwlc-ask { display: flex; align-items: flex-start; gap: 10px; margin: 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
 .kwlc-ask > :first-child { flex-shrink: 0; }
+.kwlc-asknote { margin: 8px 0 0; font: 400 13px/20px var(--font-ui, var(--font-display)); color: var(--ink-2); text-wrap: pretty; }
 .kwlc-task-dot { width: 14px; height: 14px; flex-shrink: 0; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ink-4); }
 .kwlc-task-due { flex-shrink: 0; font: 500 12px/16px var(--font-ui, var(--font-display)); color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .kwlc-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding-top: 12px; box-shadow: inset 0 1px 0 var(--hairline); }

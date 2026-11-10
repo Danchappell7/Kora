@@ -49,6 +49,8 @@ export interface MemberActivity {
 export interface WorkspaceActivity {
   /** the server's today ("YYYY-MM-DD", London) */
   today: string;
+  /** the workspace's first day: nobody was active in it before then (absent: older than the week) */
+  since?: string;
   members: MemberActivity[];
   /** the last 7 days, oldest first: how many people were active each day */
   days: { day: string; people: number }[];
@@ -71,7 +73,8 @@ export function parseActivity(raw: unknown): WorkspaceActivity | null {
     const n = Number(r?.people);
     return at ? [{ day: at, people: Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0 }] : [];
   });
-  return { today: day(o.today) ?? o.today, members, days };
+  const since = day(o.since);
+  return { today: day(o.today) ?? o.today, ...(since ? { since } : {}), members, days };
 }
 
 /** "Today", "Yesterday", "3 days ago", "Last week", "Over a week ago", "Not this month" — rough on purpose. */
@@ -112,14 +115,20 @@ export interface HealthInput {
 export interface WorkspaceHealth {
   /** invited, not joined yet */
   invited: WorkspaceMember[];
+  /** only you here, and nobody invited yet */
+  solo: boolean;
   /** active people (the activity line); null without workspace_activity */
-  active: { count: number; of: number; days: { day: string; people: number }[]; quiet: { member: WorkspaceMember; lastDay: string | null }[]; today: string } | null;
+  active: { count: number; of: number; days: { day: string; people: number }[]; quiet: { member: WorkspaceMember; lastDay: string | null }[]; today: string; since?: string } | null;
   /** open top-level tasks with no owner, or no date */
   loose: { tasks: Task[]; noOwner: number; noDate: number };
   /** projects whose update is missing */
   missing: Project[];
   /** goals with no check-in for two weeks (null: goals 2.0 isn't in) */
   quietGoals: Goal[] | null;
+  /** what's there at all: an empty line is "not yet", never "all good" */
+  counts: { projects: number; openTasks: number; goals: number };
+  /** under way: someone else is here (or invited) and there's a project; until then the card is "getting started" */
+  started: boolean;
   /** how many lines need a look (the card's count) */
   issues: number;
 }
@@ -140,8 +149,9 @@ export function workspaceHealth(input: HealthInput): WorkspaceHealth {
     const quiet = people.filter((m) => (by.get(m.userId!)?.days ?? 0) === 0)
       .map((member) => ({ member, lastDay: by.get(member.userId!)?.lastDay ?? null }))
       .sort((x, y) => (x.lastDay ?? "").localeCompare(y.lastDay ?? ""));
-    active = { count: people.length - quiet.length, of: people.length, days: a.days, quiet, today: a.today };
+    active = { count: people.length - quiet.length, of: people.length, days: a.days, quiet, today: a.today, ...(a.since ? { since: a.since } : {}) };
   }
+  const solo = invited.length === 0 && people.length <= 1;
 
   const projects = input.projects.filter((p) => (p.workspaceId ?? null) === ws && !p.archivedAt);
   const live = new Set(projects.map((p) => p.id));
@@ -160,6 +170,7 @@ export function workspaceHealth(input: HealthInput): WorkspaceHealth {
     if (rhythm ? readsMissing(rhythm) : isStale(f, oldestTaskAge(ptasks, p.id, today))) missing.push(p);
   }
 
+  const wsGoals = (input.goals ?? []).filter((g) => (g.workspaceId ?? null) === ws && !g.archivedAt && g.status !== "done");
   let quietGoals: Goal[] | null = null;
   if (input.goals && input.checkins) {
     const last = new Map<string, string>();
@@ -172,9 +183,13 @@ export function workspaceHealth(input: HealthInput): WorkspaceHealth {
       })());
   }
 
+  const counts = { projects: projects.length, openTasks: tasks.filter((t) => isOpen(t) && !t.parentId).length, goals: wsGoals.length };
   const issues = Number(invited.length > 0) + Number(loose.length > 0) + Number(missing.length > 0) + Number(!!quietGoals?.length)
     + Number(!!active && active.of > 1 && active.count < Math.ceil(active.of / 2));
-  return { invited, active, loose: { tasks: loose, noOwner: loose.filter((t) => !t.assigneeId).length, noDate: loose.filter((t) => !t.dueDate).length }, missing, quietGoals, issues };
+  return {
+    invited, solo, active, loose: { tasks: loose, noOwner: loose.filter((t) => !t.assigneeId).length, noDate: loose.filter((t) => !t.dueDate).length },
+    missing, quietGoals, counts, started: !solo && counts.projects > 0, issues,
+  };
 }
 
 /** The fixes the card and the nudge offer. */
@@ -247,12 +262,15 @@ export function healthNudge(h: WorkspaceHealth, ctx: { workspaceId: string; work
 export const WELCOME_DAYS = 30;
 /** before 0058 records when people join: an account this new is new here */
 export const NEW_ACCOUNT_DAYS = 14;
+/** joined within this of the workspace being made: they made it */
+const MADE_IT_MS = 10 * 60_000;
 
-/** Should Today welcome `me` to this workspace? A team workspace they joined (not one they own) in the last
- *  WELCOME_DAYS, that they haven't put the card away in. Before 0058 (no joinedAt at all): a new account. */
+/** Should Today welcome `me` to this workspace? A team workspace they joined (not one they own, or made and
+ *  handed over) in the last WELCOME_DAYS, that they haven't put the card away in. Before 0058 (no joinedAt
+ *  at all): a new account. */
 export function shouldWelcome(input: {
   me: string;
-  workspace: Pick<Workspace, "id" | "kind" | "ownerId"> | undefined;
+  workspace: Pick<Workspace, "id" | "kind" | "ownerId" | "createdAt"> | undefined;
   membership: Pick<WorkspaceMember, "role" | "status" | "joinedAt"> | undefined;
   welcomed?: Record<string, string>;
   accountCreatedAt?: string | null;
@@ -262,6 +280,8 @@ export function shouldWelcome(input: {
   if (!w?.id || w.kind !== "team" || w.ownerId === input.me) return false;
   if (!m || m.status !== "active" || m.role === "owner") return false;
   if (input.welcomed?.[w.id]) return false;
+  // whoever made it (and has since handed it over, as a provisioning admin does) joined as it was made: not new here
+  if (m.joinedAt && w.createdAt && Math.abs(Date.parse(m.joinedAt) - Date.parse(w.createdAt)) < MADE_IT_MS) return false;
   if (m.joinedAt) return daysSince(m.joinedAt, input.today) <= WELCOME_DAYS;
   if (m.joinedAt === null) return false;   // 0058 is in: they joined before it kept the date, a while ago
   return !!input.accountCreatedAt && daysSince(input.accountCreatedAt, input.today) <= NEW_ACCOUNT_DAYS;
