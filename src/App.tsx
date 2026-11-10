@@ -274,6 +274,7 @@ export default function App() {
   const [projectMembers, setProjectMembers] = useState<ProjectMember[] | null>(null);
   // the project whose People & access was asked for (the header's lock chip)
   const [accessOpenFor, setAccessOpenFor] = useState<string | null>(null);
+  const viewOnlyRef = useRef<{ key: string; set: ReadonlySet<string> }>({ key: "", set: new Set() });
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
@@ -4116,7 +4117,14 @@ export default function App() {
   // a project's board settings (WIP limits, project covers): its writers — everyone here but guests (the projects policies)
   const canEditProjectBoard = (p: Project) => !activeReadOnly && !p.id.startsWith("tmp-");
   // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
-  const planProjectId = wsProjects.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
+  // 0058: where project access is on, new work goes only into projects you can edit (as before elsewhere)
+  const wsGated = accessOn(workspaces.find((w) => w.id === workspace));
+  const wsEditable = wsGated ? wsProjects.filter((p) => projectRank(p.id, accessCtx) >= 3) : wsProjects;
+  // projects you can view but not change, where project access is on (their rows read like a guest's, everywhere)
+  const viewOnlyIds = projects.filter((p) => p.workspaceId && accessOn(workspaces.find((w) => w.id === p.workspaceId)) && projectRank(p.id, accessCtx) < 3).map((p) => p.id);
+  if (viewOnlyRef.current.key !== viewOnlyIds.join(",")) viewOnlyRef.current = { key: viewOnlyIds.join(","), set: new Set(viewOnlyIds) };
+  const viewOnlyProjects = viewOnlyRef.current.set;
+  const planProjectId = wsEditable.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
   const askProjects = wsProjects.map((p) => ({ id: p.id, name: p.name }));
   const askGoals = goalExtras || goals.length ? goalFlow.ask(workspace) : [];
   const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects, askGoals]);
@@ -4621,7 +4629,9 @@ export default function App() {
         )}
         {activeReadOnly && (
           <Notice tone="neutral" icon="lock" role="note">
-            You're a guest in {activeWsName} — you can view and comment. Ask a workspace admin for member access to edit.
+            {accessOn(workspaces.find((w) => w.id === workspace))
+              ? <>You're a guest in {activeWsName}: you see the projects you're added to, and you can comment. Ask a workspace admin for member access to edit.</>
+              : <>You're a guest in {activeWsName} — you can view and comment. Ask a workspace admin for member access to edit.</>}
           </Notice>
         )}
         {banner && banner.id !== bannerDismissed && (
@@ -4640,7 +4650,7 @@ export default function App() {
             onHome={() => setRoute(route.view === "plan" ? { view: "tasks" } : { view: "plan" })} homeLabel={route.view === "plan" ? "Go to My tasks" : "Go to Today"}>
             {/* 0047: every row and card reads its approval chip from here */}
             <ApprovalSummariesProvider summaries={approvalSummaries}>
-              <BusinessChipsProvider on={biz.all && (route.view === "plan" || route.view === "inbox" || route.view === "tasks")} workspaces={workspaces} guestIn={biz.guestIn}>
+              <BusinessChipsProvider on={biz.all && (route.view === "plan" || route.view === "inbox" || route.view === "tasks")} workspaces={workspaces} guestIn={biz.guestIn} viewOnly={viewOnlyProjects}>
                 <Suspense fallback={<PlaceSkeleton kind={skeletonFor(route, taskView)} label={pageTitle} />}>
                   <RenderView render={renderMain} />
                 </Suspense>
@@ -4737,7 +4747,7 @@ export default function App() {
       )}
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
       {focusOpen && <Suspense fallback={null}><FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...seen.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} /></Suspense>}
-      <Deferred when={newTaskOpen}><NewTaskModal open={newTaskOpen} onClose={() => { setNewTaskOpen(false); setNewTaskTemplate(null); }} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsProjects} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
+      <Deferred when={newTaskOpen}><NewTaskModal open={newTaskOpen} onClose={() => { setNewTaskOpen(false); setNewTaskTemplate(null); }} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsEditable} allTags={tags} members={wsMembers} currentUserId={currentUserId} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
         tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length}
         // 0048 templates: "/" or Template ▾ in the form, the library's "Use template", the whole plan through App's create paths
         workspaceId={workspace} initialTemplate={newTaskTemplate} onApplyTemplate={applyTemplatePlan}

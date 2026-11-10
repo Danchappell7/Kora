@@ -1213,7 +1213,9 @@ export type AuditAction =
   | "workspace.renamed"
   | "integration.connected" | "integration.disconnected"
   | "api_key.created" | "api_key.revoked"
-  | "webhook.created" | "webhook.deleted";
+  | "webhook.created" | "webhook.deleted"
+  // 0058 project access
+  | "project_access.on" | "project_access.off" | "project_access.settings" | "project.visibility" | "project.member";
 export type AuditTargetKind = "task" | "project" | "member" | "workspace" | "integration" | "api_key" | "webhook";
 export interface AuditEvent {
   id: string;

@@ -7,7 +7,8 @@
    ============================================================ */
 import { useState } from "react";
 import { Avatar, Button, DateChip, Icon, IconButton, Pill, Segmented, Toggle } from "../primitives";
-import { getMember, getProject } from "../../data/data";
+import { getMember, getProject, WORKSPACES } from "../../data/data";
+import { accessOn } from "../../lib/projectAccess";
 import type { Goal, GoalCheckin, GoalKind, GoalLink, GoalPaceMode, GoalStatus, Project, Task, WorkspaceMember } from "../../data/types";
 import type { GoalProgress } from "../../lib/goalProgress";
 import { periodChoices, periodLabel, periodRange } from "../../lib/goalPeriods";
@@ -344,11 +345,13 @@ export function GoalLinks({ goal, links, projects, tasks, views = [], canEdit, o
   if (!shown.length && !progressFrom && !canEdit) return null;
   const open = tasks.filter((t) => !t.parentId && t.status !== "done" && !t.archivedAt && !has("task", t.id) && projects.some((p) => p.id === t.projectId));
   const linkable = views.filter((v) => !has("view", v.id));
+  // 0058: a project you can't see (project access on) is "A private project", and doesn't open
+  const hiddenHere = accessOn(WORKSPACES.find((w) => w.id === goal.workspaceId));
   const projectChip = (id: string, link?: GoalLink) => {
     const p = projectOf(id);
     const d = p ? dot?.(id) : null;
     return (
-      <LinkChip key={link?.id ?? `from-${id}`} icon="folder" emoji={p?.emoji} label={p?.name ?? "Archived project"} dot={d ?? undefined}
+      <LinkChip key={link?.id ?? `from-${id}`} icon={!p && hiddenHere ? "lock" : "folder"} emoji={p?.emoji} label={p?.name ?? (hiddenHere ? "A private project" : "Archived project")} dot={d ?? undefined}
         onOpen={onOpen && p ? () => onOpen("project", id) : undefined}
         onRemove={link && canEdit && id !== goal.projectId ? () => onUnlink(link) : undefined} />
     );
@@ -392,7 +395,7 @@ export function GoalLinks({ goal, links, projects, tasks, views = [], canEdit, o
 }
 
 function LinkChip({ icon, emoji, label, dot, onOpen, onRemove }: {
-  icon: "folder" | "check" | "layers"; emoji?: string; label: string; dot?: { tone: DotTone; label: string };
+  icon: "folder" | "check" | "layers" | "lock"; emoji?: string; label: string; dot?: { tone: DotTone; label: string };
   onOpen?: () => void; onRemove?: () => void;
 }) {
   const face = (

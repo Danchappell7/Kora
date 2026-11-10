@@ -91,14 +91,15 @@ export function WorkspaceMark({ workspace, size = 16, title }: { workspace: Pick
 
 /* ---------- the row chip (All businesses) ---------- */
 
-interface ChipCtx { on: boolean; byId: Map<string, Workspace>; guestIn: ReadonlySet<string> }
+interface ChipCtx { on: boolean; byId: Map<string, Workspace>; guestIn: ReadonlySet<string>; viewOnly: ReadonlySet<string> }
 const NO_GUEST: ReadonlySet<string> = new Set();
-const BusinessChips = createContext<ChipCtx>({ on: false, byId: new Map(), guestIn: NO_GUEST });
+const BusinessChips = createContext<ChipCtx>({ on: false, byId: new Map(), guestIn: NO_GUEST, viewOnly: NO_GUEST });
 
 /** App wraps the page in this: while All businesses is on (`on`), rows show which business each task is from,
- *  and a row from a workspace you're a guest in (`guestIn`) is view-only. */
-export function BusinessChipsProvider({ on, workspaces, guestIn = NO_GUEST, children }: { on: boolean; workspaces: Workspace[]; guestIn?: ReadonlySet<string>; children: ReactNode }) {
-  const value = useMemo<ChipCtx>(() => ({ on, byId: new Map(workspaces.map((w) => [w.id ?? "personal", w])), guestIn }), [on, workspaces, guestIn]);
+ *  and a row from a workspace you're a guest in (`guestIn`) is view-only. 0058: so is a row from a project
+ *  you can view but not change (`viewOnly`, project ids; only where project access is on), on every page. */
+export function BusinessChipsProvider({ on, workspaces, guestIn = NO_GUEST, viewOnly = NO_GUEST, children }: { on: boolean; workspaces: Workspace[]; guestIn?: ReadonlySet<string>; viewOnly?: ReadonlySet<string>; children: ReactNode }) {
+  const value = useMemo<ChipCtx>(() => ({ on, byId: new Map(workspaces.map((w) => [w.id ?? "personal", w])), guestIn, viewOnly }), [on, workspaces, guestIn, viewOnly]);
   // (the chips', the switch's and the lead line's rules, once for the page)
   return <BusinessChips.Provider value={value}><style>{BUSINESS_CSS}</style>{children}</BusinessChips.Provider>;
 }
@@ -106,11 +107,11 @@ export function BusinessChipsProvider({ on, workspaces, guestIn = NO_GUEST, chil
 /** Is All businesses on (a row may need its chip's room)? */
 export const useBusinessChips = (): boolean => useContext(BusinessChips).on;
 
-/** In All businesses: is this row view-only (a task in a workspace you're a guest in)? Off, the page's own
- *  read-only says so for every row. */
-export function useGuestRow(): (t: Pick<Task, "workspaceId"> | null | undefined) => boolean {
-  const { on, guestIn } = useContext(BusinessChips);
-  return useCallback((t) => on && !!t?.workspaceId && guestIn.has(t.workspaceId), [on, guestIn]);
+/** Is this row view-only? In All businesses, a task in a workspace you're a guest in (off, the page's own
+ *  read-only says so for every row); anywhere, a task in a project you can only view or comment on (0058). */
+export function useGuestRow(): (t: (Pick<Task, "workspaceId"> & Partial<Pick<Task, "projectId">>) | null | undefined) => boolean {
+  const { on, guestIn, viewOnly } = useContext(BusinessChips);
+  return useCallback((t) => (on && !!t?.workspaceId && guestIn.has(t.workspaceId)) || (!!t?.projectId && viewOnly.has(t.projectId)), [on, guestIn, viewOnly]);
 }
 
 /** A workspace's mark by its id (null: Personal), whether or not All businesses is on; nothing for one you can't see. */

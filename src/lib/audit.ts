@@ -43,6 +43,12 @@ export const AUDIT_ACTION_INFO: Readonly<Record<AuditAction, { label: string; gr
   "api_key.revoked":          { label: "API key revoked",           group: "Integrations" },
   "webhook.created":          { label: "Webhook added",             group: "Integrations" },
   "webhook.deleted":          { label: "Webhook deleted",           group: "Integrations" },
+  // 0058: project access
+  "project_access.on":        { label: "Project access on",         group: "Workspace" },
+  "project_access.off":       { label: "Project access off",        group: "Workspace" },
+  "project_access.settings":  { label: "Project access settings",   group: "Workspace" },
+  "project.visibility":       { label: "Who can see a project",     group: "Tasks and projects" },
+  "project.member":           { label: "Project people",            group: "Tasks and projects" },
 };
 export const AUDIT_ACTIONS = Object.keys(AUDIT_ACTION_INFO) as AuditAction[];
 /** The page size the UI asks for, and the most one query may return. */
@@ -285,11 +291,33 @@ export function auditParts(e: AuditEvent, opts: { you?: string | null } = {}): A
     case "api_key.revoked": return [actor, ` revoked the API key ${quoted(title)}`];
     case "webhook.created": return [actor, ` added a webhook to ${text(d.host) ?? title ?? "an endpoint"}`];
     case "webhook.deleted": return [actor, ` deleted the webhook to ${text(d.host) ?? title ?? "an endpoint"}`];
+    // 0058: project access (a target whose project you can't see is never named: the server hides those rows)
+    case "project_access.on": return [actor, " turned on project access"];
+    case "project_access.off": return [actor, " turned off project access"];
+    case "project_access.settings": {
+      const v = VISIBILITY_WORDS[String(d.default)];
+      return [actor, ` changed project access${v ? `: new projects start as ${v}` : ""}`];
+    }
+    case "project.visibility": {
+      const to = String(d.to);
+      return to === "private" ? [actor, ` made ${quoted(title)} private`]
+        : to === "members" ? [actor, ` made ${quoted(title)} members only`]
+        : [actor, ` opened ${quoted(title)} to the whole workspace`];
+    }
+    case "project.member": {
+      const person: AuditPart = { strong: memberName(text(d.user_id)) };
+      const role = ROLE_WORDS[String(d.role)];
+      if (!role) return [actor, " took ", person, ` off ${quoted(title)}`];
+      return d.from ? [actor, " changed ", person, ` to ${role} on ${quoted(title)}`] : [actor, " gave ", person, ` access to ${quoted(title)}`];
+    }
     default:
       return [actor, ` · ${auditActionLabel(e.action)}${title ? ` · ${title}` : ""}`];
   }
 }
 const TRASH_WORDS = "30 days";
+const VISIBILITY_WORDS: Record<string, string> = { workspace: "whole workspace", members: "members only", private: "private" };
+const ROLE_WORDS: Record<string, string> = { editor: "can edit", commenter: "can comment", viewer: "can view" };
+const memberName = (id: string | null): string => (id ? MEMBERS.find((m) => m.id === id)?.name : null) || "someone";
 
 /** One line for the timeline ("Olive Owner changed Sana Rao’s role from member to admin"). */
 export function describeAuditEvent(e: AuditEvent, opts: { you?: string | null } = {}): string {

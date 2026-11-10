@@ -14,6 +14,7 @@
 import { useMemo, useState } from "react";
 import { Avatar, Button, EmptyState, Icon, IconButton, Meter, Pill, ProjectDot, ProjectTile, Segmented } from "../primitives";
 import { getProject, getMember, KANBO_TODAY, toLocalISO, WORKSPACES } from "../../data/data";
+import { accessOn } from "../../lib/projectAccess";
 import type { Task, Project, Portfolio, StatusUpdate, Workspace } from "../../data/types";
 import { projectHealth, useStableOrder, type ProjectHealth } from "../views/reportingUtils";
 import { DraftInput } from "../project/DraftInput";
@@ -202,6 +203,8 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                 const inPf = pf.projectIds.map(findProject).filter((p): p is Project => !!p);
                 // (Personal, across businesses: a project you can no longer see keeps its place, to be taken out)
                 const gone = across ? pf.projectIds.filter((id) => !findProject(id)) : [];
+                // 0058: in a workspace with project access on, the ones you can't see are counted, never named
+                const unseen = !across && accessOn(workspaces.find((w) => w.id === pf.workspaceId)) ? pf.projectIds.filter((id) => !findProject(id)).length : 0;
                 const goneRows = (table: boolean) => gone.map((id) => {
                   const remove = <IconButton icon="x" size="sm" label={`Remove the project you can no longer see from ${pf.name}`} onClick={() => onUpdate(pf.id, { projectIds: pf.projectIds.filter((x) => x !== id) })} />;
                   const why = <span className="kpj-card-meta">You've lost access to it, or it was deleted</span>;
@@ -232,6 +235,7 @@ export function PortfoliosView({ portfolios, projects, tasks, statusUpdates = []
                   <>
                     {onlyYou}
                     {inPf.length > 0 && <span className="kpj-count">{combined}% · {plural(inPf.length, "project")}</span>}
+                    {unseen > 0 && <span className="kpj-card-meta">+{unseen} {unseen === 1 ? "project" : "projects"} you can't see</span>}
                     {counts.off > 0 && <Pill tone="signal">{counts.off} off track</Pill>}
                     {counts.risk > 0 && <Pill tone="warn">{counts.risk} at risk</Pill>}
                     {missingN > 0 && <Pill tone="neutral" title="Past their update day with nothing posted">{plural(missingN, "update")} missing</Pill>}

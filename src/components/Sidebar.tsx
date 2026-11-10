@@ -17,6 +17,7 @@ import { useToast } from "./Toast";
 import type { Task, Project, Member, Workspace, Subscription, IconName, SavedSearch, Role, SavedView } from "../data/types";
 import type { Route } from "../app-types";
 import { navItems, placeOf, type NavItem } from "../lib/nav";
+import { accessOn } from "../lib/projectAccess";
 import { isViewActive, useViewerMarks, viewRoute } from "../lib/views";
 import { useProjectDropTarget } from "../lib/dropActions";
 import { useTodayNavDropTarget } from "./dnd/todayNav";
@@ -858,7 +859,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
           </SectionLabel>
           {visibleProjects.length === 0 ? (
             <p className="ksb-empty">
-              {guest ? "No projects yet" : <>No projects yet · <button type="button" className="ksb-link" onClick={onNewProject}>Create one</button></>}
+              {/* (0058: a guest where project access is on sees only the projects they're added to) */}
+              {guest ? (accessOn(workspaces.find((w) => w.id === workspace)) ? "No projects shared with you yet" : "No projects yet")
+                : <>No projects yet · <button type="button" className="ksb-link" onClick={onNewProject}>Create one</button></>}
             </p>
           ) : (
             <div role="list" aria-labelledby={projectsLabelId} className="kproj-list">

@@ -174,3 +174,14 @@ describe("demo history: filters and keyset paging", () => {
     expect(reco.events.every((e) => e.workspaceId === "ws-reco")).toBe(true);
   });
 });
+
+describe("project access in the history (0058)", () => {
+  it("says each change plainly, from your side", () => {
+    expect(describeAuditEvent(ev("project_access.on"))).toMatch(/ turned on project access$/);
+    expect(describeAuditEvent(ev("project_access.off"))).toMatch(/ turned off project access$/);
+    expect(describeAuditEvent(ev("project_access.settings", { default: "members", member_private: false }))).toMatch(/ changed project access: new projects start as members only$/);
+    expect(describeAuditEvent(ev("project.visibility", { from: "workspace", to: "private" }, { targetTitle: "Seed round" }))).toMatch(/ made “Seed round” private$/);
+    expect(describeAuditEvent(ev("project.member", { user_id: "m-5", role: "commenter", from: null }, { targetTitle: "Brand Refresh" }))).toMatch(/ gave Ana Ruiz access to “Brand Refresh”$/);
+    expect(describeAuditEvent(ev("project.member", { user_id: "m-5", role: null, from: "commenter" }, { targetTitle: "Brand Refresh" }))).toMatch(/ took Ana Ruiz off “Brand Refresh”$/);
+  });
+});

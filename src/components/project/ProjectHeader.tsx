@@ -575,7 +575,7 @@ function AboutPanel({ project, tasks, statusUpdates, members, canManage, readOnl
             {access && accessIsOn ? (
               <>
                 <span className="kpj-card-meta" style={{ color: "var(--ink-2)" }}>{accessSummary(project, access.ctx)}</span>
-                <Button size="sm" variant="ghost" aria-expanded={peopleOpen} onClick={() => setPeopleOpen((v) => !v)}>{peopleOpen ? "Done" : "Manage"}</Button>
+                <Button size="sm" variant="ghost" aria-expanded={peopleOpen} onClick={() => setPeopleOpen((v) => !v)}>{peopleOpen ? "Done" : canManagePeople(project, access.ctx) ? "Manage" : "See who's on it"}</Button>
               </>
             ) : access ? (
               <ContributorsChecklist project={project} access={access} nameOf={nameOf} canManage={canManage} />

@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AiMark, Avatar, AvatarStack, Button, DateChip, EmptyState, Icon, IconButton, Pill, ProjectCover, ProjectTile, Provenance, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { getMember, KANBO_TODAY, todayISO, WORKSPACES } from "../../data/data";
+import { accessOn } from "../../lib/projectAccess";
 import type { Portfolio, PortfolioUpdate, Project, StatusKind, StatusUpdate, Task, UpdateSections, Workspace } from "../../data/types";
 import type { PortfolioPatch } from "../../data/store";
 import type { AiOutcome } from "../../lib/askTypes";
@@ -324,6 +325,10 @@ export function PortfolioPage({ portfolio: pf, projects, tasks, statusUpdates, m
         </div>
         {/* how the programme is going, in the brief's voice */}
         <p className="kpf-sentence">{/[.!?]$/.test(sentence) ? sentence : `${sentence}.`}</p>
+        {/* 0058: projects here you can't see are counted, never named */}
+        {!across && accessOn(WORKSPACES.find((w) => w.id === pf.workspaceId)) && pf.projectIds.length > inPf.length && (
+          <p className="kpf-sentence" style={{ fontSize: 13, color: "var(--ink-3)" }}>+{pf.projectIds.length - inPf.length} {pf.projectIds.length - inPf.length === 1 ? "project" : "projects"} you can't see</p>
+        )}
         {rows.length > 0 && (
           <p className="kpf-sentence-sub">{pct}% of the work is done{lands ? `, and it's due to land ${lands}` : ""}.{rows.some((r) => r.status.mismatch) ? " Kanbo sees more trouble in the work on the projects it marks." : ""}</p>
         )}

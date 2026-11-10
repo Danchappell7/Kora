@@ -141,7 +141,7 @@ describe("workspace history", () => {
     expect(parseAuditEvent({ ...AUDIT, action: "drop table" })).toBeNull();
     expect(parseAuditEvent({ ...AUDIT, action: "doc.shared" })?.action).toBe("doc.shared");   // a later migration's action
     expect(auditActionLabel("doc.shared")).toBe("doc.shared");
-    expect(AUDIT_ACTIONS).toHaveLength(19);
+    expect(AUDIT_ACTIONS).toHaveLength(24);   // (0047's 19, and 0058's five project access actions)
     for (const a of ["task.deleted", "project.purged", "member.invited", "role.changed", "workspace.renamed", "integration.connected", "api_key.created", "webhook.created"]) {
       expect(AUDIT_ACTION_INFO[a as keyof typeof AUDIT_ACTION_INFO].label).toBeTruthy();
     }
