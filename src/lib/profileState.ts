@@ -24,7 +24,10 @@ export const BOARD_SETTINGS_MAX_BYTES = 4096;
 /* ---------- profiles.onboarding ---------- */
 
 const TOUR_ROLES: readonly TourRole[] = ["owner", "member", "guest"];
-const SETUP_ITEMS: readonly SetupItemId[] = ["invite_team", "connect_calendar", "add_domain", "connect_slack", "plan_day", "complete_task", "install_app", "set_notifications"];
+const SETUP_ITEMS: readonly SetupItemId[] = ["invite_team", "connect_calendar", "add_domain", "connect_slack",
+  "pick_pack", "import_work", "invite_pilot", "set_update_day", "post_update", "plan_day", "complete_task", "install_app", "set_notifications"];
+/** the welcome cards a person keeps (one per workspace they've joined) */
+const WELCOMED_MAX = 60;
 
 /** profiles.onboarding → OnboardingState (unknown keys dropped; never throws). */
 export function parseOnboardingState(raw: unknown): OnboardingState {
@@ -47,6 +50,16 @@ export function parseOnboardingState(raw: unknown): OnboardingState {
       for (const k of SETUP_ITEMS) { const v = str(c.done[k]); if (v) done[k] = v; }
       list.done = done;
     }
+    if (isObj(c.teams)) {
+      const teams: Record<string, Partial<Record<SetupItemId, string>>> = {};
+      for (const [ws, ticks] of Object.entries(c.teams).slice(0, WELCOMED_MAX)) {
+        if (!ws || !isObj(ticks)) continue;
+        const done: Partial<Record<SetupItemId, string>> = {};
+        for (const k of SETUP_ITEMS) { const v = str(ticks[k]); if (v) done[k] = v; }
+        teams[ws] = done;
+      }
+      list.teams = teams;
+    }
     if (c.dismissedAt !== undefined) list.dismissedAt = str(c.dismissedAt);
     out.checklist = list;
   }
@@ -65,6 +78,11 @@ export function parseOnboardingState(raw: unknown): OnboardingState {
     out.momentum = mom;
   }
   if (isObj(raw.businesses)) out.businesses = raw.businesses.all === true ? { all: true } : {};
+  if (isObj(raw.welcomed)) {
+    const w: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw.welcomed).slice(0, WELCOMED_MAX)) { const at = str(v); if (k && at) w[k] = at; }
+    out.welcomed = w;
+  }
   return out;
 }
 

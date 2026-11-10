@@ -25,6 +25,21 @@ function team(members: WorkspaceMember[], extra: Partial<Parameters<typeof TeamV
 const openInvite = () => { fireEvent.click(screen.getByRole("button", { name: "Invite people" })); return screen.getByLabelText("Emails"); };
 
 describe("TeamView", () => {
+  it("0058: opens on its invite sheet when asked (Get set up's pilot group), once; the health card can open it too", () => {
+    const onInviteOpened = vi.fn();
+    const healthSlot = vi.fn(({ openInvite: open }: { openInvite: () => void }) => <button type="button" onClick={open}>Health: invite</button>);
+    const { unmount, props } = team([], { inviteNow: true, onInviteOpened, healthSlot });
+    expect(screen.getByLabelText("Emails")).toBeInTheDocument();
+    expect(onInviteOpened).toHaveBeenCalledTimes(1);
+    unmount();
+    // (said back, so the host stops asking: coming back to People doesn't open it again)
+    render(<TeamView {...props} inviteNow={false} onInviteOpened={onInviteOpened} healthSlot={healthSlot} />);
+    expect(screen.queryByLabelText("Emails")).toBeNull();
+    expect(onInviteOpened).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Health: invite" }));
+    expect(screen.getByLabelText("Emails")).toBeInTheDocument();
+  });
+
   it("shows the live profile name before the invite-row name or email", () => {
     team([member({ id: "w1", userId: "m-1", email: "maya@kanbo.app", name: "maya" })]);
     expect(screen.getByText("Maya Lin")).toBeInTheDocument();

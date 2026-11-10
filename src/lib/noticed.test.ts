@@ -111,3 +111,23 @@ describe("Kanbo noticed: a key result of yours behind pace (0052)", () => {
     expect(noticed([mine], { risks: [risk], away: [away], dismissed: [away.id] }).map((x) => x.kind)).toEqual(["risk"]);
   });
 });
+
+describe("Kanbo noticed: leading a rollout (0058)", () => {
+  const nudge = { id: "rollout:invited:ws:2", kind: "rollout" as const, tone: "accent" as const, icon: "users" as const, title: "2 people haven't joined Acme",
+    body: "Priya and Jonas were invited but haven't signed in yet. A fresh invite often does it.", actions: [{ kind: "fix" as const, label: "Resend all", fix: "resend" }] };
+  it("one fix, after your own work, and waved away for the day like any other", () => {
+    const mine = task({ id: "tok", title: "Design tokens", status: "review" });
+    const items = noticed([mine, task({ assigneeId: "maya", status: "blocked", dependencies: ["tok"] })], { rollout: [nudge, { ...nudge, id: "rollout:owner:ws:3" }] });
+    expect(items.map((x) => x.kind)).toEqual(["waiting", "rollout"]);
+    expect(items[1].actions).toEqual([{ kind: "fix", label: "Resend all", fix: "resend" }]);
+    expect(noticed([], { rollout: [nudge], dismissed: [nudge.id] })).toEqual([]);
+  });
+  it("never ahead of three things of your own", () => {
+    const due = (i: number) => task({ id: `d${i}`, title: `Due ${i}`, dueDate: day(1), originalDueDate: day(-3) });
+    const items = noticed([due(1), due(2), due(3), task({ assigneeId: "maya", status: "blocked", dependencies: ["d1"] })], {
+      goalsBehind: [{ goalId: "g", name: "Grow", noun: "goal", gap: 10, line: "Behind pace by 10%", sinceCheckin: 4 }], rollout: [nudge],
+    });
+    expect(items).toHaveLength(3);
+    expect(items.some((x) => x.kind === "rollout")).toBe(false);
+  });
+});

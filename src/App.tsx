@@ -98,8 +98,11 @@ import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
 import { useGoalWrites } from "./components/goals/useGoalWrites";
 // 0052 in the day's work: the goal panel (anywhere), "Serves" chips, the brief's goal line, Kanbo noticed, the Team place
 import { useGoalFlow } from "./components/goals/useGoalFlow";
+import { useRollout } from "./components/rollout/useRollout";
 import { GoalServes, GoalServesRow } from "./components/goals/GoalServes";
 import { TeamGoals } from "./components/goals/TeamGoals";
+import { usePackApply } from "./components/packs/usePackApply";
+import type { WorkspaceStart } from "./components/NewWorkspaceModal";
 import { groupGoalPace } from "./lib/goalPace";
 import type { GoalExtras, GoalPatch } from "./data/types";
 import {
@@ -574,6 +577,8 @@ export default function App() {
       }
     } catch { /* private mode */ }
     if (!done && projectsRef.current.filter((p) => p.id !== "p-personal").length === 0) { setOnboardOpen(true); setFirstRunHere(true); }
+    // the demo (its seed has projects) shows the first run on /?first-run, so it can be seen and reviewed
+    else if (!store.configured && new URLSearchParams(window.location.search).has("first-run")) setOnboardOpen(true);
   }, [tasks]);
   // (the sheet hands over to the guided tour, which shows the real places — "What moved" has nothing to add)
   const finishOnboarding = useCallback(() => { try { localStorage.setItem(`kanbo-onboarded:${userIdRef.current}`, "1"); } catch { /* ignore */ } markWhatMovedSeen(); setOnboardOpen(false); }, []);
@@ -3029,6 +3034,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [denyGuest, applyTeamTemplate]);
 
+  /* ---- business packs (components/packs): New workspace and New project › From a pack or template ---- */
+  const packApply = usePackApply({
+    userIdRef, workspaces, members: wsMembers, goalsV2: goalExtras !== null, workspacesRef, projectsRef, pendingTasksRef, noteCreated, applyProjects,
+    setSections, setTasks, setForms, setRules: setAutomationRules, setGoals, setGoalExtras, setPortfolios,
+    showRhythm: (id, r) => { const next = workspacesRef.current.map((w) => (w.id === id ? { ...w, updateRhythm: r } : w)); setWorkspaces(next); setReferenceData({ workspaces: next }); },
+    requestReload: () => requestReloadRef.current?.(), toastError, denyGuest,
+  });
+  const newProjectPacks = useMemo(() => packApply.hostFor({ workspaceId: workspace, mode: "project", open: setRoute }), [packApply, workspace, setRoute]);
+  const newWorkspacePacks = useMemo(() => packApply.hostFor({ workspaceId: null, mode: "workspace", open: setRoute }), [packApply, setRoute]);
+
   /* ---- 0047: plan a project with Kanbo (the AI planner; on-device when AI is off) ---- */
   /** New mode plans a project in the workspace you're in; append adds tasks to `projectId`. Never for guests. */
   const openPlanner = useCallback((p: { mode: "new" | "append"; projectId?: string; goal?: string }) => {
@@ -3062,9 +3077,10 @@ export default function App() {
   }, [denyGuest, persistTask, unplanIfTheirs, applyAutomation, buildNewTask]);
 
   /* ---- workspaces & people ---- */
-  /** A new workspace; `start` sets it up from a team template once it exists. Resolves when
-   *  everything is done (the dialog shows progress until then). */
-  const createWorkspace = useCallback(async (name: string, start?: { template: WorkspaceTemplate; projectKeys?: string[] }) => {
+  /** A new workspace; `start` sets it up from a team template or a business pack once it exists.
+   *  Resolves when everything is done (the dialog shows progress until then), with what a pack made. */
+  /** Make a team workspace you own and switch to it (null when it couldn't be made: said in a toast). */
+  const makeWorkspace = useCallback(async (name: string): Promise<Workspace | null> => {
     const me = getMember(userIdRef.current);
     let w: Workspace;
     try {
@@ -3072,19 +3088,31 @@ export default function App() {
     } catch (e) {
       reportError(e, { op: "createWorkspace" });
       toastError("Couldn't create the workspace: " + ((e as Error)?.message || e));
-      return;
+      return null;
     }
     if (w.id) noteCreated(w.id); // a reload already under way doesn't know about it yet
     setWorkspaces((ws) => [...ws, w]);
     setWsMembers((m) => [...m, { id: "owner-" + w.id, workspaceId: w.id!, userId: userIdRef.current, email: me?.email || "", name: me?.name || "You", role: "owner", status: "active" }]);
     setReferenceData({ workspaces: [...workspacesRef.current, w] });
     setWorkspace(w.id);
+    return w;
+  }, [toastError, noteCreated]);
+  const createWorkspace = useCallback(async (name: string, start?: WorkspaceStart) => {
+    const w = await makeWorkspace(name);
+    if (!w) return;
     if (!start || !w.id) { setRoute({ view: "team" }); return; }
+    if ("pack" in start) {
+      // you own it, so everything the pack sets up is yours to create (the dialog shows what it made)
+      const o = await packApply.apply(start.pack, start.pick, w.id, packApply.hostFor({ workspaceId: w.id, mode: "workspace" }).context);
+      if (o?.applied.projects.length) rolloutRef.current.notePack?.(w.id);
+      setRoute(o?.applied.projects.length ? { view: "projects" } : { view: "team" });
+      return o;
+    }
     // you own it, so the template's projects are yours to create; then show them
     const r = await applyTeamTemplate(start.template, start.projectKeys, w.id);
     setRoute(r?.projects.length ? { view: "projects" } : { view: "team" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toastError, noteCreated, applyTeamTemplate]);
+  }, [makeWorkspace, applyTeamTemplate, packApply]);
 
   const updateWorkspace = useCallback((workspaceId: string, name: string, logoUrl: string | null) => {
     const before = workspacesRef.current;
@@ -3551,9 +3579,23 @@ export default function App() {
       // the browser's own install prompt where it has one; otherwise Settings › Notifications › Kanbo app explains
       case "install_app": void promptInstall().then((r) => { if (r === "unavailable") openSettings("notifications"); }, () => openSettings("notifications")); break;
       case "set_notifications": openSettings("notifications"); break;
+      // 0058: a team's rollout
+      case "pick_pack": rolloutRef.current.openPackGallery(); break;
+      case "import_work": openImport(); break;
+      case "invite_pilot": setInviteNow(true); setRoute({ view: "team" }); break;
+      case "set_update_day": openSettings("workspace"); break;
+      case "post_update": {
+        const p = rolloutRef.current.updateProject;
+        setRoute(p ? { view: "project", projectId: p.id, tab: "updates" } : { view: "projects" });
+        break;
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setRoute]);
+  // (onSetupAction is made before the rollout hook runs: it reads the hook's latest through this)
+  const rolloutRef = useRef<{ openPackGallery: () => void; updateProject?: Project; notePack?: (workspaceId: string) => void }>({ openPackGallery: () => setNewProjectOpen(true) });
+  // Get set up's "Invite your pilot group": Team › People opens on its invite sheet
+  const [inviteNow, setInviteNow] = useState(false);
 
   /** Inbox › Archived › Move back to Inbox: the items archived here come back. */
   const unarchiveInbox = useCallback((ids: string[]) => {
@@ -3764,8 +3806,22 @@ export default function App() {
     else if (biz.runs[0]) openInBusiness(biz.runs[0].id!, { kind: "risks" });
   }, [biz.group, biz.runs, setRoute, openInBusiness]);
 
-  /* ---- 0048 first run: who the tour and the "Get set up" card are for, and what the app can see ---- */
+  /* ---- 0058 rolling Kanbo out: the first run's team path, the new member's welcome, Workspace health (components/rollout) ---- */
   const roleHere = wsMembers.find((m) => m.userId === currentUserId && (m.workspaceId ?? null) === workspace && m.status === "active")?.role ?? null;
+  const rollout = useRollout({
+    me: currentUserId, workspace, view: route.view, role: roleHere ?? undefined, workspaces, setWorkspaces, members: wsMembers, projects, tasks: allTasks,
+    statusUpdates, goals, goalExtras, goalReads: goalFlow.reads, onboarding, changeOnboarding, accountCreatedAt: auth.user?.createdAt, today: KANBO_TODAY,
+    newProjectOpen, importOpen, firstRunOpen: onboardOpen, freshFirstRun: !store.configured && window.location.search.includes("first-run"),
+    setRoute, openTask: setDetailId, openGoal, patchTask: guardedPatch,
+    makeWorkspace: async (name) => (await makeWorkspace(name))?.id ?? null,
+    adoptProjects: (ps) => { ps.forEach((p) => noteCreated(p.id)); applyProjects([...projectsRef.current, ...ps]); },
+    openPacks: () => setNewProjectOpen(true), openImport: () => openImport(),
+    inviteMember, resendInvite: store.configured ? resendInvite : undefined, askForUpdate: updateAsks,
+    toast: toastSuccess, toastAction: (m, label, run) => toastAction(m, label, run), toastError,
+  });
+  rolloutRef.current = { openPackGallery: rollout.openPackGallery, updateProject: rollout.updateProject, notePack: rollout.notePack };
+
+  /* ---- 0048 first run: who the tour and the "Get set up" card are for, and what the app can see ---- */
   const tourRole = tourRoleOf(roleHere, workspace === null);
   // a brand-new account: the first-run sheet opened this session, or it was made in the last week
   const createdAt = auth.user?.createdAt;
@@ -3798,12 +3854,16 @@ export default function App() {
     completedAny: allTasks.some((t) => t.status === "done" && t.assigneeId === currentUserId),
     installed: isStandalone() || installState() === "installed",
     notificationsChosen: pushHere || Object.keys(profile?.notifyPrefs ?? {}).length > 0,
+    // 0058: a team's rollout (packs, import, update day, first update)
+    ...rollout.setupFacts,
   });
-  // the company domain is a site admin's setting; Personal has no Slack
-  const setupHidden = useMemo<SetupItemId[]>(() => [...(adminByFlag ? [] : ["add_domain" as const]), ...(workspace === null ? ["connect_slack" as const] : [])], [adminByFlag, workspace]);
-  const showSetup = useShowSetupChecklist(tourRole, onboarding, setupFacts, { hidden: setupHidden });
+  // the company domain is a site admin's setting (Personal's list only); update days need 0053
+  // (a team's rollout list is for a workspace being set up, and its update day needs 0053: useRollout says)
+  const setupHidden = useMemo<SetupItemId[]>(() => [...(adminByFlag ? [] : ["add_domain" as const]), ...rollout.setupHidden], [adminByFlag, rollout.setupHidden]);
+  const setupOpts = { hidden: setupHidden, personal: workspace === null, workspaceId: workspace };
+  const showSetup = useShowSetupChecklist(tourRole, onboarding, setupFacts, setupOpts);
   // dismissed before it was finished: Help offers it back
-  const setupProgress = checklistProgress(tourRole, onboarding, setupFacts, { hidden: setupHidden });
+  const setupProgress = checklistProgress(tourRole, onboarding, setupFacts, setupOpts);
   const setupDismissedEarly = !!onboarding.checklist?.dismissedAt && setupProgress.total > 0 && !setupProgress.complete;
   useEffect(() => { if (route.view !== "search" && searchPrefill) setSearchPrefill(null); }, [route.view, searchPrefill]);
 
@@ -4166,10 +4226,12 @@ export default function App() {
         goalFor={goalFlow.briefGoal} goalsBehind={biz.all ? goalFlow.behind() : goalFlow.behind(workspace)} onOpenGoal={openGoal}
         // 0053: your project update is due (or a lead asked for it): a line under the brief, a nudge, Kanbo's draft ready
         updates={todayUpdates} away={awayNudge}
+        // 0058: a new member's "Welcome to <workspace>", and a rollout's one next fix for its leads
+        welcomeSlot={rollout.welcomeSlot ?? undefined} welcomeLine={rollout.welcomeLine ?? undefined} rollout={biz.all ? undefined : rollout.today}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
         setupSlot={showSetup ? (fold) => (
-          <Suspense fallback={null}><SetupChecklist role={tourRole} onboarding={onboarding} signals={setupFacts} hidden={setupHidden} onChange={changeOnboarding} onAction={onSetupAction} fold={fold} /></Suspense>
+          <Suspense fallback={null}><SetupChecklist role={tourRole} onboarding={onboarding} signals={setupFacts} hidden={setupHidden} personal={workspace === null} workspaceId={workspace} onChange={changeOnboarding} onAction={onSetupAction} fold={fold} /></Suspense>
         ) : null}
         // (the kudos you gave are on teammates' tasks, and whom your work unblocked is in theirs: `seen` is every task you can see)
         winsSlot={onboarding.momentum?.recapHidden ? null : (fold) => (
@@ -4209,7 +4271,7 @@ export default function App() {
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)}
         workspaceId={workspace} moveDeps={activeReadOnly ? undefined : moveDeps} />;
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
-      case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
+      case "goals": return <GoalsView key={route.tab ?? ""} quarter={route.tab} goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
         statusUpdates={statusUpdates} onOpenGoal={openGoal} openGoalId={goalPanel?.id ?? null}
         extras={goalExtras} workspaceId={workspace} me={currentUserId} role={personal ? null : myRole ?? null} members={wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active")}
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
@@ -4303,7 +4365,8 @@ export default function App() {
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
         onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined}
-        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} />;
+        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} healthSlot={rollout.healthSlot ?? undefined}
+        inviteNow={inviteNow} onInviteOpened={() => setInviteNow(false)} />;
       case "tasks":
       case "project": {
         const inProject = !!openProject;
@@ -4488,10 +4551,10 @@ export default function App() {
       <Deferred when={importOpen}><ImportTasksModal open={importOpen} onClose={() => { setImportOpen(false); setImportText(undefined); }} initialText={importText}
         projects={wsProjects} members={assignees.map((a) => ({ ...a, email: wsMembers.find((m) => m.userId === a.id)?.email }))}
         sections={sections.filter((s) => !s.id.startsWith("tmp-") && wsProjects.some((p) => p.id === s.projectId))}
-        defaultProjectId={openProject?.id}
-        defaultProjectName={openProject?.name}
+        defaultProjectId={rollout.importInto ?? openProject?.id}
+        defaultProjectName={rollout.importInto ? projects.find((p) => p.id === rollout.importInto)?.name : openProject?.name}
         supports={{ details: true, subtasks: true, newTags: true, newSections: true }}
-        onImport={importTasks} /></Deferred>
+        onImport={(rows) => { importTasks(rows); rollout.noteImport(rows.length); }} /></Deferred>
 
       {/* tasks and projects from every workspace (like Search); opening a project elsewhere switches to its workspace */}
       <Deferred when={cmdOpen}><CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={seen} onOpenTask={setDetailId}
@@ -4571,13 +4634,15 @@ export default function App() {
         onBrowseTemplates={() => { setNewTaskOpen(false); setNewTaskTemplate(null); openTemplateLibrary(); }} /></Deferred>
       <Deferred when={newProjectOpen}><NewProjectModal open={newProjectOpen} onClose={() => setNewProjectOpen(false)} onCreate={createProject} workspaceId={workspace} projects={wsProjects}
         // guests never create from a template (createFromTeamTemplate refuses them too)
-        onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate}
+        onApplyTemplate={activeReadOnly ? undefined : createFromTeamTemplate} packs={activeReadOnly ? undefined : rollout.wrapPacks(newProjectPacks)}
+        startIn={rollout.packMode ? "team" : undefined}
         onPlanWithKanbo={activeReadOnly ? undefined : (typed) => openPlanner({ mode: "new", goal: typed || undefined })} /></Deferred>
       {/* one first-run dialog at a time: the name step (Welcome) first, then the tour */}
       {/* (tourAvailable: the TourHost below is mounted when a tour is asked for, so the sheet hands over to it) */}
-      <Deferred when={onboardOpen && !welcomeOpen}><OnboardingModal open={onboardOpen && !welcomeOpen} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
-        onGoToday={() => setRoute({ view: "plan" })} tourAvailable /></Deferred>
-      <Deferred when={newWorkspaceOpen}><NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} /></Deferred>
+      {/* (0058: it asks who Kanbo is for; a team's pack and import open on their own sheets while it steps aside) */}
+      <Deferred when={onboardOpen && !welcomeOpen}><OnboardingModal open={onboardOpen && !welcomeOpen && !rollout.onboardingAside} profile={profile} workspaceId={workspace} onSaveProfile={saveProfile} onCreateProject={createProject} onFinish={finishOnboarding}
+        onGoToday={() => setRoute({ view: "plan" })} tourAvailable team={rollout.teamStart} /></Deferred>
+      <Deferred when={newWorkspaceOpen}><NewWorkspaceModal open={newWorkspaceOpen} onClose={() => setNewWorkspaceOpen(false)} onCreate={createWorkspace} packs={newWorkspacePacks} /></Deferred>
       {/* 0047: plan a project with Kanbo (loaded the first time it's opened) */}
       {planner && (() => {
         const planProject = planner.mode === "append" ? projects.find((p) => p.id === planner.projectId) ?? null : null;
@@ -4707,6 +4772,7 @@ export default function App() {
         <ErrorBoundary inline floating name="tour">
           <Suspense fallback={null}>
             <TourHost role={tourRole} onboarding={onboarding} onChange={changeOnboarding} isNewAccount={isNewAccount}
+              context={{ team: workspace !== null, projectId: rollout.updateProject?.id ?? null }}
               onNavigate={(r) => setRoute(r)}
               onOpenTask={(id) => { const t = (seenRef.current ?? []).find((x) => x.id === id); if (t) setWorkspace(t.workspaceId ?? null); setDetailId(id); }} />
           </Suspense>

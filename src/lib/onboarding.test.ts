@@ -7,6 +7,7 @@ import {
   onboardingPatch, removeTourSample, resumeIndex, saveOnboarding, saveOnboardingChange, setupItemsFor, shouldAutoStartTour,
   setupSignals, showSetupChecklist, startTour, tickSetupItem, tourSamplePlan, tourState, tourSteps, tourWanted, useShowSetupChecklist,
   useOnboardingState, useTourWanted, withSignalTicks, type TourSampleDeps,
+  PERSONAL_SETUP_ITEMS, IMPORTED_AT_TASKS, PILOT_SIZE, parseOnboardingState,
 } from "./onboarding";
 
 const NOW = new Date("2026-10-09T10:00:00+01:00");
@@ -41,6 +42,32 @@ describe("the tour's steps", () => {
         expect(`${x.title} ${x.body} ${x.touchBody ?? ""}`).not.toMatch(/\b(color|organize|prioritize|favorite)\b/i);
       }
     }
+  });
+  it("in a team workspace (0058): Waiting on, Pulse, Goals and project updates too; a guest only reads the updates", () => {
+    const team = { team: true, projectId: "p-1" };
+    expect(tourSteps("owner", team).map((x) => x.id)).toEqual(["places", "search", "capture", "plan-day", "task-panel", "inbox-triage", "waiting", "pulse", "goals", "updates", "invite"]);
+    expect(tourSteps("member", team).map((x) => x.id)).toEqual(["places", "search", "capture", "plan-day", "task-panel", "inbox-triage", "waiting", "pulse", "goals", "updates"]);
+    expect(tourSteps("guest", team).map((x) => x.id)).toEqual(["places", "search", "task-panel", "inbox-triage", "updates"]);
+    const s = tourSteps("member", team);
+    expect(s.find((x) => x.id === "waiting")!.route).toEqual({ view: "tasks", tab: "waiting" });
+    expect(s.find((x) => x.id === "pulse")!.route).toEqual({ view: "pulse" });
+    expect(s.find((x) => x.id === "goals")!.route).toEqual({ view: "goals" });
+    expect(s.find((x) => x.id === "updates")!.route).toEqual({ view: "project", projectId: "p-1", tab: "updates" });
+    for (const x of s) if (x.anchor) expect(Object.keys(TOUR_ANCHORS)).toContain(x.anchor);
+    for (const role of ["owner", "member", "guest"] as const) for (const x of tourSteps(role, team)) if (x.id !== "invite") expect(x.touchBody, `${role} ${x.id}`).toBeTruthy();
+    // in a team workspace you're already in one: the last step is your pilot group, not the switcher
+    const last = (steps: ReturnType<typeof tourSteps>) => steps[steps.length - 1].body;
+    expect(last(tourSteps("owner", team))).toMatch(/Invite a few people from Team › People/);
+    expect(last(tourSteps("owner", team))).not.toMatch(/switcher/);
+    expect(last(tourSteps("owner"))).toMatch(/switcher/);
+    // a guest's words never ask them to post
+    expect(tourSteps("guest", team).find((x) => x.id === "updates")!.body).toMatch(/reply/);
+    // no project to open: the updates step is a centred card
+    expect(tourSteps("member", { team: true }).find((x) => x.id === "updates")).toMatchObject({ anchor: null });
+    expect(tourSteps("member", { team: true }).find((x) => x.id === "updates")!.route).toBeUndefined();
+    // resuming counts the team's steps
+    expect(resumeIndex("owner", "goals", team)).toBe(8);
+    expect(resumeIndex("owner", "goals")).toBe(0);
   });
   it("resumes at the saved step (or the start when the role's tour doesn't have it)", () => {
     expect(resumeIndex("owner", "plan-day")).toBe(3);
@@ -107,27 +134,59 @@ describe("the “Get set up” checklist", () => {
     expect(setupItemsFor("member")).toEqual([...SETUP_ITEMS.member]);
     expect(setupItemsFor("guest")).toEqual(["install_app", "set_notifications"]);
   });
-  it("the host can leave out what this person can't do here (the company domain is a site admin's)", () => {
-    expect(setupItemsFor("owner", { hidden: ["add_domain"] })).toEqual(["invite_team", "connect_calendar", "connect_slack"]);
-    const v = checklistView("owner", {}, { invite_team: true, connect_calendar: true, connect_slack: true }, { hidden: ["add_domain"] });
-    expect([v.done, v.total, v.complete]).toEqual([3, 3, true]);
-    expect(showSetupChecklist("owner", {}, { invite_team: true, connect_calendar: true, connect_slack: true }, { hidden: ["add_domain"] })).toBe(false);
+  it("a team's owners and admins get the rollout list (0058): no Slack, no company domain", () => {
+    expect(SETUP_ITEMS.owner).toEqual(["pick_pack", "import_work", "invite_pilot", "set_update_day", "post_update"]);
+    expect(SETUP_ITEMS.owner).not.toContain("connect_slack");
+    expect(SETUP_ITEMS.owner).not.toContain("add_domain");
+  });
+  it("Personal keeps its own short list; the host can leave out what this person can't do there (the domain is a site admin's)", () => {
+    expect(setupItemsFor("owner", { personal: true })).toEqual([...PERSONAL_SETUP_ITEMS]);
+    expect(setupItemsFor("owner", { personal: true, hidden: ["add_domain"] })).toEqual(["invite_team", "connect_calendar"]);
+    const v = checklistView("owner", {}, { invite_team: true, connect_calendar: true }, { personal: true, hidden: ["add_domain"] });
+    expect([v.done, v.total, v.complete]).toEqual([2, 2, true]);
+    expect(showSetupChecklist("owner", {}, { invite_team: true, connect_calendar: true }, { personal: true, hidden: ["add_domain"] })).toBe(false);
+    // a team without update days yet (before 0053): that item's left out
+    expect(setupItemsFor("owner", { hidden: ["set_update_day"] })).toEqual(["pick_pack", "import_work", "invite_pilot", "post_update"]);
   });
   it("signals from the app's own facts", () => {
     expect(setupSignals({ teammates: 2, calendars: 0, slack: true, plannedToday: true, installed: false })).toEqual({
       invite_team: true, connect_calendar: false, add_domain: false, connect_slack: true,
       plan_day: true, complete_task: false, install_app: false, set_notifications: false,
+      pick_pack: false, import_work: false, invite_pilot: false, set_update_day: false, post_update: false,
     });
+    // a team's rollout: three projects (what a pack makes), an established backlog, a pilot group of three, the update day, an update
+    expect(setupSignals({ projects: 3, tasks: IMPORTED_AT_TASKS, teammates: PILOT_SIZE, updateDaySet: true, postedUpdate: true })).toMatchObject({
+      pick_pack: true, import_work: true, invite_pilot: true, set_update_day: true, post_update: true,
+    });
+    expect(setupSignals({ projects: 2, tasks: IMPORTED_AT_TASKS - 1, teammates: PILOT_SIZE - 1 })).toMatchObject({ pick_pack: false, import_work: false, invite_pilot: false });
   });
   it("counts manual ticks and what the app can see; signal ticks can't be unticked", () => {
     const state: OnboardingState = { checklist: { done: { invite_team: "2026-10-08T09:00:00.000Z" } } };
-    const v = checklistView("owner", state, { connect_calendar: true, plan_day: true });
+    const v = checklistView("owner", state, { connect_calendar: true, plan_day: true }, { personal: true });
     expect(v.items.map((i) => [i.id, i.done, !!i.auto])).toEqual([
-      ["invite_team", true, false], ["connect_calendar", true, true], ["add_domain", false, false], ["connect_slack", false, false],
+      ["invite_team", true, false], ["connect_calendar", true, true], ["add_domain", false, false],
     ]);
-    expect([v.done, v.total, v.complete]).toEqual([2, 4, false]);
+    expect([v.done, v.total, v.complete]).toEqual([2, 3, false]);
     expect(v.items[0]).toMatchObject({ label: "Invite your team", action: "Invite" });
-    expect(showSetupChecklist("owner", state, {})).toBe(true);
+    expect(showSetupChecklist("owner", state, {}, { personal: true })).toBe(true);
+  });
+  it("a team's rollout items are ticked per workspace: a second business starts from nothing", () => {
+    const one = { workspaceId: "ws-1" }, two = { workspaceId: "ws-2" };
+    let s = tickSetupItem({}, "pick_pack", true, NOW, one);
+    expect(s.checklist?.teams).toEqual({ "ws-1": { pick_pack: NOW.toISOString() } });
+    expect(s.checklist?.done).toBeUndefined();
+    expect(checklistView("owner", s, {}, one).items.find((i) => i.id === "pick_pack")?.done).toBe(true);
+    expect(checklistView("owner", s, {}, two).items.find((i) => i.id === "pick_pack")?.done).toBe(false);
+    // what the app sees in one business is kept for that business
+    s = withSignalTicks("owner", s, { invite_pilot: true, set_update_day: true }, NOW, one)!;
+    expect(Object.keys(s.checklist?.teams?.["ws-1"] ?? {}).sort()).toEqual(["invite_pilot", "pick_pack", "set_update_day"]);
+    expect(checklistProgress("owner", s, {}, two).done).toBe(0);
+    expect(checklistProgress("owner", s, {}, one).done).toBe(3);
+    // with no workspace to keep them in, team items aren't ticked
+    expect(tickSetupItem({}, "pick_pack", true, NOW)).toEqual({});
+    expect(withSignalTicks("owner", {}, { pick_pack: true }, NOW)).toBeNull();
+    // and they read back through the profile
+    expect(parseOnboardingState(JSON.parse(JSON.stringify(s))).checklist?.teams?.["ws-1"]?.pick_pack).toBe(NOW.toISOString());
   });
   it("the shell's word-free count agrees with the card's view, for every role and mix of ticks", () => {
     const state: OnboardingState = { checklist: { done: { plan_day: "a", connect_slack: "b", install_app: "c" } } };
@@ -240,7 +299,12 @@ describe("saving (merge_onboarding's rules)", () => {
   it("the demo profile's first run: tour done, one item ticked", () => {
     const d = demoOnboardingState(NOW);
     expect(d.tour).toMatchObject({ done: true, step: null });
-    expect(checklistView("owner", d, {}).done).toBe(1);
+    expect(checklistView("owner", d, {}, { personal: true }).done).toBe(1);
+  });
+  it("the welcome cards put away are kept per workspace, and saved as one key", () => {
+    const s = parseOnboardingState({ welcomed: { "ws-1": "2026-11-10T09:00:00.000Z", "": "x", "ws-2": 4 } });
+    expect(s.welcomed).toEqual({ "ws-1": "2026-11-10T09:00:00.000Z" });
+    expect(onboardingPatch({}, { welcomed: { "ws-1": "a" } })).toEqual({ welcomed: { "ws-1": "a" }, v: 1 });
   });
 });
 

@@ -552,18 +552,47 @@ function dayOf(today: Date | string): Date {
   d.setHours(0, 0, 0, 0);
   return d;
 }
-/** `days` after `base`, moved off a weekend to the Monday after (team work is due on a working day). */
+/** Days a team's starter work isn't due: weekends, and the Christmas break (24 Dec to 1 Jan). */
+export function teamDayOff(d: Date): boolean {
+  const wd = d.getDay(), m = d.getMonth(), day = d.getDate();
+  return wd === 0 || wd === 6 || (m === 11 && day >= 24) || (m === 0 && day === 1);
+}
+/** the first working day from `d`, going forward (step 1) or back (step -1) */
+const workingFrom = (d: Date, step: 1 | -1) => { let x = d; while (teamDayOff(x)) x = addDays(x, step); return x; };
+/** `days` after `base`, on the next working day (team work is due on a working day). */
 function workingDayAfter(base: Date, days: number): string {
-  const d = new Date(base);
-  d.setDate(d.getDate() + days);
-  const wd = d.getDay();
-  if (wd === 6) d.setDate(d.getDate() + 2);
-  else if (wd === 0) d.setDate(d.getDate() + 1);
-  return toLocalISO(d);
+  return toLocalISO(workingFrom(addDays(base, days), 1));
+}
+/** "By the 10th": the next such day of the month from `base` (that day included), on a working day:
+ *  the one before when it's a day off (a deadline), or the one after when that's already gone. */
+export function monthDay(base: Date, dayOfMonth: number): string {
+  const n = Math.min(28, Math.max(1, Math.round(dayOfMonth)));
+  let d = new Date(base.getFullYear(), base.getMonth(), n);
+  if (d < base) d = new Date(base.getFullYear(), base.getMonth() + 1, n);
+  if (!teamDayOff(d)) return toLocalISO(d);
+  const before = workingFrom(d, -1);
+  return toLocalISO(before >= base ? before : workingFrom(d, 1));
 }
 const RECUR_OK: readonly Recurrence[] = ["none", "daily", "weekdays", "weekly", "biweekly", "monthly"];
 
-function planTask(tt: TemplateTask, sections: readonly string[], base: Date): PlannedTask {
+/** A countdown task's day: `fromAnchor` days from the anchor day (as lib/templatePlan templateDate:
+ *  never before today; a day off (a weekend, the Christmas break) moves to the working day after,
+ *  or to the one before when a job due before the anchor day would otherwise land on it or after
+ *  it). A milestone keeps its own day, a weekend included. */
+export function anchoredDay(anchor: Date, fromAnchor: number, today: Date, milestone = false): string {
+  const days = Math.round(fromAnchor);
+  const at = addDays(anchor, days);
+  const d = at < today ? today : at;
+  if (milestone || !teamDayOff(d)) return toLocalISO(d);
+  const cap = days < 0 ? addDays(anchor, -1) : null;
+  const after = workingFrom(d, 1);
+  // (a date already past the anchor is meant to be after it: the next working day's fine)
+  if (!cap || after <= cap || d > cap) return toLocalISO(after);
+  const before = workingFrom(d, -1);
+  return toLocalISO(before < today ? d : before);
+}
+
+function planTask(tt: TemplateTask, sections: readonly string[], base: Date, anchor?: Date | null): PlannedTask {
   const focus = typeof tt.focusMin === "number" && Number.isFinite(tt.focusMin) ? Math.max(5, Math.round(tt.focusMin)) : 30;
   const out: PlannedTask = {
     title: tt.title.trim(),
@@ -573,17 +602,23 @@ function planTask(tt: TemplateTask, sections: readonly string[], base: Date): Pl
     recurrence: RECUR_OK.includes(tt.recurrence as Recurrence) ? tt.recurrence! : "none",
   };
   if (tt.section && sections.includes(tt.section)) out.section = tt.section;
-  if (typeof tt.dueInDays === "number" && Number.isFinite(tt.dueInDays)) out.dueDate = workingDayAfter(base, Math.max(0, Math.round(tt.dueInDays)));
+  if (anchor && typeof tt.fromAnchor === "number" && Number.isFinite(tt.fromAnchor)) out.dueDate = anchoredDay(anchor, tt.fromAnchor, base, !!tt.milestone);
+  else if (typeof tt.dayOfMonth === "number" && Number.isFinite(tt.dayOfMonth)) out.dueDate = monthDay(base, tt.dayOfMonth);
+  else if (typeof tt.dueInDays === "number" && Number.isFinite(tt.dueInDays)) out.dueDate = workingDayAfter(base, Math.max(0, Math.round(tt.dueInDays)));
   if (typeof tt.effortHours === "number" && Number.isFinite(tt.effortHours) && tt.effortHours > 0) out.effortHours = Math.round(tt.effortHours * 4) / 4;
+  if (tt.milestone) out.milestone = true;
+  if (tt.forTeam) out.forTeam = true;
   return out;
 }
-function planProject(p: TemplateProject, base: Date) {
+function planProject(p: TemplateProject, base: Date, anchorDay?: string) {
   const sections = [...new Set(p.sections.map((s) => s.trim()).filter(Boolean))];
+  // a countdown project: its anchor day (as picked, else where it starts out)
+  const anchor = p.anchor ? parseDay(anchorDay) ?? addDays(base, Math.max(0, Math.round(p.anchor.defaultInDays))) : null;
   return {
     key: p.key, name: p.name, emoji: p.emoji, color: spectrumColor(p.hue),
     ...(p.description ? { description: p.description } : {}),
     sections,
-    tasks: p.tasks.filter((x) => x.title.trim()).map((x) => planTask(x, sections, base)),
+    tasks: p.tasks.filter((x) => x.title.trim()).map((x) => planTask(x, sections, base, anchor)),
     ...(p.form ? { form: { ...p.form, fields: [...p.form.fields] } } : {}),
     ...(p.rule ? { rule: { ...p.rule, actions: p.rule.actions.map((a) => ({ ...a })) } } : {}),
   };
@@ -593,14 +628,16 @@ function planProject(p: TemplateProject, base: Date) {
  *  (spectrumColor), due dates counted from `today` (one landing on a weekend
  *  moves to the Monday), defaults filled in (medium priority, 30-minute focus,
  *  no repeat). `projectKeys` keeps only those projects, in the template's
- *  order (all when omitted). */
-export function buildWorkspaceFromTemplate(template: WorkspaceTemplate, today: Date | string, opts: { projectKeys?: string[] } = {}): WorkspacePlan {
+ *  order (all when omitted). A project with an anchor (a business pack's
+ *  countdown) counts its tasks back from `anchors[key]` ("YYYY-MM-DD"), or
+ *  from its anchor's default when none is given (anchoredDay). */
+export function buildWorkspaceFromTemplate(template: Pick<WorkspaceTemplate, "id" | "name" | "projects">, today: Date | string, opts: { projectKeys?: string[]; anchors?: Record<string, string> } = {}): WorkspacePlan {
   const base = dayOf(today);
   const keep = opts.projectKeys ? new Set(opts.projectKeys) : null;
   return {
     templateId: template.id,
     name: template.name,
-    projects: template.projects.filter((p) => !keep || keep.has(p.key)).map((p) => planProject(p, base)),
+    projects: template.projects.filter((p) => !keep || keep.has(p.key)).map((p) => planProject(p, base, opts.anchors?.[p.key])),
   };
 }
 
@@ -629,7 +666,7 @@ export interface AppliedPlan {
 const newTaskUuid = (i: number): string =>
   typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `t-new-${Date.now()}-${i}-${Math.round(Math.random() * 1e6)}`;
 
-/** Create a plan's projects, sections, tasks (assigned to `assigneeId`), forms
+/** Create a plan's projects, sections, tasks (assigned to `assigneeId`; a routine for the team to nobody), forms
  *  and rules, in that order, one project at a time. A step that fails is
  *  reported in `failed` (by name) and the rest carry on — never a
  *  half-silent failure. (A project that can't be created takes its sections,
@@ -662,12 +699,14 @@ export async function applyWorkspacePlan(plan: WorkspacePlan, ctx: { workspaceId
       return {
         id: newTaskUuid(i), title: pt.title, description: pt.description,
         status: "todo", priority: pt.priority,
-        projectId: project.id, workspaceId: ws, assigneeId: ctx.assigneeId,
+        // (a routine for the team is nobody's yet in a team workspace: whoever runs that shift picks it up)
+        projectId: project.id, workspaceId: ws, assigneeId: pt.forTeam && ws ? "" : ctx.assigneeId,
         sectionId: pt.section ? sectionIds[pt.section] : undefined,
         dueDate: pt.dueDate, effortHours: pt.effortHours,
         tags: [], dependencies: [], subtasks: [], comments: 0, followers: [], collaborators: [],
         focusMin: pt.focusMin, dur: pt.focusMin, aiScore: 50, scheduled: null, planToday: false,
-        recurrence: pt.recurrence, position: stamp + i,
+        recurrence: pt.recurrence, position: stamp + i, createdAt: new Date(stamp).toISOString(),
+        ...(pt.milestone ? { isMilestone: true } : {}),
       };
     });
     if (built.length) {

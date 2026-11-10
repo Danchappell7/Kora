@@ -512,6 +512,8 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
   const headline: BriefSpan[] = [];
   const prose: BriefSpan[] = [];
   const focus: BriefEntity | null = top ? { kind: "focus", text: focusPhrase(top.title), taskId: top.id } : null;
+  // a sentence ending on a shortened title already ends ("…"): no full stop after it
+  const stop = focus?.text.endsWith("…") ? "" : ".";
   let slot: Interval | undefined;
 
   // why the one big thing, and when: "It's due at 17:00 and three of the team's tasks are waiting on it, so I'd give it your clearest stretch, 10:15–11:45, before lunch."
@@ -602,7 +604,7 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
     else prose.push("Nothing's due and nothing's planned. Capture what's on your mind, or enjoy the room.");
     if (free >= BOOKED_UNDER) prose.push(` You've ${fmtDuration(free)} free.`);
   } else if (variant === "overloaded") {
-    headline.push("Something has to give. Start with ", focus!, ".");
+    headline.push("Something has to give. Start with ", focus!, stop);
     whyTop(top!);
     goalLine();
     // what to move: the lowest-ranked unplaced work until the rest fits
@@ -618,7 +620,7 @@ export function composeTodayBrief({ tasks: given, events, nowMin, today, userNam
     }
   } else {
     // morning, afternoon, Monday: the one big thing
-    headline.push(variant === "monday" ? "New week. One big thing today: " : variant === "afternoon" ? "One big thing this afternoon: " : "One big thing today: ", focus!, ".");
+    headline.push(variant === "monday" ? "New week. One big thing today: " : variant === "afternoon" ? "One big thing this afternoon: " : "One big thing today: ", focus!, stop);
     whyTop(top!);
     goalLine();
     whoWaits(top!.id);

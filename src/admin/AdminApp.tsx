@@ -83,7 +83,8 @@ export function AdminApp() {
             </>
           )}
         </header>
-        <AdminView currentEmail={auth.user?.email ?? undefined} />
+        <AdminView currentEmail={auth.user?.email ?? undefined}
+          currentUser={auth.user ? { id: auth.user.id, email: auth.user.email ?? "", name: auth.user.email ?? "" } : undefined} />
       </div>
     </div>
   );

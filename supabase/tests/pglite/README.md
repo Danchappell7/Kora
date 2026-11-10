@@ -14,7 +14,7 @@ were all broken. Test data is still set up with PGlite directly.
 export PATH="$HOME/.kora-tools/node-v20.18.1-darwin-arm64/bin:$PATH"
 cd ~/Downloads/kora-app
 node supabase/tests/pglite/run.mjs         # both migration sets
-node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0056 (no 0048, no 0049)
+node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0056 + 0058 (no 0048, no 0049)
 node supabase/tests/pglite/run.mjs 0049    # every migration
 ```
 
@@ -85,3 +85,14 @@ or there (never the ender, a guest, or someone who switched update notices off),
 7 days; the next meeting carries the last one's actions (never another business's); deleting a meeting
 takes its recaps; a suspended person reads and runs nothing; nobody writes the tables directly. Then 0056
 twice and 0041 again.
+
+0058 (rolling Kanbo out): a workspace's owners and admins see who's been active this week, by day and never
+a time of day (a member, a guest, an outsider and a suspended admin are refused, and nobody reads another
+person's sessions); join dates are the server's (set when an invite is claimed, never by hand); the rollout
+plan is set by owners and admins only, its champion and pilot group are members (never a guest or an
+outsider), and any other shape is refused by the function and by the column. Provisioning a business is a
+platform admin's alone (a workspace owner, a member, a guest, an outsider, someone who sets their own
+is_admin flag and a suspended admin all try): it never approves a public mail domain, a bad address or
+junk, and nothing is half made. workspace_handovers has no client access. When the invited owner joins,
+the business is theirs (owner, project owners, open tasks, goals); someone else joining doesn't take it, and
+an owner chosen by hand stays. Then 0058 twice, and 0041 and 0042 again (a handover still works).

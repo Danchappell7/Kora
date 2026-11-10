@@ -11,7 +11,8 @@ import type { AccessRequest } from "../../data/types";
 import { reportError } from "../../lib/monitoring";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { downloadAccountsCsv } from "../../admin/accountsCsv";
-import { SystemStatus } from "../admin";
+import { AdoptionPanel, ProvisionBusiness, SystemStatus } from "../admin";
+import { MEMBERS } from "../../data/data";
 
 /* Early-access requests — review, approve (with email), decline. */
 type ReqTab = "pending" | "approved" | "declined" | "all";
@@ -885,13 +886,15 @@ function AuditPanel() {
 const STATUS_COLORS: Record<string, string> = { todo: "var(--st-todo)", progress: "var(--st-progress)", review: "var(--st-review)", blocked: "var(--st-blocked)", done: "var(--st-done)" };
 const PRIORITY_COLORS: Record<string, string> = { low: "var(--prio-low)", medium: "var(--prio-medium)", high: "var(--prio-high)", urgent: "var(--prio-urgent)" };
 
-export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
+export function AdminView({ currentEmail, currentUser }: { currentEmail?: string; currentUser?: { id: string; email: string; name: string } } = {}) {
   const [accounts, setAccounts] = useState<AdminAccount[]>([]);
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [series, setSeries] = useState<AdminSeries | null>(null);
   const [billing, setBilling] = useState<AdminBilling | null>(null);
   const [funnel, setFunnel] = useState<AdminFunnel | null>(null);
   const [loading, setLoading] = useState(true);
+  // a business provisioned: its row joins the adoption table
+  const [provisioned, setProvisioned] = useState(0);
 
   const reloadAccounts = useCallback(async () => {
     const a = await store.adminAccounts();
@@ -915,6 +918,9 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
     return () => { cancelled = true; };
   }, []);
 
+  // who provisions (the demo: its own Daniel)
+  const self = MEMBERS.find((m) => m.type === "self");
+  const me = currentUser ?? { id: self?.id ?? "m-self", email: currentEmail ?? self?.email ?? "", name: self?.name ?? "" };
   const totalUsers = stats?.total_users ?? accounts.length;
   const num = (v?: number) => v == null ? "—" : v.toLocaleString();
   const fmtDur = (sec?: number) => {
@@ -971,6 +977,9 @@ export function AdminView({ currentEmail }: { currentEmail?: string } = {}) {
       <AccountsPanel accounts={accounts} loading={loading} currentEmail={currentEmail} onReload={reloadAccounts} />
 
       <div style={{ height: 18 }} />
+      {/* 0058: set a business up for its owner, and see which businesses are taking to Kanbo */}
+      <ProvisionBusiness me={me} onProvisioned={() => setProvisioned((n) => n + 1)} />
+      <AdoptionPanel refreshKey={provisioned} />
       <WorkspacesPanel />
       <AuditPanel />
     </div>

@@ -63,6 +63,8 @@ export interface GoalsViewProps {
   onOpenGoal?: (id: string, opts?: { checkin?: boolean }) => void;
   /** the goal the host's panel shows */
   openGoalId?: string | null;
+  /** the quarter it opens on ("2027-Q1": a business pack's summary opens it on the pack's goals) */
+  quarter?: string;
 }
 
 /** A goal named in the summary sentence keeps it one sentence: a long name is cut (in full on hover). */
@@ -75,7 +77,13 @@ export function GoalsView(props: GoalsViewProps) {
   const who = { me, role };
   const [adding, setAdding] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [quarter, setQuarter] = useState(() => quarterOf(today));
+  // (a business whose goals are all for next quarter, as a business pack set up late in this one makes them, opens on next quarter)
+  const [quarter, setQuarter] = useState(() => {
+    const here = quarterOf(today), next = quarterOptions(today)[2].value;
+    if (props.quarter && quarterOptions(today).some((q) => q.value === props.quarter)) return props.quarter;
+    const live = goals.filter((g) => !g.archivedAt);
+    return live.some((g) => g.period === next) && !live.some((g) => (g.period ?? here) === here) ? next : here;
+  });
   // without a host panel, the page opens its own
   const [ownOpen, setOwnOpen] = useState<{ id: string; checkin: boolean } | null>(null);
   const realProjects = projects.filter((p) => p.id !== "p-personal");
@@ -147,7 +155,7 @@ export function GoalsView(props: GoalsViewProps) {
         ) : (
           <>
             {groups.length > 0 && (
-              <p className="kgp-summary" aria-live="polite">
+              <p className="kgp-summary" aria-live="polite" data-tour="goals">
                 {summary.parts.map((p, i) => typeof p === "string" ? <span key={i}>{p}</span>
                   : <button key={i} type="button" className="kgp-sum-goal" title={p.text.length > SUM_NAME ? p.text : undefined} onClick={() => openGoal(p.goalId)}>{clip(p.text)}</button>)}
               </p>

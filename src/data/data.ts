@@ -169,7 +169,9 @@ const demoUpdateDay = (offset: number): number => {
 export let WORKSPACES: Workspace[] = [
   { id: null, name: "Personal", kind: "personal" },
   { id: "ws-foundrise", name: "Foundrise", kind: "team", ownerId: "m-self", logoUrl: demoLogo("F", "#3b6fe0", "#1d3f9a"),
-    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(0) } },
+    updateRhythm: { cadence: "weekly", weekday: demoUpdateDay(0) },
+    // 0058: Foundrise's rollout is under way: Maya champions it, and the pilot group and go-live date are still to pick
+    rollout: { champion: "m-1" } },
   { id: "ws-reco", name: "Reco HQ", kind: "team", ownerId: "m-self", logoUrl: demoLogo("R", "#f08a3c", "#c4532a") },
   { id: "ws-courtside", name: "Courtside Padel", kind: "team", ownerId: "m-2",
     logoUrl: demoLogo("C", "#1f9e7a", "#0f6b55", `<circle cx="50" cy="14" r="6" fill="#d9f26b"/>`),

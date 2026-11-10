@@ -12,27 +12,52 @@ afterEach(() => { vi.useRealTimers(); });
 const next = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls[fn.mock.calls.length - 1]?.[0] as OnboardingState;
 
 describe("Get set up", () => {
-  it("owners: four items, a progress ring, each with its button", () => {
+  it("a team's owners (0058): pick a pack, bring your work in, invite your pilot group, set your update day, post your first update", () => {
     const onAction = vi.fn();
-    render(<SetupChecklist role="owner" onboarding={{ checklist: { done: { invite_team: "t" } } }} signals={{}} onChange={vi.fn()} onAction={onAction} />);
+    render(<SetupChecklist role="owner" workspaceId="ws-1" onboarding={{ checklist: { teams: { "ws-1": { pick_pack: "t" } } } }} signals={{}} onChange={vi.fn()} onAction={onAction} />);
     const card = screen.getByRole("region", { name: "Get set up" });
-    expect(within(card).getByRole("progressbar", { name: "Set-up progress" })).toHaveAttribute("aria-valuetext", "1 of 4 done");
-    expect(within(card).getByText(/1 of 4 done · Four quick things to get your team going/)).toBeInTheDocument();
+    expect(within(card).getByRole("progressbar", { name: "Set-up progress" })).toHaveAttribute("aria-valuetext", "1 of 5 done");
+    expect(within(card).getByText(/1 of 5 done · Five quick things to get your team going/)).toBeInTheDocument();
     expect(within(card).getAllByRole("listitem").map((li) => li.querySelector(".ksetup-label")?.textContent))
-      .toEqual(["Invite your team", "Connect a calendar", "Add your company domain", "Connect Slack"]);
-    expect(within(card).getByRole("checkbox", { name: "Done: Invite your team" })).toBeChecked();
+      .toEqual(["Start from a business pack", "Bring your work in", "Invite your pilot group", "Set your update day", "Post your first update"]);
+    // no Slack (paused), no company domain (the platform's)
+    expect(within(card).queryByText("Connect Slack")).toBeNull();
+    expect(within(card).queryByText("Add your company domain")).toBeNull();
+    expect(within(card).getByRole("checkbox", { name: "Done: Start from a business pack" })).toBeChecked();
+    // a done item says what's in place, in its own words
+    expect(within(card).getByText("Your projects are set up.")).toBeInTheDocument();
     // done items have no button; the rest take you there
-    expect(within(card).queryByRole("button", { name: "Invite: Invite your team" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Pick: Start from a business pack" })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Import: Bring your work in" }));
+    expect(onAction).toHaveBeenCalledWith("import_work");
+    fireEvent.click(within(card).getByRole("button", { name: "Set: Set your update day" }));
+    expect(onAction).toHaveBeenCalledWith("set_update_day");
+  });
+  it("a team's ticks are its own: ticking one in a second business doesn't tick it in the first", () => {
+    const onChange = vi.fn();
+    render(<SetupChecklist role="owner" workspaceId="ws-2" onboarding={{ checklist: { teams: { "ws-1": { pick_pack: "t" } } } }} signals={{}} onChange={onChange} onAction={vi.fn()} />);
+    expect(screen.getByRole("checkbox", { name: "Done: Start from a business pack" })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Done: Post your first update" }));
+    expect(next(onChange).checklist?.teams).toEqual({ "ws-1": { pick_pack: "t" }, "ws-2": { post_update: NOW.toISOString() } });
+    expect(next(onChange).checklist?.done).toBeUndefined();
+  });
+  it("Personal: its own short list", () => {
+    const onAction = vi.fn();
+    render(<SetupChecklist role="owner" personal onboarding={{ checklist: { done: { invite_team: "t" } } }} signals={{}} onChange={vi.fn()} onAction={onAction} />);
+    const card = screen.getByRole("region", { name: "Get set up" });
+    expect(within(card).getAllByRole("listitem").map((li) => li.querySelector(".ksetup-label")?.textContent))
+      .toEqual(["Invite your team", "Connect a calendar", "Add your company domain"]);
+    expect(within(card).getByText(/1 of 3 done · Three quick things to get going/)).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "Connect: Connect a calendar" }));
     expect(onAction).toHaveBeenCalledWith("connect_calendar");
   });
   it("folded (Today beside the rail): one row — how far you are, the next step and its button; Set-up steps opens the list", () => {
     const onAction = vi.fn(), onFold = vi.fn();
-    const props = { role: "owner" as TourRole, onboarding: { checklist: { done: { invite_team: "t" } } }, signals: {}, onChange: vi.fn(), onAction };
+    const props = { role: "owner" as TourRole, workspaceId: "ws-1", onboarding: { checklist: { teams: { "ws-1": { pick_pack: "t" } } } }, signals: {}, onChange: vi.fn(), onAction };
     const { rerender } = render(<SetupChecklist {...props} fold={{ folded: true, onFold }} />);
     const card = screen.getByRole("region", { name: "Get set up" });
     expect(card).toHaveAttribute("data-folded");
-    expect(within(card).getByText("1 of 4 done · Next: Connect a calendar")).toBeInTheDocument();
+    expect(within(card).getByText("1 of 5 done · Next: Bring your work in")).toBeInTheDocument();
     // the list is there for the disclosure to open, but hidden (so neither seen nor tabbed to)
     const steps = within(card).getByRole("button", { name: "Set-up steps" });
     expect(steps).toHaveAttribute("aria-expanded", "false");
@@ -40,21 +65,21 @@ describe("Get set up", () => {
     expect(list).not.toBeVisible();
     expect(within(card).queryAllByRole("checkbox")).toHaveLength(0);
     // the next step's button is right there
-    fireEvent.click(within(card).getByRole("button", { name: "Connect: Connect a calendar" }));
-    expect(onAction).toHaveBeenCalledWith("connect_calendar");
+    fireEvent.click(within(card).getByRole("button", { name: "Import: Bring your work in" }));
+    expect(onAction).toHaveBeenCalledWith("import_work");
     fireEvent.click(steps);
     expect(onFold).toHaveBeenCalledWith(false);
     rerender(<SetupChecklist {...props} fold={{ folded: false, onFold }} />);
     expect(card).not.toHaveAttribute("data-folded");
     expect(within(card).getByRole("button", { name: "Set-up steps" })).toHaveAttribute("aria-expanded", "true");
-    expect(within(card).getAllByRole("checkbox")).toHaveLength(4);
-    expect(within(card).getByText(/1 of 4 done · Four quick things/)).toBeInTheDocument();
+    expect(within(card).getAllByRole("checkbox")).toHaveLength(5);
+    expect(within(card).getByText(/1 of 5 done · Five quick things/)).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "Set-up steps" }));
     expect(onFold).toHaveBeenLastCalledWith(true);
     // no fold (a phone, or anywhere else): the whole card, no disclosure
     rerender(<SetupChecklist {...props} />);
     expect(within(card).queryByRole("button", { name: "Set-up steps" })).toBeNull();
-    expect(within(card).getAllByRole("checkbox")).toHaveLength(4);
+    expect(within(card).getAllByRole("checkbox")).toHaveLength(5);
   });
   it("members: plan your day, complete a task, install the app, set notifications", () => {
     render(<SetupChecklist role="member" onboarding={{}} signals={{}} onChange={vi.fn()} onAction={vi.fn()} />);
@@ -63,9 +88,9 @@ describe("Get set up", () => {
     expect(screen.getByText(/Four quick things to make Kanbo yours/)).toBeInTheDocument();
   });
   it("an owner who isn't a site admin: no company-domain item", () => {
-    render(<SetupChecklist role="owner" hidden={["add_domain"]} onboarding={{}} signals={{}} onChange={vi.fn()} onAction={vi.fn()} />);
+    render(<SetupChecklist role="owner" personal hidden={["add_domain"]} onboarding={{}} signals={{}} onChange={vi.fn()} onAction={vi.fn()} />);
     expect(screen.queryByRole("checkbox", { name: "Done: Add your company domain" })).toBeNull();
-    expect(screen.getByText(/0 of 3 done · Three quick things/)).toBeInTheDocument();
+    expect(screen.getByText(/0 of 2 done · Two quick things/)).toBeInTheDocument();
   });
   it("guests: only what they can do", () => {
     render(<SetupChecklist role="guest" onboarding={{}} signals={{}} onChange={vi.fn()} onAction={vi.fn()} />);

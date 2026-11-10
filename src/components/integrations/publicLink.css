@@ -53,6 +53,7 @@
   box-shadow: 0 0 0 1px var(--hairline);
 }
 .kpubl-qr-text { display: grid; justify-items: start; gap: 10px; min-width: 0; }
+.kpubl-qr-acts { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ---- "Regenerate the link?" (inline, under the actions) ---- */
 .kpubl-confirm {
