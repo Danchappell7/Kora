@@ -9,11 +9,17 @@ import { useState } from "react";
 import { Avatar, Button, DateChip, Icon, IconButton, Pill, Segmented, Toggle } from "../primitives";
 import { getMember, getProject } from "../../data/data";
 import type { Goal, GoalCheckin, GoalKind, GoalLink, GoalPaceMode, GoalStatus, Project, Task, WorkspaceMember } from "../../data/types";
+import type { GoalProgress } from "../../lib/goalProgress";
 import { periodChoices, periodLabel, periodRange } from "../../lib/goalPeriods";
 import { paceDisagrees, type PaceRead } from "../../lib/goalPace";
 import { FORMER_MEMBER } from "../../lib/statusDraft";
+import type { DotTone } from "../../lib/goalFlow";
+import "./goals.css";
 
 export const GOAL_STATUS_LABEL: Record<GoalStatus, string> = { on_track: "On track", at_risk: "At risk", off_track: "Off track", done: "Achieved" };
+type Tone = "neutral" | "accent" | "ok" | "warn" | "signal";
+/** A status as a pill or a select reads it. */
+export const GOAL_TONE: Record<GoalStatus, { tone: Tone }> = { on_track: { tone: "ok" }, at_risk: { tone: "warn" }, off_track: { tone: "signal" }, done: { tone: "accent" } };
 export const KIND_LABEL: Record<GoalKind, string> = { objective: "Goal", key_result: "Key result", metric: "Metric" };
 const PACE_LABEL: Record<GoalPaceMode, string> = { linear: "Steady", backloaded: "Back-loaded", off: "No pace line" };
 export const CONFIDENCE_LABEL = ["", "Very low", "Low", "Medium", "High", "Very high"];
@@ -42,6 +48,55 @@ export const personName = (id: string | null | undefined, members?: WorkspaceMem
   return name?.trim() || FORMER_MEMBER;
 };
 const first = (name: string) => (name === FORMER_MEMBER ? name : name.split(/\s+/)[0] || name);
+
+/** A goal's identity, as a project tile reads one: its icon (else its name's initial) on its colour
+ *  (else a hue its id picks, the same every time). */
+export const goalTile = (g: Pick<Goal, "id" | "name" | "icon" | "color">) => ({ id: g.id, name: g.name, emoji: g.icon ?? undefined, color: g.color ?? "" });
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** An inline "add" row: a name field with Add and Cancel. */
+export function GoalAdder({ label, placeholder, onAdd, onCancel, className }: { label: string; placeholder: string; onAdd: (name: string) => void; onCancel: () => void; className?: string }) {
+  const [name, setName] = useState("");
+  const add = () => { const n = name.trim(); if (n) onAdd(n); };
+  return (
+    <div className={className ? `kpj-adder ${className}` : "kpj-adder"}>
+      {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+      <input autoFocus className="kpj-field" value={name} onChange={(e) => setName(e.target.value)} placeholder={placeholder} aria-label={label}
+        onKeyDown={(e) => { if (e.key === "Enter") add(); else if (e.key === "Escape") { e.stopPropagation(); onCancel(); } }} />
+      <Button variant="primary" onClick={add} disabled={!name.trim()}>Add</Button>
+      <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+    </div>
+  );
+}
+
+/** A goal's numbers in words: "3,760 of 5,000 users, from 3,200" or "6.6%, down to 5%, from 8%". */
+export function numbersLine(g: Goal): string {
+  const now = g.current ?? g.startValue ?? 0;
+  const head = g.direction === "lower" ? `${withUnit(now, g.unit)}, down to ${withUnit(g.target, g.unit)}`
+    : g.unit && !/^[£$€%]/.test(g.unit) ? `${withUnit(now)} of ${withUnit(g.target, g.unit)}` : `${withUnit(now, g.unit)} of ${withUnit(g.target, g.unit)}`;
+  return g.startValue != null && g.startValue !== 0 ? `${head}, from ${withUnit(g.startValue, g.unit)}` : head;
+}
+
+/** The project a goal reads its % from, archived ones included (they keep their progress). */
+export function linkedOf(g: Goal, projects: Project[]): Project | undefined {
+  return g.projectId ? (getProject(g.projectId) ?? projects.find((p) => p.id === g.projectId)) : undefined;
+}
+
+/** Where a goal's % comes from: its project (top-level tasks done), its key results, or its own number. */
+export function GoalSource({ prog, linked, weighted }: { prog: GoalProgress; linked?: Project; weighted?: boolean }) {
+  return (
+    <div style={{ marginTop: 6 }}>
+      {prog.source === "project" && (
+        <span className="kpj-goal-source" title="The share of the project's tasks that are done (sub-tasks count with their parent)">
+          From project {linked?.name ?? "—"}{linked?.archivedAt ? " (archived)" : ""}
+        </span>
+      )}
+      {prog.source === "subgoals" && <span className="kpj-goal-source" title="Enter a current value to track this goal's own number instead">{weighted ? "Weighted average" : "Average"} of {plural(prog.children, "key result")}</span>}
+      {prog.source === "manual" && prog.subPct !== undefined && <span className="kpj-goal-source">Own value · {plural(prog.children, "key result")} {weighted ? "weighted average" : "average"} {prog.subPct}%</span>}
+    </div>
+  );
+}
 
 /* ---------------- owner and period ---------------- */
 
@@ -152,7 +207,7 @@ export function GoalPaceLine({ goal, read, canEdit, onAccept }: {
 /* ---------------- check-ins ---------------- */
 
 /** The newest check-in in a line, a composer for a new one (editors), and the history. */
-export function GoalCheckins({ goal, checkins, members, canEdit, canPost, today, me, isAdmin, onPost, onRemove }: {
+export function GoalCheckins({ goal, checkins, members, canEdit, canPost, today, me, isAdmin, onPost, onRemove, historyOpen = false, composeFirst = false }: {
   goal: Goal;
   /** this goal's, newest first */
   checkins: GoalCheckin[];
@@ -166,15 +221,24 @@ export function GoalCheckins({ goal, checkins, members, canEdit, canPost, today,
   isAdmin: boolean;
   onPost: (value: number, confidence: number | null, note: string) => void;
   onRemove: (c: GoalCheckin) => void;
+  /** the history shows from the start (the goal panel) */
+  historyOpen?: boolean;
+  /** the composer opens at once (a one-tap check-in from a row or Kanbo noticed) */
+  composeFirst?: boolean;
 }) {
-  const [composing, setComposing] = useState(false);
-  const [showAll, setShowAll] = useState(false);
+  const [composing, setComposing] = useState(composeFirst && canEdit && canPost);
+  const [showAll, setShowAll] = useState(historyOpen);
   const latest = checkins[0];
   const personal = (goal.workspaceId ?? null) === null;
   return (
     <div className="kgl-checkins">
       <div className="kgl-checkin-row">
-        {latest ? (
+        {historyOpen ? (
+          // the panel lists every check-in below: here, only how sure the newest one is
+          <span className="kgl-latest kgl-quiet">
+            {latest ? (latest.confidence ? `Confidence ${CONFIDENCE_LABEL[latest.confidence].toLowerCase()} at the last check-in` : `${checkins.length} ${checkins.length === 1 ? "check-in" : "check-ins"}`) : canPost ? "No check-ins yet." : null}
+          </span>
+        ) : latest ? (
           <span className="kgl-latest">
             <span>Checked in {daysAgo(latest.createdAt, today)}{personal ? "" : ` by ${latest.authorId === me ? "you" : first(personName(latest.authorId, members))}`}:</span>
             <b className="kpj-mono">{withUnit(latest.value, goal.unit)}</b>
@@ -183,7 +247,7 @@ export function GoalCheckins({ goal, checkins, members, canEdit, canPost, today,
           </span>
         ) : <span className="kgl-latest kgl-quiet">{canPost ? "No check-ins yet." : null}</span>}
         <span className="kgl-checkin-acts">
-          {checkins.length > 1 && (
+          {checkins.length > 1 && !historyOpen && (
             <Button size="sm" variant="ghost" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
               {showAll ? "Hide history" : `History (${checkins.length})`}
             </Button>
@@ -201,11 +265,11 @@ export function GoalCheckins({ goal, checkins, members, canEdit, canPost, today,
             <li key={c.id}>
               <span className="kgl-history-when">{daysAgo(c.createdAt, today)}</span>
               <b className="kpj-mono">{withUnit(c.value, goal.unit)}</b>
-              {!personal && <span className="kgl-history-who">{c.authorId === me ? "You" : first(personName(c.authorId, members))}</span>}
-              {c.note && <span className="kgl-history-note">{c.note}</span>}
-              {canEdit && (c.authorId === me || isAdmin || personal) && (
+              <span className="kgl-history-who">{personal ? "" : c.authorId === me ? "You" : first(personName(c.authorId, members))}</span>
+              <span className="kgl-history-note">{c.note ?? ""}</span>
+              {canEdit && (c.authorId === me || isAdmin || personal) ? (
                 <IconButton icon="x" size="sm" tone="danger" label={`Take back the check-in of ${withUnit(c.value, goal.unit)}`} onClick={() => onRemove(c)} />
-              )}
+              ) : <span />}
             </li>
           ))}
         </ol>
@@ -253,45 +317,68 @@ function CheckinComposer({ goal, onPost, onCancel }: { goal: Goal; onPost: (valu
 /* ---------------- linked work ---------------- */
 
 /** The projects, tasks and views a goal is linked to (its own workspace's), with a picker
- *  for editors. The project its % comes from is always among them. */
-export function GoalLinks({ goal, links, projects, tasks, canEdit, onLink, onUnlink }: {
+ *  for editors. The project its % comes from is always among them; each project wears a
+ *  dot for its health, and each name opens it. */
+export function GoalLinks({ goal, links, projects, tasks, views = [], canEdit, onLink, onUnlink, onOpen, dot }: {
   goal: Goal;
   links: GoalLink[];
   /** this workspace's projects (archived ones may still be linked) */
   projects: Project[];
   tasks: Task[];
+  /** the saved views it may link (its workspace's shared ones; a personal goal, your own) */
+  views?: { id: string; name: string; emoji?: string | null }[];
   canEdit: boolean;
-  onLink: (kind: "project" | "task", targetId: string) => void;
+  onLink: (kind: "project" | "task" | "view", targetId: string) => void;
   onUnlink: (link: GoalLink) => void;
+  onOpen?: (kind: "project" | "task" | "view", targetId: string) => void;
+  /** a linked project's health */
+  dot?: (projectId: string) => { tone: DotTone; label: string } | null;
 }) {
   const projectOf = (id: string) => getProject(id) ?? projects.find((p) => p.id === id);
   // (work that's since been deleted drops out of the list)
-  const shown = links.filter((l) => l.kind === "view" || (l.kind === "project" ? !!projectOf(l.targetId) || l.targetId === goal.projectId : tasks.some((t) => t.id === l.targetId)));
+  const shown = links.filter((l) => l.kind === "view" ? views.some((v) => v.id === l.targetId) || !views.length
+    : l.kind === "project" ? !!projectOf(l.targetId) || l.targetId === goal.projectId : tasks.some((t) => t.id === l.targetId));
   const has = (kind: string, id: string) => links.some((l) => l.kind === kind && l.targetId === id);
   const progressFrom = goal.projectId && !has("project", goal.projectId) ? goal.projectId : null;
   if (!shown.length && !progressFrom && !canEdit) return null;
   const open = tasks.filter((t) => !t.parentId && t.status !== "done" && !t.archivedAt && !has("task", t.id) && projects.some((p) => p.id === t.projectId));
+  const linkable = views.filter((v) => !has("view", v.id));
+  const projectChip = (id: string, link?: GoalLink) => {
+    const p = projectOf(id);
+    const d = p ? dot?.(id) : null;
+    return (
+      <LinkChip key={link?.id ?? `from-${id}`} icon="folder" emoji={p?.emoji} label={p?.name ?? "Archived project"} dot={d ?? undefined}
+        onOpen={onOpen && p ? () => onOpen("project", id) : undefined}
+        onRemove={link && canEdit && id !== goal.projectId ? () => onUnlink(link) : undefined} />
+    );
+  };
   return (
     <div className="kgl-links" aria-label={`Work linked to ${goal.name}`}>
-      <span className="kgl-links-head">Linked work</span>
-      {progressFrom && <LinkChip icon="folder" label={projectOf(progressFrom)?.name ?? "Archived project"} emoji={projectOf(progressFrom)?.emoji} />}
+      {progressFrom && projectChip(progressFrom)}
       {shown.map((l) => {
-        const p = l.kind === "project" ? projectOf(l.targetId) : undefined;
+        if (l.kind === "project") return projectChip(l.targetId, l);
         const t = l.kind === "task" ? tasks.find((x) => x.id === l.targetId) : undefined;
-        const label = l.kind === "project" ? p?.name ?? "Archived project" : l.kind === "task" ? t?.title ?? "" : "Saved view";
+        const v = l.kind === "view" ? views.find((x) => x.id === l.targetId) : undefined;
+        const label = l.kind === "task" ? t?.title ?? "" : v?.name ?? "Saved view";
         return (
-          <LinkChip key={l.id} icon={l.kind === "project" ? "folder" : l.kind === "task" ? "check" : "layers"} emoji={p?.emoji} label={label}
-            onRemove={canEdit && !(l.kind === "project" && l.targetId === goal.projectId) ? () => onUnlink(l) : undefined} />
+          <LinkChip key={l.id} icon={l.kind === "task" ? "check" : "layers"} emoji={v?.emoji ?? undefined} label={label}
+            onOpen={onOpen && (t || v) ? () => onOpen(l.kind, l.targetId) : undefined}
+            onRemove={canEdit ? () => onUnlink(l) : undefined} />
         );
       })}
       {!shown.length && !progressFrom && <span className="kgl-quiet">None yet.</span>}
       {canEdit && (
         <select className="kpj-field kgl-select kgl-link-pick" data-size="sm" value="" aria-label={`Link work to ${goal.name}`}
-          onChange={(e) => { const [kind, id] = e.target.value.split(":"); if (id) onLink(kind as "project" | "task", e.target.value.slice(kind.length + 1)); }}>
+          onChange={(e) => { const [kind] = e.target.value.split(":"); const id = e.target.value.slice(kind.length + 1); if (id) onLink(kind as "project" | "task" | "view", id); }}>
           <option value="">Link work…</option>
           <optgroup label="Projects">
             {projects.filter((p) => !p.archivedAt && !has("project", p.id) && p.id !== goal.projectId).map((p) => <option key={p.id} value={`project:${p.id}`}>{p.name}</option>)}
           </optgroup>
+          {linkable.length > 0 && (
+            <optgroup label="Saved views">
+              {linkable.map((v) => <option key={v.id} value={`view:${v.id}`}>{v.name}</option>)}
+            </optgroup>
+          )}
           {projects.filter((p) => open.some((t) => t.projectId === p.id)).map((p) => (
             <optgroup key={p.id} label={`Tasks in ${p.name}`}>
               {open.filter((t) => t.projectId === p.id).map((t) => <option key={t.id} value={`task:${t.id}`}>{t.title}</option>)}
@@ -303,11 +390,20 @@ export function GoalLinks({ goal, links, projects, tasks, canEdit, onLink, onUnl
   );
 }
 
-function LinkChip({ icon, emoji, label, onRemove }: { icon: "folder" | "check" | "layers"; emoji?: string; label: string; onRemove?: () => void }) {
-  return (
-    <span className="kgl-chip">
+function LinkChip({ icon, emoji, label, dot, onOpen, onRemove }: {
+  icon: "folder" | "check" | "layers"; emoji?: string; label: string; dot?: { tone: DotTone; label: string };
+  onOpen?: () => void; onRemove?: () => void;
+}) {
+  const face = (
+    <>
       {emoji ? <span aria-hidden="true">{emoji}</span> : <Icon name={icon} size={12} sw={1.75} />}
       <span className="kgl-chip-name">{label}</span>
+      {dot && <span className="kgp-dot" data-tone={dot.tone} role="img" aria-label={dot.label} title={dot.label} />}
+    </>
+  );
+  return (
+    <span className="kgl-chip">
+      {onOpen ? <button type="button" className="kgl-chip-open" onClick={onOpen} aria-label={`Open ${label}`}>{face}</button> : face}
       {onRemove && <button type="button" className="kgl-chip-x" aria-label={`Unlink ${label}`} onClick={onRemove}><Icon name="x" size={12} sw={2} /></button>}
     </span>
   );

@@ -1,9 +1,10 @@
-/* Goals 2.0 on the Goals page: owners and quarters, who may change what (the same rules
-   as 0052), a check-in, the pace line and the status it suggests (never set by itself),
-   links, key results, archived goals, and the page as it was before 0052 is run. */
+/* The Goals page in Quiet Precision: the one-sentence summary, the quarter switcher, the Company /
+   Team / Mine groups, compact rows (identity, owner, pace bar, last check-in, the health of the work
+   behind each goal, or "No work behind this"), rows that open the goal panel, the phone's one-tap
+   check-in, new goals, archived ones, guests, and the page before 0052 is run. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import type { Goal, GoalCheckin, GoalExtras, GoalLink, Project, Task, WorkspaceMember } from "../../data/types";
+import type { Goal, GoalCheckin, GoalLink, Project, Task, WorkspaceMember } from "../../data/types";
 import { GoalsView } from "./GoalsView";
 
 const TODAY = new Date(2026, 10, 10);   // 10 Nov 2026: day 40 of Q4's 91, 44% of the way
@@ -13,201 +14,169 @@ afterEach(() => { vi.useRealTimers(); });
 const Q4 = { period: "2026-Q4", periodStart: "2026-10-01", periodEnd: "2026-12-31" };
 const goal = (o: Partial<Goal> & { id: string; name: string }): Goal => ({ status: "on_track", workspaceId: "ws", ownerId: "m-self", contributors: [], kind: "objective", direction: "higher", visibility: "everyone", pace: "linear", ...Q4, ...o });
 const member = (userId: string, name: string, role: WorkspaceMember["role"]): WorkspaceMember => ({ id: `wm-${userId}`, workspaceId: "ws", userId, email: `${userId}@x.org`, name, role, status: "active" });
-const MEMBERS = [member("m-self", "Daniel Okai", "owner"), member("m-1", "Maya Lin", "member"), member("m-2", "Theo Vance", "member"), member("m-4", "Idris Bell", "guest")];
+const MEMBERS = [member("m-self", "Daniel Okai", "owner"), member("m-1", "Maya Lin", "member"), member("m-2", "Theo Vance", "member")];
 const PROJECTS: Project[] = [{ id: "p1", name: "Launch", emoji: "🚀", color: "red", workspaceId: "ws" }, { id: "p2", name: "Brand", emoji: "🎨", color: "blue", workspaceId: "ws" }];
-const TASKS: Task[] = [{ id: "t1", title: "Write the plan", description: "", status: "todo", priority: "medium", projectId: "p1", assigneeId: "m-self", tags: [], dependencies: [], subtasks: [], focusMin: 30, comments: 0, aiScore: 0 }];
-const NO_EXTRAS: GoalExtras = { checkins: [], links: [] };
+const TASKS: Task[] = [{ id: "t1", title: "Write the plan", description: "", status: "todo", priority: "medium", projectId: "p1", assigneeId: "m-self", tags: [], dependencies: [], subtasks: [], focusMin: 30, comments: 0, aiScore: 0, dueDate: "2026-11-01" }];
+
+
+// Grow (company, on pace), Launch (company, read from p1: 0% two thirds through, behind), a key
+// result of Maya's (Team) and one of mine (Mine, behind)
+const grow = goal({ id: "grow", name: "Grow weekly actives to 5,000", target: 100, current: 45, startValue: 0 });
+const launch = goal({ id: "launch", name: "Launch on 30 Nov", projectId: "p1", period: null, periodStart: null, periodEnd: null, due: "2026-11-30", createdAt: "2026-10-01T09:00:00Z" });
+const mayas = goal({ id: "act", name: "Lift activation to 45%", parentId: "grow", kind: "key_result", ownerId: "m-1", target: 100, current: 44, startValue: 0 });
+const mine = goal({ id: "win", name: "Win back 120 lapsed accounts", parentId: "grow", kind: "key_result", ownerId: "m-self", target: 120, current: 12, startValue: 0, unit: "accounts" });
+const ALL = [grow, launch, mayas, mine];
+const LINKS: GoalLink[] = [{ id: "l1", goalId: "launch", workspaceId: "ws", kind: "project", targetId: "p1" }, { id: "l2", goalId: "win", workspaceId: "ws", kind: "task", targetId: "t1" }];
+const CHECKINS: GoalCheckin[] = [{ id: "c1", goalId: "win", workspaceId: "ws", authorId: "m-self", value: 12, createdAt: "2026-11-01T17:00:00Z" }];
 
 function renderGoals(goals: Goal[], o: Partial<Parameters<typeof GoalsView>[0]> = {}) {
   const props = {
     goals, projects: PROJECTS, tasks: TASKS, onCreate: vi.fn(), onUpdate: vi.fn(), onDelete: vi.fn(),
-    extras: NO_EXTRAS, workspaceId: "ws", me: "m-self", role: "owner" as const, members: MEMBERS, today: TODAY,
-    onCheckin: vi.fn(), onDeleteCheckin: vi.fn(), onLink: vi.fn(), onUnlink: vi.fn(), ...o,
+    extras: { checkins: CHECKINS, links: LINKS }, workspaceId: "ws", me: "m-self", role: "owner" as const, members: MEMBERS, today: TODAY,
+    onCheckin: vi.fn(), onDeleteCheckin: vi.fn(), onLink: vi.fn(), onUnlink: vi.fn(), onOpenGoal: vi.fn(), ...o,
   };
   return { ...render(<GoalsView {...props} />), props };
 }
-const card = (name: string) => screen.getByRole("article", { name: `Goal ${name}` });
-const meter = (name: string) => screen.getByRole("progressbar", { name: `${name} progress` });
+/** a goal's row button (the summary names goals too) */
+const open = (name: string) => [...document.querySelectorAll<HTMLButtonElement>(".kgp-open")].find((b) => b.textContent === name)!;
+const row = (name: string) => open(name).closest("li") as HTMLElement;
+const group = (label: string) => screen.getByRole("region", { name: `${label} goals` });
 
-describe("Goals 2.0: owners and quarters", () => {
-  it("an owner picks a goal's owner from the workspace's members (never a guest) and its quarter", () => {
-    const { props } = renderGoals([goal({ id: "g", name: "Grow", target: 100, current: 40 })]);
-    const owner = screen.getByLabelText("Owner of Grow") as HTMLSelectElement;
-    expect([...owner.options].map((o) => o.text)).toEqual(["No owner", "Daniel Okai", "Maya Lin", "Theo Vance"]);
-    fireEvent.change(owner, { target: { value: "m-1" } });
-    expect(props.onUpdate).toHaveBeenLastCalledWith("g", { ownerId: "m-1" });
-    const period = screen.getByLabelText("Period of Grow") as HTMLSelectElement;
-    expect(period.value).toBe("2026-Q4");
-    fireEvent.change(period, { target: { value: "2027-Q1" } });
-    expect(props.onUpdate).toHaveBeenLastCalledWith("g", { period: "2027-Q1", periodStart: "2027-01-01", periodEnd: "2027-03-31" });
-    fireEvent.change(period, { target: { value: "" } });
-    expect(props.onUpdate).toHaveBeenLastCalledWith("g", { period: null, periodStart: null, periodEnd: null });
+describe("the Goals page: the summary and the quarter", () => {
+  it("opens with one sentence: how many goals are on pace and which are behind (each opens)", () => {
+    const { props } = renderGoals(ALL);
+    const lede = document.querySelector(".kgp-summary")!;
+    expect(lede.textContent).toBe("2 of 4 goals on pace; Launch on 30 Nov and Win back 120 lapsed accounts are behind.");
+    fireEvent.click(within(lede as HTMLElement).getByRole("button", { name: "Win back 120 lapsed accounts" }));
+    expect(props.onOpenGoal).toHaveBeenCalledWith("win");
   });
 
-  it("a member edits the goals they own or help on; the rest they read, and company goals are for owners and admins", () => {
-    renderGoals([
-      goal({ id: "a", name: "Theirs", ownerId: "m-2", target: 10, current: 4, unit: "deals" }),
-      goal({ id: "b", name: "Mine", ownerId: "m-1", target: 10, current: 2 }),
-      goal({ id: "c", name: "Helping", ownerId: "m-2", contributors: ["m-1"], target: 10, current: 3 }),
-    ], { me: "m-1", role: "member" });
-    expect(within(card("Theirs")).queryAllByRole("combobox")).toHaveLength(0);
-    expect(within(card("Theirs")).queryByRole("textbox")).toBeNull();
-    expect(within(card("Theirs")).queryByRole("button", { name: /Delete goal/ })).toBeNull();
-    expect(within(card("Theirs")).getByText("4 of 10 deals")).toBeInTheDocument();
-    expect(within(card("Mine")).getByLabelText("Goal name: Mine")).toBeInTheDocument();
-    expect(within(card("Mine")).getByLabelText("Owner of Mine")).toBeInTheDocument();   // the goal's owner hands it over
-    // a contributor edits but doesn't hand it over
-    expect(within(card("Helping")).getByLabelText("Status of Helping")).toBeInTheDocument();
-    expect(within(card("Helping")).queryByLabelText("Owner of Helping")).toBeNull();
-    expect(within(card("Helping")).getByText("Theo Vance")).toBeInTheDocument();
-    // no New goal: owners and admins set the company's goals
-    expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
-    expect(screen.getByText(/Owners and admins set the business's goals/)).toBeInTheDocument();
+  it("switches quarter: this one first, the next shows its own, All shows every goal", () => {
+    renderGoals([...ALL, goal({ id: "next", name: "Open in Leeds", period: "2027-Q1", periodStart: "2027-01-01", periodEnd: "2027-03-31" })]);
+    const q = within(screen.getByRole("group", { name: "Quarter" }));
+    expect(q.getAllByRole("button").map((b) => b.textContent)).toEqual(["Q3", "Q4", "Q1 2027", "All"]);
+    expect(q.getByRole("button", { name: "Q4" })).toHaveAttribute("aria-pressed", "true");
+    expect(open("Open in Leeds")).toBeUndefined();
+    fireEvent.click(q.getByRole("button", { name: "Q1 2027" }));
+    expect(open("Open in Leeds")).toBeDefined();
+    expect(open("Launch on 30 Nov")).toBeUndefined();
+    fireEvent.click(q.getByRole("button", { name: "Q3" }));
+    expect(screen.getByText(/Nothing runs in Q3 yet\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show every goal" }));
+    expect([open("Open in Leeds"), open("Launch on 30 Nov")].every(Boolean)).toBe(true);
+  });
+});
+
+describe("the Goals page: groups and rows", () => {
+  it("puts the business's goals in Company, Maya's key result in Team and mine in Mine", () => {
+    renderGoals(ALL);
+    expect(within(group("Company")).getAllByRole("listitem").map((li) => li.querySelector(".kgp-open")!.textContent)).toEqual(["Grow weekly actives to 5,000", "Launch on 30 Nov"]);
+    expect(group("Team").contains(open("Lift activation to 45%"))).toBe(true);
+    expect(group("Mine").contains(open("Win back 120 lapsed accounts"))).toBe(true);
+    expect(within(row("Win back 120 lapsed accounts")).getByText("Key result · Grow weekly actives to 5,000")).toBeInTheDocument();
+    expect(within(row("Grow weekly actives to 5,000")).getByText("2 key results")).toBeInTheDocument();
   });
 
-  it("a member adds a key result under a goal they own: theirs, in the same quarter", () => {
-    const { props } = renderGoals([goal({ id: "b", name: "Mine", ownerId: "m-1", target: 10, current: 2 })], { me: "m-1", role: "member" });
-    fireEvent.click(within(card("Mine")).getByRole("button", { name: "Add a key result" }));
-    fireEvent.change(screen.getByLabelText("New key result under Mine"), { target: { value: "Ten demos booked" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(props.onCreate).toHaveBeenCalledWith("Ten demos booked", { parentId: "b", kind: "key_result", ownerId: "m-1", ...Q4 });
+  it("each row: its owner, a pace bar with where it should be, the pace in words, the last check-in, the work's health", () => {
+    renderGoals(ALL);
+    const win = within(row("Win back 120 lapsed accounts"));
+    expect(win.getByRole("img", { name: "Owner: Daniel Okai" })).toBeInTheDocument();
+    expect(win.getByRole("progressbar", { name: "Win back 120 lapsed accounts progress" })).toHaveAttribute("aria-valuenow", "10");
+    expect(row("Win back 120 lapsed accounts").querySelector(".kmeter-marker")).not.toBeNull();
+    expect(win.getAllByText(/Behind pace by 34%/).length).toBeGreaterThan(0);
+    expect(win.getByTitle("Last check-in 9 days ago")).toHaveTextContent("9d");
+    // Launch reads its % from p1, whose task is overdue: an amber dot, named
+    expect(within(row("Launch on 30 Nov")).getByRole("img", { name: "Launch: 0% done, work overdue" })).toBeInTheDocument();
+    // Maya's key result has nothing linked: it says so
+    expect(within(row("Lift activation to 45%")).getAllByText(/no work behind this/i).length).toBeGreaterThan(0);
+    // Grow has work through its key results
+    expect(within(row("Grow weekly actives to 5,000")).queryAllByText(/no work behind this/i)).toHaveLength(0);
   });
 
+  it("a row opens the goal panel; ↓ and ↑ move between rows", () => {
+    const { props } = renderGoals(ALL, { openGoalId: "grow" });
+    expect(row("Grow weekly actives to 5,000")).toHaveAttribute("data-open", "true");
+    fireEvent.click(open("Launch on 30 Nov"));
+    expect(props.onOpenGoal).toHaveBeenCalledWith("launch");
+    const first = open("Grow weekly actives to 5,000");
+    first.focus();
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(open("Launch on 30 Nov"));
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(first);
+  });
+
+  it("a phone's one-tap check-in: on goals that track their own number, for whoever may edit them", () => {
+    const { props } = renderGoals(ALL, { me: "m-1", role: "member" });
+    // Maya edits her key result (and Grow, which she doesn't own, she only reads)
+    fireEvent.click(screen.getByRole("button", { name: "Check in on Lift activation to 45%" }));
+    expect(props.onOpenGoal).toHaveBeenCalledWith("act", { checkin: true });
+    expect(screen.queryByRole("button", { name: "Check in on Grow weekly actives to 5,000" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check in on Launch on 30 Nov" })).toBeNull();   // read from a project
+  });
+
+  it("without a host's panel, the page opens its own", () => {
+    renderGoals(ALL, { onOpenGoal: undefined });
+    fireEvent.click(open("Win back 120 lapsed accounts"));
+    expect(screen.getByRole("dialog", { name: "Goal: Win back 120 lapsed accounts" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close goal" }));
+    expect(screen.queryByRole("dialog", { name: /^Goal:/ })).toBeNull();
+  });
+});
+
+describe("the Goals page: who sees and makes what", () => {
   it("an owner's new goal is a company goal, theirs, this quarter", () => {
-    const { props } = renderGoals([goal({ id: "g", name: "Grow" })]);
+    const { props } = renderGoals([grow]);
     fireEvent.click(screen.getByRole("button", { name: "New goal" }));
     fireEvent.change(screen.getByLabelText("New goal name"), { target: { value: "Hire two engineers" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(props.onCreate).toHaveBeenCalledWith("Hire two engineers", { kind: "objective", ownerId: "m-self", ...Q4 });
   });
 
-  it("a leadership-only goal is for owners, admins and its own people", () => {
-    const lead = goal({ id: "l", name: "Sell the company", ownerId: "m-self", visibility: "leadership", target: 1, current: 0 });
-    const { unmount } = renderGoals([lead, goal({ id: "g", name: "Grow" })], { me: "m-1", role: "member" });
-    expect(screen.queryByRole("article", { name: "Goal Sell the company" })).toBeNull();
-    unmount();
-    renderGoals([lead]);
-    expect(within(card("Sell the company")).getByText("Leadership only")).toBeInTheDocument();
-  });
-});
-
-describe("Goals 2.0: progress and pace", () => {
-  it("cut churn from 8% to 5% reads 0% on day one", () => {
-    renderGoals([goal({ id: "c", name: "Cut churn", direction: "lower", startValue: 8, target: 5, current: 8, unit: "%" })]);
-    expect(meter("Cut churn")).toHaveAttribute("aria-valuenow", "0");
+  it("a member makes no company goals (the page says who does) and never sees a leadership-only one", () => {
+    renderGoals([...ALL, goal({ id: "l", name: "Sell the company", visibility: "leadership", target: 1, current: 0 })], { me: "m-1", role: "member" });
+    expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
+    expect(screen.getByText(/Owners and admins set the business's goals/)).toBeInTheDocument();
+    expect(open("Sell the company")).toBeUndefined();
   });
 
-  it("says how far behind pace a goal is and suggests a status the owner takes in one tap; it never sets one itself", () => {
-    const { props } = renderGoals([goal({ id: "g", name: "Grow", target: 100, current: 32, status: "on_track" })]);
-    const c = card("Grow");
-    expect(within(c).getByText("Behind pace by 12%")).toBeInTheDocument();
-    expect(within(c).getByText("Kanbo suggests At risk.")).toBeInTheDocument();
-    expect(props.onUpdate).not.toHaveBeenCalled();
-    fireEvent.click(within(c).getByRole("button", { name: "Mark At risk" }));
-    expect(props.onUpdate).toHaveBeenCalledWith("g", { status: "at_risk" });
-  });
-
-  it("when the status already says what the pace says, it's just the line; a reader sees the suggestion with no button", () => {
-    const { unmount } = renderGoals([goal({ id: "g", name: "Grow", target: 100, current: 32, status: "at_risk" })]);
-    expect(screen.getByText("Behind pace by 12%")).toBeInTheDocument();
-    expect(screen.queryByText(/Kanbo suggests/)).toBeNull();
-    unmount();
-    renderGoals([goal({ id: "g", name: "Grow", ownerId: "m-2", target: 100, current: 32 })], { me: "m-1", role: "member" });
-    expect(screen.getByText("Kanbo suggests At risk.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Mark/ })).toBeNull();
-  });
-
-  it("a goal past its date unfinished suggests Off track; a back-loaded one expects little early; no pace line when it's off", () => {
-    renderGoals([
-      goal({ id: "late", name: "Late", target: 100, current: 60, due: "2026-11-01" }),
-      goal({ id: "slow", name: "Slow start", target: 100, current: 20, pace: "backloaded" }),
-      goal({ id: "none", name: "No pace", target: 100, current: 1, pace: "off" }),
-    ]);
-    expect(within(card("Late")).getByText("Past due at 60%")).toBeInTheDocument();
-    expect(within(card("Late")).getByText("Kanbo suggests Off track.")).toBeInTheDocument();
-    expect(within(card("Slow start")).getByText("On pace")).toBeInTheDocument();
-    expect(card("No pace").querySelector(".kgl-pace")).toBeNull();
-  });
-});
-
-describe("Goals 2.0: check-ins", () => {
-  const checkins: GoalCheckin[] = [
-    { id: "c2", goalId: "g", workspaceId: "ws", authorId: "m-1", value: 3760, confidence: 3, note: "Onboarding fix is in", createdAt: "2026-11-08T17:00:00Z" },
-    { id: "c1", goalId: "g", workspaceId: "ws", authorId: null, value: 3550, confidence: null, createdAt: "2026-10-25T17:00:00Z" },
-  ];
-  it("shows the newest check-in and the history, a departed author as Former member", () => {
-    renderGoals([goal({ id: "g", name: "Grow", startValue: 3200, target: 5000, current: 3760, unit: "users" })], { extras: { checkins, links: [] } });
-    const c = card("Grow");
-    expect(within(c).getByText("Checked in 2 days ago by Maya:")).toBeInTheDocument();
-    expect(within(c).getByText("3,760 users", { selector: "b" })).toBeInTheDocument();
-    expect(within(c).getByText("Onboarding fix is in")).toBeInTheDocument();
-    fireEvent.click(within(c).getByRole("button", { name: "History (2)" }));
-    const history = within(c).getByRole("list", { name: "Check-ins on Grow" });
-    expect(within(history).getByText("Former member")).toBeInTheDocument();
-    fireEvent.click(within(history).getByRole("button", { name: "Take back the check-in of 3,550 users" }));
-  });
-
-  it("posts one: a number, how sure you are and a note", () => {
-    const { props } = renderGoals([goal({ id: "g", name: "Grow", target: 5000, current: 3760 })]);
-    fireEvent.click(within(card("Grow")).getByRole("button", { name: "Check in" }));
-    const box = within(card("Grow")).getByRole("group", { name: "Check in on Grow" });
-    fireEvent.change(within(box).getByLabelText("Where it stands"), { target: { value: "3900" } });
-    fireEvent.change(within(box).getByLabelText("Confidence"), { target: { value: "4" } });
-    fireEvent.change(within(box).getByLabelText("Note"), { target: { value: "Referral pilot live" } });
-    fireEvent.click(within(box).getByRole("button", { name: "Post check-in" }));
-    expect(props.onCheckin).toHaveBeenCalledWith(expect.objectContaining({ id: "g" }), 3900, 4, "Referral pilot live");
-    expect(within(card("Grow")).queryByRole("group", { name: "Check in on Grow" })).toBeNull();
-  });
-
-  it("only goals that track their own number take check-ins, and only from people who may edit them", () => {
-    renderGoals([
-      goal({ id: "p", name: "From a project", projectId: "p1" }),
-      goal({ id: "t", name: "Theirs", ownerId: "m-2", target: 10, current: 2 }),
-    ], { me: "m-1", role: "member" });
-    expect(screen.queryByRole("button", { name: "Check in" })).toBeNull();
-  });
-});
-
-describe("Goals 2.0: linked work", () => {
-  it("lists the goal's projects and tasks; editors link more and unlink", () => {
-    const links: GoalLink[] = [
-      { id: "l1", goalId: "g", workspaceId: "ws", kind: "project", targetId: "p1" },
-      { id: "l2", goalId: "g", workspaceId: "ws", kind: "task", targetId: "t1" },
-    ];
-    const { props } = renderGoals([goal({ id: "g", name: "Grow", target: 10, current: 1 })], { extras: { checkins: [], links } });
-    const c = within(card("Grow")).getByLabelText("Work linked to Grow");
-    expect(within(c).getByText("Launch")).toBeInTheDocument();
-    expect(within(c).getByText("Write the plan")).toBeInTheDocument();
-    fireEvent.click(within(c).getByRole("button", { name: "Unlink Write the plan" }));
-    expect(props.onUnlink).toHaveBeenCalledWith(links[1]);
-    const pick = within(c).getByLabelText("Link work to Grow") as HTMLSelectElement;
-    expect([...pick.options].map((o) => o.value)).toEqual(["", "project:p2"]);   // the task's already linked; Launch too
-    fireEvent.change(pick, { target: { value: "project:p2" } });
-    expect(props.onLink).toHaveBeenCalledWith(expect.objectContaining({ id: "g" }), "project", "p2");
-  });
-});
-
-describe("Goals 2.0: archived goals", () => {
-  it("are out of the way until asked for, and come back with Restore", () => {
-    const { props } = renderGoals([goal({ id: "g", name: "Grow" }), goal({ id: "old", name: "Last quarter's", archivedAt: "2026-10-01T09:00:00Z" })]);
-    expect(screen.queryByRole("article", { name: "Goal Last quarter's" })).toBeNull();
+  it("archived goals are out of the way until asked for", () => {
+    renderGoals([grow, goal({ id: "old", name: "Last quarter's", archivedAt: "2026-10-01T09:00:00Z" })]);
+    expect(open("Last quarter's")).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "Show archived (1)" }));
-    fireEvent.click(within(card("Last quarter's")).getByRole("button", { name: "Restore goal Last quarter's" }));
-    expect(props.onUpdate).toHaveBeenCalledWith("old", { archivedAt: null });
-    fireEvent.click(within(card("Grow")).getByRole("button", { name: "Archive goal Grow" }));
-    expect(props.onUpdate).toHaveBeenLastCalledWith("g", { archivedAt: expect.any(String) });
+    expect(within(row("Last quarter's")).getByText("Archived")).toBeInTheDocument();
+  });
+
+  it("a guest reads the goals calmly (before 0051's lock), or learns that goals are for members", () => {
+    const { unmount } = renderGoals(ALL, { readOnly: true, role: "guest", extras: null });
+    expect(screen.getByText(/as a guest you can read them/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New goal" })).toBeNull();
+    expect(screen.getByRole("article", { name: "Goal Grow weekly actives to 5,000" })).toBeInTheDocument();
+    unmount();
+    renderGoals(ALL, { readOnly: true, role: "guest" });   // with 0052 the team's goals never reach a guest
+    expect(screen.getByText("Goals are for members")).toBeInTheDocument();
+  });
+
+  it("with no goals yet, owners start one", () => {
+    renderGoals([]);
+    expect(screen.getByText("No goals yet")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New goal" })).toBeInTheDocument();
   });
 });
 
 describe("before 0052 is run", () => {
-  it("is the page it always was (anyone who writes edits; no owners, quarters or check-ins), with the pace line from when the goal was made", () => {
-    renderGoals([{ id: "g", name: "Grow", status: "on_track", workspaceId: "ws", target: 100, current: 10, createdAt: "2026-10-01T09:00:00Z", due: "2026-12-31" }],
+  it("reads the goals as they were: rows and pace from when they were made, no owners or check-ins, anyone who writes adds one", () => {
+    const { props } = renderGoals([{ id: "g", name: "Grow", status: "on_track", workspaceId: "ws", target: 100, current: 10, createdAt: "2026-10-01T09:00:00Z", due: "2026-12-31" }],
       { extras: null, me: "m-1", role: "member" });
-    expect(screen.getByLabelText("Goal name: Grow")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "New goal" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Owner of Grow")).toBeNull();
-    expect(screen.queryByLabelText("Period of Grow")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Check in" })).toBeNull();
-    expect(screen.getByText("Behind pace by 34%")).toBeInTheDocument();
+    const r = within(row("Grow"));
+    expect(r.getAllByText(/Behind pace by 34%/).length).toBeGreaterThan(0);
+    expect(r.queryByRole("img", { name: /^Owner/ })).toBeNull();
+    expect(r.queryByRole("img", { name: "No owner" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Check in on/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New goal" }));
+    fireEvent.change(screen.getByLabelText("New goal name"), { target: { value: "Ship it" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(props.onCreate).toHaveBeenCalledWith("Ship it");
   });
 });
+

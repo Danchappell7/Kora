@@ -31,7 +31,7 @@ import {
   ImportTasksModal, OnboardingModal, WelcomeModal, QuickCapture, ExtractTasksSheet, ShutdownSheet, WeeklyReview,
   FocusMode, PlannerHost, TrialBanner, UpgradeModal, Paywall, likelyNext, everyScreen, prefetchRoute,
   TourHost, SetupChecklist, HelpMenu, QuickAddSheet, prefetchQuickAdd, TemplateLibrary, SaveAsTemplate, TodayStreak, TodayWins,
-  SlackLinkPage, GroupView,
+  SlackLinkPage, GroupView, GoalPanelHost,
 } from "./lazyViews";
 import type { GroupTarget } from "./components/views/GroupView";
 // one view across businesses: All businesses on Today, Inbox and My tasks; the switcher's dots; Projects › Group
@@ -82,6 +82,10 @@ import type { InsightsNavProps } from "./components/views/InsightsSummary";
 import { loadAppearance, saveAppearance, type Appearance } from "./lib/appearance";
 import { SMART_LISTS, smartListQuery } from "./lib/smartLists";
 import { useGoalWrites } from "./components/goals/useGoalWrites";
+// 0052 in the day's work: the goal panel (anywhere), "Serves" chips, the brief's goal line, Kanbo noticed, the Team place
+import { useGoalFlow } from "./components/goals/useGoalFlow";
+import { GoalServes, GoalServesRow } from "./components/goals/GoalServes";
+import { TeamGoals } from "./components/goals/TeamGoals";
 import { groupGoalPace } from "./lib/goalPace";
 import type { GoalExtras, GoalPatch } from "./data/types";
 import {
@@ -230,6 +234,10 @@ export default function App() {
   const [goals, setGoals] = useState<Goal[]>([]);
   // 0052's check-ins and links (null until it's run: owners, quarters and check-ins stay off)
   const [goalExtras, setGoalExtras] = useState<GoalExtras | null>(null);
+  // the goal open in the goal panel (from a Goals row, a chip, the brief, Kanbo noticed, ⌘K); `checkin`: composer out
+  const [goalPanel, setGoalPanel] = useState<{ id: string; checkin?: boolean } | null>(null);
+  const openGoal = useCallback((id: string, opts?: { checkin?: boolean }) => setGoalPanel({ id, checkin: !!opts?.checkin }), []);
+  const closeGoal = useCallback(() => setGoalPanel(null), []);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [statusUpdates, setStatusUpdates] = useState<StatusUpdate[]>([]);
   const [automationRules, setAutomationRules] = useState<AutomationRule[]>([]);
@@ -2687,8 +2695,9 @@ export default function App() {
 
   // ---- goals / OKRs ----
   // (0052's owner, quarter, parent and kind ride along in `extra` once it's run)
-  const createGoal = useCallback((name: string, extra?: GoalPatch) => {
-    const wsId = workspaceRef.current;
+  const createGoal = useCallback((name: string, extra?: GoalPatch, inWorkspace?: string | null) => {
+    // (a key result added in the goal panel goes in its goal's workspace, whichever is open)
+    const wsId = inWorkspace !== undefined ? inWorkspace : workspaceRef.current;
     if (denyGuest([wsId])) return;
     const tmp: Goal = { id: "tmp-goal-" + Date.now(), workspaceId: wsId, name, status: "on_track", current: 0, target: 100, createdAt: new Date().toISOString(), ...extra };
     setGoals((g) => [...g, tmp]);
@@ -3521,6 +3530,8 @@ export default function App() {
   const reportTasks = useMemo(() => (tasks ?? []).filter((t) => (t.workspaceId ?? null) === workspace && !t.archivedAt), [tasks, workspace]);
   // (a Personal portfolio can hold any business's projects: every workspace's tasks, archived projects' too)
   const acrossReportTasks = useMemo(() => (tasks ?? []).filter((t) => !t.archivedAt), [tasks]);
+  // goals for the rest of the app: the chips, the brief, Kanbo noticed, Ask (components/goals/useGoalFlow)
+  const goalFlow = useGoalFlow({ goals, extras: goalExtras, tasks: acrossReportTasks, me: currentUserId, roleIn, members: wsMembers, today: KANBO_TODAY });
   const allSeen = useMemo(() => (tasksSeen === tasks ? allTasks : inWorkspace(tasksSeen ?? [])), [tasksSeen, tasks, allTasks, inWorkspace]);
   // Radar: the workspace's risks (blockers, slips, stale work, over capacity), for the
   // sidebar's Team badge, Today's brief and each project's notice line
@@ -3840,8 +3851,9 @@ export default function App() {
   // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
   const planProjectId = wsProjects.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
   const askProjects = wsProjects.map((p) => ({ id: p.id, name: p.name }));
-  const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects]);
-  if (askContextRef.current?.key !== askKey) askContextRef.current = { key: askKey, value: { today: dayKey, me: currentUserId, members: assignees, projects: askProjects } };
+  const askGoals = goalExtras || goals.length ? goalFlow.ask(workspace) : [];
+  const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects, askGoals]);
+  if (askContextRef.current?.key !== askKey) askContextRef.current = { key: askKey, value: { today: dayKey, me: currentUserId, members: assignees, projects: askProjects, goals: askGoals } };
   const askContext = askContextRef.current.value;
   const wsRules = automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId));
   const wsForms = forms.filter((f) => wsProjects.some((p) => p.id === f.projectId));
@@ -3952,8 +3964,9 @@ export default function App() {
             // its cover, and its tile (its emoji lives there, never beside the name as well)
             identity: { project: openProject, crumb: { label: "Projects", href: pathOf({ view: "projects" }), onClick: () => setRoute({ view: "projects" }) } },
             // (0048: who else is in the project right now, beside its people)
-            titleAddon: <Suspense fallback={null}><ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")}
-              me={currentUser ? { userId: currentUserId, name: currentUser.name, color: currentUser.color ?? "" } : null} /></Suspense>,
+            titleAddon: <><Suspense fallback={null}><ProjectTitleAddon project={openProject} tasks={scoped} statusUpdates={projUpdates} onOpenUpdates={() => goProjectTab("updates")}
+              me={currentUser ? { userId: currentUserId, name: currentUser.name, color: currentUser.color ?? "" } : null} /></Suspense>
+              <GoalServes goals={goalFlow.forProject(openProject.id)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} compact={isMobile} /></>,
             actions: (
               <Suspense fallback={null}><ProjectActions project={openProject} tasks={scoped} statusUpdates={projUpdates} canManage={canManageProject(openProject)} readOnly={activeReadOnly}
                 onPostStatus={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} onTab={goProjectTab}
@@ -4039,6 +4052,8 @@ export default function App() {
         dayClosed={shutdownDone(currentUserId, dayKey)} onPlanTomorrow={() => setRoute({ view: "myweek" })}
         // 0048: "/" in the rail's capture field picks a template, as Quick capture's does
         templates={activeReadOnly ? undefined : todayTemplates}
+        // 0052: one goal line in the brief, and your key results behind pace in Kanbo noticed
+        goalFor={goalFlow.briefGoal} goalsBehind={biz.all ? goalFlow.behind() : goalFlow.behind(workspace)} onOpenGoal={openGoal}
         // 0048: "Get set up" in place of the old "2 of 4 set up" chip, then the week's wins (Friday afternoons, Monday mornings)
         // (beside the rail Today folds each to a row, so the day keeps its room; `fold` says how)
         setupSlot={showSetup ? (fold) => (
@@ -4058,6 +4073,7 @@ export default function App() {
       case "reports": return <ReportsView key={wsKey} tasks={allTasks} projects={wsProjects} members={assignees} onOpen={setDetailId} {...insightsNav} />;
       // 0048 universal search: tasks, comments, docs, projects and people; saved as views (lib/views)
       case "search": return <SearchView tasks={seen} projects={projects} members={everyone} currentUserId={currentUserId} onOpen={setDetailId}
+        goals={goalFlow.goals} onOpenGoal={openGoal}
         savedSearches={NO_SAVED_SEARCHES} onSaveSearch={noop} onDeleteSavedSearch={noop}
         preset={searchPreset} presetKey={searchView ? searchView.id : searchPresetKey} presetView={searchView?.query}
         onBulkPatch={guardedBulkPatch} onBulkDelete={bulkDelete} sections={sections} customFields={customFields}
@@ -4078,6 +4094,7 @@ export default function App() {
       case "workload": return <WorkloadView tasks={allTasks} members={loadMembers} onOpen={setDetailId} personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} />;
       // (a goal or portfolio linked to an archived project reads that project's own tasks: archiving a finished project kept them)
       case "goals": return <GoalsView goals={goals.filter((g) => (g.workspaceId ?? null) === workspace)} projects={wsProjects} tasks={reportTasks} onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} readOnly={activeReadOnly}
+        statusUpdates={statusUpdates} onOpenGoal={openGoal} openGoalId={goalPanel?.id ?? null}
         extras={goalExtras} workspaceId={workspace} me={currentUserId} role={personal ? null : myRole ?? null} members={wsMembers.filter((m) => (m.workspaceId ?? null) === workspace && m.status === "active")}
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
@@ -4117,7 +4134,8 @@ export default function App() {
       case "projects": return <ProjectsView projects={wsProjects} tasks={allTasks} statusUpdates={statusUpdates} members={assignees} currentUserId={currentUserId}
         canCreate={!activeReadOnly} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })} onNewProject={() => setNewProjectOpen(true)}
         onPlanProject={activeReadOnly ? undefined : () => openPlanner({ mode: "new" })}
-        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject} />;
+        onPostUpdate={activeReadOnly ? undefined : postStatusUpdate} aiStatus={aiStatus} risksByProject={activeReadOnly ? undefined : risksByProject}
+        goalChip={(pid) => <GoalServes goals={goalFlow.forProject(pid)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />} />;
       // 0047: deleted tasks and projects, 30 days (rows come back through the realtime reload too)
       case "bin": return (
         <RecycleBin key={wsKey} workspaceId={workspace} workspaceName={activeWsName} role={workspace ? (myRole ?? null) : null} currentUserId={currentUserId}
@@ -4130,7 +4148,8 @@ export default function App() {
         onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined}
         personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })}
         // 0048: a task dropped on a person is handed to them (Undo); kudos read live
-        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} />;
+        onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson}
+        goalsSlot={<TeamGoals goals={goalFlow.goals.filter((g) => (g.workspaceId ?? null) === workspace)} reads={goalFlow.reads} today={KANBO_TODAY} onOpenGoal={openGoal} onOpenGoals={() => setRoute({ view: "goals" })} />} />;
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
       case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
         onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined}
@@ -4232,7 +4251,7 @@ export default function App() {
   return (
     // Desktop: the sidebar and a main column whose views scroll on their own. Phone: the
     // whole page is one scroll (the header and the bottom bar stay put), no inner scroll boxes.
-    <div ref={rootRef} data-panel={detailId ? "open" : undefined} onPointerOver={prefetchLink} onFocus={prefetchLink} style={isMobile
+    <div ref={rootRef} data-panel={detailId || goalPanel ? "open" : undefined} onPointerOver={prefetchLink} onFocus={prefetchLink} style={isMobile
       ? { position: "relative", height: "100vh", overflowX: "hidden", overflowY: "auto", overscrollBehaviorY: "contain", background: "var(--bg)" }
       : { position: "relative", height: "100vh", display: "flex", overflow: "hidden", background: "var(--bg)" }}>
       <AppBg />
@@ -4325,6 +4344,7 @@ export default function App() {
 
       {/* tasks and projects from every workspace (like Search); opening a project elsewhere switches to its workspace */}
       <Deferred when={cmdOpen}><CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={seen} onOpenTask={setDetailId}
+        goals={goalFlow.goals} onOpenGoal={openGoal}
         projects={projects} workspaces={workspaces} canCreateProject={!activeReadOnly} canSeeGroup={biz.group}
         onOpenProject={(id) => {
           const p = projects.find((x) => x.id === id);
@@ -4357,12 +4377,25 @@ export default function App() {
         // opened by an "Ask Kanbo" button: the example questions lead
         initialQuery={paletteQuery} askFirst={paletteQuery !== undefined} personal={personal} /></Deferred>
 
+      {goalPanel && (
+        <ErrorBoundary key={goalPanel.id} inline floating name="goal-panel" onHome={closeGoal} homeLabel="Close">
+          <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
+            <GoalPanelHost open={goalPanel} goals={goals} extras={goalExtras} projects={projects} tasks={acrossReportTasks} members={wsMembers} statusUpdates={statusUpdates}
+              views={sv.views} me={currentUserId} roleIn={roleIn} docked={docked && !isMobile} onClose={closeGoal} onOpenGoal={openGoal}
+              onOpenGoals={(ws) => { if (ws !== workspace) setWorkspace(ws); setRoute({ view: "goals" }); }} onOpenTask={setDetailId}
+              onOpenProject={(id) => { const p = projects.find((x) => x.id === id); if (p && (p.workspaceId ?? null) !== workspace) setWorkspace(p.workspaceId ?? null); setRoute({ view: "project", projectId: id }); }}
+              onOpenView={(id) => { const v = getSavedView(id); if (v) setRoute(viewRoute(v)); }}
+              onCreate={createGoal} onUpdate={updateGoal} onDelete={deleteGoal} writes={goalWrites} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
       {detailId && (
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
           <TaskDetail taskId={detailId} ai={aiOn} onApprovalsChange={onApprovalsChange} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
             readOnly={detailReadOnly} docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })}
-            onSaveAsTemplate={(id) => setSaveTemplateFor(id)} />
+            onSaveAsTemplate={(id) => setSaveTemplateFor(id)}
+            goalRow={(t) => <GoalServesRow goals={goalFlow.forTask(t)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />} />
           </Suspense>
         </ErrorBoundary>
       )}

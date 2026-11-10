@@ -20,6 +20,9 @@ const tasksFor = (pid: string) => {
     ...Array.from({ length: 6 }, () => task({ projectId: pid, parentId: parent.id }))];
 };
 const meter = (name: string) => screen.getByRole("progressbar", { name: `${name} progress` });
+/** a goal's row opens its panel (the page's own, with no host panel): editing lives there */
+const openGoal = (name: string) => fireEvent.click([...document.querySelectorAll<HTMLButtonElement>(".kgp-open")].find((b) => b.textContent === name)!);
+const panel = (name: string) => within(screen.getByRole("dialog", { name: `Goal: ${name}` }));
 
 describe("GoalsView — the numbers", () => {
   const base = { onCreate: () => {}, onDelete: () => {}, onUpdate: () => {} };
@@ -27,7 +30,9 @@ describe("GoalsView — the numbers", () => {
     const p1 = proj("p1", "Launch");
     render(<GoalsView {...base} projects={[p1]} tasks={tasksFor("p1")} goals={[{ id: "g", name: "Ship it", status: "on_track", projectId: "p1" }]} />);
     expect(meter("Ship it")).toHaveAttribute("aria-valuenow", "50");
-    expect(screen.getByText("From project Launch")).toBeInTheDocument();
+    openGoal("Ship it");
+    expect(panel("Ship it").getByRole("progressbar", { name: "Ship it progress" })).toHaveAttribute("aria-valuenow", "50");
+    expect(panel("Ship it").getByText("From project Launch")).toBeInTheDocument();
   });
 
   it("a goal linked to an archived project keeps that project's progress instead of dropping to 0%", () => {
@@ -39,7 +44,8 @@ describe("GoalsView — the numbers", () => {
       // the archived project isn't in the workspace's project list; its tasks still come (App's goalTasks)
       render(<GoalsView {...base} projects={[proj("p1", "Launch")]} tasks={finished} goals={[{ id: "g", name: "Old goal", status: "done", projectId: "p-old" }]} />);
       expect(meter("Old goal")).toHaveAttribute("aria-valuenow", "100");
-      expect(screen.getByText("From project Old launch (archived)")).toBeInTheDocument();
+      openGoal("Old goal");
+      expect(panel("Old goal").getByText("From project Old launch (archived)")).toBeInTheDocument();
     } finally {
       setReferenceData({ projects: prev });
     }
@@ -48,6 +54,7 @@ describe("GoalsView — the numbers", () => {
   it("shows the description and saves an edit to it once", () => {
     const onUpdate = vi.fn();
     render(<GoalsView {...base} onUpdate={onUpdate} projects={[]} tasks={[]} goals={[{ id: "g", name: "Grow", status: "on_track", description: "Weekly actives across web and mobile." }]} />);
+    openGoal("Grow");
     const box = screen.getByLabelText("Description of Grow") as HTMLTextAreaElement;
     // it wraps onto as many lines as it needs (a one-line field cut a long one off)
     expect(box.tagName).toBe("TEXTAREA");
@@ -61,6 +68,7 @@ describe("GoalsView — the numbers", () => {
   it("a description stays one paragraph: Enter saves it, a pasted line break becomes a space", () => {
     const onUpdate = vi.fn();
     render(<GoalsView {...base} onUpdate={onUpdate} projects={[]} tasks={[]} goals={[{ id: "g", name: "Grow", status: "on_track" }]} />);
+    openGoal("Grow");
     const box = screen.getByLabelText("Description of Grow") as HTMLTextAreaElement;
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "Weekly actives\nacross web and mobile." } });
