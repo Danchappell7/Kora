@@ -17,6 +17,7 @@ node supabase/tests/pglite/run.mjs         # every migration set
 node supabase/tests/pglite/run.mjs 0047    # 0001..0047 + 0050..0058 (no 0048, no 0049)
 node supabase/tests/pglite/run.mjs 0049    # every migration
 node supabase/tests/pglite/run.mjs 0058    # 0001..0050 + 0058, then 0051..0057 after it
+node supabase/tests/pglite/run.mjs 0050    # 0001..0050: the edge functions as they'll run before 0058
 ```
 
 It takes a minute or two and exits non-zero if anything fails. Each full set applies 0050 twice.
@@ -112,3 +113,13 @@ Notion, rates, asks, form links, meeting agendas, the bin and the history, the I
 webhooks, a published-table and a security-definer audit, VERIFY, 5 000 tasks behind the switch, 0058
 twice, the undo file, every older file run again, and 0051..0057 applied after 0058. MCP and the REST API
 (an API key) get their own checks on the shared world.
+
+The edge functions' own project access (wave 4, stage B), on both full sets with the switch off, on and off
+again: `_shared/projectAccess.ts`'s service checks over the SQL driver follow the rank table; the API's rank
+for a colleague (`personRankSql`, worked out as the caller) equals `pa_rank_for` for every person and project,
+read as the owner and as a viewer; the REST API's answers on writing into a project, commenting, assignees,
+rules' assignees, moves, a repeating task's next occurrence, the database's own assignee refusal and
+`visibility`; MCP's @mentions; the Slack app's neutral link cards; and the real webhook dispatcher
+(`runDispatch`) sending a private project's event only to the endpoint whose viewer can see it. A last set,
+0001..0050 (`run.mjs 0050`), runs the legit and attack flows on the live database with those changes in, and
+shows every check answers today's rule there.
