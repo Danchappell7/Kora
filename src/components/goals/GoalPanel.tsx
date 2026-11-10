@@ -14,12 +14,12 @@ import { Button, DateChip, Icon, IconButton, Meter, Pill, ProjectTile, Sheet, pr
 import { Popover } from "../primitives/Popover";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { KANBO_TODAY, toLocalISO } from "../../data/data";
+import { KANBO_TODAY, toLocalISO, WORKSPACES } from "../../data/data";
 import type { Goal, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, GoalStatus, Project, Role, StatusUpdate, Task, WorkspaceMember } from "../../data/types";
 import { goalDescendants, goalTree } from "../views/reportingUtils";
 import { DraftInput } from "../project/DraftInput";
 import { IdentityFields, IdentityPreview } from "../project/IdentityPicker";
-import { checkinsOf, hasWorkBehind, NEEDS_LINE, projectDot, readGoals, takesCheckins, type GoalRead } from "../../lib/goalFlow";
+import { checkinsOf, hasWorkBehind, hiddenProjectOf, NEEDS_LINE, projectDot, readGoals, takesCheckins, type GoalRead } from "../../lib/goalFlow";
 import { canDeleteGoal, canEditGoal, canHandOverGoal, canMakeCompanyGoal, canPlaceGoal } from "../../lib/goalRules";
 import { GOAL_TONE, GoalAdder, GoalCheckins, GoalDetails, GoalLinks, GoalMetaRow, GoalPaceLine, GoalSource, GOAL_STATUS_LABEL, KIND_LABEL, fmtGoalValue, fmtNum, goalTile, linkedOf, numbersLine } from "./GoalParts";
 import { GoalSparkline } from "./GoalSparkline";
@@ -107,8 +107,10 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
   const canTopLevel = !v2 || canMakeCompanyGoal(g.workspaceId ?? null, role);
   const personal = (g.workspaceId ?? null) === null;
   const realProjects = projects.filter((p) => p.id !== "p-personal");
-  const reads = useMemo(() => readGoals(goals, tasks, today), [goals, tasks, today]);
-  const read: GoalRead = reads.get(g.id) ?? readGoals([g], tasks, today).get(g.id)!;
+  // (0058: a goal reading its % from a project you can't see has none you can know)
+  const hidden = useMemo(() => hiddenProjectOf(projects, WORKSPACES), [projects]);
+  const reads = useMemo(() => readGoals(goals, tasks, today, hidden), [goals, tasks, today, hidden]);
+  const read: GoalRead = reads.get(g.id) ?? readGoals([g], tasks, today, hidden).get(g.id)!;
   const prog = read.progress;
   const checkins = useMemo(() => checkinsOf(g.id, extras?.checkins ?? []), [g.id, extras]);
   const links = useMemo(() => (extras?.links ?? []).filter((l) => l.goalId === g.id), [g.id, extras]);
@@ -262,13 +264,14 @@ function GoalPanelBody(props: GoalPanelProps & { isMobile: boolean }) {
           <div className="kgx-big">
             {ownNumber
               ? <><span className="kgx-big-num">{unitWord(g.unit) ? fmtNum(g.current ?? g.startValue ?? 0) : fmtGoalValue(g.current ?? g.startValue ?? 0, g.unit)}</span><span className="kgx-big-of">{standsOf(g)}</span></>
+              : read.hidden ? <span className="kgx-big-of">Unknown</span>
               : <><span className="kgx-big-num">{read.pct}%</span><span className="kgx-big-of">done</span></>}
           </div>
-          <div className="kgx-meter">
+          {!read.hidden && <div className="kgx-meter">
             <Meter value={read.pct} height={6} tone={meterTone} marker={expected} label={`${g.name} progress`} />
             {/* its own number is above: this % is how far along the way it is ("60% of 80%" is 29% of the way from 52%) */}
             <span className="kpj-mono">{read.pct}%{ownNumber && <span className="kgx-meter-way"> of the way</span>}</span>
-          </div>
+          </div>}
           <GoalSource prog={prog} linked={linkedProject} weighted={goals.some((x) => x.parentId === g.id && !x.archivedAt && x.weight != null && x.weight !== 1)} />
           <div style={{ marginTop: 12 }}>
             <GoalSparkline goal={g} checkins={ownNumber ? checkins : []} pct={read.pct} today={today}

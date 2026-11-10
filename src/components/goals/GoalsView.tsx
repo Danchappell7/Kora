@@ -15,14 +15,14 @@
    ============================================================ */
 import { useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Avatar, Button, DateChip, EmptyState, Icon, Meter, Pill, ProjectTile, Segmented } from "../primitives";
-import { KANBO_TODAY, toLocalISO } from "../../data/data";
+import { KANBO_TODAY, toLocalISO, WORKSPACES } from "../../data/data";
 import type { Goal, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Project, Role, StatusUpdate, Task, WorkspaceMember } from "../../data/types";
 import { goalTree, useStableOrder, type GoalProgress } from "../views/reportingUtils";
 import { periodRange, quarterOf } from "../../lib/goalPeriods";
 import { paceDisagrees } from "../../lib/goalPace";
 import { canEditGoal, canMakeCompanyGoal, canSeeGoal, COMPANY_GOALS_RULE, goalLookup } from "../../lib/goalRules";
 import {
-  checkinAge, checkinsOf, goalCarriedOver, goalGroup, goalProjectIds, goalsInQuarter, goalsSummary, GROUP_LABEL, hasWorkBehind, paceWords, periodShort, projectDot, quarterOptions, readGoals, takesCheckins,
+  checkinAge, checkinsOf, goalCarriedOver, goalGroup, goalProjectIds, goalsInQuarter, goalsSummary, GROUP_LABEL, hasWorkBehind, hiddenProjectOf, paceWords, periodShort, projectDot, quarterOptions, readGoals, takesCheckins,
   type GoalGroup, type GoalRead,
 } from "../../lib/goalFlow";
 import { GOAL_STATUS_LABEL, GOAL_TONE, GoalAdder, GoalSource, KIND_LABEL, daysAgo, goalTile, linkedOf, numbersLine, personName } from "./GoalParts";
@@ -94,7 +94,9 @@ export function GoalsView(props: GoalsViewProps) {
     return goals.filter((g) => canSeeGoal(g, { me, role }, byId));
   }, [v2, goals, me, role]);
   const stable = useStableOrder(visible);
-  const reads = useMemo(() => readGoals(visible, tasks, today), [visible, tasks, today]);
+  // (0058: a goal reading its % from a project you can't see has none you can know)
+  const hidden = useMemo(() => hiddenProjectOf(projects, WORKSPACES), [projects]);
+  const reads = useMemo(() => readGoals(visible, tasks, today, hidden), [visible, tasks, today, hidden]);
   const links = extras?.links ?? [];
   const checkins = extras?.checkins ?? [];
   const wsId = props.workspaceId !== undefined ? props.workspaceId : (goals[0]?.workspaceId ?? null);
@@ -261,8 +263,10 @@ function GoalRow({ r, all, links, checkins, projects, tasks, statusUpdates, memb
           : v2 ? <span className="kgp-noface" role="img" aria-label="No owner" title="No owner"><Icon name="user" size={12} /></span> : null}
       </span>
       <div className="kgp-pace">
-        <Meter value={r.pct} height={4} tone={tone} marker={expected} label={`${g.name} progress`} />
-        <span className="kgp-pct" title={numbers ? `${r.pct}% of the way` : undefined}>{r.pct}%</span>
+        {r.hidden ? <span className="kgp-pct" aria-label="Progress unknown">–</span> : <>
+          <Meter value={r.pct} height={4} tone={tone} marker={expected} label={`${g.name} progress`} />
+          <span className="kgp-pct" title={numbers ? `${r.pct}% of the way` : undefined}>{r.pct}%</span>
+        </>}
         <span className="kgp-pace-say" data-state={state} title={statusTip}>
           <span className="kgp-status" data-tone={statusTone}>{status}</span>
           {say && <span className="kgp-pace-words">{say}</span>}

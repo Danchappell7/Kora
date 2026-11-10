@@ -3,9 +3,11 @@
    results Kanbo noticed are behind pace, and what Ask is told. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Goal, GoalCheckin, GoalLink, Project, StatusUpdate, Task } from "../data/types";
+import { noteAccessSchema, resetAccessSchema } from "./projectAccess";
+import { businessDigest } from "./group";
 import {
   askGoals, briefGoalLookup, checkinAge, goalCarriedOver, goalGroup, goalInRange, goalsBehindForMe, goalsForProject, goalsForTask, goalsInQuarter, goalsSummary, goalSpan,
-  hasWorkBehind, paceWords, periodShort, projectDot, quarterOptions, readGoals, seeableGoals, servesLabel,
+  hasWorkBehind, hiddenProjectOf, paceWords, periodShort, projectDot, quarterOptions, readGoals, seeableGoals, servesLabel,
 } from "./goalFlow";
 
 const TODAY = new Date(2026, 10, 10);   // 10 Nov 2026: day 40 of Q4's 91 (44% of the way)
@@ -184,3 +186,39 @@ describe("the brief's goal line, Kanbo noticed and Ask", () => {
     expect(told.find((g) => g.id === "on")!.noWork).toBe(true);
   });
 });
+
+describe("0058: a goal whose % comes from a project you can't see", () => {
+  const W = { id: "ws", name: "Foundrise", kind: "team" as const, projectAccess: { on: true, defaultVisibility: "workspace" as const, membersMayMakePrivate: false } };
+  const seedTasks = [1, 2, 3, 4].map((i) => task({ id: `s${i}`, projectId: "seed", status: i < 4 ? "done" : "todo" }));
+  const seedGoal = goal({ id: "seed-g", name: "Close the seed round", projectId: "seed", ...{ period: null, periodStart: null, periodEnd: null }, due: "2026-12-31", createdAt: "2026-10-01T09:00:00Z" });
+  beforeEach(() => noteAccessSchema(true));
+  afterEach(() => resetAccessSchema());
+
+  it("reads as unknown, not 0% and behind: no pace, no suggestion, in no count", () => {
+    const hidden = hiddenProjectOf([{ id: "p1" }], [W]);
+    const r = readGoals([seedGoal], [], TODAY, hidden).get("seed-g")!;
+    expect(r).toMatchObject({ pct: 0, hidden: true, pace: null, standing: "early" });
+    expect(r.progress.source).toBe("hidden");
+    expect(paceWords(r)).toBe("Progress comes from a project you can't see");
+    // someone who can see it reads its real %
+    expect(readGoals([seedGoal], seedTasks, TODAY, hiddenProjectOf([{ id: "seed" }], [W])).get("seed-g")).toMatchObject({ pct: 75, standing: "on" });
+    // and with project access off, nothing is hidden (a project that isn't loaded reads as before)
+    expect(readGoals([seedGoal], [], TODAY, hiddenProjectOf([], [{ ...W, projectAccess: { ...W.projectAccess, on: false } }])).get("seed-g")?.hidden).toBeUndefined();
+  });
+
+  it("a parent's roll-up leaves it out rather than counting it as 0", () => {
+    const parent = goal({ id: "par", name: "Fund the year" });
+    const kr1 = goal({ id: "kr1", parentId: "par", kind: "key_result", projectId: "seed" });
+    const kr2 = goal({ id: "kr2", parentId: "par", kind: "key_result", target: 100, current: 50, startValue: 0 });
+    const reads = readGoals([parent, kr1, kr2], [], TODAY, hiddenProjectOf([], [W]));
+    expect(reads.get("par")?.pct).toBe(50);
+  });
+
+  it("it's never on the Group page as past due at 0%, and a team meeting's agenda leaves it out", () => {
+    const late = { ...seedGoal, due: "2026-11-01" };
+    const d = businessDigest(W, "admin", { workspaces: [W], members: [], me: "me", tasks: [], projects: [{ id: "p1", name: "Open", emoji: "", color: "", workspaceId: "ws" }],
+      goals: [late, { ...late, id: "marked", status: "off_track" }], statusUpdates: [], approvals: [], today: TODAY });
+    expect(d.goals.behind.map((g) => [g.goal.id, g.why, g.hidden ?? false])).toEqual([["marked", "off_track", true]]);
+  });
+});
+

@@ -9,14 +9,18 @@
      (and 0%, never 100%, until where it started is known);
    · a goal with key results under it, and no number of its own yet,
      rolls up as their weighted average (each counts its weight, 1 when
-     unset; archived ones don't count).
+     unset; archived ones don't count);
+   · a goal whose project you can't see (0058, project access on) has
+     no % you can know: it's "hidden", and its parent's roll-up leaves
+     it out rather than counting it as 0.
    Pure: no React, no I/O.
    ============================================================ */
 import type { Goal } from "../data/types";
 
 export interface GoalProgress {
   pct: number;
-  source: "project" | "subgoals" | "manual";
+  /** hidden: its project is one you can't see (pct is 0 and means nothing) */
+  source: "project" | "subgoals" | "manual" | "hidden";
   children: number;
   /** the weighted average of the sub-goals, when there are any (shown alongside a goal's own number) */
   subPct?: number;
@@ -65,7 +69,7 @@ export const goalWeight = (g: Pick<Goal, "weight">): number => (g.weight != null
  *  - otherwise a goal with sub-goals rolls up as their weighted average (the untouched
  *    0 / 100 parent used to read 0% however far along its sub-goals were);
  *  - otherwise its own number. */
-export function goalProgressMap(goals: Goal[], projectPct: (projectId: string) => number): Map<string, GoalProgress> {
+export function goalProgressMap(goals: Goal[], projectPct: (projectId: string) => number, hidden?: (g: Goal) => boolean): Map<string, GoalProgress> {
   const ids = new Set(goals.map((g) => g.id));
   const kids = new Map<string, Goal[]>();
   for (const g of goals) if (g.parentId && g.parentId !== g.id && ids.has(g.parentId)) { const a = kids.get(g.parentId) ?? []; a.push(g); kids.set(g.parentId, a); }
@@ -78,7 +82,7 @@ export function goalProgressMap(goals: Goal[], projectPct: (projectId: string) =
     if (children.length && !visiting.has(g.id)) {
       visiting.add(g.id);
       const counted = children.filter((c) => !visiting.has(c.id) && !c.archivedAt);
-      const vals = counted.map((c) => [calc(c).pct, goalWeight(c)] as const);
+      const vals = counted.map((c) => [calc(c), goalWeight(c)] as const).filter(([p]) => p.source !== "hidden").map(([p, w]) => [p.pct, w] as const);
       visiting.delete(g.id);
       const total = vals.reduce((a, [, w]) => a + w, 0);
       if (total > 0) subPct = vals.reduce((a, [p, w]) => a + p * w, 0) / total;
@@ -86,7 +90,8 @@ export function goalProgressMap(goals: Goal[], projectPct: (projectId: string) =
     const n = children.length;
     const withSub = subPct === undefined ? {} : { subPct };
     let res: GoalProgress;
-    if (g.projectId) res = { pct: projectPct(g.projectId), source: "project", children: n, ...withSub };
+    if (g.projectId && hidden?.(g)) res = { pct: 0, source: "hidden", children: n, ...withSub };
+    else if (g.projectId) res = { pct: projectPct(g.projectId), source: "project", children: n, ...withSub };
     else if (subPct !== undefined && !tracksOwnNumber(g)) res = { pct: subPct, source: "subgoals", children: n, subPct };
     else res = { pct: goalValuePct(g), source: "manual", children: n, ...withSub };
     memo.set(g.id, res);

@@ -243,6 +243,15 @@ describe("project access (0058, D17): an agenda carries only what everyone it's 
     expect(scoped.tasks.map((t) => t.id)).not.toContain("p-task");
     expect(scoped.projects.map((p) => p.id)).toEqual(["pa", "pm", "pb"]);
   });
+  it("a goal whose % comes from a Members only project stays off a team meeting's agenda (never 'Past due at 0%')", () => {
+    const seedTasks = [1, 2, 3, 4].map((i) => task({ id: `s${i}`, projectId: "pm", status: i < 4 ? "done" : "todo" }));
+    const g = goal({ id: "g-seed", name: "Close the seed round", projectId: "pm", due: "2026-11-01" });
+    const team = agendaFacts(input({ workspaces: [gated[0]], tasks: [...TASKS, ...seedTasks], goalTasks: [...TASKS, ...seedTasks], projects, goals: [g] }));
+    expect(team.goals.map((x) => x.id)).toEqual([]);
+    expect(team.goalsBehind).toBe(0);
+    const lead = agendaFacts(input({ preset: "leadership", workspaces: [gated[0]], tasks: [...TASKS, ...seedTasks], goalTasks: [...TASKS, ...seedTasks], projects, goals: [g] }));
+    expect(lead.goals.map((x) => [x.id, x.pct, x.line])).toEqual([["g-seed", 75, "Past due at 75%"]]);
+  });
   it("with project access off, nothing is left out", () => {
     const all = input({ tasks: [...TASKS, ...secret], projects });
     expect(forAudience(all)).toBe(all);

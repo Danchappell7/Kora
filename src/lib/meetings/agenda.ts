@@ -265,7 +265,9 @@ export function agendaFacts(all: AgendaInput): AgendaFacts {
       const why = g.why === "off_track" ? "Off track" : g.why === "at_risk" ? "At risk" : g.why === "overdue" ? `Past due at ${g.pct}%` : "";
       return [why, g.pace?.line && g.pace.line !== why ? g.pace.line : ""].filter(Boolean).join(" · ") || g.pace?.line || "Behind pace";
     };
-    const behind = digest.goals.behind;
+    // (0058: a goal whose % comes from a project the meeting's people can't all see stays off the agenda:
+    // its number would be wrong for them, and its line would name work they can't open)
+    const behind = digest.goals.behind.filter((g) => !g.hidden);
     const parentOf = (g: Goal) => (g.parentId ? wsGoals.find((x) => x.id === g.parentId && !x.archivedAt) : undefined);
     for (const g of behind) {
       const parent = parentOf(g.goal);

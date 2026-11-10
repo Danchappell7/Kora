@@ -8,8 +8,8 @@
    ============================================================ */
 import { useCallback, useMemo } from "react";
 import { getMember } from "../../data/data";
-import type { Goal, GoalExtras, Role, Task, WorkspaceMember } from "../../data/types";
-import { askGoals, briefGoalLookup, goalsBehindForMe, goalsForProject, goalsForTask, readGoals, seeableGoals, type AskGoal, type BriefGoal, type GoalBehind, type GoalRead } from "../../lib/goalFlow";
+import type { Goal, GoalExtras, Project, Role, Task, Workspace, WorkspaceMember } from "../../data/types";
+import { askGoals, briefGoalLookup, goalsBehindForMe, goalsForProject, goalsForTask, hiddenProjectOf, readGoals, seeableGoals, type AskGoal, type BriefGoal, type GoalBehind, type GoalRead } from "../../lib/goalFlow";
 
 export interface GoalFlow {
   /** the goals you can see, archived ones left out */
@@ -27,7 +27,7 @@ export interface GoalFlow {
   ask: (workspaceId: string | null) => AskGoal[];
 }
 
-export function useGoalFlow({ goals, extras, tasks, me, roleIn, members, today }: {
+export function useGoalFlow({ goals, extras, tasks, me, roleIn, members, today, projects, workspaces }: {
   goals: Goal[];
   extras: GoalExtras | null;
   /** every workspace's tasks (archived projects' too) */
@@ -36,9 +36,13 @@ export function useGoalFlow({ goals, extras, tasks, me, roleIn, members, today }
   roleIn: (wsId: string | null) => Role | null | undefined;
   members: WorkspaceMember[];
   today: Date;
+  /** 0058: the projects you can see, and the workspaces (a goal reading its % from any other is unknown) */
+  projects?: Project[];
+  workspaces?: Workspace[];
 }): GoalFlow {
   const seen = useMemo(() => seeableGoals(goals, me, roleIn).filter((g) => !g.archivedAt), [goals, me, roleIn]);
-  const reads = useMemo(() => readGoals(seen, tasks, today), [seen, tasks, today]);
+  const hidden = useMemo(() => (projects && workspaces ? hiddenProjectOf(projects, workspaces) : undefined), [projects, workspaces]);
+  const reads = useMemo(() => readGoals(seen, tasks, today, hidden), [seen, tasks, today, hidden]);
   const links = useMemo(() => extras?.links ?? [], [extras]);
   const checkins = useMemo(() => extras?.checkins ?? [], [extras]);
   const brief = useMemo(() => briefGoalLookup(me, seen, links, reads), [me, seen, links, reads]);

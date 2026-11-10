@@ -94,6 +94,7 @@ export function GoalSource({ prog, linked, weighted }: { prog: GoalProgress; lin
           From project {linked?.name ?? "—"}{linked?.archivedAt ? " (archived)" : ""}
         </span>
       )}
+      {prog.source === "hidden" && <span className="kpj-goal-source"><Icon name="lock" size={11} sw={2} /> Progress comes from a project you can't see</span>}
       {prog.source === "subgoals" && <span className="kpj-goal-source" title="Enter a current value to track this goal's own number instead">{weighted ? "Weighted average" : "Average"} of {plural(prog.children, "key result")}</span>}
       {prog.source === "manual" && prog.subPct !== undefined && <span className="kpj-goal-source">Own value · {plural(prog.children, "key result")} {weighted ? "weighted average" : "average"} {prog.subPct}%</span>}
     </div>

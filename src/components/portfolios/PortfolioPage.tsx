@@ -20,7 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AiMark, Avatar, AvatarStack, Button, DateChip, EmptyState, Icon, IconButton, Pill, ProjectCover, ProjectTile, Provenance, Segmented } from "../primitives";
 import { Popover } from "../primitives/Popover";
 import { getMember, KANBO_TODAY, todayISO, WORKSPACES } from "../../data/data";
-import { accessOn } from "../../lib/projectAccess";
+import { accessOn, visibilityOf } from "../../lib/projectAccess";
 import type { Portfolio, PortfolioUpdate, Project, StatusKind, StatusUpdate, Task, UpdateSections, Workspace } from "../../data/types";
 import type { PortfolioPatch } from "../../data/store";
 import type { AiOutcome } from "../../lib/askTypes";
@@ -52,11 +52,22 @@ export type AiPortfolio = (facts: unknown) => Promise<AiOutcome<{ summary: strin
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
 
+/** 0058: a team portfolio's updates are read by everyone in its workspace, so Kanbo drafts one only
+ *  from the projects they can all see (Whole workspace, or any while project access is off). The
+ *  server can't scrub free text: this is the only place it's kept out. A Personal portfolio is yours. */
+export function draftableRows(pf: Pick<Portfolio, "workspaceId">, rows: PfRow[], workspaces: Pick<Workspace, "id" | "projectAccess">[]): PfRow[] {
+  if (!pf.workspaceId) return rows;
+  return rows.filter((r) => !accessOn(workspaces.find((w) => w.id === (r.p.workspaceId ?? null))) || visibilityOf(r.p) === "workspace");
+}
+
 /** The portfolio update Kanbo drafts for its owner, and its earlier ones. */
-function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, owner, aiPortfolio, onOpenProject }: {
+function PortfolioUpdates({ pf, rows: allRows, tasks, statusUpdates, me, canWrite, lead, owner, aiPortfolio, onOpenProject }: {
   pf: Portfolio; rows: PfRow[]; tasks: Task[]; statusUpdates: StatusUpdate[]; me: string; canWrite: boolean; lead: boolean;
   owner: string | null; aiPortfolio?: AiPortfolio; onOpenProject: (id: string) => void;
 }) {
+  // (what Kanbo drafts from; each project's latest, below, is still every one you can see)
+  const rows = draftableRows(pf, allRows, WORKSPACES);
+  const leftOut = allRows.length - rows.length;
   const { updates, on } = usePortfolioUpdates(pf.id);
   const idx = useMemo(() => indexTasks(tasks), [tasks]);
   const isOwner = !!owner && owner === me;
@@ -73,14 +84,16 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
   // the owner opens to Kanbo's draft; once they've posted it, it folds back to "Draft a portfolio update"
   const [posted, setPosted] = useState(false);
   const open = canWrite && on && (writing || (isOwner && !posted));
-  const local = () => draftPortfolioLocal(rows, tasks, idx, statusUpdates, KANBO_TODAY, owner);
+  // (nothing everyone can see: nothing to draft from, and the note below says why)
+  const local = () => (rows.length || !leftOut ? draftPortfolioLocal(rows, tasks, idx, statusUpdates, KANBO_TODAY, owner)
+    : { summary: "", status: "on_track" as StatusKind, sections: {} as UpdateSections });
   const draft = async () => {
     if (drafting) return;
     setErr(null);
     const fill = (d: { summary: string; status: StatusKind; sections?: UpdateSections }, from: "ai" | "template", why: string | null) => {
       setText(d.summary); setKind(d.status); setSections(d.sections ?? {}); setSource(from); setNote(why);
     };
-    if (!aiPortfolio) { fill(local(), "template", null); return; }
+    if (!aiPortfolio || (!rows.length && leftOut)) { fill(local(), "template", null); return; }
     setDrafting(true);
     let out: Awaited<ReturnType<AiPortfolio>> | null = null;
     try { out = await aiPortfolio(portfolioFactsForAi(pf, rows, tasks, idx, statusUpdates, KANBO_TODAY, owner)); } catch { out = null; }
@@ -107,7 +120,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const latestOfEach = rows.filter((r) => r.latest);
+  const latestOfEach = allRows.filter((r) => r.latest);
   const ownerName = owner ? getMember(owner)?.name : undefined;
   return (
     <div className="kpf-updates">
@@ -126,6 +139,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
               {source === "ai" && <Provenance summary={`from ${plural(rows.length, "project")}' latest updates`} details={rows.map((r) => `${r.p.name}: ${r.status.label}`)} />}
             </div>
             {source === "template" && <p className="kpj-composer-note">{note ?? "Kanbo drafted this on this device from the projects' latest updates."} {isOwner ? "Edit it, then post it for your followers." : "Edit it before you post."}</p>}
+            {leftOut > 0 && <p className="kpj-composer-note" title="Everyone here reads a portfolio update, so Kanbo leaves out projects not everyone can see.">Leaves out {plural(leftOut, "private project")}.</p>}
             <fieldset className="kuc-sec">
               {SECTION_KEYS.map((k) => (
                 <label key={k} className="kuc-sec-row">
@@ -161,7 +175,7 @@ function PortfolioUpdates({ pf, rows, tasks, statusUpdates, me, canWrite, lead, 
         <h2 className="kpf-h2">Latest from each project</h2>
         {latestOfEach.length === 0 ? <p className="kpf-off">None of its projects has posted an update yet.</p> : (
           <ol className="kpf-latest">
-            {rows.map((r) => {
+            {allRows.map((r) => {
               const u = r.latest;
               const by = u ? updateAuthor(u) : undefined;
               return (

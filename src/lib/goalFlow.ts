@@ -17,7 +17,8 @@
      Kanbo noticed, and which goals are slipping.
    Pure: no React, no I/O, no clock of its own.
    ============================================================ */
-import type { Goal, GoalCheckin, GoalLink, Project, Role, StatusUpdate, Task } from "../data/types";
+import type { Goal, GoalCheckin, GoalLink, Project, Role, StatusUpdate, Task, Workspace } from "../data/types";
+import { accessOn } from "./projectAccess";
 import { goalNumbersGap, goalProgressMap, type GoalProgress } from "./goalProgress";
 import { goalPace, type PaceRead } from "./goalPace";
 import { periodLabel, periodRange, quarterOf } from "./goalPeriods";
@@ -35,22 +36,35 @@ export interface GoalRead {
   standing: "on" | "behind" | "early";
   /** a goal that tracks its own number but can't be measured yet: it needs a target, or where it started */
   needs?: "target" | "start";
+  /** 0058: its % comes from a project you can't see: unknown, so no pace, and it's in no count */
+  hidden?: true;
 }
 
 /** What a goal that isn't set up yet says in place of its pace. */
 export const NEEDS_LINE: Record<NonNullable<GoalRead["needs"]>, string> = { target: "Set a target", start: "Set where it started" };
+/** What a goal whose project you can't see says in place of its pace and %. */
+export const HIDDEN_LINE = "Progress comes from a project you can't see";
+
+/** 0058: a goal whose % comes from a project you can't see: project access is on in its workspace,
+ *  and the project isn't one of yours (`projects`: the ones loaded, or a meeting's audience's). */
+export function hiddenProjectOf(projects: readonly Pick<Project, "id">[], workspaces: readonly Pick<Workspace, "id" | "projectAccess">[]): (g: Goal) => boolean {
+  const ids = new Set(projects.map((p) => p.id));
+  return (g) => !!g.projectId && !ids.has(g.projectId) && accessOn(workspaces.find((w) => w.id === (g.workspaceId ?? null)));
+}
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const localIso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const DAY = 86_400_000;
 const dayNo = (iso: string) => { const [y, m, d] = iso.slice(0, 10).split("-").map(Number); return Date.UTC(y, m - 1, d) / DAY; };
 
-/** Every goal's %, pace and standing. `tasks`: the goals' workspaces' tasks (archived projects' too). */
-export function readGoals(goals: Goal[], tasks: Task[], today: Date): Map<string, GoalRead> {
-  const progress = goalProgressMap(goals, (pid) => projectPct(tasks, pid));
+/** Every goal's %, pace and standing. `tasks`: the goals' workspaces' tasks (archived projects' too).
+ *  `hidden`: goals whose project you can't see (hiddenProjectOf): no pace, never behind, not counted. */
+export function readGoals(goals: Goal[], tasks: Task[], today: Date, hidden?: (g: Goal) => boolean): Map<string, GoalRead> {
+  const progress = goalProgressMap(goals, (pid) => projectPct(tasks, pid), hidden);
   const out = new Map<string, GoalRead>();
   for (const g of goals) {
     const p = progress.get(g.id) ?? { pct: 0, source: "manual" as const, children: 0 };
+    if (p.source === "hidden") { out.set(g.id, { goal: g, progress: p, pct: p.pct, pace: null, standing: "early", hidden: true }); continue; }
     // its own number with nothing to measure against yet: no pace, no suggestion, not counted
     const needs = p.source === "manual" && g.status !== "done" ? goalNumbersGap(g) ?? undefined : undefined;
     const pace = needs ? null : goalPace(g, p.pct, today);
@@ -120,7 +134,7 @@ export function servesLabel(goal: Goal, today: Date): string {
 }
 
 /** "Behind pace by 12%", "On pace", "Set a target", … for a row; "" when there's no pace line. */
-export const paceWords = (r: GoalRead): string => (r.pace ? r.pace.line : r.needs ? NEEDS_LINE[r.needs] : "");
+export const paceWords = (r: GoalRead): string => (r.hidden ? HIDDEN_LINE : r.pace ? r.pace.line : r.needs ? NEEDS_LINE[r.needs] : "");
 
 /* ---------------- the quarter a goal belongs to ---------------- */
 
@@ -333,7 +347,7 @@ export function askGoals(goals: Goal[], links: GoalLink[], reads: Map<string, Go
       const r = reads.get(g.id);
       return {
         id: g.id, name: g.name, period: periodShort(g, today), status: g.status, pct: r?.pct ?? 0,
-        expected: r?.pace && r.pace.state !== "early" ? r.pace.expected : null, pace: r?.pace?.line ?? "",
+        expected: r?.pace && r.pace.state !== "early" ? r.pace.expected : null, pace: r?.hidden ? HIDDEN_LINE : r?.pace?.line ?? "",
         slipping: g.status !== "done" && (r?.standing === "behind" || g.status === "at_risk" || g.status === "off_track"),
         owner: g.ownerId ? nameOf(g.ownerId) : "", kind: g.kind === "key_result" ? "key result" : g.kind === "metric" ? "metric" : "goal",
         noWork: (g.workspaceId ?? null) !== null && !hasWorkBehind(g, goals, links),

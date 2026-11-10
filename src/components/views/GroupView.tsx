@@ -193,15 +193,17 @@ function BusinessSection({ d, onOpen, asks, runMeetings }: { d: BusinessDigest; 
           {d.goals.total === 0 ? <p className="kgrp-calm">No goals yet.</p>
             : d.goals.behind.length === 0 ? <Calm>Every goal is on track.</Calm> : (
               <ul className="kgrp-rows">
-                {d.goals.behind.slice(0, 3).map(({ goal, pct, why, pace }) => (
+                {d.goals.behind.slice(0, 3).map(({ goal, pct, why, pace, hidden }) => (
                   <li key={goal.id} className="kgrp-row">
                     <div className="kgrp-line">
                       <button type="button" className="kgrp-open" onClick={() => go({ kind: "goals" })} title={goal.name}>{goal.name}</button>
                       <Pill tone={GOAL_WHY[why].tone}>{GOAL_WHY[why].label}</Pill>
                     </div>
                     <div className="kgrp-meta">
-                      <Meter value={pct} width={88} height={4} label={`${goal.name} progress`} />
-                      <span>{pct}%</span>
+                      {hidden ? <span>Progress comes from a project you can't see</span> : <>
+                        <Meter value={pct} width={88} height={4} label={`${goal.name} progress`} />
+                        <span>{pct}%</span>
+                      </>}
                     </div>
                     {/* wave 2: the pace line */}
                     {pace?.line && <span className="kgrp-pace">{pace.line}</span>}

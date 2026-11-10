@@ -10,6 +10,7 @@ import { resetPortfolioUpdates } from "../../lib/portfolioUpdates";
 import * as exportTasks from "../../lib/exportTasks";
 import { PortfolioPage } from "./PortfolioPage";
 import { PortfolioScope, scopeToPortfolio, setInsightsPortfolio } from "./PortfolioScope";
+import { noteAccessSchema, resetAccessSchema } from "../../lib/projectAccess";
 
 const NOW = new Date(2026, 10, 13, 10);      // Friday 13 Nov 2026: the team's day (the default)
 const proj = (id: string, name: string, o: Partial<Project> = {}): Project => ({ id, name, emoji: "📁", color: "red", workspaceId: "ws", ownerId: "m-2", ...o });
@@ -186,3 +187,43 @@ describe("Insights for one portfolio", () => {
     expect(none.container.querySelector(".kpf-scope")).toBeNull();
   });
 });
+
+describe("0058: a team portfolio's update, with project access on", () => {
+  // (Foundrise has project access on in the demo; everyone at Foundrise reads the portfolio's updates)
+  const fr = (id: string, name: string, o: Partial<Project> = {}) => proj(id, name, { workspaceId: "ws-foundrise", ownerId: "m-self", ...o });
+  const frProjects = [fr("calm", "Calm", { visibility: "workspace" }), fr("payroll", "Payroll & contracts", { visibility: "private" }), fr("seed", "Seed round", { visibility: "members" })];
+  const frUpdates: StatusUpdate[] = [
+    upd("calm", "on_track", "2026-11-12T10:00:00", "Moving."),
+    { ...upd("payroll", "off_track", "2026-11-12T10:00:00", "Theo's contract renewal is three weeks late. More soon."), sections: { risks: "Theo may walk if the renewal slips again." } },
+    upd("seed", "at_risk", "2026-11-12T10:00:00", "The lead investor wants a lower valuation."),
+  ];
+  const FR: Portfolio = { ...PF, workspaceId: "ws-foundrise", projectIds: ["calm", "payroll", "seed"] };
+  beforeEach(() => noteAccessSchema(true));
+  afterEach(() => resetAccessSchema());
+
+  it("Kanbo drafts it only from the projects everyone there can see, and says what it left out", () => {
+    page({ portfolio: FR, projects: frProjects, tasks: [task("c1", "calm"), task("p1", "payroll"), task("s1", "seed")], statusUpdates: frUpdates, tab: "updates" });
+    const all = Array.from(document.querySelectorAll("textarea")).map((t) => (t as HTMLTextAreaElement).value).join("\n");
+    expect(all).toMatch(/1 of 1 project is on track/);
+    expect(all).not.toMatch(/Payroll|Theo|Seed round|valuation/);
+    expect(screen.getByText("Leaves out 2 private projects.")).toBeInTheDocument();
+    // each project's latest is still listed for you, who can see them
+    expect(screen.getByRole("button", { name: "Open project Payroll & contracts" })).toBeInTheDocument();
+  });
+
+  it("the facts sent to Kanbo's AI leave them out too", async () => {
+    const ai = vi.fn(async () => ({ source: "ai" as const, data: { summary: "x", status: "on_track" as const } }));
+    page({ portfolio: FR, projects: frProjects, tasks: [task("c1", "calm"), task("p1", "payroll")], statusUpdates: frUpdates, tab: "updates", aiPortfolio: ai as never });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /Redraft|Draft it for me/ })); });
+    const facts = (ai.mock.calls[0] as unknown[])[0] as { projects: { name: string }[] };
+    expect(facts.projects.map((p) => p.name)).toEqual(["Calm"]);
+  });
+
+  it("a Personal portfolio is yours alone: nothing is left out", () => {
+    page({ portfolio: { ...FR, workspaceId: null }, projects: frProjects, tasks: [], statusUpdates: frUpdates, tab: "updates" });
+    expect(screen.queryByText(/Leaves out/)).toBeNull();
+    const all = Array.from(document.querySelectorAll("textarea")).map((t) => (t as HTMLTextAreaElement).value).join("\n");
+    expect(all).toMatch(/Payroll & contracts is off track/);
+  });
+});
+

@@ -30,6 +30,7 @@ import { mergedStatus, type MergedStatus } from "./honestStatus";
 import { projectRhythmState, readsMissing } from "./updateRhythm";
 import { computeRisks, type Risk } from "./radar";
 import { projectProgressOf } from "./countRules";
+import { hiddenProjectOf } from "./goalFlow";
 import { localDay, startOfWeekMon, addDays } from "./weekMath";
 import { approvalsEverywhere, businessesYouRun, businessLead, roleInWorkspace, wsKey, type WorkspaceSignal } from "./businesses";
 
@@ -38,7 +39,8 @@ export interface GoalPaceRead { behind: boolean; line: string }
 export type GoalPace = (goal: Goal, progress: GoalProgress, today: Date) => GoalPaceRead | null;
 
 export type GoalWhy = "off_track" | "at_risk" | "overdue" | "pace";
-export interface GroupGoal { goal: Goal; pct: number; why: GoalWhy; pace?: GoalPaceRead }
+/** hidden (0058): its % comes from a project you can't see (only its own status can put it here) */
+export interface GroupGoal { goal: Goal; pct: number; why: GoalWhy; pace?: GoalPaceRead; hidden?: true }
 /** missing: past its update day and the follow-ups (0053) · stale: no update in 14 days (before 0053) */
 export type ProjectWhy = "off_track" | "at_risk" | "missing" | "stale";
 export interface GroupProject {
@@ -117,12 +119,14 @@ export function goalsBehind(goals: readonly Goal[], progress: ReadonlyMap<string
     if (g.status === "done" || g.archivedAt) continue;
     const prog = progress.get(g.id) ?? { pct: 0, source: "manual" as const, children: 0 };
     const pct = Math.round(prog.pct);
-    const read = pace?.(g, prog, today) ?? undefined;
+    // (0058: a % from a project you can't see is unknown: never past due at 0%, never behind pace)
+    const hidden = prog.source === "hidden";
+    const read = hidden ? undefined : pace?.(g, prog, today) ?? undefined;
     const why: GoalWhy | null = g.status === "off_track" ? "off_track"
       : g.status === "at_risk" ? "at_risk"
-      : g.due && g.due < todayIso && pct < 100 ? "overdue"
+      : !hidden && g.due && g.due < todayIso && pct < 100 ? "overdue"
       : read?.behind ? "pace" : null;
-    if (why) out.push({ goal: g, pct, why, ...(read ? { pace: read } : {}) });
+    if (why) out.push({ goal: g, pct, why, ...(read ? { pace: read } : {}), ...(hidden ? { hidden: true as const } : {}) });
   }
   const rank: Record<GoalWhy, number> = { off_track: 0, overdue: 1, at_risk: 2, pace: 3 };
   return out.sort((a, b) => rank[a.why] - rank[b.why] || (a.goal.position ?? 0) - (b.goal.position ?? 0));
@@ -142,7 +146,7 @@ export function businessDigest(ws: Workspace, role: Role, input: GroupInput): Bu
   // (lib/countRules: top-level tasks, the rule the Goals page and each project's header use)
   const goalTasks = (input.goalTasks ?? all).filter((t) => (t.workspaceId ?? null) === wsId) as Task[];
   const pctOf = (pid: string) => projectProgressOf(goalTasks, pid).pct;
-  const behind = goalsBehind(goals, goalProgressMap(goals, pctOf), today, input.pace);
+  const behind = goalsBehind(goals, goalProgressMap(goals, pctOf, hiddenProjectOf(allProjects, input.workspaces)), today, input.pace);
 
   // projects: Kanbo's read of the work, the latest update's call, or an update that's gone missing
   const needs: GroupProject[] = [];
