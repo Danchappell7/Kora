@@ -332,7 +332,7 @@ export function FormsView({ forms, projects, members, onCreate, onUpdate, onDele
                         </div>
                       )}
                       {/* anyone with the link can submit (guests only see the link while it's on) */}
-                      <PublicLinkPanel form={f} canEdit={!readOnly} projectName={proj?.name} onChange={(p) => onPublicChange?.(f.id, p)} />
+                      <PublicLinkPanel form={f} canEdit={!readOnly} projectName={proj?.name} projectColor={proj?.color} onChange={(p) => onPublicChange?.(f.id, p)} />
                       {filling && !readOnly && (
                         <form className="kpj-form-fill" aria-label={`Fill in ${f.name}`} onSubmit={(e) => { e.preventDefault(); submit(f); }}>
                           {/* eslint-disable-next-line jsx-a11y/no-autofocus */}

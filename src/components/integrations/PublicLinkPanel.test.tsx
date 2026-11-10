@@ -76,6 +76,27 @@ describe("in the demo", () => {
     expect(clicks[0].download).toBe("q3-product-launch-launch-requests-qr.svg");
     expect(URL.createObjectURL).toHaveBeenCalled();
   });
+  it("prints the QR code as an A4 poster: the form's name, its description and the link, in the project's colour", async () => {
+    render(<PublicLinkPanel form={{ ...base, publicEnabled: true, description: "Tell us what you need for launch." }} canEdit projectName="Q3 Product Launch" projectColor="#3366ff" />);
+    fireEvent.click(await screen.findByRole("button", { name: "QR code" }));
+    const doc = { write: vi.fn(), open: vi.fn(), close: vi.fn() };
+    const w = { document: doc, focus: vi.fn(), print: vi.fn() } as unknown as Window;
+    vi.spyOn(window, "open").mockReturnValue(w);
+    fireEvent.click(screen.getByRole("button", { name: "Print poster" }));
+    const html = doc.write.mock.calls.map((c) => String(c[0])).join("");
+    expect(html).toContain("<h1>Launch requests</h1>");
+    expect(html).toContain("Tell us what you need for launch.");
+    expect(html).toContain(`${window.location.origin}/f/demo`);
+    expect(html).toContain("background:#3366ff");
+    expect(html).toContain("Launch requests · Q3 Product Launch");
+  });
+  it("says so when the browser blocks the poster's window", async () => {
+    render(<PublicLinkPanel form={{ ...base, publicEnabled: true }} canEdit />);
+    fireEvent.click(await screen.findByRole("button", { name: "QR code" }));
+    vi.spyOn(window, "open").mockReturnValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "Print poster" }));
+    expect(await screen.findByText(/blocked the poster's window/)).toBeInTheDocument();
+  });
   it("names the download safely", () => {
     expect(qrFileName("Café / IT desk!", "Ops & Facilities")).toBe("ops-facilities-cafe-it-desk-qr.svg");
     expect(qrFileName("Bugs")).toBe("bugs-qr.svg");

@@ -1,7 +1,8 @@
 /* ============================================================
    KANBO — a form's public link.                             [f9-public-forms]
    "Anyone with the link can submit" toggle, the link (copy, open), a QR
-   code (lib/qr, pure SVG; download as SVG) and "Regenerate link"
+   code (lib/qr, pure SVG; download as SVG, or print it as an A4 poster:
+   lib/packPoster) and "Regenerate link"
    (confirm: the old link stops working). Read-only for people who can't
    edit the form (guests): they see the link only while it's on. Demo:
    toggles locally and links to /f/demo. Before 0043: explains it isn't
@@ -17,6 +18,7 @@ import type { FormDef } from "../../data/types";
 import { Button, Icon, Pill, Toggle } from "../primitives";
 import { copyText, useOptionalToast } from "../rituals/shared";
 import { encodeQr, qrPath, qrSvg } from "../../lib/qr";
+import { printPoster } from "../../lib/packPoster";
 import {
   DEMO_PUBLIC_TOKEN, publicFormUrl, publicLinksStatus, regenerateFormLink, setFormPublic,
   PublicLinkError, type PublicLinksStatus,
@@ -27,8 +29,10 @@ export interface PublicLinkPanelProps {
   form: FormDef;
   /** may switch it / regenerate it (owner, admin, member; never guests) */
   canEdit: boolean;
-  /** the project's name, for the QR download's file name and alt text */
+  /** the project's name, for the QR download's file name and alt text (and the poster) */
   projectName?: string;
+  /** the project's colour, for the poster's band */
+  projectColor?: string;
   /** the form's new public state, so the host updates its list */
   onChange?: (patch: { publicEnabled: boolean; publicToken: string | null }) => void;
 }
@@ -46,7 +50,7 @@ export function qrFileName(formName: string, projectName?: string): string {
 
 const isMac = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
 
-export function PublicLinkPanel({ form, canEdit, projectName, onChange }: PublicLinkPanelProps) {
+export function PublicLinkPanel({ form, canEdit, projectName, projectColor, onChange }: PublicLinkPanelProps) {
   const toast = useOptionalToast();
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const id = (k: string) => `kpubl-${uid}-${k}`;
@@ -178,6 +182,13 @@ export function PublicLinkPanel({ form, canEdit, projectName, onChange }: Public
     }
   };
 
+  // an A4 poster: the form's name as the headline, its description under it, the code and the link
+  const poster = () => {
+    if (!url) return;
+    const ok = printPoster({ headline: form.name, line: form.description, formName: form.name, projectName, url, color: projectColor });
+    if (!ok) announce("Your browser blocked the poster's window. Allow pop-ups for Kanbo, then try again.", "error");
+  };
+
   const closeConfirm = () => {
     setConfirming(false);
     focusOn("regen");
@@ -301,7 +312,12 @@ export function PublicLinkPanel({ form, canEdit, projectName, onChange }: Public
               )}
               <div className="kpubl-qr-text">
                 <p className="kpubl-desc">Put it on a poster, a slide or a desk sign: scanning it opens the form.{canEdit && !demo ? " If you regenerate the link, download it again." : ""}</p>
-                {qr && <Button size="sm" variant="secondary" onClick={download}>Download SVG</Button>}
+                {qr && (
+                  <div className="kpubl-qr-acts">
+                    <Button size="sm" variant="secondary" onClick={download}>Download SVG</Button>
+                    <Button size="sm" variant="ghost" onClick={poster}>Print poster</Button>
+                  </div>
+                )}
               </div>
             </div>
           )}
