@@ -427,6 +427,16 @@ begin
   end;
 end $rt$;
 
+-- ---------- 6. 0058's project access survives a re-run of this file ----------
+-- Its start puts back its own can_see_task, and section 2 its tasks_visible_to,
+-- which know nothing of project access.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0043') on conflict (version) do nothing;
 

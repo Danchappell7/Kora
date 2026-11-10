@@ -344,3 +344,13 @@ begin
     perform public.update_conversation_restore();
   end if;
 end $updates$;
+
+-- ---------- 12. 0058's project access survives a re-run of this file ----------
+-- Section 4 drops every policy on the content tables, 0058's restrictive
+-- "project access: …" ones too.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;

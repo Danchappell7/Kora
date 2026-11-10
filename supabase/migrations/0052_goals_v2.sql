@@ -921,6 +921,16 @@ begin
   perform public.goal_search_restore();
 end $search$;
 
+-- ---------- 9. 0058's project access survives a re-run of this file ----------
+-- goal_rules_restore() drops every policy on goal_links, 0058's "project access:
+-- read" too (and a first run after 0058 makes goal_links without 0058's trigger).  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0052') on conflict (version) do nothing;
 

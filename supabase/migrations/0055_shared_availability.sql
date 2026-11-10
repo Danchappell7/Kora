@@ -382,6 +382,15 @@ begin
   end loop;
 end $rt$;
 
+-- ---------- 5. 0058's project access survives a re-run of this file ----------
+-- Section 3 drops every policy on bill_rates, 0058's "project access: read" too.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0055') on conflict (version) do nothing;
 

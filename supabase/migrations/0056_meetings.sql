@@ -578,6 +578,16 @@ end; $$
   grant execute on function public.kanbo_realtime_allowed(text, text, boolean) to authenticated;
 end $presence$;
 
+-- ---------- 7. 0058's project access survives a re-run of this file ----------
+-- Belt and braces: a first run after 0058 makes meetings and meeting_items without
+-- 0058's triggers on them.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0056') on conflict (version) do nothing;
 

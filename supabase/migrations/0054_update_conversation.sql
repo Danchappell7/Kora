@@ -670,6 +670,16 @@ begin
     and (last_error is null or char_length(last_error) <= 500));
 end $queue$;
 
+-- ---------- 10. 0058's project access survives a re-run of this file ----------
+-- It puts back its own can_see_status_update and drops every policy on its
+-- tables, 0058's "project access: replies" ones too.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0054') on conflict (version) do nothing;
 

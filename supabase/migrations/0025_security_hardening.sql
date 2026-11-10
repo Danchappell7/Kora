@@ -120,3 +120,13 @@ end;
 $$;
 
 grant execute on function public.toggle_comment_reaction(uuid, text) to authenticated;
+
+-- ---------- 5. 0058's project access survives a re-run of this file ----------
+-- Section 4 puts back its own toggle_comment_reaction, which lets someone who may only
+-- view a task react to its comments.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;

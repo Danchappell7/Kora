@@ -1713,6 +1713,16 @@ begin
   end loop;
 end $rt$;
 
+-- ---------- 17. 0058's project access survives a re-run of this file ----------
+-- Section 1 puts back its own can_see_project and can_edit_project, and section 4
+-- drops every policy on the bin, the history, approvals and docs, 0058's too.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0047') on conflict (version) do nothing;
 

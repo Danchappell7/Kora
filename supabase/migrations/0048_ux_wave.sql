@@ -1276,6 +1276,16 @@ begin
   end if;
 end $goalsearch$;
 
+-- ---------- 18. 0058's project access survives a re-run of this file ----------
+-- Section 10 drops every policy on saved views and kudos, 0058's "project
+-- access: read" on shared views too.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0048') on conflict (version) do nothing;
 

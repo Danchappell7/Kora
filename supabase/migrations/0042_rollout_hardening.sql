@@ -780,6 +780,16 @@ begin
   end if;
 end $apiscope$;
 
+-- ---------- 10. 0058's project access survives a re-run of this file ----------
+-- Sections 7b and 7c put back their own can_edit_task and toggle_task_follow,
+-- which know nothing of project access.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0042') on conflict (version) do nothing;
 

@@ -185,6 +185,15 @@ begin
     and (last_error is null or char_length(last_error) <= 500));
 end $queue$;
 
+-- ---------- 6. 0058's project access survives a re-run of this file ----------
+-- A first run after 0058 makes update_asks without 0058's trigger on it.  When 0058 is in, put it back.
+do $projectaccess$
+begin
+  if to_regprocedure('public.project_access_restore()') is not null then
+    perform public.project_access_restore();
+  end if;
+end $projectaccess$;
+
 -- ---------- done: record it ----------
 insert into public.schema_migrations (version) values ('0053') on conflict (version) do nothing;
 
