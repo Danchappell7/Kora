@@ -219,6 +219,32 @@ revoke all on public.project_departures from public, anon, authenticated;
 do $svc$ begin
   grant select, insert, update, delete on public.project_departures to service_role;
 exception when undefined_object then null; end $svc$;
+-- 1i. a Notion page that a sync or a database's importer linked to a team task, once that link has gone
+-- for good while the task's project is still to be reckoned with: the task deleted for good on its own
+-- (its bin row purged, by hand or by housekeeping after 30 days), or the link removed with its task still
+-- there (unlinked, or by the notion function). A two-way sync wrote that task's title into the page, and
+-- the page cache holds it for any link to the page, so the page stays closed to anyone who can't see the
+-- project it was linked from (2h), and its database too, once no sync that linked it is left (2j), as
+-- they were while the link was live or in the bin. (A project deleted for good keeps its own: 1g.)
+-- Recorded whatever the switch says; it's judged only while the switch is on. Service only.
+create table if not exists public.notion_pages_retired (
+  id           uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references public.workspaces (id) on delete cascade,
+  page_id      text not null,
+  database_id  text,
+  sync_id      uuid,                 -- (the sync whose link it was: null, an importer's or a removed sync's)
+  project_id   text,                 -- (as the task held it: null, no project)
+  access       jsonb,                -- (the project's then: 2d)
+  retired_at   timestamptz not null default now()
+);
+create unique index if not exists notion_pages_retired_key
+  on public.notion_pages_retired (workspace_id, page_id, (coalesce(project_id, '')), (coalesce(sync_id::text, '')));
+create index if not exists notion_pages_retired_db_idx on public.notion_pages_retired (workspace_id, database_id) where database_id is not null;
+alter table public.notion_pages_retired enable row level security;
+revoke all on public.notion_pages_retired from public, anon, authenticated;
+do $svc$ begin
+  grant select, insert, update, delete on public.notion_pages_retired to service_role;
+exception when undefined_object then null; end $svc$;
 
 -- ---------- 2. the access functions ----------
 -- 2a. THE RANK (the single table: SQL, the edge functions and the app mirror it)
@@ -613,10 +639,11 @@ $$;
 -- the hidden task's current title, and the notion function would fetch it from Notion on request. Such a
 -- page is linked by the sync (kind 'synced'), or by its database's importer (notion_database_id set: a
 -- one-off import, a sync that was removed, a link the bin brought back without its sync); a link someone
--- added by hand names no database, and never hides a page. It stays hidden while the project's in the bin
--- (the links its row holds, judged by that row's access) and once it's deleted for good (the pages its
--- row recorded, 1g). Unless the caller can see the task that a live sync links the page to: the page is
--- that task's then, whatever an import elsewhere made of it.
+-- added by hand names no database, and never hides a page. It stays hidden while the project's (or the
+-- task's) in the bin (the links its row holds, judged by that row's access), once the project's deleted
+-- for good (the pages its row recorded, 1g), and once the task's deleted for good on its own or the link
+-- is removed (1i, judged by the project it was linked from). Unless the caller can see the task that a
+-- live sync links the page to: the page is that task's then, whatever an import elsewhere made of it.
 create or replace function public.pa_notion_page_hidden(p_ws uuid, p_page text)
 returns boolean language sql security definer stable set search_path = public as $$
   select (exists (select 1 from public.notion_links l
@@ -632,7 +659,10 @@ returns boolean language sql security definer stable set search_path = public as
                         and public.pa_snapshot_rank(r.workspace_id, r.project_id, r.access) < 1)
           or exists (select 1 from public.project_ids_retired g
                       where g.workspace_id = p_ws and g.notion_pages @> array[p_page]
-                        and public.pa_rank(p_ws, g.id::text) < 1))
+                        and public.pa_rank(p_ws, g.id::text) < 1)
+          or exists (select 1 from public.notion_pages_retired x
+                      where x.workspace_id = p_ws and x.page_id = p_page
+                        and public.pa_snapshot_rank(p_ws, x.project_id, x.access) < 1))
      and not exists (select 1 from public.notion_links l
                       where l.workspace_id = p_ws and l.notion_page_id = p_page and l.kind = 'synced' and l.sync_id is not null
                         and public.can_see_task(l.task_id));
@@ -748,7 +778,9 @@ $$;
 --     closed to all but the workspace's owners, who see every project.
 --   - Such a project is in the bin, or its tasks are: the syncs and links their bin entries hold, each
 --     judged by its row's access (a binned task's link whose sync is still here is that sync's project's,
---     as a live one is). Once the project is deleted for good, the databases its row recorded (1g).
+--     as a live one is). Once the project is deleted for good, the databases its row recorded (1g); once
+--     such a task is deleted for good on its own, or its link removed, the page it left behind (1i: its
+--     pages still hold what a two-way sync wrote), judged as a binned link is.
 create or replace function public.user_notion_database_hidden(p_user uuid, p_ws uuid, p_db text)
 returns boolean language sql security definer stable set search_path = public as $$
   with linked as (
@@ -771,7 +803,11 @@ returns boolean language sql security definer stable set search_path = public as
                   and public.pa_snapshot_rank_for(p_user, p_ws, r.project_id, r.access) < 1)
     or exists (select 1 from public.project_ids_retired g
                 where g.workspace_id = p_ws and p_db = any (g.notion_databases)
-                  and public.pa_rank_for(p_user, p_ws, g.id::text) < 1));
+                  and public.pa_rank_for(p_user, p_ws, g.id::text) < 1)
+    or exists (select 1 from public.notion_pages_retired x
+                where x.workspace_id = p_ws and x.database_id = p_db
+                  and not exists (select 1 from public.notion_syncs s where s.id = x.sync_id)
+                  and public.pa_snapshot_rank_for(p_user, p_ws, x.project_id, x.access) < 1));
 $$;
 do $svc$
 declare f text;
@@ -1053,6 +1089,8 @@ begin
    where g.workspace_id = p_ws and (g.access ->> 'owner' = uid or g.access @> probe);
   update public.project_departures d set access = public.pa_access_without(d.access, p_user, heir)
    where d.workspace_id = p_ws and (d.access ->> 'owner' = uid or d.access @> probe);
+  update public.notion_pages_retired x set access = public.pa_access_without(x.access, p_user, heir)
+   where x.workspace_id = p_ws and (x.access ->> 'owner' = uid or x.access @> probe);
   update public.audit_events e set access = public.pa_access_without(e.access, p_user, heir)
    where e.workspace_id = p_ws and e.project_id is not null and e.access is not null
      and (e.access ->> 'owner' = uid or e.access @> probe);
@@ -1083,6 +1121,9 @@ begin
       union select d.workspace_id, public.kanbo_uuid(d.access ->> 'owner') from public.project_departures d
       union select d.workspace_id, public.kanbo_uuid(e ->> 0) from public.project_departures d
               cross join lateral jsonb_array_elements(case when jsonb_typeof(d.access -> 'members') = 'array' then d.access -> 'members' else '[]'::jsonb end) e
+      union select x.workspace_id, public.kanbo_uuid(x.access ->> 'owner') from public.notion_pages_retired x
+      union select x.workspace_id, public.kanbo_uuid(e ->> 0) from public.notion_pages_retired x
+              cross join lateral jsonb_array_elements(case when jsonb_typeof(x.access -> 'members') = 'array' then x.access -> 'members' else '[]'::jsonb end) e
       union select a.workspace_id, public.kanbo_uuid(a.access ->> 'owner') from public.audit_events a
              where a.workspace_id is not null and a.project_id is not null and a.access is not null
       union select a.workspace_id, public.kanbo_uuid(e ->> 0) from public.audit_events a
@@ -2348,6 +2389,22 @@ begin
   return new;
 end; $$;
 
+-- (1i: the pages that a sync's or a database importer's links in p_links tie to a task, left behind as
+-- linked from p_project, with p_access; a link someone added by hand names no database, and isn't one)
+create or replace function public.pa_retire_notion_pages(p_ws uuid, p_project text, p_access jsonb, p_links jsonb)
+returns void language sql security definer set search_path = public as $$
+  insert into public.notion_pages_retired as g (workspace_id, page_id, database_id, sync_id, project_id, access)
+  select distinct on (e ->> 'notion_page_id', public.kanbo_uuid(e ->> 'sync_id'))
+         p_ws, e ->> 'notion_page_id', e ->> 'notion_database_id', public.kanbo_uuid(e ->> 'sync_id'), p_project, p_access
+    from jsonb_array_elements(case when jsonb_typeof(p_links) = 'array' then p_links else '[]'::jsonb end) e
+   where p_ws is not null and e ->> 'notion_page_id' is not null
+     and (e ->> 'kind' = 'synced' or e ->> 'notion_database_id' is not null)
+   order by e ->> 'notion_page_id', public.kanbo_uuid(e ->> 'sync_id'), e ->> 'notion_database_id' nulls last
+  on conflict (workspace_id, page_id, (coalesce(project_id, '')), (coalesce(sync_id::text, '')))
+  do update set database_id = coalesce(excluded.database_id, g.database_id), access = coalesce(excluded.access, g.access),
+                retired_at = now();
+$$;
+
 -- trash, delete for good: edit rights on the item's project (housekeeping, the service role, passes),
 -- for a client's own delete (purge_trash): never a row a foreign key takes with an account (its creator's,
 -- in a workspace that goes with them), which Admin › Delete user (0029's admin_delete_user: the platform
@@ -2397,7 +2454,43 @@ begin
       if cardinality(roots) > 0 then delete from public.tasks where id = any (roots); end if;   -- (0047's bin entries)
       delete from public.sections s where s.workspace_id = old.workspace_id and s.project_id = old.item_id::text;
     end if;
+  elsif old.kind <> 'project' and old.restored_at is null and old.workspace_id is not null
+        and jsonb_typeof(old.snapshot -> 'notion_links') = 'array'
+        and exists (select 1 from public.workspaces w where w.id = old.workspace_id) then
+    -- a task (and its sub-tasks) deleted for good on its own: the pages its synced or importer-made links
+    -- tied it to, with its row's project and access (1i), as its row held them
+    perform public.pa_retire_notion_pages(old.workspace_id, old.project_id,
+                                          coalesce(old.access, public.pa_access_snapshot(old.workspace_id, old.project_id)),
+                                          old.snapshot -> 'notion_links');
   end if;
+  return old;
+end; $$;
+
+-- notion_links, after delete: a sync's or an importer's link removed while its task is still there
+-- (notion_unlink_page, the notion function) leaves its page behind (1i) with the task's project and its
+-- access now; a task that has left the workspace it was linked in (to someone's Personal list or another
+-- workspace), with none here: closed to all but this workspace's owners, as its database is (2j). One
+-- that goes with its task is the bin's: the task's bin entry holds it (and its purge records it, above),
+-- unless that entry is another workspace's (the task had left): then, as one that has left.
+create or replace function public.pa_trg_notion_links_gone() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare t record;
+begin
+  if not (old.kind = 'synced' or old.notion_database_id is not null)
+     or not exists (select 1 from public.workspaces w where w.id = old.workspace_id) then     -- (not the workspace closing)
+    return old;
+  end if;
+  select x.workspace_id, x.project_id into t from public.tasks x where x.id = old.task_id;
+  if not found and exists (select 1 from public.trash r
+                            where r.workspace_id = old.workspace_id and r.restored_at is null
+                              and r.snapshot -> 'notion_links' @> jsonb_build_array(jsonb_build_object('id', old.id))) then
+    return old;
+  end if;
+  perform public.pa_retire_notion_pages(old.workspace_id,
+            case when t.workspace_id = old.workspace_id then t.project_id end,
+            case when t.workspace_id = old.workspace_id then public.pa_access_snapshot(old.workspace_id, t.project_id)
+                 else jsonb_build_object('v', 1, 'visibility', 'private', 'owner', null, 'members', '[]'::jsonb) end,
+            jsonb_build_array(to_jsonb(old)));
   return old;
 end; $$;
 
@@ -2640,10 +2733,11 @@ begin
                            'pa_trg_trash_capture', 'pa_trg_trash_restore', 'pa_trg_trash_purge', 'pa_trg_audit_events',
                            'pa_trg_goal_links', 'pa_trg_goals_project', 'pa_trg_forms_token', 'pa_trg_notion_syncs',
                            'pa_trg_update_asks', 'pa_trg_bill_rates', 'pa_trg_meetings', 'pa_trg_meeting_items',
-                           'pa_trg_tasks_delete', 'pa_trg_projects_delete', 'pa_trg_approvals_cancel'] loop
+                           'pa_trg_tasks_delete', 'pa_trg_projects_delete', 'pa_trg_approvals_cancel', 'pa_trg_notion_links_gone'] loop
     execute format('revoke execute on function public.%I() from public, anon, authenticated', f);
   end loop;
   foreach f in array array['public.pa_mirror_contributors(uuid)', 'public.pa_detach_strays(uuid,uuid[])',
+                           'public.pa_retire_notion_pages(uuid,text,jsonb,jsonb)',
                            'public.pa_audience_open(text,uuid[],uuid,text)',
                            'public.pa_task_audience_open(text,uuid[],text)', 'public.pa_project_audience_open(text,uuid[],text)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
@@ -2754,6 +2848,7 @@ language sql immutable set search_path = pg_catalog as $$
     ('goals', 'trg_goals_pa_project', 'before insert or update of project_id', 'pa_trg_goals_project', 'project_id'),
     ('forms', 'trg_forms_pa_token', 'before update of public_token', 'pa_trg_forms_token', 'public_token'),
     ('notion_syncs', 'trg_notion_syncs_pa', 'before insert or update of project_id', 'pa_trg_notion_syncs', null),
+    ('notion_links', 'trg_notion_links_pa_gone', 'after delete', 'pa_trg_notion_links_gone', null),
     ('update_asks', 'trg_update_asks_pa', 'before insert', 'pa_trg_update_asks', null),
     -- (never on an update of updated_by alone: that's the foreign key emptying it when its account is deleted)
     ('bill_rates', 'trg_bill_rates_pa', 'before insert or update of project_id, workspace_id, hourly_rate', 'pa_trg_bill_rates', null),
@@ -2767,8 +2862,9 @@ do $svc$ begin
   grant execute on function public.pa_trigger_defs() to service_role;
 exception when undefined_object then null; end $svc$;
 
--- 5c. (Re)makes everything: every policy above, the twenty-one bodies this file changes (each equal to
--- its old one while the switch is off), and every trigger. Run below, and by 0025, 0041,
+-- 5c. (Re)makes everything: every policy above, the twenty-two bodies this file changes (each equal to
+-- its old one while the switch is off, but for 0041's comment author trigger, which isn't about access),
+-- and every trigger. Run below, and by 0025, 0041,
 -- 0042, 0043, 0046, 0047, 0048, 0052, 0053, 0054, 0055 and 0056 when one of them is run again (they
 -- drop policies or put an old body back). Safe in any state from 0047 on, and twice in a row.
 -- Returns how many objects it made.
@@ -3432,6 +3528,37 @@ $b$ $fn$;
   grant execute on function public.restore_from_trash(uuid) to authenticated;
   n := n + 1;
 
+  -- 0041's comment_author_from_profile (trg_comment_author): not about access, and the same whatever the
+  -- switch says. Under a client's role 0041 took every update of a comment for its author's own edit: a
+  -- reaction (toggle_comment_reaction) gave the comment the reactor's name, and Admin › Delete user
+  -- (0029's admin_delete_user: the platform admin, a client) had its emptying of a commenter's author
+  -- (0041's before_user_delete, then the foreign key) put back, so the account was never deleted. Now
+  -- only the author's own edit takes their name; anyone else's keeps the author and their name; and the
+  -- author empties only once their account has gone (the foreign key's SET NULL, which runs after the
+  -- auth.users row has, as 0054's update replies have it), never by a client's own update.
+  execute $fn$
+create or replace function public.comment_author_from_profile() returns trigger
+language plpgsql security definer set search_path = public as $b$
+declare n text;
+begin
+  if coalesce(auth.role(), '') not in ('authenticated', 'anon') then return new; end if;
+  if tg_op = 'UPDATE' then
+    new.task_id := old.task_id;
+    if not (new.user_id is null and not exists (select 1 from auth.users u where u.id = old.user_id)) then
+      new.user_id := old.user_id;
+    end if;
+    if old.user_id is distinct from auth.uid() then
+      new.author_name := old.author_name;
+      return new;
+    end if;
+  end if;
+  select nullif(btrim(coalesce(p.first_name, '') || ' ' || coalesce(p.last_name, '')), '')
+    into n from public.profiles p where p.id = auth.uid();
+  new.author_name := coalesce(n, (select email from auth.users where id = auth.uid()), 'Someone');
+  return new;
+end; $b$ $fn$;
+  n := n + 1;
+
   -- the triggers
   for d in select * from public.pa_trigger_defs() loop
     if to_regclass('public.' || d.tbl) is null then continue; end if;
@@ -3492,6 +3619,8 @@ returns boolean language sql stable set search_path = pg_catalog, public as $$
                                    then array['public.kanbo_realtime_allowed(text,text,boolean)'] else '{}'::text[] end) f(sig)
        where not coalesce((select position('public.pa_' in p.prosrc) > 0 from pg_catalog.pg_proc p
                             where p.oid = to_regprocedure(f.sig)), false))
+    and coalesce((select position('old.user_id is distinct from auth.uid()' in p.prosrc) > 0 from pg_catalog.pg_proc p
+                   where p.oid = to_regprocedure('public.comment_author_from_profile()')), false)
     and not exists (select 1 from pg_catalog.pg_attrdef ad join pg_catalog.pg_attribute a on a.attrelid = ad.adrelid and a.attnum = ad.adnum
                      where ad.adrelid = 'public.projects'::regclass and a.attname = 'visibility')
     and exists (select 1 from pg_catalog.pg_attribute a
@@ -3560,6 +3689,7 @@ insert into public.schema_migrations (version) values ('0058') on conflict (vers
 --   not has_table_privilege('authenticated', 'public.project_members', 'insert')
 --     and not has_table_privilege('authenticated', 'public.project_members', 'delete')               as members_through_functions,
 --   not has_table_privilege('authenticated', 'public.project_ids_retired', 'select')                 as retired_ids_private,
+--   not has_table_privilege('authenticated', 'public.notion_pages_retired', 'select')                as retired_pages_private,
 --   not has_table_privilege('authenticated', 'public.project_departures', 'select')                  as departures_private,
 --   has_function_privilege('authenticated', 'public.set_project_access(uuid,boolean,text,boolean)', 'execute')
 --     and not has_function_privilege('anon', 'public.set_project_access(uuid,boolean,text,boolean)', 'execute') as switch_fn,

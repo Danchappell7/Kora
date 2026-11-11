@@ -4265,9 +4265,9 @@ async function projectAccessApiSuite(w: World) {
       const bin = (await one<{ id: string }>(`select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [item])).id;
       await asPerson(pg, w.alice, `select public.purge_trash($1::uuid)`, [bin]);
     }
-    // (deleted for good, Exec bonus's record keeps its database; a task's bin row deleted for good is gone, and
-    // Exec perks, still here, is judged as any project is: by its live links, and it has none left)
-    eq([await binnedSees(binnedDb), await binnedSees(binnedOnceDb)], [[true, true, false, false], [false, false, false, false]], "deleted for good: Exec bonus's database stays closed");
+    // (deleted for good, Exec bonus's record keeps its database; Exec perks' task, deleted for good on its own,
+    // leaves its page behind with Exec perks' access (notion_pages_retired): its database stays closed too)
+    eq([await binnedSees(binnedDb), await binnedSees(binnedOnceDb)], [[true, true, false, false], [true, true, false, false]], "deleted for good: both databases stay closed");
     // (the history's purge rows go: later suites count every purge row there is)
     await pg.query(`delete from public.audit_events where action like '%.purged' and target_id in ($1, $2)`, [bonus, perksTask]);
   });

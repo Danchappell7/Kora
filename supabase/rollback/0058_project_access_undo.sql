@@ -12,8 +12,9 @@
 -- the workspaces' settings (every switch is turned off: with no rules behind
 -- it, a switch that says "on" would only mislead the app), trash.access,
 -- audit_events.project_id / access, webhooks.url_set_by, the ids of projects deleted for
--- good (project_ids_retired) and where Members only and Private projects left a workspace from
--- (project_departures): nothing reads those two while 0058 is out. While it's out, the app keeps a
+-- good (project_ids_retired), where Members only and Private projects left a workspace from
+-- (project_departures) and the Notion pages tasks left behind (notion_pages_retired): nothing reads
+-- those three while 0058 is out (nor records a page left behind meanwhile). While it's out, the app keeps a
 -- project's people in contributor_ids again (as before 0058) and nothing keeps project_members
 -- in step. Running 0058 again afterwards puts every rule back and brings project_members back
 -- to contributor_ids (people taken off meanwhile, or who left the workspace, lose their rows;
@@ -119,6 +120,7 @@ begin
     ('goals', 'trg_goals_pa_project'),
     ('forms', 'trg_forms_pa_token'),
     ('notion_syncs', 'trg_notion_syncs_pa'),
+    ('notion_links', 'trg_notion_links_pa_gone'),
     ('update_asks', 'trg_update_asks_pa'),
     ('bill_rates', 'trg_bill_rates_pa'),
     ('meetings', 'trg_meetings_pa'),
@@ -168,6 +170,9 @@ begin
 end $off$;
 
 -- ---------- 6. the helpers' bodies as their own files had them (copies, not re-runs) ----------
+-- (but for 0041's comment_author_from_profile, which keeps 0058's body: it isn't about access, and
+-- 0041's own gives a comment its reactor's name and refuses Admin › Delete user for anyone who has
+-- commented. Running 0041 again puts 0041's back.)
 -- (0025_security_hardening.sql)
 create or replace function public.toggle_comment_reaction(p_comment uuid, p_emoji text)
 returns jsonb
@@ -761,6 +766,7 @@ delete from public.schema_migrations where version = '0058';
 -- drop table if exists public.project_members;
 -- drop table if exists public.project_ids_retired;
 -- drop table if exists public.project_departures;
+-- drop table if exists public.notion_pages_retired;
 -- alter table public.projects drop column if exists visibility;
 -- alter table public.workspaces drop column if exists project_access, drop column if exists project_access_default,
 --   drop column if exists project_access_member_private, drop column if exists project_access_changed_at;

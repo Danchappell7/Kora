@@ -42,7 +42,7 @@ aren't put back if they're made a member again); the app asks first.
 | Who can see a project | `projects.visibility` (`workspace`, `members`, `private`); `set_project_visibility(project, visibility)` | **Whole workspace**: everyone in the workspace (guests only if they're added). **Members only**: the project's people, plus the workspace's owners and admins. **Private**: the project's people, plus the workspace's owner. Changed by the workspace's owner, the project's owner, its editors (not guests), and admins (not on Private projects). Nobody but the owner can change it so that they'd lose access themselves. Every project there today is Whole workspace. |
 | A project's people | `project_members` (editor, commenter, viewer); `set_project_member`, `remove_project_member` | Filled once from each project's contributors (editors; guests are commenters; never the project's owner, who always edits). A guest is never more than a commenter (someone made a guest after making a project still owns it, and comments on it). Read by anyone who can see the project. Written only through the functions; `contributor_ids` is kept in step both ways, so older tabs keep working. |
 | Guests invited onto projects | `project_member_invites`; `set_invite_projects(invite, grants)`, `remove_invite_project(invite, project)` | Owners and admins choose the projects a new guest will see; they become that guest's project rows when the invite is accepted. A pending grant is read by the project's managers (who see it in People & access and can take it off) and by owners and admins on projects they can see. `set_invite_projects` changes only the grants on projects the caller manages: one on a project they can't see (made Private since by its owner) is kept, so an admin's edit of an invite never drops it. Re-inviting a pending guest adds the new projects to what the invite brings. |
-| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired`, `project_departures` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A Members only or Private project that moves to Personal or another workspace leaves a record of the access it had where it was: anything that still names it there (work an old tab writes under its id, webhook events waiting for it) keeps that access, read-only, rather than becoming everyone's. Its id is never a new project's either, once nothing holds it any more (deleted for good from a Personal bin, its new workspace closed, its owner's account deleted), whatever the switch says; a restore from the bin still brings it back, and moving it back is always allowed. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
+| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired`, `project_departures`, `notion_pages_retired` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A Members only or Private project that moves to Personal or another workspace leaves a record of the access it had where it was: anything that still names it there (work an old tab writes under its id, webhook events waiting for it) keeps that access, read-only, rather than becoming everyone's. Its id is never a new project's either, once nothing holds it any more (deleted for good from a Personal bin, its new workspace closed, its owner's account deleted), whatever the switch says; a restore from the bin still brings it back, and moving it back is always allowed. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. A Notion page that a sync or an import linked to a task keeps a record once that task is deleted for good or the link is removed, so the page (and, with no sync left, its database) stays closed to anyone who couldn't see the project it was linked from. |
 
 What each person can do on a project (one rank, the same table the app uses,
 `src/lib/projectAccessMatrix.json`): **view** (read, follow, plan, mark updates
@@ -197,7 +197,14 @@ No new secrets and no new schedule.
   platform admin, who usually isn't in the workspace) deletes anyone, as
   GoTrue's delete does: emptying a bill rate's "set by" or taking a solo
   owner's bin entries with them is never judged as the platform admin's own
-  write or Delete forever. When a workspace's owner
+  write or Delete forever. Nor is emptying the author of someone's comments
+  (their comments stay, under their name): before 0058 that was taken for the
+  platform admin's own edit and put back, so Admin › Delete user failed for
+  anyone who had ever commented in a team workspace, whatever the switch
+  says. 0058 fixes that in 0041's comment author trigger, which isn't about
+  access and so keeps 0058's body through the undo file; the same fix stops a
+  reaction (`toggle_comment_reaction`) giving a comment its reactor's name.
+  When a workspace's owner
   deletes their account, its next admin (or, with none, its longest-standing
   member) becomes the owner and so sees every project there, Private ones
   they were kept off included; the deletion sheet says so where Project access
@@ -328,7 +335,15 @@ person who saved it: it goes when someone else signs in there.)
   say) is hidden from you, with the page's cached title, so the Notion
   function won't fetch the page for you either (a page someone linked to a
   task by hand names no database, and never closes it; nor does an import
-  elsewhere close a page a live sync links to a task you can see). Removing a
+  elsewhere close a page a live sync links to a task you can see). The other
+  way round, it errs on the closed side: a page that the same database's
+  import (or a sync since removed) also linked to a Whole workspace task is
+  closed there too, link and cached title, to anyone who can't see the
+  Members only or Private project it went into, though nothing of that
+  project's may be in it. A one-off import's links and a removed sync's look
+  the same, and a removed two-way sync's pages hold what it wrote, so Kanbo
+  can't tell the two apart: the link just disappears from the open task for
+  them (the task itself, its title included, stays). Removing a
   sync doesn't open its database or its pages up: its pages stay linked to
   that project's tasks (and keep what a two-way sync wrote into them), so it
   still can't be previewed or imported by anyone who can't see the project,
@@ -336,11 +351,15 @@ person who saved it: it goes when someone else signs in there.)
   project: while it (or one of its imported tasks) is in the bin, the syncs and
   links its bin entry holds keep the database and its pages closed to anyone
   who can't see that entry, and once the project is deleted for good, the
-  database and pages its record kept stay closed to anyone who couldn't see it
-  (a task deleted for good on its own takes its page's closure with it, as
-  unlinking it would). Restoring a project whose database syncs with another
-  project by now brings it back without its sync, and says so ("Its Notion
-  sync wasn't restored"). (A task
+  database and pages its record kept stay closed to anyone who couldn't see it.
+  Nor does deleting one of its tasks for good on its own (Delete forever, or
+  the bin's clean-up after 30 days), nor removing a sync's or an import's link
+  from one: the page stays closed to anyone who can't see the project it was
+  linked from, and its database too once no sync that linked it is left (a
+  task that had left for someone's Personal list or another workspace leaves
+  its page closed to all but the workspace's owners). Restoring a project
+  whose database syncs with another project by now brings it back without its
+  sync, and says so ("Its Notion sync wasn't restored"). (A task
   moved out of a synced project you can see keeps its sync's link without
   closing the database to you. An imported task that has since gone to
   someone's Personal list or to another workspace doesn't close it either

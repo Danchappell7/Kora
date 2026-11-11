@@ -257,7 +257,9 @@ async function onlyOwnProject(service: Tx, ws: string): Promise<boolean> {
  * pages may still hold what a two-way sync wrote from a closed project), and then it's closed to all but
  * the workspace's owners, who see every project. Nor does deleting the project open it: while the project
  * (or its tasks) are in the bin, the syncs and links its bin entries hold keep it closed to whoever can't
- * see that entry, and once it's deleted for good, the databases its record kept. The rule is 0058's
+ * see that entry, and once it's deleted for good, the databases its record kept; nor deleting one of its
+ * tasks for good, or removing a link: the page left behind keeps its project's access (notion_pages_retired),
+ * and closes the database, once no sync that linked it is left, as a removed sync's link does. The rule is 0058's
  * user_notion_database_hidden (trg_notion_syncs_pa asks it too, of a new sync made with notion_save_sync
  * itself), on the service connection: the person's own reads of notion_syncs and notion_links are
  * filtered by the same rule, so they would miss exactly those. Before 0058, or with the switch off (the

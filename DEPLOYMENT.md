@@ -976,7 +976,10 @@ steps; nothing breaks while you wait.
    or project line goes where it named another business's (or another
    person's) work; and a task from a Members only or Private project that's
    been deleted (or has moved to another business) comes back from the bin
-   only with its project, even with the switch off. From now on Team ›
+   only with its project, even with the switch off. Admin › Delete user now
+   deletes someone who has commented in a business (before, it failed for
+   them; their comments stay, under their name), and reacting to a comment no
+   longer puts your name on it. From now on Team ›
    People asks before making someone a guest (or an admin a member) and names
    what they'd lose: made a guest, their "Can edit" project roles become "Can
    comment", whatever the switch says, and stay so if they're made a member
