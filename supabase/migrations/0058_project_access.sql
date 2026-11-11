@@ -771,7 +771,11 @@ begin
       from jsonb_array_elements(p #> '{due,tasks}') with ordinality a(e, i)
      where not public.pa_task_hidden_for(p_user, public.kanbo_uuid(e ->> 'id'));
     if jsonb_array_length(kept) = 0 then return null; end if;
-    if jsonb_array_length(kept) <> jsonb_array_length(p #> '{due,tasks}') then p := jsonb_set(p, '{due,tasks}', kept); end if;
+    -- (its "…and N more" counted tasks behind the held ones it no longer knows: some may be hidden now too)
+    if jsonb_array_length(kept) <> jsonb_array_length(p #> '{due,tasks}') then
+      p := jsonb_set(p, '{due,tasks}', kept);
+      if p #> '{due,more}' is not null then p := jsonb_set(p, '{due,more}', '0'::jsonb); end if;
+    end if;
   end if;
   if jsonb_typeof(p #> '{about,projects}') = 'array' and exists (
        select 1 from jsonb_array_elements_text(p #> '{about,projects}') x
@@ -1902,8 +1906,9 @@ begin
 end; $$;
 
 -- tasks, before (switch on): a sub-task has its parent's project (D11); an assignee who can't see the
--- project is refused from the app, and handed to the project's owner from the server (D10);
--- collaborators and followers who can't see it drop out. The assignee is judged as a member: someone
+-- project is refused from the app, and handed to the project's owner from the server (D10), its plan
+-- (on today, the slot, the My-tasks section) released as any hand-on releases it; collaborators and
+-- followers who can't see it drop out. The assignee is judged as a member: someone
 -- suspended or awaiting approval by the project they'll see once they can act (pa_assignee_rank), and
 -- someone who has left the workspace keeps a task they already had when it moves (nothing here is
 -- theirs to see, wherever it goes: as before, and as remove_member leaves it), but is never given one.
@@ -1944,6 +1949,8 @@ begin
       new.assignee_id := coalesce(
         (select p.owner_id from public.projects p where p.id = public.kanbo_uuid(new.project_id) and p.workspace_id = new.workspace_id),
         (select w.owner_id from public.workspaces w where w.id = new.workspace_id))::text;
+      -- (and, as every hand-on, the plan on it was the old assignee's: never a slot in its new one's day)
+      new.plan_today := false; new.scheduled := null; new.my_section_id := null;
     end if;
   end if;
   -- (collaborators and followers as the assignee: someone suspended or awaiting approval keeps their
@@ -2612,8 +2619,10 @@ language sql immutable set search_path = pg_catalog as $$
     ('workspaces', 'trg_workspaces_pa_after', 'after update of project_access, owner_id', 'pa_trg_workspaces_after', null),
     ('projects', 'trg_projects_pa_guard', 'before insert or update', 'pa_trg_projects_guard', null),
     ('projects', 'trg_projects_pa_after', 'after insert or update of visibility, owner_id, workspace_id', 'pa_trg_projects_after', null),
-    ('project_members', 'trg_project_members_guard', 'before insert or update', 'pa_trg_project_members_guard', null),
-    ('project_members', 'trg_project_members_after', 'after insert or update or delete', 'pa_trg_project_members_after', null),
+    -- (never on an update of added_by alone: that's the foreign key emptying it when its account is
+    -- deleted, which can reach the row after its project has gone in the same statement)
+    ('project_members', 'trg_project_members_guard', 'before insert or update of project_id, user_id, role, workspace_id', 'pa_trg_project_members_guard', null),
+    ('project_members', 'trg_project_members_after', 'after insert or update of project_id, user_id, role, workspace_id or delete', 'pa_trg_project_members_after', null),
     ('workspace_members', 'trg_ws_members_pa', 'after update of role, status, user_id or delete', 'pa_trg_ws_members', null),
     ('tasks', 'trg_tasks_pa', 'before insert or update of project_id, parent_id, assignee_id, collaborators, followers, workspace_id', 'pa_trg_tasks', null),
     ('tasks', 'trg_tasks_pa_after', 'after update of project_id, parent_id, workspace_id', 'pa_trg_tasks_after', null),

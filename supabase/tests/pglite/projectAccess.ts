@@ -2297,6 +2297,70 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq(got.back.pending, ["Zebra back PW"], "so it hears what Moe sees, never Private PP's");
   });
 
+  await test("0058: an owner whose only other people are guests (or a pending invite) deletes their account after adding someone to a project, switch on or off: the account and the workspace go", async () => {
+    // (deleting the account closes a workspace with no heir, and its projects with it, in the same statement
+    // that empties project_members.added_by: that emptying must never reach 0058's project_members triggers)
+    // (with 0042's heir rule, the live one: never a guest. An older file run again here (0041) may have put
+    // back the rule that made a guest the heir, and then there's never a workspace without one)
+    const heirRule = /create or replace function public\.before_user_delete\(\)[\s\S]*?\nend; \$\$;/.exec(migrationSql("0042_rollout_hardening.sql"))?.[0];
+    ok(heirRule && heirRule.includes("m.role <> 'guest'"), "0042's heir rule");
+    const got = await scenario(async (run, exec, tryRun) => {
+      await exec(heirRule!);
+      const out: Record<string, string> = {};
+      let n = 0;
+      for (const [label, on, how, invited] of [
+        ["switch on, added in People & access", true, "member", false],
+        ["switch on, on the project's contributors", true, "edit", false],
+        ["switch off, on a new project's contributors", false, "create", false],
+        ["switch off, contributors edited", false, "edit", false],
+        ["switch off, contributors edited, an invite pending", false, "edit", true],
+      ] as const) {
+        n++;
+        const mail = (k: string) => `solo-${k}${n}.pa@example.org`;
+        const X = String((await run(null, `insert into auth.users (email, raw_user_meta_data) values ($1, '{"first_name": "Xena"}'::jsonb) returning id::text as id`, [mail("x")]))[0].id);
+        const G = String((await run(null, `insert into auth.users (email, raw_user_meta_data) values ($1, '{"first_name": "Gus"}'::jsonb) returning id::text as id`, [mail("g")]))[0].id);
+        await run(null, `update public.profiles set approved = true where id in ($1::uuid, $2::uuid)`, [X, G]);
+        const ws = String((await run(null, `insert into public.workspaces (name, owner_id) values ($1, $2::uuid) returning id::text as id`, [`Solo ${n}`, X]))[0].id);
+        await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status)
+                         values ($1::uuid, $2::uuid, $3, 'Xena', 'owner', 'active'), ($1::uuid, $4::uuid, $5, 'Gus', 'guest', 'active')`, [ws, X, mail("x"), G, mail("g")]);
+        if (invited) await run(null, `insert into public.workspace_members (workspace_id, email, name, role, status) values ($1::uuid, $2, 'New', 'member', 'invited')`, [ws, mail("i")]);
+        if (on) await run(X, `select public.set_project_access($1::uuid, true)`, [ws]);
+        let P: string;
+        if (how === "create") {
+          P = String((await run(X, `insert into public.projects (user_id, owner_id, name, workspace_id, contributor_ids) values ($1::uuid, $1::uuid, 'Client portal', $2::uuid, array[$3::uuid]) returning id::text as id`, [X, ws, G]))[0].id);
+        } else {
+          P = String((await run(X, `insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, 'Client portal', $2::uuid) returning id::text as id`, [X, ws]))[0].id);
+          if (how === "edit") await run(X, `update public.projects set contributor_ids = array[$2::uuid] where id = $1::uuid`, [P, G]);
+          else await run(X, `select public.set_project_member($1::uuid, $2::uuid, 'commenter')`, [P, G]);
+        }
+        const added = (await run(null, `select count(*)::int as n from public.project_members where project_id = $1::uuid and added_by = $2::uuid`, [P, X]))[0].n;
+        const del = await tryRun(null, `delete from auth.users where id = $1::uuid`, [X]);
+        const left = (await run(null, `select (select count(*) from auth.users where id = $1::uuid)::int as u, (select count(*) from public.workspaces where id = $2::uuid)::int as w,
+                                              (select count(*) from public.project_members where project_id = $3::uuid)::int as m`, [X, ws, P]))[0];
+        out[label] = `added ${added}; ${"error" in del ? `refused (${del.error})` : "deleted"}; account ${left.u}, workspace ${left.w}, people rows ${left.m}`;
+      }
+      // (and an heir still inherits: an admin takes the workspace over, the guest keeps their place)
+      const Y = String((await run(null, `insert into auth.users (email) values ('solo-heir-y.pa@example.org') returning id::text as id`))[0].id);
+      const H = String((await run(null, `insert into auth.users (email) values ('solo-heir-h.pa@example.org') returning id::text as id`))[0].id);
+      const G = String((await run(null, `insert into auth.users (email) values ('solo-heir-g.pa@example.org') returning id::text as id`))[0].id);
+      await run(null, `update public.profiles set approved = true where id in ($1::uuid, $2::uuid, $3::uuid)`, [Y, H, G]);
+      const ws = String((await run(null, `insert into public.workspaces (name, owner_id) values ('Solo heir', $1::uuid) returning id::text as id`, [Y]))[0].id);
+      await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status)
+                       values ($1::uuid, $2::uuid, 'y', 'Yan', 'owner', 'active'), ($1::uuid, $3::uuid, 'h', 'Hal', 'admin', 'active'), ($1::uuid, $4::uuid, 'g', 'Gus', 'guest', 'active')`, [ws, Y, H, G]);
+      await run(Y, `select public.set_project_access($1::uuid, true)`, [ws]);
+      const P = String((await run(Y, `insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, 'Client portal', $2::uuid) returning id::text as id`, [Y, ws]))[0].id);
+      await run(Y, `select public.set_project_member($1::uuid, $2::uuid, 'commenter')`, [P, G]);
+      const del = await tryRun(null, `delete from auth.users where id = $1::uuid`, [Y]);
+      const after = (await run(null, `select (select owner_id::text from public.workspaces where id = $1::uuid) as owner,
+                                             (select role || ':' || coalesce(added_by::text, 'nobody') from public.project_members where project_id = $2::uuid and user_id = $3::uuid) as guest`, [ws, P, G]))[0];
+      out["an admin to inherit"] = `${"error" in del ? `refused (${del.error})` : "deleted"}; owner ${after.owner === H ? "Hal" : after.owner}; guest ${after.guest}`;
+      return out;
+    });
+    for (const [label, said] of Object.entries(got)) {
+      eq(said, label === "an admin to inherit" ? "deleted; owner Hal; guest commenter:nobody" : "added 1; deleted; account 0, workspace 0, people rows 0", label);
+    }
+  });
+
   await test("0058: a bin row's summary names only its own scope's project and parent (a task of your own naming a Private project or task: whatever the switch says)", async () => {
     const got = await scenario(async (run) => {
       await run(null, `update public.projects set emoji = '🦓', color = '#123456' where id = $1::uuid`, [w.proj.PP]);
