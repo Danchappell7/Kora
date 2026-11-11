@@ -74,7 +74,8 @@ export function ImportTasksModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onImport: (rows: ImportRow[]) => void;
+  /** false: refused (nothing was imported), so the rows stay here to send elsewhere */
+  onImport: (rows: ImportRow[]) => boolean | void;
   /** Projects tasks can go into (the active workspace's, not archived). Shows an "Import into" picker. */
   projects?: ImportProject[];
   /** People to match Assignee columns and @mentions against (email optional — falls back to loaded members). */
@@ -228,7 +229,7 @@ export function ImportTasksModal({
   const doImport = () => {
     if (!canImport) return;
     // imported straight after typing: make sure the last keystrokes are included
-    onImport(deferredText === text ? rows : analyse(text).rows);
+    if (onImport(deferredText === text ? rows : analyse(text).rows) === false) return;
     resetInput();
     onClose();
   };

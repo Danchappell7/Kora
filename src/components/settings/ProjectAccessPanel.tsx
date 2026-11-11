@@ -110,7 +110,9 @@ export function ProjectAccessPanel({ workspace, ctx, nameOf, tasks = [], onChang
             </ul>
           </div>
         )}
-        <SetRow label="New projects start as" desc="Anyone making a project can change it in its About tab.">
+        <SetRow label="New projects start as" desc={s.on
+          ? "Anyone making a project can change it in its About tab."
+          : "Projects made from now on start as this, even before you turn it on. Their makers can change it in About once it's on."}>
           <select className="kset-input" aria-label="New projects start as" value={s.defaultVisibility} disabled={busy}
             onChange={(e) => void save({ defaultVisibility: e.target.value as ProjectVisibility })}>
             {VISIBILITIES.map((v) => <option key={v} value={v}>{VISIBILITY_LABEL[v]}</option>)}

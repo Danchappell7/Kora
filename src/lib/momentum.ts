@@ -522,6 +522,8 @@ export function kudosErrorText(reason: KudosFailure): string {
     case "not_done": return "Kudos are for finished tasks.";
     case "team_only": return "Kudos are for tasks in a team workspace.";
     case "self": return "Kudos are for your teammates.";
+    // (0058: the person can't see the task, or no longer can: a changed note would reach them anyway)
+    case "recipient": return "Kudos can only go to someone who can see this task.";
     case "too_many": return "That's a lot of kudos for one day. Try again tomorrow.";
     case "invalid": return `Kudos need one of the emoji, and a note of ${KUDOS_NOTE_MAX} characters or fewer.`;
     case "unavailable": return "Kudos aren't switched on yet.";

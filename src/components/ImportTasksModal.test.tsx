@@ -44,6 +44,16 @@ describe("ImportTasksModal", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("a refused import (onImport says false) keeps the modal open with what was pasted", () => {
+    const onImport = vi.fn(() => false);
+    const { type, onClose, textarea } = setup({ defaultProjectId: "p-web", defaultProjectName: "Website", onImport });
+    type("Call Sarah\nBook venue");
+    fireEvent.click(screen.getByRole("button", { name: "Import 2 tasks" }));
+    expect(onImport).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("Call Sarah\nBook venue");
+  });
+
   it("asks which project to import into when there's no project context", () => {
     const { type, onImport } = setup();
     type("Task one\nTask two");

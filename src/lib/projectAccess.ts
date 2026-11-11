@@ -248,6 +248,61 @@ export function narrowingLoss(project: Project, to: ProjectVisibility, ctx: Acce
   });
 }
 
+/** 0058, switch on: a sub-task lives in its parent's project (D11: the server puts it back there,
+ *  saying nothing). Moved to another project on its own (its parent isn't in `moving`), it becomes a
+ *  task of its own, so the move holds. Changes `patch`; true when it did. `on`: the destination
+ *  workspace's switch. */
+export function detachSoloMove(prev: Pick<Task, "parentId" | "projectId">, patch: Partial<Pick<Task, "parentId" | "projectId">>,
+  moving: ReadonlySet<string>, on: boolean): boolean {
+  if (!on || !prev.parentId || "parentId" in patch || moving.has(prev.parentId)) return false;
+  if (patch.projectId === undefined || patch.projectId === prev.projectId) return false;
+  patch.parentId = undefined;
+  return true;
+}
+
+const ROLE_ORDER: Record<Role, number> = { guest: 0, member: 1, admin: 2, owner: 3 };
+/** What making someone `to` (a narrower role) takes from them in a workspace (0058): with the switch on,
+ *  the projects they'd stop seeing (with their open tasks there) and those they could no longer edit;
+ *  made a guest, whatever the switch says, the projects where their editor role becomes "can comment"
+ *  for good (made a member again, it stays so). Empty for a wider role, or before 0058. */
+export function roleChangeLoss(wsId: string, userId: string, to: Role, ctx: AccessCtx,
+  tasks: Pick<Task, "projectId" | "assigneeId" | "status" | "archivedAt">[] = []): { unseen: { name: string; openTasks: number }[]; viewOnly: string[]; capped: string[] } {
+  const out = { unseen: [] as { name: string; openTasks: number }[], viewOnly: [] as string[], capped: [] as string[] };
+  const from = roleOf(ctx, wsId, userId);
+  if (!accessSchema() || !from || from === "owner" || ROLE_ORDER[to] >= ROLE_ORDER[from]) return out;
+  const on = accessOn(wsOf(ctx, wsId));
+  for (const p of ctx.projects.filter((x) => (x.workspaceId ?? null) === wsId && !x.archivedAt)) {
+    const isOwner = !!p.ownerId && p.ownerId === userId;
+    const mine = memberRole(ctx, p.id, userId);
+    const after = to === "guest" && mine === "editor" ? "commenter" : mine;
+    if (to === "guest" && mine === "editor") out.capped.push(p.name);
+    if (!on) continue;
+    const now = rankCore(true, from, visibilityOf(p), isOwner, mine);
+    const then = rankCore(true, to, visibilityOf(p), isOwner, after);
+    if (now >= 1 && then < 1) {
+      out.unseen.push({ name: p.name, openTasks: tasks.filter((t) => t.projectId === p.id && t.assigneeId === userId && t.status !== "done" && !t.archivedAt).length });
+    } else if (now >= 3 && then < 3 && !(to === "guest" && mine === "editor")) out.viewOnly.push(p.name);
+  }
+  return out;
+}
+const listNames = (names: string[], max = 4) => {
+  const shown = names.slice(0, max);
+  const more = names.length - shown.length;
+  return more > 0 ? `${shown.join(", ")} and ${more} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0] ?? "";
+};
+/** The question before a role change that narrows what someone has (null: nothing to ask). */
+export function roleChangeQuestion(name: string, to: Role, loss: ReturnType<typeof roleChangeLoss>): string | null {
+  if (!loss.unseen.length && !loss.viewOnly.length && !loss.capped.length) return null;
+  const lines = [`Make ${name} ${to === "admin" ? "an admin" : `a ${to}`}?`];
+  if (loss.unseen.length) {
+    const open = loss.unseen.reduce((n, x) => n + x.openTasks, 0);
+    lines.push(`They'd stop seeing ${listNames(loss.unseen.map((x) => x.name))}${open ? `, with ${open === 1 ? "1 open task" : `${open} open tasks`} of theirs there` : ""}.`);
+  }
+  if (loss.viewOnly.length) lines.push(`They could no longer change ${listNames(loss.viewOnly)}.`);
+  if (loss.capped.length) lines.push(`Their role on ${listNames(loss.capped)} becomes Can comment, and stays that way if they're given their role back.`);
+  return lines.join("\n\n");
+}
+
 /** How many people can see a project with that visibility once the switch is on (rank ≥ 1),
  *  the implicit owners and admins included. */
 export function seesCount(project: Project, ctx: AccessCtx, visibility: ProjectVisibility = visibilityOf(project)): number {

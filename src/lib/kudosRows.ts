@@ -33,7 +33,8 @@ export function kudosFailure(e: unknown): KudosFailure {
   if (/need a team task/i.test(m)) return "team_only";
   if (/not for yourself/i.test(m)) return "self";
   if (/too many kudos/i.test(m)) return "too_many";
-  if (/invalid (emoji|note|recipient)|kudos_shape/i.test(m)) return "invalid";
+  if (/invalid recipient/i.test(m)) return "recipient";
+  if (/invalid (emoji|note)|kudos_shape/i.test(m)) return "invalid";
   if (isNetwork(m)) return "network";
   return "error";
 }

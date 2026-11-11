@@ -146,6 +146,44 @@ describe("App · project access on (Foundrise)", () => {
     expect(await screen.findByText("Maya Lin can't see Seed round, so “Ship onboarding redesign to staging” is now assigned to you.")).toBeInTheDocument();
   }, 30_000);
 
+  it("0058: a sub-task moved to another project on its own becomes a task of its own there (the server would keep it with its parent)", async () => {
+    const base = TASKS.find((x) => x.title === "Ship onboarding redesign to staging")!;
+    TASKS.push({ ...base, id: "t-solo-sub", title: "Write the staging checklist", parentId: base.id, assigneeId: "m-self", status: "todo", dependencies: [],
+      collaborators: [], subtasks: [], recurrence: "none" });
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    try {
+      inWs("ws-foundrise", "/p/p-launch/list?task=t-solo-sub");
+      await boot();
+      const panel = await screen.findByRole("dialog", { name: /Write the staging checklist/ }, { timeout: 8000 });
+      fireEvent.change(within(panel).getByLabelText("Project"), { target: { value: "p-seed" } });
+      await waitFor(() => expect(upd.mock.calls.some((c) => c[0] === "t-solo-sub" && c[1].projectId === "p-seed")).toBe(true));
+      const sent = upd.mock.calls.find((c) => c[0] === "t-solo-sub" && c[1].projectId === "p-seed")![1];
+      expect("parentId" in sent && sent.parentId === undefined).toBe(true);
+      // (its parent stays where it was)
+      expect(upd.mock.calls.some((c) => c[0] === base.id && c[1].projectId !== undefined)).toBe(false);
+    } finally { TASKS.splice(TASKS.findIndex((t) => t.id === "t-solo-sub"), 1); }
+  }, 60_000);
+
+  it("0058: making someone a guest (or an admin a member) asks first, naming what they'd lose; cancelled, nothing changes", async () => {
+    const set = spy(vi.spyOn(store, "setMemberRole").mockResolvedValue(undefined));
+    const confirm = spy(vi.spyOn(window, "confirm").mockReturnValue(false));
+    inWs("ws-foundrise", "/team/people");
+    await boot();
+    fireEvent.click((await screen.findAllByRole("button", { name: /Maya Lin/ }, { timeout: 8000 }))[0]);
+    const dlg = await screen.findByRole("dialog", { name: "Maya Lin profile" }, { timeout: 8000 });
+    fireEvent.change(within(dlg).getByRole("combobox", { name: "Role for Maya Lin" }), { target: { value: "guest" } });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const q = String(confirm.mock.calls[0][0]);
+    expect(q).toMatch(/^Make Maya Lin a guest\?/);
+    expect(q).toMatch(/Payroll & contracts/);
+    expect(q).toMatch(/becomes Can comment, and stays that way/);
+    expect(set).not.toHaveBeenCalled();
+    // asked again and confirmed: it goes
+    confirm.mockReturnValue(true);
+    fireEvent.change(within(dlg).getByRole("combobox", { name: "Role for Maya Lin" }), { target: { value: "guest" } });
+    await waitFor(() => expect(set).toHaveBeenCalledWith(expect.any(String), "guest"));
+  }, 60_000);
+
   it("a project's rule never hands a task to someone who can't see the project (a status change still saves), and its Rules offer only its people", async () => {
     // a rule made while Seed round was still Whole workspace (or before the switch went on)
     DEMO_RULES.push({ id: "rule-review", projectId: "p-seed", workspaceId: "ws-foundrise", name: "Review goes to Maya",
@@ -383,6 +421,28 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     expect(within(panel).getByText("View only")).toBeInTheDocument();
     expect(within(panel).queryByRole("textbox", { name: "Add a comment" })).toBeNull();
   });
+  it("0058: a commenter's comment saves without a task-row write the server would refuse (the count catches up on reload)", async () => {
+    // (Daniel a commenter on Fee review for this test: the store's demo copy is made once, so the load is changed)
+    const boot0 = store.bootstrap.bind(store);
+    spy(vi.spyOn(store, "bootstrap").mockImplementation(async (...a: Parameters<typeof store.bootstrap>) => {
+      const b = await boot0(...a);
+      return { ...b, projectMembers: b.projectMembers?.map((m) => (m.projectId === "p-hb-fees" && m.userId === "m-self" ? { ...m, role: "commenter" as const } : m)) };
+    }));
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    const add = spy(vi.spyOn(store, "addComment"));
+    {
+      inWs("ws-harbour", "/p/p-hb-fees");
+      await boot();
+      fireEvent.click(await screen.findByText("Compare partner fee bands", {}, { timeout: 8000 }));
+      const panel = await screen.findByRole("dialog", { name: /Compare partner fee bands/ });
+      const box = await within(panel).findByRole("textbox", { name: "Add a comment" }, { timeout: 8000 });
+      fireEvent.change(box, { target: { value: "The bands look right to me" } });
+      fireEvent.keyDown(box, { key: "Enter", metaKey: true });
+      await waitFor(() => expect(add).toHaveBeenCalled(), { timeout: 8000 });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(upd.mock.calls.filter((c) => "comments" in c[1])).toEqual([]);
+    }
+  }, 60_000);
   it("0058: a task's Project picker offers only projects you can edit (and its own): never Fee review", async () => {
     inWs("ws-harbour", "/p/p-northwind/list");
     await boot();
@@ -419,6 +479,44 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(create.mock.calls[0][0]).toMatchObject({ title: "Ask Sana about the fee bands", projectId: "p-northwind" });
   });
+  it("0058: New task on its page files into a project you can change, and the picker shows the one it saves to", async () => {
+    const create = spy(vi.spyOn(store, "createTask"));
+    inWs("ws-harbour", "/p/p-hb-fees");
+    await boot();
+    expect(await screen.findByRole("heading", { name: "Fee review" })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "c" });
+    const dialog = await screen.findByRole("dialog", { name: /New task/i }, { timeout: 8000 });
+    fireEvent.change(within(dialog).getAllByRole("textbox")[0], { target: { value: "Write up the partner fee comparison" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Create( task)?$/i }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).toMatchObject({ title: "Write up the partner fee comparison", projectId: "p-northwind" });
+    expect(screen.queryByText("You can view Fee review, but not change it.")).toBeNull();
+  }, 60_000);
+  it("0058: Paste notes → tasks and Import tasks on its page never offer it (they'd be refused and lose what was pasted)", async () => {
+    inWs("ws-harbour", "/p/p-hb-fees");
+    await boot();
+    expect(await screen.findByRole("heading", { name: "Fee review" })).toBeInTheDocument();
+    const palette = async (label: string) => {
+      fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+      const dlg = await screen.findByRole("dialog", { name: "Command palette" }, { timeout: 8000 });
+      const input = within(dlg).queryAllByRole("combobox")[0] ?? within(dlg).getAllByRole("textbox")[0];
+      fireEvent.change(input, { target: { value: label } });
+      const opts = await within(dlg).findAllByRole("option", { name: new RegExp(label) }, { timeout: 8000 });
+      fireEvent.click(opts.find((o) => o.getAttribute("data-kind") !== "ask" && !/Search/i.test(o.textContent ?? "")) ?? opts[opts.length - 1]);
+    };
+    await palette("Paste notes");
+    const sheet = await screen.findByRole("dialog", { name: /Notes → tasks/ }, { timeout: 8000 });
+    fireEvent.change(within(sheet).getByRole("textbox", { name: "Notes" }), { target: { value: "- Sana to send the fee bands by Friday\n- Draft the partner letter\n- Book the review call" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: /Find tasks/ }));
+    const sel = await within(sheet).findByRole("combobox", { name: "Project for these tasks" }, { timeout: 8000 }) as HTMLSelectElement;
+    expect(sel.value).not.toBe("p-hb-fees");
+    expect([...sel.querySelectorAll("option")].map((o) => o.textContent ?? "").some((t) => /Fee review/.test(t))).toBe(false);
+    fireEvent.keyDown(sheet, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Notes → tasks/ })).toBeNull());
+    await palette("Import tasks");
+    const imp = await screen.findByRole("dialog", { name: /Import/ }, { timeout: 8000 });
+    expect(/Fee review/.test(imp.textContent ?? "")).toBe(false);
+  }, 60_000);
   it("Projects › Requests shows its form, but it can't be filled in, changed or deleted there", async () => {
     inWs("ws-harbour", "/projects/requests");
     await boot();

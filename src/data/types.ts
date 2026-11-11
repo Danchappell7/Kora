@@ -1787,7 +1787,7 @@ export interface Kudos {
   fromName?: string;
   toName?: string;
 }
-export type KudosFailure = "not_allowed" | "not_found" | "not_done" | "team_only" | "self" | "invalid" | "too_many" | "unavailable" | "network" | "error";
+export type KudosFailure = "not_allowed" | "not_found" | "not_done" | "team_only" | "self" | "recipient" | "invalid" | "too_many" | "unavailable" | "network" | "error";
 
 /* ---------- live presence (Supabase Realtime presence + broadcast; no tables) ---------- */
 

@@ -54,6 +54,14 @@ describe("ProjectAccessPanel", () => {
     expect(screen.getByRole("alertdialog").textContent).toMatch(/^Turn off project access\? Everyone at Reco HQ, guests included, will see every project again\./);
   });
 
+  it("the default for new projects says what it does while the switch is off (it applies already; nobody is asked)", () => {
+    const { rerender } = render(<ProjectAccessPanel workspace={ws(false)} ctx={ctx("me", false)} onChange={vi.fn()} />);
+    expect(screen.getByText(/Projects made from now on start as this, even before you turn it on/)).toBeInTheDocument();
+    expect(screen.queryByText("Anyone making a project can change it in its About tab.")).toBeNull();
+    rerender(<ProjectAccessPanel workspace={ws(true)} ctx={ctx("me", true)} onChange={vi.fn()} />);
+    expect(screen.getByText("Anyone making a project can change it in its About tab.")).toBeInTheDocument();
+  });
+
   it("off: a project already set Members only or Private names who'd lose it, and the question says so too", () => {
     render(<ProjectAccessPanel workspace={ws(false)} ctx={ctx("me", false)} onChange={vi.fn()} />);
     expect(screen.queryByText(/nothing changes until a project is Members only or Private/)).toBeNull();

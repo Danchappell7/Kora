@@ -136,7 +136,7 @@ describe("0048 rows → app types", () => {
     expect(templateFailure(new Error("too many task templates"))).toBe("too_many");
     expect(templateFailure(new TypeError("Failed to fetch"))).toBe("network");
     for (const [m, k] of [["not authorized", "not_allowed"], ["task not found", "not_found"], ["task not done", "not_done"], ["kudos need a team task", "team_only"],
-      ["not for yourself", "self"], ["too many kudos", "too_many"], ["invalid emoji", "invalid"], ["invalid recipient", "invalid"],
+      ["not for yourself", "self"], ["too many kudos", "too_many"], ["invalid emoji", "invalid"], ["invalid recipient", "recipient"],
       ["Could not find the function public.give_kudos(p_task) in the schema cache", "unavailable"], ["boom", "error"]] as const) {
       expect(kudosFailure(new Error(m))).toBe(k);
     }

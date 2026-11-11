@@ -320,9 +320,11 @@ export function transferQuestion(name: string, loses: string[] = []): string {
   return `${base} You'll stop seeing ${loses.length === 1 ? "the Private project" : `${loses.length} Private projects`} you're not on (${list}), and only ${name} can add you back.`;
 }
 
-function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, onSetTitle, onTransferOwnership, transferLoses = [], onRemoveMember, onOpen, onClose, onHandOn, handTo = [], projectsSlot }: {
+function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, roleQuestion, onSetTitle, onTransferOwnership, transferLoses = [], onRemoveMember, onOpen, onClose, onHandOn, handTo = [], projectsSlot }: {
   /** 0058: their projects (owners and admins, project access on) */
   projectsSlot?: ReactNode;
+  /** 0058: what a narrower role would take from them, as a question (null: nothing to ask) */
+  roleQuestion?: (memberId: string, to: Role) => string | null;
   m: WorkspaceMember;
   name: string;
   isSelf: boolean;
@@ -391,7 +393,14 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
           <span className="kprof-label" id={`kprof-role-${m.id}`}>Role</span>
           <div className="kprof-role">
             {manageRole ? (
-              <select value={m.role} onChange={(e) => onSetRole!(m.id, e.target.value as Role)} aria-label={`Role for ${name}`} className="kfield-select">
+              <select value={m.role} aria-label={`Role for ${name}`} className="kfield-select"
+                onChange={(e) => {
+                  const to = e.target.value as Role;
+                  // (0058: a narrower role that takes projects or edit rights from them asks first, as Make owner and Remove do)
+                  const q = roleQuestion?.(m.id, to);
+                  if (q && !window.confirm(q)) return;
+                  onSetRole!(m.id, to);
+                }}>
                 {[...new Set<Role>([m.role, ...inviteOptions])].map((r) => <option key={r} value={r}>{ROLE_META[r].label}</option>)}
               </select>
             ) : pending ? (
@@ -602,7 +611,7 @@ const ROLE_FILTER: Record<RoleFilter, (r: Role) => boolean> = {
 /** One invite's outcome in a multi-invite: ok, refused (with the reason) or not an email. */
 type InviteResult = { email: string; ok: boolean; text: string };
 
-export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, transferLoses, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened, inviteProjects, memberProjects }: {
+export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, roleQuestion, onSetTitle, onTransferOwnership, transferLoses, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened, inviteProjects, memberProjects }: {
   tasks: Task[];
   workspace: string | null;
   workspaces?: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -620,6 +629,8 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   onResendInvite?: (memberId: string) => Promise<InviteEmailResult>;
   onRemoveMember: (memberId: string) => void;
   onSetRole?: (memberId: string, role: Role) => void;
+  /** 0058: asked before a role change that would take projects or edit rights from someone (null: nothing to ask) */
+  roleQuestion?: (memberId: string, to: Role) => string | null;
   onSetTitle?: (memberId: string, title: string) => void;
   onTransferOwnership?: (workspaceId: string, memberId: string) => void;
   /** 0058, switched on: the Private projects the owner isn't on (an admin doesn't see them): "Make owner" says so */
@@ -1000,7 +1011,7 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
       {selected && (
         <MemberProfile key={selected.id} m={selected} name={memberName(selected)} isSelf={selected.userId === currentUserId}
           role={role} workspace={workspace} tasks={tasks} inviteOptions={inviteOptions}
-          onSetRole={onSetRole} onSetTitle={onSetTitle} onTransferOwnership={onTransferOwnership} transferLoses={transferLoses}
+          onSetRole={onSetRole} roleQuestion={roleQuestion} onSetTitle={onSetTitle} onTransferOwnership={onTransferOwnership} transferLoses={transferLoses}
           onRemoveMember={onRemoveMember} onOpen={onOpen} onClose={() => setSelectedId(null)}
           onHandOn={role && role !== "guest" ? onDropTasksOnPerson : undefined}
           handTo={active.filter((x) => x.userId && x.role !== "guest").map((x) => ({ id: x.userId!, name: memberName(x) }))}

@@ -116,9 +116,11 @@ export function NewTaskModal({ open, onClose, onCreate, onCreateTag, onDeleteTag
   /** whose library to load when `templates` isn't given (default: the default project's workspace) */
   workspaceId?: string | null;
 }) {
-  // Default to the project you're in (defaultProjectId); otherwise the neutral
-  // "Personal" bucket rather than auto-picking a real project.
-  const defaultProject = defaultProjectId
+  // Default to the project you're in (defaultProjectId), when it's one you can file into (0058: a
+  // project you can only view isn't offered, and a default the picker doesn't list would be saved
+  // into while it shows another); otherwise the neutral "Personal" bucket rather than auto-picking
+  // a real project.
+  const defaultProject = (defaultProjectId && (!projects.length || projects.some((p) => p.id === defaultProjectId)) ? defaultProjectId : undefined)
     || (projects.some((p) => p.id === "p-personal") ? "p-personal" : projects[0]?.id)
     || "p-personal";
   const [title, setTitle] = useState("");

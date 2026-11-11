@@ -4,8 +4,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import MATRIX from "./projectAccessMatrix.json";
 import {
-  accessErrorText, accessOn, accessSchema, audienceOpen, canManagePeople, canSetVisibility, cantBeGiven, copyPeople, copyRoles, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
-  noteAccessSchema, peopleFor, projectRank, rankCore, rankFor, resetAccessSchema, seesCount, taskRank, turnOnPreview, type AccessCtx,
+  accessErrorText, accessOn, accessSchema, audienceOpen, canManagePeople, canSetVisibility, cantBeGiven, copyPeople, copyRoles, detachSoloMove, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
+  noteAccessSchema, peopleFor, projectRank, rankCore, rankFor, resetAccessSchema, roleChangeLoss, roleChangeQuestion, seesCount, taskRank, turnOnPreview, type AccessCtx,
 } from "./projectAccess";
 import type { Project, ProjectMember, ProjectVisibility, Workspace, WorkspaceMember } from "../data/types";
 import { DEMO_PROJECT_MEMBERS, PROJECTS } from "../data/data";
@@ -236,6 +236,44 @@ describe("people, projects and previews", () => {
       .toEqual([["a", 0], ["me", 0], ["mv", 0], ["m2", 1]]);   // (GC is on it: a guest keeps it)
     expect(seesCount(proj("pp", "private"), ctx)).toBe(2);
     expect(seesCount(proj("pp", "private"), ctx, "members")).toBe(3);
+  });
+  it("detachSoloMove: a sub-task moved without its parent (switch on) becomes a task of its own; one moving with it, or off, stays a sub-task", () => {
+    const sub = { parentId: "t-parent", projectId: "pw" };
+    const p1: { projectId?: string; parentId?: string } = { projectId: "pm" };
+    expect(detachSoloMove(sub, p1, new Set(["t-sub"]), true)).toBe(true);
+    expect("parentId" in p1 && p1.parentId === undefined).toBe(true);
+    for (const [patch, moving, on] of [[{ projectId: "pm" }, new Set(["t-sub", "t-parent"]), true], [{ projectId: "pm" }, new Set(["t-sub"]), false],
+                                        [{ projectId: "pw" }, new Set(["t-sub"]), true], [{ projectId: "pm", parentId: "t-other" }, new Set(["t-sub"]), true]] as const) {
+      const p: { projectId?: string; parentId?: string } = { ...patch };
+      expect(detachSoloMove(sub, p, moving, on), JSON.stringify([patch, [...moving], on])).toBe(false);
+      expect(p).toEqual(patch);
+    }
+    expect(detachSoloMove({ projectId: "pw" }, { projectId: "pm" }, new Set(), true)).toBe(false);
+  });
+  it("roleChangeLoss / roleChangeQuestion: a narrower role says what it takes (switch on: projects and edit rights; made a guest: editor roles for good)", () => {
+    noteAccessSchema(true);
+    const tasks = [{ projectId: "pw", assigneeId: "me", status: "todo" as const }, { projectId: "pw", assigneeId: "me", status: "done" as const }];
+    // Meg (an editor of pm and pp, owner of pq) made a guest, switch on
+    const on = roleChangeLoss(W, "me", "guest", world(true, "o"), tasks);
+    expect(on.unseen).toEqual([{ name: "pw", openTasks: 1 }]);
+    expect(on.capped.sort()).toEqual(["pm", "pp"]);
+    expect(on.viewOnly).toEqual(["pq"]);
+    const q = roleChangeQuestion("Meg", "guest", on)!;
+    expect(q).toContain("Make Meg a guest?");
+    expect(q).toContain("They'd stop seeing pw, with 1 open task of theirs there.");
+    expect(q).toContain("They could no longer change pq.");
+    expect(q).toContain("Their role on pm and pp becomes Can comment");
+    // switched off: only the roles that change for good
+    const off = roleChangeLoss(W, "me", "guest", world(false, "o"), tasks);
+    expect([off.unseen, off.viewOnly, off.capped.sort()]).toEqual([[], [], ["pm", "pp"]]);
+    // an admin made a member, switch on: the Members only project they aren't on
+    expect(roleChangeLoss(W, "a", "member", world(true, "o")).unseen.map((x) => x.name)).toEqual(["pm"]);
+    // nothing to ask: a wider role, switched off with no editor rows, or before 0058
+    expect(roleChangeQuestion("Ari", "admin", roleChangeLoss(W, "a", "admin", world(true, "o")))).toBeNull();
+    expect(roleChangeQuestion("Moe", "member", roleChangeLoss(W, "m2", "admin", world(true, "o")))).toBeNull();
+    expect(roleChangeQuestion("Ari", "member", roleChangeLoss(W, "a", "member", world(false, "o")))).toBeNull();
+    noteAccessSchema(false);
+    expect(roleChangeQuestion("Meg", "guest", roleChangeLoss(W, "me", "guest", world(true, "o"), tasks))).toBeNull();
   });
   it("refusals are said from your side", () => {
     expect(accessErrorText({ code: "access_missing" })).toBe("Project access isn't switched on yet.");

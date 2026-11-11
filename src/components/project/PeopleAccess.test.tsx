@@ -69,6 +69,28 @@ describe("PeopleAccess", () => {
     expect(props.onInviteGuest).toHaveBeenCalledWith("p1");
   });
 
+  it("your own row asks before you take yourself off it, or give yourself a role you couldn't undo (others' rows don't)", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      const { panel, props } = setup(ctx("me", [pm("me", "editor"), pm("m2", "editor")]));
+      fireEvent.click(within(panel).getByRole("button", { name: "Remove Mo Member" }));
+      expect(String(confirm.mock.calls[0]?.[0])).toBe("You'd lose access to Seed round. Only its owner or one of its editors can add you back.");
+      fireEvent.change(within(panel).getByRole("combobox", { name: "Mo Member's role" }), { target: { value: "viewer" } });
+      expect(String(confirm.mock.calls[1]?.[0])).toMatch(/^You couldn't change Seed round any more/);
+      expect(props.onRemoveMember).not.toHaveBeenCalled();
+      expect(props.onSetMember).not.toHaveBeenCalled();
+      // someone else's: straight through
+      fireEvent.click(within(panel).getByRole("button", { name: "Remove Theo Vance" }));
+      await vi.waitFor(() => expect(props.onRemoveMember).toHaveBeenCalledWith("p1", "m2"));
+      expect(confirm).toHaveBeenCalledTimes(2);
+      // confirmed: it goes
+      confirm.mockReturnValue(true);
+      await vi.waitFor(() => expect(within(panel).getByRole("button", { name: "Remove Mo Member" })).not.toBeDisabled());
+      fireEvent.click(within(panel).getByRole("button", { name: "Remove Mo Member" }));
+      await vi.waitFor(() => expect(props.onRemoveMember).toHaveBeenCalledWith("p1", "me"));
+    } finally { confirm.mockRestore(); }
+  });
+
   it("someone who can't manage it reads it; members can't pick Private unless an owner allows it", () => {
     const { panel } = setup(ctx("m2", []), project({ visibility: "workspace" }));
     expect(within(panel).queryByRole("combobox", { name: "Add someone to this project" })).toBeNull();

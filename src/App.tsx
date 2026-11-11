@@ -59,7 +59,7 @@ import { MemberProjects, type MemberProjectRow } from "./components/project/Memb
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, cantBeGiven, copyPeople, copyRoles, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankCore, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, cantBeGiven, copyPeople, copyRoles, detachSoloMove, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankCore, rankFor, roleChangeLoss, roleChangeQuestion, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -2012,6 +2012,16 @@ export default function App() {
     return accessRetarget(prev, patch);
   }, [accessRetarget]);
 
+  /** 0058: a sub-task moved to another project without its parent (`moving`: the tasks moving in the same
+   *  change) becomes a task of its own where project access is on, or the server keeps it in its parent's
+   *  project, and only the people changes made for the move would land (detachSoloMove). */
+  const soloDetach = useCallback((prev: Task, patch: Partial<Task>, moving: ReadonlySet<string>) => {
+    if (patch.projectId === undefined || patch.projectId === prev.projectId) return;
+    const ws = patch.workspaceId !== undefined ? patch.workspaceId : projectWs(patch.projectId);
+    detachSoloMove(prev, patch, moving, accessOn(workspacesRef.current.find((w) => w.id === ws)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** Sub-tasks go wherever their parent goes (project, workspace) and are archived with it. */
   const cascadeToDescendants = useCallback((prev: Task, patch: Partial<Task>, all: Task[], into: Map<string, Partial<Task>>) => {
     const moved = ("projectId" in patch && patch.projectId !== prev.projectId) || ("workspaceId" in patch && (patch.workspaceId ?? null) !== (prev.workspaceId ?? null));
@@ -2083,6 +2093,7 @@ export default function App() {
     // re-picking the same status must never restamp completedAt
     if ("status" in patch && (!patch.status || patch.status === prev.status)) { delete patch.status; delete patch.completedAt; }
     if (patch.status === "done" && !confirmCompleteBlocked([prev])) return;
+    soloDetach(prev, patch, new Set([id]));
     const note = retarget(prev, patch);
     if ("workspaceId" in patch && (patch.workspaceId ?? null) !== (prev.workspaceId ?? null) && denyGuest([patch.workspaceId])) return;
     if ("projectId" in patch && patch.projectId && patch.projectId !== prev.projectId && denyEdit([patch.projectId])) return;
@@ -2096,7 +2107,7 @@ export default function App() {
     if (fx.logs.size) updateWithStatus(patches, fx, { retry: () => patchTaskRef.current(id, patchIn) });
     else updateTasks(patches);
     if (note) toastInfo(note);
-  }, [denyGuest, denyEdit, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastInfo]);
+  }, [denyGuest, denyEdit, confirmCompleteBlocked, soloDetach, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastInfo]);
   patchTaskRef.current = patchTask;
 
   // follow/unfollow a task (followers get its activity in their inbox)
@@ -2114,6 +2125,13 @@ export default function App() {
     store.setTaskFollow(id, follow).then((followers) => {
       if (!latest()) return;
       if (followers) { applyLocal(new Map([[id, { followers }]])); return; }
+      // (0058: someone who can only view or comment on it follows through the function alone: a row save
+      // would be refused when it's replayed, and parked as a change that can't be synced)
+      if (store.configured && taskRank(t, accessNow()) < 3) {
+        applyLocal(new Map([[id, { followers: apply(now(), !follow) }]]));
+        toastError(`Couldn't ${follow ? "follow" : "unfollow"} “${t.title}” just now. Try again when you're back online.`);
+        return;
+      }
       // demo mode, offline or older edits to this task still queued, or 0042 not run yet:
       // a normal save, rolled back to the list before the click (with Retry) if it fails
       commit(new Map([[id, { followers: apply(now(), follow) }]]), new Map([[id, t]]));
@@ -2123,7 +2141,7 @@ export default function App() {
       applyLocal(new Map([[id, { followers: apply(now(), !follow) }]]));
       toastError(follow ? `Couldn't follow “${t.title}”` : `Couldn't unfollow “${t.title}”`);
     });
-  }, [applyLocal, commit, toastError]);
+  }, [applyLocal, commit, toastError, accessNow]);
 
   // toggle the signed-in user's emoji reaction on a task itself
   const toggleTaskReaction = useCallback((id: string, emoji: string) => {
@@ -2161,10 +2179,12 @@ export default function App() {
     const completed: string[] = [];
     const fx = newStatusFx();
     let refused = 0;
+    const moving = new Set(rows.map((r) => r.id));
     for (const prev of rows) {
       const p: Partial<Task> = { ...(opts.patchFor ? opts.patchFor(prev) : patchIn) };
       // per task: completedAt only moves for tasks whose status really changes
       if ("status" in p && (!p.status || p.status === prev.status)) { delete p.status; delete p.completedAt; }
+      soloDetach(prev, p, moving);
       const note = retarget(prev, p); if (note) notes.add(note);
       Object.assign(p, releasedPlan(prev, p));
       if (p.status) { if (p.status === "done") completed.push(prev.id); Object.assign(p, onStatusChange(prev, { ...prev, ...p }, fx)); }
@@ -2198,7 +2218,7 @@ export default function App() {
       opts.undoAlso?.();
     }, {});
     if (said) toastInfo(said);
-  }, [denyEdit, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
+  }, [denyEdit, confirmCompleteBlocked, soloDetach, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
   bulkPatchRef.current = bulkPatch;
 
   /* ---- personal plan state: the assignee-only write guard ----
@@ -2354,8 +2374,9 @@ export default function App() {
         const count = (tasksRef.current?.find((x) => x.id === taskId)?.comments ?? t.comments) + 1;
         setTasks((ts) => ts && ts.map((x) => x.id === taskId ? { ...x, comments: count } : x));
         noteWrite(taskId, { comments: count });
-        // guests can comment but not write the task row — their count catches up on the next reload
-        if (roleIn(t.workspaceId) !== "guest") writeTask(taskId, { comments: count }).catch(reportError);
+        // guests, and commenters on a project (0058), can comment but not write the task row — their
+        // count catches up on the next reload
+        if (roleIn(t.workspaceId) !== "guest" && taskRank(t, accessNow()) >= 3) writeTask(taskId, { comments: count }).catch(reportError);
         // no self-logged "comment" row: task_events keeps the history, and the
         // inbox only shows comments from other people (DB trigger)
         if (mentions.length) store.notify({ kind: "mention", taskId, taskTitle: t.title, recipientIds: mentions });
@@ -2367,7 +2388,7 @@ export default function App() {
       toastError("Couldn't post the comment.");
       return null;
     }
-  }, [toastError, noteWrite, roleIn, writeTask]);
+  }, [toastError, noteWrite, roleIn, writeTask, accessNow]);
 
   const toggleSubtask = useCallback((taskId: string, subId: string) => {
     const task = tasksRef.current?.find((t) => t.id === taskId);
@@ -2756,8 +2777,10 @@ export default function App() {
         const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
         // as every move: someone on a task who can't see the target drops off it (its assignee: it's yours), 0058
         const notes = new Set<string>();
+        const moving = new Set(affected.map((t) => t.id));
         const patches = new Map(affected.map((t) => {
           const p: Partial<Task> = { projectId: targetId, workspaceId: targetWs, sectionId: undefined };
+          soloDetach(t, p, moving);
           const note = retarget(t, p); if (note) notes.add(note);
           return [t.id, Object.assign(p, releasedPlan(t, p))] as [string, Partial<Task>];
         }));
@@ -2806,7 +2829,7 @@ export default function App() {
         }
       });
     }, {});
-  }, [denyEdit, canDeleteProject, deferTmp, applyProjects, retarget, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError, toastAction, toastInfo, clearWrite, setRoute]);
+  }, [denyEdit, canDeleteProject, deferTmp, applyProjects, soloDetach, retarget, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError, toastAction, toastInfo, clearWrite, setRoute]);
 
   // ---- sections (ordered groupings within a project) ----
   const sectionWs = (s: Section | undefined) => (s ? s.workspaceId ?? projectWs(s.projectId) : null);
@@ -3475,6 +3498,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toastError, toastSuccess, refreshWorkspaceMembers]);
 
+  /** 0058: before a narrower role (an admin made a member, anyone made a guest): what it takes from them,
+   *  as a question, or null when it takes nothing (or before 0058). Made a guest, their editor roles
+   *  become "can comment" whatever the switch says, and aren't put back when they're promoted again. */
+  const roleQuestion = useCallback((memberId: string, to: Role): string | null => {
+    const m = wsMembersRef.current.find((x) => x.id === memberId);
+    if (!m?.userId || !m.workspaceId) return null;
+    const name = m.name || m.email || "them";
+    return roleChangeQuestion(name, to, roleChangeLoss(m.workspaceId, m.userId, to, accessNow(), tasksRef.current ?? []));
+  }, [accessNow]);
   const setMemberRole = useCallback((memberId: string, role: Role) => {
     setWsMembers((xs) => xs.map((m) => m.id === memberId ? { ...m, role } : m));
     store.setMemberRole(memberId, role).catch((e) => { reportError(e, { op: "setMemberRole" }); toastError("Couldn't change the role: " + (e?.message || e)); refreshWorkspaceMembers(); });
@@ -3713,9 +3745,11 @@ export default function App() {
     const notes = new Set<string>();
     const wsIds: (string | null | undefined)[] = [];
     const rows: Task[] = [];
+    const moving = new Set(list.map((x) => x.id));
     for (const { id, patch: given } of list) {
       const prev = all.find((t) => t.id === id); if (!prev) continue;
       const p: Partial<Task> = { ...given };
+      soloDetach(prev, p, moving);
       const note = retarget(prev, p); if (note) notes.add(note);
       Object.assign(p, releasedPlan(prev, p));
       wsIds.push(prev.workspaceId, "workspaceId" in p ? p.workspaceId : undefined);
@@ -3729,7 +3763,7 @@ export default function App() {
     if (denyGuest(wsIds) || denyEdit(rows)) return;
     updateTasks(patches);
     if (said) toastInfo(said);
-  }, [retarget, cascadeToDescendants, denyGuest, denyEdit, updateTasks, toastInfo]);
+  }, [soloDetach, retarget, cascadeToDescendants, denyGuest, denyEdit, updateTasks, toastInfo]);
   const moveDeps = useCallback((): MoveDeps => ({
     tasks: tasksRef.current ?? [], updateTasks: applyMovePatches,
     toast: (m, undo) => { if (undo) toastAction(m, "Undo", undo, {}); else toastInfo(m); },
@@ -4383,6 +4417,8 @@ export default function App() {
   const planProjectId = wsEditable.find((p) => !p.id.startsWith("tmp-"))?.id ?? "p-personal";
   // quick capture's default: the project you're on, if you can change it
   const captureDefault = routeRef.current.view === "project" && wsEditable.some((p) => p.id === routeRef.current.projectId) ? routeRef.current.projectId : undefined;
+  // (Import tasks: the project the rollout checklist asked for, else the one you're in, if you can change it)
+  const importDefault = [rollout.importInto, openProject?.id].find((x): x is string => !!x && wsEditable.some((p) => p.id === x));
   const askProjects = wsProjects.map((p) => ({ id: p.id, name: p.name }));
   const askGoals = goalExtras || goals.length ? goalFlow.ask(workspace) : [];
   const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects, askGoals]);
@@ -4747,7 +4783,7 @@ export default function App() {
         meeting={workspace && !personal && !activeReadOnly ? { workspaceId: workspace, preset: "team", canLead: isAdmin } : null}
         goalsSlot={<TeamGoals goals={goalFlow.goals.filter((g) => (g.workspaceId ?? null) === workspace)} reads={goalFlow.reads} today={KANBO_TODAY} onOpenGoal={openGoal} onOpenGoals={() => setRoute({ view: "goals" })} />} />;
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership}
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} roleQuestion={roleQuestion} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership}
         transferLoses={accessOn(workspaces.find((w) => w.id === workspace)) ? projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt && visibilityOf(p) === "private"
           && p.ownerId !== currentUserId && !accessMemberRole(accessCtx, p.id, currentUserId)).map((p) => p.name) : undefined}
         onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
@@ -4821,7 +4857,7 @@ export default function App() {
               <Suspense fallback={null}><ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={projectPeople(assignees)}
                 canManage={canManageProject(openProject!)} readOnly={projRO} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
                 onPostStatus={projRO ? undefined : postStatusUpdate} aiStatus={aiStatus}
-                conversation={{ me: currentUserId, lead: isAdmin, onEdit: projRO ? undefined : editStatusUpdate, onDelete: deleteStatusUpdate, focusUpdateId: updateFocus,
+                conversation={{ me: currentUserId, lead: isAdmin && !projRO, onEdit: projRO ? undefined : editStatusUpdate, onDelete: deleteStatusUpdate, focusUpdateId: updateFocus,
                   canReply: projectRank(openProject!.id, accessCtx) >= 2 }}
                 rules={{ ...rulesProps(openProject!.id), readOnly: projRO }} forms={{ ...formsProps(openProject!.id), readOnly: projRO }}
                 // 0058: who's on it (once 0058 is in) and, with project access on, who can see it
@@ -4968,13 +5004,14 @@ export default function App() {
         )}
       </main>
 
+      {/* (0058: only projects you can change; refused, the rows stay in the form) */}
       <Deferred when={importOpen}><ImportTasksModal open={importOpen} onClose={() => { setImportOpen(false); setImportText(undefined); }} initialText={importText}
-        projects={wsProjects} members={assignees.map((a) => ({ ...a, email: wsMembers.find((m) => m.userId === a.id)?.email }))}
-        sections={sections.filter((s) => !s.id.startsWith("tmp-") && wsProjects.some((p) => p.id === s.projectId))}
-        defaultProjectId={rollout.importInto ?? openProject?.id}
-        defaultProjectName={rollout.importInto ? projects.find((p) => p.id === rollout.importInto)?.name : openProject?.name}
+        projects={wsEditable} members={assignees.map((a) => ({ ...a, email: wsMembers.find((m) => m.userId === a.id)?.email }))}
+        sections={sections.filter((s) => !s.id.startsWith("tmp-") && wsEditable.some((p) => p.id === s.projectId))}
+        defaultProjectId={importDefault}
+        defaultProjectName={importDefault ? projects.find((p) => p.id === importDefault)?.name : undefined}
         supports={{ details: true, subtasks: true, newTags: true, newSections: true }}
-        onImport={(rows) => { importTasks(rows); rollout.noteImport(rows.length); }} /></Deferred>
+        onImport={(rows) => { if (!importTasks(rows)) return false; rollout.noteImport(rows.length); }} /></Deferred>
 
       {/* tasks and projects from every workspace (like Search); opening a project elsewhere switches to its workspace */}
       <Deferred when={cmdOpen}><CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} tasks={seen} onOpenTask={setDetailId}
@@ -5051,7 +5088,8 @@ export default function App() {
       {/* suggestions are yours; the task you chose to focus on (anyone's) is always included */}
       {focusOpen && <Suspense fallback={null}><FocusMode focus={focus} tasks={focus.taskId && !myTasks.some((t) => t.id === focus.taskId) ? [...myTasks, ...seen.filter((t) => t.id === focus.taskId)] : myTasks} onClose={() => setFocusOpen(false)} onOpenTask={(id) => { setFocusOpen(false); setDetailId(id); }} /></Suspense>}
       <Deferred when={newTaskOpen}><NewTaskModal open={newTaskOpen} onClose={() => { setNewTaskOpen(false); setNewTaskTemplate(null); }} onCreate={createTask} onCreateTag={createTag} onDeleteTag={deleteTag} projects={wsEditable} allTags={tags} members={wsMembers} currentUserId={currentUserId}
-        canSee={wsGated ? (u, pid) => { const w = projectWs(pid); return !w || rankFor(accessCtx, u, w, pid) >= 1; } : undefined} defaultStatus={newTaskStatus} defaultProjectId={newTaskProjectId}
+        canSee={wsGated ? (u, pid) => { const w = projectWs(pid); return !w || rankFor(accessCtx, u, w, pid) >= 1; } : undefined} defaultStatus={newTaskStatus}
+        defaultProjectId={newTaskProjectId && wsEditable.some((p) => p.id === newTaskProjectId) ? newTaskProjectId : undefined}
         tagUsage={(id) => seen.filter((t) => t.tags.includes(id)).length}
         // 0048 templates: "/" or Template ▾ in the form, the library's "Use template", the whole plan through App's create paths
         workspaceId={workspace} initialTemplate={newTaskTemplate} onApplyTemplate={applyTemplatePlan}
@@ -5186,9 +5224,9 @@ export default function App() {
         );
       })()}
       <Deferred when={extract.open}><ExtractTasksSheet open={extract.open} onClose={() => setExtract({ open: false })} initialText={extract.text} context={extract.context}
-        projects={wsProjects} members={assignees} membersFor={ruleMembers} defaultProjectId={openProject?.id} currentUserId={currentUserId}
+        projects={wsEditable} members={assignees} membersFor={ruleMembers} defaultProjectId={captureDefault} currentUserId={currentUserId}
         onExtractAI={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined}
-        onCreate={(rows) => { importTasks(rows, { verb: "Added" }); }} /></Deferred>
+        onCreate={(rows) => (importTasks(rows, { verb: "Added" }) ? undefined : false)} /></Deferred>
       <Deferred when={shutdownOpen}><ShutdownSheet open={shutdownOpen} onClose={() => setShutdownOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} userName={currentUser?.name}
         onPatch={guardedPatch} onComment={(taskId, body) => addComment(taskId, body)} focusMinutesToday={focus.focusMinToday} readOnly={activeReadOnly} /></Deferred>
       <Deferred when={weeklyOpen}><WeeklyReview open={weeklyOpen} onClose={() => setWeeklyOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} onPatch={guardedPatch}

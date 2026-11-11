@@ -13,7 +13,7 @@ import { useId, useMemo, useState } from "react";
 import { Avatar, Button, Icon } from "../primitives";
 import type { Project, ProjectRole, ProjectVisibility, Task } from "../../data/types";
 import {
-  canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, memberRole, narrowingLoss, rankFor, rankWith, roleOf, seesCount, visibilityOf,
+  accessOn, canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, memberRole, narrowingLoss, rankCore, rankFor, rankWith, roleOf, seesCount, visibilityOf,
   ROLE_LABEL, VISIBILITY_LABEL, type AccessCtx,
 } from "../../lib/projectAccess";
 import "./peopleAccess.css";
@@ -92,6 +92,16 @@ export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSet
   };
   const mine = rankFor(ctx, ctx.me, wsId, project.id);
   const YOURS = ["", "You can view it.", "You can view it and comment on its tasks.", "You can see and edit it."];
+  /** Your own row (a manager who isn't its owner): taking yourself off, or a lower role, can't be undone by
+   *  you (a viewer or commenter manages nothing), so it asks first, as the visibility radios refuse it. */
+  const selfOk = (uid: string, role: ProjectRole | null) => {
+    if (uid !== ctx.me) return true;
+    const then = rankCore(accessOn(ctx.workspaces.find((w) => w.id === wsId)), roleOf(ctx, wsId, uid), vis, false, role);
+    if (then >= mine) return true;
+    return window.confirm(then < 1
+      ? `You'd lose access to ${project.name}. Only its owner or one of its editors can add you back.`
+      : `You couldn't change ${project.name} any more, nor who's on it. Only its owner or one of its editors can give you your role back.`);
+  };
 
   return (
     <section className="kpax" aria-labelledby={`${id}-t`}>
@@ -156,10 +166,10 @@ export function PeopleAccess({ project, ctx, workspaceName, tasks, nameOf, onSet
                 {manage ? (
                   <>
                     <select className="kpax-select" aria-label={`${nameOf(m.userId)}'s role`} value={m.role} disabled={busy}
-                      onChange={(e) => void run(() => onSetMember(project.id, m.userId, e.target.value as ProjectRole))}>
+                      onChange={(e) => { const to = e.target.value as ProjectRole; if (selfOk(m.userId, to)) void run(() => onSetMember(project.id, m.userId, to)); }}>
                       {(isGuest ? (["commenter", "viewer"] as ProjectRole[]) : (["editor", "commenter", "viewer"] as ProjectRole[])).map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                     </select>
-                    <Button size="sm" variant="ghost" disabled={busy} aria-label={`Remove ${nameOf(m.userId)}`} onClick={() => void run(() => onRemoveMember(project.id, m.userId))}>Remove</Button>
+                    <Button size="sm" variant="ghost" disabled={busy} aria-label={`Remove ${nameOf(m.userId)}`} onClick={() => { if (selfOk(m.userId, null)) void run(() => onRemoveMember(project.id, m.userId)); }}>Remove</Button>
                   </>
                 ) : <span className="kpax-role-fixed" title={effective === 3 && m.role !== "editor" ? "Everyone here can edit a Whole workspace project" : undefined}>{ROLE_LABEL[m.role]}</span>}
               </li>
