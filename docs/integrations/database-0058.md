@@ -15,7 +15,8 @@ and then with 0058 in and the switch off: the answers are identical.
 
 The exceptions. First, a project still owned by someone who has already left
 its workspace becomes the workspace owner's (the file does this once, and from then
-on whenever someone leaves). Otherwise, invited back later, even as a guest for
+on whenever someone leaves, or a workspace owner with no member row of their own
+hands the business over). Otherwise, invited back later, even as a guest for
 one other project, they would own every project they had made, Private ones
 included. Nobody's access changes: the departed person has none, and the
 workspace's owner already sees everything. The VERIFY column `owners_still_in`
@@ -41,7 +42,7 @@ aren't put back if they're made a member again); the app asks first.
 | Who can see a project | `projects.visibility` (`workspace`, `members`, `private`); `set_project_visibility(project, visibility)` | **Whole workspace**: everyone in the workspace (guests only if they're added). **Members only**: the project's people, plus the workspace's owners and admins. **Private**: the project's people, plus the workspace's owner. Changed by the workspace's owner, the project's owner, its editors (not guests), and admins (not on Private projects). Nobody but the owner can change it so that they'd lose access themselves. Every project there today is Whole workspace. |
 | A project's people | `project_members` (editor, commenter, viewer); `set_project_member`, `remove_project_member` | Filled once from each project's contributors (editors; guests are commenters; never the project's owner, who always edits). A guest is never more than a commenter (someone made a guest after making a project still owns it, and comments on it). Read by anyone who can see the project. Written only through the functions; `contributor_ids` is kept in step both ways, so older tabs keep working. |
 | Guests invited onto projects | `project_member_invites`; `set_invite_projects(invite, grants)`, `remove_invite_project(invite, project)` | Owners and admins choose the projects a new guest will see; they become that guest's project rows when the invite is accepted. A pending grant is read by the project's managers (who see it in People & access and can take it off) and by owners and admins on projects they can see. `set_invite_projects` changes only the grants on projects the caller manages: one on a project they can't see (made Private since by its owner) is kept, so an admin's edit of an invite never drops it. Re-inviting a pending guest adds the new projects to what the invite brings. |
-| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired`, `project_departures` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A Members only or Private project that moves to Personal or another workspace leaves a record of the access it had where it was: anything that still names it there (work an old tab writes under its id, webhook events waiting for it) keeps that access, read-only, rather than becoming everyone's. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
+| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired`, `project_departures` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A Members only or Private project that moves to Personal or another workspace leaves a record of the access it had where it was: anything that still names it there (work an old tab writes under its id, webhook events waiting for it) keeps that access, read-only, rather than becoming everyone's. Its id is never a new project's either, once nothing holds it any more (deleted for good from a Personal bin, its new workspace closed, its owner's account deleted), whatever the switch says; a restore from the bin still brings it back, and moving it back is always allowed. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
 
 What each person can do on a project (one rank, the same table the app uses,
 `src/lib/projectAccessMatrix.json`): **view** (read, follow, plan, mark updates
@@ -132,7 +133,18 @@ No new secrets and no new schedule.
   the workspace's owner still can), and anything left in it counts as closed
   on a meeting's agenda and in Slack posts. A bin entry's summary names its
   parent task only when that's in the same project (switching on drops the
-  line from entries binned while it was off). When a Members only or Private project is
+  line from entries binned while it was off). Switching on also splits a bin
+  entry binned while it was off (or before 0058) that took another project's
+  sub-tasks along: each such sub-task (with its own sub-tasks of that project
+  and their comments, files and history) becomes a bin entry of its own in
+  its own project, with that project's access, the same delete time and
+  expiry, on its own (no parent), and a history line of its own; the entry
+  it came from counts only its own project's tasks, in the bin and in the
+  history. So only the sub-task's own project's people read, restore or
+  delete it for good, as if it had been freed before the delete. (Switched
+  off again, the split stays, like a freed sub-task.) Restoring a bin row
+  that's already been restored says where its task is now only to someone
+  who can see it there. When a Members only or Private project is
   deleted for good, anything still in it (written while the switch was off,
   say) goes to the bin as items of its own, with the project's access, rather
   than becoming work everyone reads. Its id is never used for a new project.
@@ -197,7 +209,10 @@ No new secrets and no new schedule.
 - **Approvals.** A reviewer who can only view the task now (or can't see it)
   isn't offered a decision (`can_decide`), and the request's asker sees who
   can't review it and, when it can't finish, that it should be cancelled and
-  asked again.
+  asked again. Only the request's asker, or an owner or admin who can edit the
+  task, cancels it (an admin who's only a viewer or commenter on a Private
+  project's task isn't offered Cancel, and `cancel_approval` says "approval not
+  found").
 - **Update replies.** An @mention in a reply to a project update asks for a
   reply, so it reaches only people who can reply (never a viewer), as Asks do.
 - **Asking for an update** about a project you can't see is "not
@@ -206,7 +221,17 @@ No new secrets and no new schedule.
   notes and actions, and setting a bill rate on such a project (none of them
   says first that it's a live project here). Notion's status counts only the
   syncs of projects you can see, and a task's dependencies list only the tasks
-  you can see.
+  you can see. Switching a Notion sync on or off, or removing it
+  (`notion_set_sync_enabled`, `notion_delete_sync`), needs edit rights on its
+  project: anyone else gets "sync not found", as for a sync that isn't there,
+  whatever sync id they hold (every member could read them while a project was
+  open, and a synced task moved out keeps its sync's id), and never the sync's
+  details or last error. A new public link for a form you can't see is "form
+  not found" (one you can only view: "not authorized"). What a pending invite
+  brings can't be probed either: `set_invite_projects` refuses a grant on a
+  project you can't see whatever the invite already holds, and
+  `remove_invite_project` gives someone who doesn't manage the project the
+  same answer whether the invite brings it or not.
 - **Kudos.** A changed kudos note or emoji goes to its recipient's Inbox only
   while they can still see the task; otherwise the change is refused, as giving
   kudos to them would be.
@@ -230,6 +255,36 @@ they've already had: Inbox items, emails, push notices, Slack posts and
 webhooks already delivered; meeting agendas and recaps already stored; shared
 templates; exports; and a device's offline copy until its next load.
 
+- **Live channels.** A doc's live edits, carets and who's here go over
+  Supabase Realtime, which checks the rules when someone joins a channel and
+  when their token refreshes, not on every message. Someone taken off a
+  project, or left out when it's narrowed, can keep receiving that doc's live
+  edits for as long as their open session's token lasts (up to an hour, the
+  default) if their client doesn't leave the channel. Kanbo itself reloads and
+  leaves (the workspaces touch); a modified client or a held-open connection
+  may not. Saved docs, tasks and every table's live changes follow the rules
+  at once. Before 0058 the same held for someone removed from a workspace;
+  0058 just makes losing a project routine. If that matters, shorten the
+  access-token (JWT) expiry in Supabase's auth settings before switching on.
+- **Ids you already hold.** With the switch on, someone who already has the
+  id of a Members only or Private task, comment or project (read before it
+  narrowed, or from a goal or a portfolio) can still tell whether it's there:
+  some answers differ for a live hidden id and a made-up one (a reply naming
+  it as the parent comment, a Personal task hung under it, a project's or
+  task's id already in use, `pa_rank` / `pa_task_gated` called directly).
+  None of them reads its title, content, people or counts. Anyone outside the
+  workspace could do the same before 0058.
+- **Invites made by someone who has since lost access.** A pending guest
+  invite's project grants don't follow whoever made them: an admin who's
+  later made a member (or removed), or an owner who hands over, leaves the
+  grants they made in place, and the guest gets them on joining. The owner
+  and each project's managers see and can take off pending grants in People &
+  access. Before 0058 the same admin could leave a whole-workspace invite
+  behind.
+- **Webhook summaries.** An endpoint's last delivery time, status, error and
+  failure count (Settings › Webhooks) move with every delivery it makes,
+  including ones about Private projects that the delivery log hides from
+  you. They say when, never what.
 - **Notion.** A two-way Notion sync set up on a project keeps copying its tasks
   into its Notion database after the project is made Members only or Private
   (it runs as the person who set it up, who can still see it). Anyone who can
@@ -243,7 +298,12 @@ templates; exports; and a device's offline copy until its next load.
   them as its assignee), and the rest of the run carries on. A database that
   syncs with a project you can't see can't be previewed or imported by you,
   kept in sync or not, and its sync can't be taken over by naming the same
-  database for another project ("already syncs").
+  database for another project ("already syncs"). Nor can its pages be read
+  in Kanbo through a link of your own: a page that a synced task you can't see
+  mirrors can't be linked to a task of yours ("invalid page"), and a link to it
+  made before (while its project was open, say) is hidden from you, with the
+  page's cached title, so the Notion function won't fetch the page for you
+  either.
 - **Names a guest can read.** A task's history row keeps the name its author had
   when it was written (0038 falls back to their email when they had no name),
   so a guest reading a task in their project can see the name of a teammate

@@ -987,7 +987,8 @@ steps; nothing breaks while you wait.
    lose it. Choose "New projects start as" and whether members may make
    projects private, then switch it on and confirm. (Switching on also frees any
    sub-task that was moved to another project on its own: it stays where it is,
-   as a task of its own.) Then mark that business's
+   as a task of its own. One that's in the bin with its old parent becomes a bin
+   entry of its own, in its own project.) Then mark that business's
    HR, finance and leadership projects Members only or Private (About › People &
    access › Manage); it asks before anyone loses access and names them. Check
    it as a guest would (or ask one): they see only their projects. Each
@@ -995,7 +996,11 @@ steps; nothing breaks while you wait.
    project you make private syncs to Notion, its tasks keep going to that Notion
    database: stop its sync first if that database is shared more widely (a
    synced task moved into a Members only or Private project stops syncing by
-   itself). From now on,
+   itself). Live doc editing is checked when someone opens the doc and when
+   their sign-in token refreshes, so someone taken off a project (or left out
+   when it's narrowed) could keep receiving that doc's live edits for up to an
+   hour with a client other than Kanbo; if that matters for a business, shorten
+   the access-token (JWT) expiry in Supabase's auth settings first. From now on,
    inviting a guest (Team › People › Invite people, role Guest) asks "Projects
    they can see" (inviting the same person again adds to their projects), and
    a project's People & access lists the pending invites that bring it, for
