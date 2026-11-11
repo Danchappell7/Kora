@@ -323,10 +323,12 @@ person who saved it: it goes when someone else signs in there.)
   them), so it still can't be previewed or imported by anyone who can't see
   the project, nor can a database imported once into such a project. (A task
   moved out of a synced project you can see keeps its sync's link without
-  closing the database to you, and an imported task that has since gone to
-  someone's Personal list or to another workspace doesn't close it to anyone:
-  it's no longer a project here. With the switch off, no database is ever
-  refused for this, as before 0058.)
+  closing the database to you. An imported task that has since gone to
+  someone's Personal list or to another workspace doesn't close it either
+  while some of its tasks are still here: the database is judged by those.
+  Which project a task left isn't recorded, so once every one of them has
+  gone, it's closed to all but the workspace's owners. With the switch off, no
+  database is ever refused for this, as before 0058.)
 - **Names a guest can read.** A task's history row keeps the name its author had
   when it was written (0038 falls back to their email when they had no name),
   so a guest reading a task in their project can see the name of a teammate

@@ -4151,13 +4151,15 @@ async function projectAccessApiSuite(w: World) {
     await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [openSync]);
   });
   /** A Notion database imported once (no Keep in sync) by `by` into `project`: each task is a plain link
-   *  naming the database. Then one goes to `by`'s Personal list, one (if asked) to a project in a second
-   *  workspace of alice's, and the rest stay. The links keep w1 (notion_links_guard fires only on the link). */
+   *  naming the database. Then one goes to `by`'s Personal list, one (unless elsewhere: false) to a project
+   *  in a second workspace of alice's, and one (unless stays: false) stays. The links keep w1
+   *  (notion_links_guard fires only on writes to the link). */
   let pageNo = 0;
-  const importedThenMoved = async (label: string, dbId: string, by: string, project: string, elsewhere = true) => {
+  const importedThenMoved = async (label: string, dbId: string, by: string, project: string, o: { elsewhere?: boolean; stays?: boolean } = {}) => {
+    const elsewhere = o.elsewhere !== false;
     const tasks: string[] = [];
     for (const title of ["went to a Personal list", "went to another workspace", "stayed"]) {
-      if (title === "went to another workspace" && !elsewhere) continue;
+      if ((title === "went to another workspace" && !elsewhere) || (title === "stayed" && o.stays === false)) continue;
       const t = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id) values ($1::uuid, $2, $3, $4::uuid, '') returning id::text as id`,
         [by, `${label}: ${title}`, project, w.w1])).id;
       await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, kind, created_by)
@@ -4185,12 +4187,15 @@ async function projectAccessApiSuite(w: World) {
       },
     };
   };
-  await test("0058, Notion, switch on: a task imported once that has gone to someone's Personal list or to another workspace doesn't close its database to anyone here; one still in a Private project does", async () => {
+  await test("0058, Notion, switch on: a task imported once that has gone to someone's Personal list or to another workspace doesn't close its database while some of its tasks are still here; one still in a Private project does; with every task gone it's closed to all but the owner", async () => {
     const ola = await admin("ola-notion");
     const openDb = "0d0d0d0d-0000-4000-8000-000000005814", payDb = "0d0d0d0d-0000-4000-8000-000000005815";
     // ola imported a database into Launch (open); alice imported another into Board pay (Private: alice, dora)
     const open = await importedThenMoved("Imported to Launch", openDb, ola, w.launch);
-    const closed = await importedThenMoved("Imported to Board pay", payDb, w.alice, pay, false);
+    const closed = await importedThenMoved("Imported to Board pay", payDb, w.alice, pay, { elsewhere: false });
+    // and dora imported a third into Board pay, every task of which has left (which project they left isn't recorded)
+    const goneDb = "0d0d0d0d-0000-4000-8000-000000005818";
+    const gone = await importedThenMoved("Imported to Board pay, all gone", goneDb, dora, pay, { stays: false });
     const sees = async (dbId: string) => {
       const out: boolean[] = [];
       for (const u of [ola, w.alice, w.bob, dora]) out.push(await syncsOutOfSight(w.deps.db.service, u, w.w1, dbId));
@@ -4198,8 +4203,10 @@ async function projectAccessApiSuite(w: World) {
     };
     eq(await sees(openDb), [false, false, false, false], "Launch's database: open to ola, alice, bob and dora");
     eq(await sees(payDb), [true, false, true, false], "Board pay's: still closed to ola and bob (not on it), not to alice or dora");
+    eq(await sees(goneDb), [true, false, true, true], "every task gone: closed to all but alice, the workspace's owner");
     await open.done();
     await closed.done();
+    await gone.done();
   });
   /** a member of w1 whose account is suspended, with an address of their own */
   const suspendedMember = async (name: string) => {
@@ -4294,8 +4301,10 @@ async function projectAccessApiSuite(w: World) {
     const pia = await admin("pia-notion");
     const dbId = "0d0d0d0d-0000-4000-8000-000000005816", payDb = "0d0d0d0d-0000-4000-8000-000000005817";
     const moved = await importedThenMoved("Off: imported to Launch", dbId, pia, w.launch);
-    const closed = await importedThenMoved("Off: imported to Board pay", payDb, w.alice, pay, false);
-    for (const [name, id] of [["Launch's", dbId], ["Board pay's", payDb]] as const) {
+    const closed = await importedThenMoved("Off: imported to Board pay", payDb, w.alice, pay, { elsewhere: false });
+    const goneDb = "0d0d0d0d-0000-4000-8000-000000005819";
+    const gone = await importedThenMoved("Off: imported to Board pay, all gone", goneDb, dora, pay, { stays: false });
+    for (const [name, id] of [["Launch's", dbId], ["Board pay's", payDb], ["Board pay's (every task gone)", goneDb]] as const) {
       const out: boolean[] = [];
       for (const u of [pia, w.alice, w.bob, dora]) out.push(await syncsOutOfSight(w.deps.db.service, u, w.w1, id));
       eq(out, [false, false, false, false], `${name} database: open to pia, alice, bob and dora`);
@@ -4327,6 +4336,7 @@ async function projectAccessApiSuite(w: World) {
     await pg.query(`delete from public.tasks where project_id = $1 and title = 'Off: a new page'`, [w.launch]);
     await moved.done();
     await closed.done();
+    await gone.done();
   });
   await test("0058 via REST, switch off: a sub-task moved on its own goes under its parent, as before", async () => {
     const f = await family("Off: solo move");
