@@ -396,6 +396,8 @@ export default function App() {
   const [archivedRev, setArchivedRev] = useState(0);
   // Ask's context, kept as the same object while nothing in it changes (the palette snapshots it per question)
   const askContextRef = useRef<{ key: string; value: AskContext } | null>(null);
+  // (0058: who can't see each project here, for Ask: worked out again only when its inputs change)
+  const askUnseenRef = useRef<{ deps: unknown[]; value: Record<string, string[]> }>({ deps: [], value: {} });
 
   /* ---- live views of state for stable callbacks ---- */
   const routeRef = useRef<Route>(route); routeRef.current = route;
@@ -4440,11 +4442,16 @@ export default function App() {
   // 0058 (project access on): what Ask may not propose — changes to work you can only view, and a task
   // for someone who can't see its project (the apply would refuse both, lib/askActions)
   const askViewOnly = wsGated ? wsProjects.filter((p) => viewOnlyProjects.has(p.id)).map((p) => p.id) : [];
-  const askUnseen: Record<string, string[]> = {};
-  if (wsGated && workspace) for (const p of wsProjects) {
-    const blind = assignees.filter((a) => a.id !== currentUserId && !!accessRoleOf(accessCtx, workspace, a.id) && rankFor(accessCtx, a.id, workspace, p.id) < 1).map((a) => a.id);
-    if (blind.length) askUnseen[p.id] = blind;
+  const unseenDeps = [wsGated, workspace, currentUserId, projects, workspaces, wsMembers, projectMembers];
+  if (unseenDeps.some((d, i) => d !== askUnseenRef.current.deps[i])) {
+    const value: Record<string, string[]> = {};
+    if (wsGated && workspace) for (const p of wsProjects) {
+      const blind = assignees.filter((a) => a.id !== currentUserId && !!accessRoleOf(accessCtx, workspace, a.id) && rankFor(accessCtx, a.id, workspace, p.id) < 1).map((a) => a.id);
+      if (blind.length) value[p.id] = blind;
+    }
+    askUnseenRef.current = { deps: unseenDeps, value };
   }
+  const askUnseen = askUnseenRef.current.value;
   const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects, askGoals, askViewOnly, askUnseen]);
   if (askContextRef.current?.key !== askKey) askContextRef.current = { key: askKey, value: { today: dayKey, me: currentUserId, members: assignees, projects: askProjects, goals: askGoals,
     ...(wsGated ? { viewOnly: askViewOnly, unseen: askUnseen } : {}) } };

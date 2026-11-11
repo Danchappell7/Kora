@@ -137,6 +137,20 @@ describe("App · project access on (Foundrise)", () => {
     expect(offered.some((x) => /Maya Lin|Ana Ruiz/.test(x))).toBe(false);
   }, 30_000);
 
+  it("0058: Ask Kanbo never offers to give a Members only task to someone who can't see the project", async () => {
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    inWs("ws-foundrise", "/p/p-seed/list");
+    await boot();
+    await screen.findByText("Update the cap table", {}, { timeout: 8000 });
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const box = await screen.findByRole("combobox", { name: "Search or ask Kanbo" });
+    fireEvent.change(box, { target: { value: "assign update the cap table to Maya" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(await screen.findByText(/Kanbo left out 1 change: Maya Lin can't see Seed round\./, {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
+    expect(upd.mock.calls.filter(([id]) => id === "t-pa-3")).toEqual([]);
+  }, 60_000);
+
   it("moving a task into a project its assignee can't see gives it to you, and says why", async () => {
     inWs("ws-foundrise", "/p/p-launch/list");
     await boot();
