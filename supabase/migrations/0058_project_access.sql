@@ -284,6 +284,21 @@ create or replace function public.pa_rank(p_ws uuid, p_project text)
 returns integer language sql security definer stable set search_path = public as $$
   select public.pa_rank_for(auth.uid(), p_ws, p_project);
 $$;
+-- (an assignee's rank, for trg_tasks_pa: someone suspended or awaiting approval is still in the
+-- workspace, and has the rank they'll have once they can act again, as the app (which never knows who's
+-- suspended) judges them; null: not in the workspace at all, so nothing in it is theirs to see)
+create or replace function public.pa_assignee_rank(p_user uuid, p_ws uuid, p_project text)
+returns integer language plpgsql security definer stable set search_path = public as $$
+declare r text := public.pa_ws_member_role(p_user, p_ws); p record;
+begin
+  if r not in ('owner', 'admin', 'member', 'guest') then return null; end if;
+  if public.user_ws_role(p_user, p_ws) <> 'none' then return public.pa_rank_for(p_user, p_ws, p_project); end if;
+  select x.id, x.visibility, x.owner_id into p from public.projects x where x.id = public.kanbo_uuid(p_project) and x.workspace_id = p_ws;
+  return public.pa_rank_core(public.pa_on(p_ws), r, case when p.id is null then null else p.visibility end, p.id is not null and p.owner_id = p_user,
+           case when p.id is null then null
+                else (select m.role from public.project_members m where m.project_id = p.id and m.user_id = p_user) end);
+end; $$;
+revoke execute on function public.pa_assignee_rank(uuid, uuid, text) from public, anon, authenticated;
 -- The row form for the policies on projects: it never reads the projects row (an INSERT … RETURNING
 -- row isn't there yet for a STABLE function), only the switch, the caller's role and their member row.
 create or replace function public.pa_project_rank(p_ws uuid, p_project uuid, p_visibility text, p_owner uuid)
@@ -1016,8 +1031,14 @@ end $internal$;
 -- loses their row; a guest's editor row becomes commenter), and the grants of invites claimed
 -- meanwhile go (their projects were never given). Whoever was added meanwhile gets a row only on a
 -- Whole workspace project: with the rules out, anyone could add themselves to a Members only or
--- Private one's list, so there they're added again in People & access. Nobody who was taken off a
+-- Private one's list, so there they're added again in People & access (and nobody could open one up to
+-- the whole workspace meanwhile: the undo file keeps visibility as it was). Nobody who was taken off a
 -- project comes back.
+-- (the undo file's guard, which kept every project's visibility as it was while this file was out,
+-- goes: from here on trg_projects_pa_guard decides who changes it. Every run.)
+drop trigger if exists trg_projects_visibility_kept on public.projects;
+drop function if exists public.project_visibility_kept();
+
 do $seed$
 declare resync boolean;
 begin
@@ -1199,7 +1220,8 @@ end; $$;
 -- text}], 50 at most. They become project_members when it's claimed. It sets the grants on the projects
 -- the caller manages, and only those: a grant on one they can't see stays as it is (it's that project's
 -- managers', who may have made it Private since: an admin's edit of the whole list never drops it), and
--- one they can see but not manage may only be sent back as it is. Answers how many the invite brings.
+-- one they can see but not manage may only be sent back as it is. Answers how many of the projects the
+-- invite brings the caller can see.
 create or replace function public.set_invite_projects(p_member uuid, p_grants jsonb)
 returns integer language plpgsql security definer set search_path = public as $$
 declare
@@ -1248,7 +1270,8 @@ begin
     on conflict (member_id, project_id) do update set role = excluded.role
      where public.project_member_invites.role is distinct from excluded.role;
   end loop;
-  select count(*) into n from public.project_member_invites where member_id = p_member;
+  -- (how many of its projects you can see: one you can't is kept, never counted to you)
+  select count(*) into n from public.project_member_invites where member_id = p_member and public.can_see_project(project_id);
   return n;
 end; $$;
 
@@ -1348,7 +1371,9 @@ begin
   if tg_op = 'INSERT' then
     if new.workspace_id is null then new.visibility := 'workspace'; return new; end if;
     if restoring and new.visibility is not null then
-      null;                                       -- the bin puts back what it had (a pre-0058 one has none: the default)
+      null;                                       -- the bin puts back what it had
+    elsif restoring then
+      new.visibility := 'workspace';              -- binned before 0058, when every project was the whole workspace's
     elsif new.visibility is null then
       d := coalesce((select w.project_access_default from public.workspaces w where w.id = new.workspace_id), 'workspace');
       if d = 'private' and not (case when client then public.pa_may_make_private(new.workspace_id)
@@ -1395,13 +1420,18 @@ begin
      and not public.pa_can_manage(old.id) then
     raise exception 'not authorized';
   end if;
-  -- (and only once its work has gone: nothing moves a project's tasks or updates with it, and what it
-  -- left behind would be loose work every member of its old workspace reads and edits)
+  -- (and only once its work has gone: nothing moves a project's tasks, updates, sections, fields, rules
+  -- or forms with it, and what it left behind would be loose work every member of its old workspace
+  -- reads and edits)
   if direct and new.workspace_id is distinct from old.workspace_id and old.workspace_id is not null
      and (public.pa_on(old.workspace_id) or old.visibility <> 'workspace')
      and (exists (select 1 from public.tasks t where t.workspace_id = old.workspace_id and t.project_id = old.id::text)
-          or exists (select 1 from public.status_updates s where s.workspace_id = old.workspace_id and s.project_id = old.id::text)) then
-    raise exception 'move its tasks first' using hint = 'A project leaves its workspace only once its tasks and updates have gone.';
+          or exists (select 1 from public.status_updates s where s.workspace_id = old.workspace_id and s.project_id = old.id::text)
+          or exists (select 1 from public.sections x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
+          or exists (select 1 from public.custom_field_defs x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
+          or exists (select 1 from public.automation_rules x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
+          or exists (select 1 from public.forms x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)) then
+    raise exception 'move its tasks first' using hint = 'A project leaves its workspace only once its tasks, updates, sections, fields, rules and forms have gone.';
   end if;
   if new.workspace_id is null then new.visibility := 'workspace'; end if;     -- moved to Personal: nothing to gate
   -- (judged where it was, else where it's going: an owner change on the way out or in counts too)
@@ -1632,7 +1662,10 @@ end; $$;
 
 -- tasks, before (switch on): a sub-task has its parent's project (D11); an assignee who can't see the
 -- project is refused from the app, and handed to the project's owner from the server (D10);
--- collaborators and followers who can't see it drop out
+-- collaborators and followers who can't see it drop out. The assignee is judged as a member: someone
+-- suspended or awaiting approval by the project they'll see once they can act (pa_assignee_rank), and
+-- someone who has left the workspace keeps a task they already had when it moves (nothing here is
+-- theirs to see, wherever it goes: as before, and as remove_member leaves it), but is never given one.
 create or replace function public.pa_trg_tasks() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -1640,6 +1673,7 @@ declare
   par record;
   moved boolean;
   who uuid;
+  ar integer;
 begin
   if new.workspace_id is null or not public.pa_on(new.workspace_id) then return new; end if;
   if public.pa_restoring() then
@@ -1660,14 +1694,16 @@ begin
   end if;
   moved := tg_op = 'INSERT' or new.project_id is distinct from old.project_id or new.workspace_id is distinct from old.workspace_id;
   who := public.kanbo_uuid(new.assignee_id);
-  if who is not null and (moved or new.assignee_id is distinct from old.assignee_id)
-     and public.pa_rank_for(who, new.workspace_id, new.project_id) < 1 then
-    if direct then
-      raise exception 'assignee can''t see this project' using errcode = '42501';
+  if who is not null and (moved or new.assignee_id is distinct from old.assignee_id) then
+    ar := public.pa_assignee_rank(who, new.workspace_id, new.project_id);
+    if coalesce(ar, 0) < 1 and not (ar is null and tg_op = 'UPDATE' and new.assignee_id is not distinct from old.assignee_id) then
+      if direct then
+        raise exception 'assignee can''t see this project' using errcode = '42501';
+      end if;
+      new.assignee_id := coalesce(
+        (select p.owner_id from public.projects p where p.id = public.kanbo_uuid(new.project_id) and p.workspace_id = new.workspace_id),
+        (select w.owner_id from public.workspaces w where w.id = new.workspace_id))::text;
     end if;
-    new.assignee_id := coalesce(
-      (select p.owner_id from public.projects p where p.id = public.kanbo_uuid(new.project_id) and p.workspace_id = new.workspace_id),
-      (select w.owner_id from public.workspaces w where w.id = new.workspace_id))::text;
   end if;
   if moved or new.collaborators is distinct from old.collaborators then
     new.collaborators := coalesce(array(
@@ -1736,7 +1772,8 @@ begin
   return new;
 end; $$;
 
--- status_update_comments (0054): the @mentioned are people who can read the update
+-- status_update_comments (0054): the @mentioned are people who can reply to the update (a mention asks
+-- for a reply, 0054's notice says so: as with Asks, never a viewer, who can't)
 create or replace function public.pa_trg_status_update_comment() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare s record;
@@ -1745,7 +1782,7 @@ begin
   if s.workspace_id is null or not public.pa_on(s.workspace_id) then return new; end if;
   new.mentions := coalesce(array(
     select x from unnest(coalesce(new.mentions, '{}'::uuid[])) with ordinality a(x, i)
-     where public.pa_rank_for(x, s.workspace_id, s.project_id) >= 1 order by i), '{}');
+     where public.pa_rank_for(x, s.workspace_id, s.project_id) >= 2 order by i), '{}');
   return new;
 end; $$;
 
@@ -1833,9 +1870,16 @@ begin
 end; $$;
 
 -- webhooks: re-pointing an endpoint makes whoever did it its viewer (D19), and what's still queued for
--- it (retries, the backlog) goes to the new address only if the new viewer can see it
+-- it (retries, the backlog) goes to the new address only if the new viewer can see it. Its viewer's
+-- account deleted (url_set_by nulled by its foreign key, the address the same): it never falls back to
+-- its creator's access, which may be wider (an admin could re-point an owner's endpoint, delete their
+-- own account and have it all): it's switched off as when they leave, whatever the switch says (the
+-- dispatcher judges a viewer the same way with it off), and what's waiting for it fails. Switched back
+-- on after its viewer went, whoever does it takes the address on as theirs: its viewer from then on
+-- (else the next delivery would switch it off again, or its creator's access would apply).
 create or replace function public.pa_trg_webhooks_url() returns trigger
 language plpgsql security definer set search_path = public as $$
+declare gone constant text := 'Switched off: the person who set its address no longer has access';
 begin
   if new.url is distinct from old.url then
     new.url_set_by := coalesce(public.kanbo_actor(), old.url_set_by);
@@ -1848,6 +1892,18 @@ begin
          and public.pa_rank_or_binned(coalesce(new.url_set_by, new.created_by), new.workspace_id,
                                       public.pa_webhook_project(o.event, o.payload)) < 1;
     end if;
+  elsif old.url_set_by is not null and new.url_set_by is null and old.url_set_by is distinct from old.created_by then
+    new.active := false;
+    new.disabled_at := coalesce(case when old.active then now() end, old.disabled_at, now());
+    new.disabled_reason := gone;
+    update public.webhook_deliveries
+       set state = 'failed', next_attempt_at = null, lease_until = null, updated_at = now(),
+           error = 'Not sent: the person who set this endpoint''s address no longer has access, so it was switched off.'
+     where webhook_id = new.id and state = 'pending';
+  end if;
+  if new.active and not old.active and old.disabled_reason = gone and new.url is not distinct from old.url
+     and public.kanbo_actor() is not null then
+    new.url_set_by := public.kanbo_actor();
   end if;
   return new;
 end; $$;
@@ -2283,7 +2339,7 @@ language sql immutable set search_path = pg_catalog as $$
     ('activity', 'trg_activity_pa_gate', 'before insert', 'pa_trg_activity_gate', null),
     ('notify_queue', 'trg_notify_queue_pa_gate', 'before insert', 'pa_trg_notify_queue_gate', null),
     ('webhook_deliveries', 'trg_webhook_deliveries_pa_gate', 'before insert or update of state', 'pa_trg_webhook_deliveries_gate', null),
-    ('webhooks', 'trg_webhooks_pa_url', 'before update of url', 'pa_trg_webhooks_url', null),
+    ('webhooks', 'trg_webhooks_pa_url', 'before update of url, url_set_by, active', 'pa_trg_webhooks_url', null),
     ('approval_reviewers', 'trg_approval_reviewers_pa', 'before insert or update of decision', 'pa_trg_approval_reviewers', null),
     ('kudos', 'trg_kudos_pa', 'before insert or update of emoji, note', 'pa_trg_kudos', null),
     ('trash', 'trg_trash_pa_capture', 'before insert', 'pa_trg_trash_capture', null),
@@ -2306,7 +2362,7 @@ do $svc$ begin
   grant execute on function public.pa_trigger_defs() to service_role;
 exception when undefined_object then null; end $svc$;
 
--- 5c. (Re)makes everything: every policy above, the nine bodies this file changes (each equal to
+-- 5c. (Re)makes everything: every policy above, the thirteen bodies this file changes (each equal to
 -- its old one while the switch is off), and every trigger. Run below, and by 0025, 0041,
 -- 0042, 0043, 0046, 0047, 0048, 0052, 0053, 0054, 0055 and 0056 when one of them is run again (they
 -- drop policies or put an old body back). Safe in any state from 0047 on, and twice in a row.
@@ -2498,7 +2554,131 @@ $b$ $fn$;
     revoke execute on function public.can_see_status_update(uuid) from public, anon;
     grant execute on function public.can_see_status_update(uuid) to authenticated;
     n := n + 1;
+
+    -- 0054's status_update_project_ok: with the switch on, a project the caller can't see is no answer
+    -- either (it never says which hidden ids are live projects). Switch off: 0054's, line for line.
+    execute $fn$
+create or replace function public.status_update_project_ok(p_project text, p_ws uuid)
+returns boolean language plpgsql security definer stable set search_path = public as $b$
+begin
+  if p_ws is null then return true; end if;
+  if not public.is_member(p_ws) then return false; end if;
+  if p_project is null or p_project !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then return false; end if;
+  if public.pa_on(p_ws) and public.pa_rank(p_ws, p_project) < 1 then return false; end if;
+  return exists (select 1 from public.projects p where p.id = p_project::uuid and p.workspace_id = p_ws);
+end; $b$ $fn$;
+    revoke execute on function public.status_update_project_ok(text, uuid) from public, anon;
+    grant execute on function public.status_update_project_ok(text, uuid) to authenticated;
+    n := n + 1;
   end if;
+
+  -- 0053's ask_for_update (only where 0053 is in): with the switch on, a project the caller can't see
+  -- gets 'not authorized' before anything is said about it (archived, its owner, an ask already made:
+  -- the trigger on update_asks only ever saw the insert). Switch off: 0053's, line for line.
+  if to_regclass('public.update_asks') is not null then
+    execute $fn$
+create or replace function public.ask_for_update(p_project uuid)
+returns public.update_asks language plpgsql security definer set search_path = public as $b$
+declare
+  me uuid := auth.uid();
+  p record;
+  r public.update_asks;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  select id, workspace_id, owner_id, archived_at into p from public.projects where id = p_project;
+  if not found or p.workspace_id is null or coalesce(public.ws_role(p.workspace_id), 'none') not in ('owner', 'admin') then
+    raise exception 'not authorized';
+  end if;
+  if public.pa_on(p.workspace_id) and public.pa_rank(p.workspace_id, p_project::text) < 1 then
+    raise exception 'not authorized';
+  end if;
+  if p.archived_at is not null then raise exception 'not allowed: the project is archived'; end if;
+  if p.owner_id is null then raise exception 'not allowed: no owner'; end if;
+  if p.owner_id = me then raise exception 'not allowed: your own project'; end if;
+  if not exists (select 1 from public.workspace_members m
+                  where m.workspace_id = p.workspace_id and m.user_id = p.owner_id and m.status = 'active')
+     and not exists (select 1 from public.workspaces w where w.id = p.workspace_id and w.owner_id = p.owner_id) then
+    raise exception 'not allowed: the owner has left';
+  end if;
+  -- a guest can't post an update, so there's nothing to ask them for
+  if not exists (select 1 from public.workspaces w where w.id = p.workspace_id and w.owner_id = p.owner_id)
+     and not exists (select 1 from public.workspace_members m where m.workspace_id = p.workspace_id and m.user_id = p.owner_id
+                      and m.status = 'active' and m.role in ('owner', 'admin', 'member')) then
+    raise exception 'not allowed: the owner is a guest';
+  end if;
+  -- two leads asking at once make one ask
+  perform pg_advisory_xact_lock(hashtext('kanbo.update_ask:' || p_project::text));
+  if exists (select 1 from public.update_asks a where a.project_id = p_project and a.created_at > now() - interval '20 hours') then
+    raise exception 'already asked recently';
+  end if;
+  if (select count(*) from public.update_asks a where a.asked_by = me and a.created_at > now() - interval '24 hours') >= 30 then
+    raise exception 'too many asks today';
+  end if;
+  delete from public.update_asks where created_at < now() - interval '30 days';
+  insert into public.update_asks (project_id, workspace_id, asked_by, owner_id)
+    values (p_project, p.workspace_id, me, p.owner_id) returning * into r;
+  return r;
+end; $b$ $fn$;
+    revoke execute on function public.ask_for_update(uuid) from public, anon;
+    grant execute on function public.ask_for_update(uuid) to authenticated;
+    n := n + 1;
+  end if;
+
+  -- 0047's approval_json: with the switch on, can_decide also needs comment rights on the task (D7: a
+  -- reviewer who's only a viewer now, or can't see it, isn't offered a decision trg_approval_reviewers_pa
+  -- would refuse). Switch off: 0047's, line for line.
+  execute $fn$
+create or replace function public.approval_json(a public.approvals)
+returns jsonb language sql security definer stable set search_path = public as $b$
+  select jsonb_build_object(
+    'id', a.id, 'task_id', a.task_id, 'workspace_id', a.workspace_id,
+    'requested_by', a.requested_by,
+    'requested_by_name', case when a.requested_by is not null then public.kanbo_person_name(a.requested_by) end,
+    'title', a.title, 'note', a.note, 'attachment_id', a.attachment_id,
+    'status', a.status, 'rule', a.rule,
+    'created_at', a.created_at, 'updated_at', a.updated_at, 'resolved_at', a.resolved_at,
+    'reviewers', coalesce((select jsonb_agg(jsonb_build_object(
+                             'user_id', r.user_id, 'name', public.kanbo_person_name(r.user_id),
+                             'decision', r.decision, 'comment', r.comment, 'decided_at', r.decided_at)
+                           order by r.decided_at nulls last, public.kanbo_person_name(r.user_id))
+                            from public.approval_reviewers r where r.approval_id = a.id), '[]'::jsonb),
+    'can_decide', a.status = 'pending' and auth.uid() is not null and public.is_member(a.workspace_id)
+                  and exists (select 1 from public.approval_reviewers r where r.approval_id = a.id and r.user_id = auth.uid())
+                  and (not public.pa_on(a.workspace_id) or public.pa_task_rank(a.task_id) >= 2),
+    'can_cancel', a.status = 'pending' and auth.uid() is not null and public.can_act()
+                  and (a.requested_by = auth.uid() or public.ws_role(a.workspace_id) in ('owner', 'admin')));
+$b$ $fn$;
+  revoke execute on function public.approval_json(public.approvals) from public, anon, authenticated;
+  n := n + 1;
+
+  -- 0046's list_webhook_deliveries: with the switch on, only deliveries of events about work the caller can
+  -- see (or about no project): an owner's endpoint hears of Private projects, and its log mustn't tell
+  -- everyone else when they changed. Switch off: 0046's, line for line.
+  execute $fn$
+create or replace function public.list_webhook_deliveries(p_id uuid, p_limit integer default 25)
+returns jsonb language plpgsql security definer stable set search_path = public as $b$
+declare w public.webhooks;
+begin
+  if auth.uid() is null then raise exception 'not authorized'; end if;
+  select * into w from public.webhooks where id = p_id;
+  if w.id is null or not public.webhook_can_see(w) then raise exception 'webhook not found'; end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', d.id, 'webhook_id', d.webhook_id, 'outbox_id', d.outbox_id, 'event', d.event,
+             'state', d.state, 'attempt', d.attempt, 'status_code', d.status_code, 'error', d.error,
+             'duration_ms', d.duration_ms, 'next_attempt_at', d.next_attempt_at,
+             'delivered_at', d.delivered_at, 'created_at', d.created_at, 'updated_at', d.updated_at)
+           order by d.created_at desc, d.id)
+      from (select * from public.webhook_deliveries x where x.webhook_id = p_id
+               and (w.workspace_id is null or not public.pa_on(w.workspace_id) or x.event = 'ping'
+                    or coalesce((select public.pa_rank_or_binned(auth.uid(), w.workspace_id, public.pa_webhook_project(o.event, o.payload))
+                                   from public.webhook_outbox o where o.id = x.outbox_id
+                                    and public.pa_webhook_project(o.event, o.payload) is not null), 1) >= 1)
+             order by x.created_at desc, x.id limit greatest(1, least(coalesce(p_limit, 25), 100))) d), '[]'::jsonb);
+end; $b$ $fn$;
+  revoke execute on function public.list_webhook_deliveries(uuid, integer) from public, anon;
+  grant execute on function public.list_webhook_deliveries(uuid, integer) to authenticated;
+  n := n + 1;
 
   -- 0047's restore_from_trash: with the switch on, edit rights on the item's project first (what isn't
   -- yours to restore is 'not found', restored or not), and a task whose project has gone comes back
@@ -2603,9 +2783,12 @@ returns boolean language sql stable set search_path = pg_catalog, public as $$
       select 1 from unnest(array['public.can_see_task(uuid)', 'public.can_edit_task(uuid)', 'public.can_see_project(uuid)',
                                  'public.can_edit_project(uuid)', 'public.tasks_visible_to(uuid)',
                                  'public.toggle_task_follow(uuid,boolean)', 'public.toggle_comment_reaction(uuid,text)',
-                                 'public.restore_from_trash(uuid)']
+                                 'public.restore_from_trash(uuid)', 'public.approval_json(public.approvals)',
+                                 'public.list_webhook_deliveries(uuid,integer)']
                            || case when to_regclass('public.status_update_comments') is not null
-                                   then array['public.can_see_status_update(uuid)'] else '{}'::text[] end) f(sig)
+                                   then array['public.can_see_status_update(uuid)', 'public.status_update_project_ok(text,uuid)'] else '{}'::text[] end
+                           || case when to_regclass('public.update_asks') is not null
+                                   then array['public.ask_for_update(uuid)'] else '{}'::text[] end) f(sig)
        where not coalesce((select position('public.pa_' in p.prosrc) > 0 from pg_catalog.pg_proc p
                             where p.oid = to_regprocedure(f.sig)), false))
     and not exists (select 1 from pg_catalog.pg_attrdef ad join pg_catalog.pg_attribute a on a.attrelid = ad.adrelid and a.attnum = ad.adnum

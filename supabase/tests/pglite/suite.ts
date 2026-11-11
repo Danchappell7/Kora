@@ -3726,11 +3726,12 @@ async function projectAccessApiSuite(w: World) {
     eq([next.project_id, next.assignee_id], [pay, w.alice], "the next one is alice's");
     await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'editor')`, [pay, dora]);
   });
-  await test("0058 via REST, switch on: the database's own refusal of an assignee (a suspended account) is a 422 on assigneeId too", async () => {
+  await test("0058 via REST, switch on: a suspended account is judged by the projects they'll see again (the database agrees with the API's own check)", async () => {
     await pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [dora]);
     try {
+      // (r2: the trigger used to refuse anyone suspended, so a repeat, a move or a rule naming them failed in the app)
       const t = await rest(w, aliceKey, "POST", "/tasks", { title: "For a suspended account", projectId: pay, assigneeId: dora });
-      eq([t.status, t.json?.error?.details?.fields?.assigneeId], [422, "That person can't see this project."], "refused by the trigger, said plainly");
+      eq([t.status, t.json?.assigneeId], [201, dora], "dora, still an editor of Board pay, keeps it");
     } finally {
       await pg.query(`update public.profiles set suspended = false where id = $1::uuid`, [dora]);
     }
