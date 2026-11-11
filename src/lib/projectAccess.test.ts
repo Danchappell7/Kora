@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import MATRIX from "./projectAccessMatrix.json";
 import {
-  accessErrorText, accessOn, accessSchema, canManagePeople, canSetVisibility, copyPeople, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
+  accessErrorText, accessOn, accessSchema, canManagePeople, canSetVisibility, copyPeople, copyRoles, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
   noteAccessSchema, peopleFor, projectRank, rankCore, rankFor, resetAccessSchema, seesCount, taskRank, turnOnPreview, type AccessCtx,
 } from "./projectAccess";
 import type { Project, ProjectMember, ProjectVisibility, Workspace, WorkspaceMember } from "../data/types";
@@ -199,6 +199,10 @@ describe("people, projects and previews", () => {
     // switched off, a copy that stays Members only or Private keeps its owner too (it's closed again once it's back on)
     expect(copyPeople(proj("pm", "members", "a"), world(false, "me"), "members").sort()).toEqual(["a", "gc", "me", "mv"]);
     expect(copyPeople(proj("pm", "members", "a"), world(false, "me"), "workspace").sort()).toEqual(["gc", "me", "mv"]);
+  });
+  it("copyRoles: each person keeps their role on the copy (a viewer stays a viewer); its owner edits", () => {
+    expect(copyRoles(proj("pm", "members", "a"), world(true, "me"))).toEqual({ me: "editor", mv: "viewer", gc: "editor", a: "editor" });
+    expect(copyRoles(proj("pw", "workspace", "o"), world(true, "me"))).toEqual({ gc: "commenter", o: "editor" });
   });
   it("narrowingLoss says who'd lose sight of it and their open tasks there", () => {
     noteAccessSchema(true);

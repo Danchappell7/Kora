@@ -78,3 +78,19 @@ describe("moveIntoWeek", () => {
     expect(moveIntoWeek({ dueDate: "2026-11-10" }, NEXT, TODAY, { isOff: (iso) => iso >= "2026-11-17" && iso <= "2026-11-20" })).toEqual({ dueDate: "2026-11-16" });
   });
 });
+
+describe("planRebalance and project access (0058)", () => {
+  it("never hands work to someone who can't see its project: the next person with room takes it, or nobody", () => {
+    const tasks = [
+      task({ id: "pay", title: "Renew contract", projectId: "p-payroll", dueDate: "2026-11-13", effortHours: 10 }),
+      task({ id: "busy", status: "progress", dueDate: "2026-11-12", effortHours: 30 }),
+    ];
+    const base = { tasks, members, weekStart: MON, today: TODAY, capacityOf: (id: string) => (id === "maya" ? 32 : 40) };
+    // Sana has the most room, but only Maya and Theo can see Payroll
+    const seen = (id: string, t: Task) => t.projectId !== "p-payroll" || id === "maya" || id === "theo";
+    expect(planRebalance({ ...base, canReceive: seen }).moves.map((m) => [m.taskId, m.to])).toEqual([["pay", "theo"]]);
+    expect(planRebalance({ ...base, canReceive: (id, t) => t.projectId !== "p-payroll" || id === "maya" }).moves).toEqual([]);
+    // (none given: as before)
+    expect(planRebalance(base).moves.map((m) => m.to)).toEqual(["sana"]);
+  });
+});

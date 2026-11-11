@@ -59,13 +59,14 @@ import { MemberProjects, type MemberProjectRow } from "./components/project/Memb
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, copyPeople, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, copyPeople, copyRoles, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
 import { splitPersonal, withOverlay, writePlanOverlay, writeSectionOverlay, writeScoreOverlay, prunePlanOverlay, type PersonalKey } from "./lib/planOverlay";
 import { undoLast } from "./lib/undoStack";
 import { computeRisks, readCapacities } from "./lib/radar";
+import { retargetSummary, stayedCount } from "./lib/retargetNotes";
 import { shutdownDone } from "./lib/rituals";
 import { momentumCounts } from "./lib/brief";
 import type { AskAction, AskContext } from "./lib/askTypes";
@@ -2114,6 +2115,7 @@ export default function App() {
     const notes = new Set<string>();
     const completed: string[] = [];
     const fx = newStatusFx();
+    let refused = 0;
     for (const prev of rows) {
       const p: Partial<Task> = { ...(opts.patchFor ? opts.patchFor(prev) : patchIn) };
       // per task: completedAt only moves for tasks whose status really changes
@@ -2122,10 +2124,12 @@ export default function App() {
       Object.assign(p, releasedPlan(prev, p));
       if (p.status) { if (p.status === "done") completed.push(prev.id); Object.assign(p, onStatusChange(prev, { ...prev, ...p }, fx)); }
       if (Object.keys(p).length) { patches.set(prev.id, p); cascadeToDescendants(prev, p, all, patches); }
+      else if (note && stayedCount([note])) refused++;     // (0058: nothing changed: its new assignee can't see it)
     }
+    const said = retargetSummary(notes);
     if (!patches.size) {
       // (refused: someone who can't see the project, 0058)
-      if (notes.size && !opts.undoAlso) { toastInfo([...notes][0]); return; }
+      if (said && !opts.undoAlso) { toastInfo(said); return; }
       // only your own plan changed (teammates' tasks): that's still a change, with its Undo
       if (opts.undoAlso) toastAction(`Updated ${plural(rows.length, "task")} in your plan`, "Undo", opts.undoAlso, {});
       else toastInfo(`Nothing to change — ${rows.length === 1 ? "it's" : "they're"} already like that.`);
@@ -2140,7 +2144,7 @@ export default function App() {
         retry: () => { if (failedIds.length) bulkPatchRef.current(failedIds, patchIn, { patchFor: opts.patchFor }); },
       });
     } else updateTasks(patches);
-    toastAction(`Updated ${plural(rows.length, "task")}`, "Undo", () => {
+    toastAction(`Updated ${plural(rows.length - refused, "task")}`, "Undo", () => {
       completed.forEach(unspawnRecurrence);
       const present = new Set((tasksRef.current ?? []).map((t) => t.id));
       const back = new Map<string, Partial<Task>>();
@@ -2148,8 +2152,7 @@ export default function App() {
       updateTasks(back, { notify: false });
       opts.undoAlso?.();
     }, {});
-    if (notes.size === 1) toastInfo([...notes][0]);
-    else if (notes.size > 1) toastInfo(`${plural(notes.size, "task")} ${notes.size === 1 ? "was" : "were"} reassigned to you — their assignees aren't in that workspace.`);
+    if (said) toastInfo(said);
   }, [denyEdit, confirmCompleteBlocked, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastAction, toastInfo, unspawnRecurrence]);
   bulkPatchRef.current = bulkPatch;
 
@@ -2595,9 +2598,12 @@ export default function App() {
       vis = "members";        // (switched off, a copy is never refused: it's as closed as you may make one)
     }
     // (its owner too, while the switch is on or the copy is closed, when it's someone else's: lib/projectAccess copyPeople)
+    // (each keeps their role on it: a viewer stays a viewer, lib/projectAccess copyRoles)
     const people = accessSchema() && projectMembersRef.current ? copyPeople(src, accessNow(), vis) : undefined;
+    const roles = people?.length ? copyRoles(src, accessNow()) : undefined;
     try {
-      const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId, ...(vis ? { visibility: vis } : {}), ...(people?.length ? { memberIds: people } : {}) }, me);
+      const np = await store.createProject({ name: `${src.name} (copy)`, emoji: src.emoji, color: src.color, workspaceId: wsId, ...(vis ? { visibility: vis } : {}),
+        ...(people?.length ? { memberIds: people, memberRoles: roles } : {}) }, me);
       noteCreated(np.id); // a reload already under way doesn't know about it yet
       applyProjects([...projectsRef.current, np]);
       if (people?.length) reloadProjectMembers();
@@ -3374,6 +3380,12 @@ export default function App() {
     setWsMembers((xs) => xs.filter((x) => x.id !== memberId));
     store.removeMember(memberId)
       .then(() => {
+        // (0058: the projects they owned there are the workspace's owner's now, as the database
+        // does it; the realtime reload says the same)
+        const heir = m?.userId && accessSchema() ? workspacesRef.current.find((w) => w.id === m.workspaceId)?.ownerId : undefined;
+        if (m?.userId && heir && heir !== m.userId && projectsRef.current.some((p) => p.workspaceId === m.workspaceId && p.ownerId === m.userId)) {
+          applyProjects(projectsRef.current.map((p) => (p.workspaceId === m.workspaceId && p.ownerId === m.userId ? { ...p, ownerId: heir } : p)));
+        }
         if (!leaving || !m) return;
         // you left: stop pointing at a workspace you're no longer in
         const name = workspacesRef.current.find((w) => w.id === m.workspaceId)?.name || "the workspace";
@@ -3632,11 +3644,13 @@ export default function App() {
       rows.push(prev);
       if (Object.keys(p).length) { patches.set(id, p); cascadeToDescendants(prev, p, all, patches); }
     }
-    if (!patches.size) { if (notes.size) toastInfo([...notes][0]); return; }
+    // (one note as it is; several counted by what happened to them: retargetSummary)
+    const said = retargetSummary(notes);
+    if (!patches.size) { if (said) toastInfo(said); return; }
     // (0058: the moves leave out work you can only view; this is the backstop)
     if (denyGuest(wsIds) || denyEdit(rows)) return;
     updateTasks(patches);
-    if (notes.size === 1) toastInfo([...notes][0]);
+    if (said) toastInfo(said);
   }, [retarget, cascadeToDescendants, denyGuest, denyEdit, updateTasks, toastInfo]);
   const moveDeps = useCallback((): MoveDeps => ({
     tasks: tasksRef.current ?? [], updateTasks: applyMovePatches,
@@ -4625,6 +4639,7 @@ export default function App() {
         personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })}
         // 0048: a task dropped on a person is handed to them (Undo); kudos read live (0058: where you can comment)
         onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} canKudos={(t) => taskRank(t, accessNow()) >= 2}
+        canSee={(u, t) => moveDeps().canSee?.(u, t) ?? true}
         // 0056: Run meeting (never a guest's)
         meeting={workspace && !personal && !activeReadOnly ? { workspaceId: workspace, preset: "team", canLead: isAdmin } : null}
         goalsSlot={<TeamGoals goals={goalFlow.goals.filter((g) => (g.workspaceId ?? null) === workspace)} reads={goalFlow.reads} today={KANBO_TODAY} onOpenGoal={openGoal} onOpenGoals={() => setRoute({ view: "goals" })} />} />;

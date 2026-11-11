@@ -39,9 +39,11 @@ export interface RadarPanelProps {
   currentUserId?: string;
   /** a control at the end of the header (Pulse: Post to Slack) */
   action?: ReactNode;
+  /** (0058) can this person see this task's project: Assign offers only them (none given: every teammate) */
+  canSee?: (userId: string, task: Task) => boolean;
 }
 
-export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch, onOpenWorkload, tasks = [], loading, currentUserId, action }: RadarPanelProps) {
+export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch, onOpenWorkload, tasks = [], loading, currentUserId, action, canSee }: RadarPanelProps) {
   const tally = riskTally(risks);
   const toast = useOptionalToast();
   const headId = "kradar-" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -172,7 +174,7 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
                         }
                         if (f.kind === "assign" && focus) {
                           return (
-                            <AssignFix key={key} label={f.label} variant={variant} task={focus} members={members.filter((m) => !m.guest)}
+                            <AssignFix key={key} label={f.label} variant={variant} task={focus} members={members.filter((m) => !m.guest && (!canSee || canSee(m.id, focus)))}
                               onPick={(m) => { onPatch(focus.id, { assigneeId: m.id }); ack(r, i, `Assigned to ${firstName(m.name)}`, { taskId: focus.id, field: "assigneeId", value: m.id }); }} />
                           );
                         }

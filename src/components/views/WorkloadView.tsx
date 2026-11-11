@@ -221,6 +221,8 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace,
   const canMove = !!moveDeps && !personal;
   // (0058: work you can only view is never offered a move, nor put in a rebalance)
   const yoursToMove = useCallback((t: Task) => moveDeps?.().canEdit?.(t) ?? true, [moveDeps]);
+  // (0058: nor handed to someone who can't see its project)
+  const canTake = useCallback((userId: string, t: Task) => moveDeps?.().canSee?.(userId, t) ?? true, [moveDeps]);
   const teammates = members.filter((m) => !m.guest);
   const today = useMemo(() => new Date(todayKey), [todayKey]);
   const availRef = useRef<AvailabilityState>(avail);
@@ -234,10 +236,10 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace,
   const [preview, setPreview] = useState<RebalancePlan | null>(null);
   const plan = useMemo(() => (canMove && overloaded.length
     ? planRebalance({ tasks, members, weekStart: focus.start, today, capacityOf: (id) => capIn(id, focus.start), isOff: shared ? (id, iso) => isOffOn(id, iso, avail) : undefined,
-      lastResort: shared ? (id) => roleOf(workspaceId, id, avail) === "owner" : undefined, canMove: yoursToMove })
+      lastResort: shared ? (id) => roleOf(workspaceId, id, avail) === "owner" : undefined, canMove: yoursToMove, canReceive: canTake })
     : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canMove, overloaded.length, tasks, members, focus.start.getTime(), today, avail, localCaps, shared, yoursToMove]);
+    [canMove, overloaded.length, tasks, members, focus.start.getTime(), today, avail, localCaps, shared, yoursToMove, canTake]);
   const weekChoices = weeks.map((w) => ({ start: w.start, label: w.offset === 0 ? "This week" : w.offset === 1 ? "Next week" : weekOfWords(w.start) }));
 
   if (personal) {
@@ -308,7 +310,7 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace,
       {preview && moveDeps && (
         <RebalancePreview plan={preview} nameOf={nameOf} capacityOf={capOf} weekLabel={weekWord(focus.offset)} workspaceId={workspaceId}
           onCancel={() => setPreview(null)}
-          onApply={() => { applyRebalance(preview, moveDeps()); setPreview(null); }} />
+          onApply={() => { applyRebalance(preview, moveDeps(), nameFn); setPreview(null); }} />
       )}
       {orphaned > 0 && (
         <p className="kload-notice" data-tone="quiet">
@@ -399,7 +401,7 @@ export function WorkloadView({ tasks, members, onOpen, personal, onNewWorkspace,
                             hours={partial ? `${fmtHours(hours)} of ${fmtHours(effort)}` : fmtHours(hours)}
                             label={partial ? "This week's share of the estimate" : !estimated ? "No estimate — counted as 1h" : undefined}
                             canMove={canMove && !!t.workspaceId && t.workspaceId === workspaceId && yoursToMove(t)} keepRoom={canMove}
-                            people={teammates.map((m) => ({ id: m.id, name: m.name }))} weeks={weekChoices} currentWeek={focus.start} onMove={move} />
+                            people={teammates.filter((m) => canTake(m.id, t)).map((m) => ({ id: m.id, name: m.name }))} weeks={weekChoices} currentWeek={focus.start} onMove={move} />
                         );
                       })}
                       {r.undated > 0 && <p className="kload-muted">+ {r.undated} open task{r.undated === 1 ? "" : "s"} with no dates (not counted).</p>}

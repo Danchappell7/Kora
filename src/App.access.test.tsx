@@ -99,6 +99,22 @@ describe("App · project access on (Foundrise)", () => {
     }
   });
 
+  it("a copy keeps each person's role: a viewer on the project is a viewer on the copy, not an editor", async () => {
+    await store.setProjectMember("p-payroll", "m-1", "viewer");
+    try {
+      const create = spy(vi.spyOn(store, "createProject").mockRejectedValue(new Error("offline")));
+      inWs("ws-foundrise", "/p/p-payroll");
+      await boot();
+      fireEvent.click(await screen.findByRole("button", { name: "Project actions" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: /Duplicate/ }));
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      expect(create.mock.calls[0][0].memberIds).toEqual(expect.arrayContaining(["m-1"]));
+      expect(create.mock.calls[0][0].memberRoles?.["m-1"]).toBe("viewer");
+    } finally {
+      await store.setProjectMember("p-payroll", "m-1", "editor");
+    }
+  });
+
   it("a private project's copy is private too, with its people", async () => {
     inWs("ws-foundrise", "/p/p-payroll");
     await boot();

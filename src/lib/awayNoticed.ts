@@ -26,7 +26,9 @@ const short = (s: string) => (s.length > 40 ? s.slice(0, 39).trimEnd() + "…" :
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The away cards for Today (at most two, soonest first). `nameOf` gives a person's name. */
-export function awayNoticed(input: { tasks: Task[]; today: string; nameOf: (id: string) => string; s: AvailabilityState }): Noticed[] {
+export function awayNoticed(input: { tasks: Task[]; today: string; nameOf: (id: string) => string; s: AvailabilityState;
+  /** (0058) can this person see this task's project (none given: yes): a teammate offered the work must see all of it */
+  canSee?: (userId: string, task: Task) => boolean }): Noticed[] {
   const { tasks, today, s } = input;
   if (!availabilityOn(s) || !s.me) return [];
   const t0 = localDay(today);
@@ -80,8 +82,9 @@ export function awayNoticed(input: { tasks: Task[]; today: string; nameOf: (id: 
 
 /** The teammate with the most room to take this work on in the week it's due: on the team where it all
  *  is (one business, where you may hand it over), not you or the person away, not off on any day it's due,
- *  and staying under 90% of their week with it. Null when nobody has room (or it spans businesses). */
-function withRoom(input: { tasks: Task[]; today: string; s: AvailabilityState }, who: string, due: Task[]): string | null {
+ *  able to see every task's project (0058), and staying under 90% of their week with it. Null when nobody
+ *  has room (or it spans businesses). */
+function withRoom(input: { tasks: Task[]; today: string; s: AvailabilityState; canSee?: (userId: string, task: Task) => boolean }, who: string, due: Task[]): string | null {
   const { s } = input;
   const ws = due[0].workspaceId;
   if (!ws || !s.roles[ws] || due.some((t) => t.workspaceId !== ws)) return null;
@@ -98,6 +101,7 @@ function withRoom(input: { tasks: Task[]; today: string; s: AvailabilityState },
   for (const [id, role] of Object.entries(s.roles[ws])) {
     if (id === who || id === s.me || role === "guest") continue;
     if (days.some((d) => isOffOn(id, d, s))) continue;
+    if (input.canSee && due.some((t) => !input.canSee!(id, t))) continue;
     const room = capacityInWeek(ws, id, weekStart, s) * ROOM - (rows.get(id)?.hours ?? 0) - hours;
     if (room < 0) continue;
     if (!best || room > best.room || (room === best.room && id < best.id)) best = { id, room };

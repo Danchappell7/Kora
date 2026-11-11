@@ -349,6 +349,10 @@ export interface SlackPostInput {
   status?: StatusKind;
   /** optional heading override */
   title?: string;
+  /** "standup" / "risks" (0058): the text was built leaving out Members only and Private work, because this
+   *  tab knows the workspace's switch is on. Left out (the switch off here, or before 0058) the server
+   *  posts it only where the switch really is off, and otherwise asks this tab to reload. */
+  filtered?: boolean;
 }
 
 const KIND_ACTION: Record<SlackPostKind, string> = { standup: "post_standup", status: "post_status", risks: "post_risks" };
@@ -368,9 +372,10 @@ export async function postToSlack(workspaceId: string, input: SlackPostInput): P
   return invokeSlack(workspaceId, {
     action,
     text: text.slice(0, SLACK_LIMITS.text),
-    // 0058: every stand-up and Radar text this app builds leaves out Members only and Private work
-    // (TeamPulse, WinsRecap); slack-post asks a tab from before this to reload rather than post its list
-    ...(input.kind !== "status" ? { audience: "open" } : {}),
+    // 0058: a stand-up or Radar text built with Members only and Private work left out says so (TeamPulse,
+    // WinsRecap: where this tab knows the switch is on). One that wasn't (a tab that thinks it's off, or from
+    // before 0058) says nothing: slack-post posts it where the switch is off, and otherwise asks it to reload
+    ...(input.kind !== "status" && input.filtered ? { audience: "open" } : {}),
     ...(input.projectId ? { projectId: input.projectId } : {}),
     ...(input.status ? { status: input.status } : {}),
     ...(input.title?.trim() ? { title: input.title.trim().slice(0, SLACK_LIMITS.title) } : {}),

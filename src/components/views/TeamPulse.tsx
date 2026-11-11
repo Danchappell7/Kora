@@ -74,7 +74,7 @@ const rowsFor = (text: string) =>
 type Person = { id: string; name: string; role?: string; guest?: boolean };
 type WriteUp = { status: "loading" } | { status: "ready"; text: string; ai: boolean; note?: string };
 
-export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople, kudos: kudosProp, onGiveKudos, canKudos, onDropTasksOnPerson, goalsSlot, meeting }: {
+export function TeamPulse({ tasks, members, currentUserId, workspaceName, workspaceId = null, readOnly, loadEvents, onOpen, onNudge, onPatch, onOpenWorkload, onWriteUp, personal, onNewWorkspace, onOpenPeople, kudos: kudosProp, onGiveKudos, canKudos, onDropTasksOnPerson, goalsSlot, meeting, canSee }: {
   tasks: Task[];
   members: WorkspaceMember[];
   currentUserId: string;
@@ -106,6 +106,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   goalsSlot?: ReactNode;
   /** (0056) Run meeting here (never for guests) */
   meeting?: MeetingScope | null;
+  /** (0058) can this person see this task's project: Radar's Assign offers only them. None given: everyone */
+  canSee?: (userId: string, task: Task) => boolean;
 }) {
   const toast = useOptionalToast();
   const [period, setPeriod] = useState<PulsePeriod>("day");
@@ -280,7 +282,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
             <Button size="sm" variant="secondary" icon="copy" onClick={() => void copy(pulseMarkdown(slackFacts), "slack")} disabled={loading}
               title={leftOut ? "Leaves out private projects" : undefined}>Copy for Slack</Button>
             {/* renders nothing until this workspace has a Slack channel (and never for guests) */}
-            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => pulseMarkdown(slackFacts)} disabled={loading} />}
+            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => pulseMarkdown(slackFacts)} disabled={loading} filtered={slackGated} />}
             {leftOut > 0 && <span className="kpulse-note">Leaves out private projects</span>}
             <Button size="sm" variant="hero" icon="kanbo" onClick={() => void startWriteUp()} disabled={loading}>Write it up</Button>
           </span>
@@ -304,10 +306,10 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
         </div>
 
         <aside className="kpulse-radar" aria-label="Radar">
-          <RadarPanel risks={risks} members={people} readOnly={readOnly} tasks={tasks} loading={loading} currentUserId={currentUserId}
+          <RadarPanel risks={risks} members={people} readOnly={readOnly} tasks={tasks} loading={loading} currentUserId={currentUserId} canSee={canSee}
             onOpen={onOpen} onNudge={onNudge} onPatch={onPatch} onOpenWorkload={onOpenWorkload}
             action={!readOnly && !loading && risks.length > 0
-              ? <SlackPostButton workspaceId={workspaceId} kind="risks" variant="ghost" getText={() => risksSlackText(slackRisks)} />
+              ? <SlackPostButton workspaceId={workspaceId} kind="risks" variant="ghost" getText={() => risksSlackText(slackRisks)} filtered={slackGated} />
               : undefined} />
         </aside>
         {goalsSlot && <div className="kpulse-goals">{goalsSlot}</div>}
@@ -351,7 +353,7 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
       <Sheet open={!!writeUp} onClose={closeWriteUp} label="Write it up" title="Write it up" width={640}
         footer={writeUp?.status === "ready" ? (
           <>
-            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => draft} variant="secondary" size="md" disabled={!draft.trim()} />}
+            {!readOnly && <SlackPostButton workspaceId={workspaceId} kind="standup" getText={() => draft} variant="secondary" size="md" disabled={!draft.trim()} filtered={slackGated} />}
             <Button variant="secondary" onClick={() => void copy(draft, "plain")}>Copy</Button>
             <Button variant="primary" icon="copy" onClick={() => void copy(draft, "slack")}>Copy for Slack</Button>
           </>

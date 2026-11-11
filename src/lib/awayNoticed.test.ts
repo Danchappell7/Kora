@@ -70,3 +70,17 @@ describe("awayNoticed", () => {
     });
   });
 });
+
+describe("awayNoticed and project access (0058)", () => {
+  it("offers the work only to a teammate who can see every task's project", () => {
+    const roles = { ws: { me: "owner" as const, sana: "member" as const, theo: "member" as const, maya: "member" as const } };
+    const tasks = [task({ title: "FAQ copy", dueDate: "2026-11-11", effortHours: 4 }), task({ title: "Payslips", projectId: "p-payroll", dueDate: "2026-11-13", effortHours: 4 })];
+    const s = state({ roles });
+    const withAccess = (canSee: (u: string, t: Task) => boolean) => awayNoticed({ tasks, today, s, nameOf: (id) => names[id] ?? "", canSee });
+    // Maya would have had it (as much room as Theo, a-z); she can't see Payroll, so Theo is offered it
+    expect(run(tasks, s)[0].actions[0]).toMatchObject({ label: "Give to Maya", assignTo: "maya" });
+    expect(withAccess((u, t) => t.projectId !== "p-payroll" || u === "theo")[0].actions[0]).toMatchObject({ label: "Give to Theo", assignTo: "theo" });
+    // nobody who can see it all: only the move to the day she's back
+    expect(withAccess((u, t) => t.projectId !== "p-payroll" || u === "sana")[0].actions.map((a) => a.label)).toEqual(["Move to Mon", "Open it"]);
+  });
+});

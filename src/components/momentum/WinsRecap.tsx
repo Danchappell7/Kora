@@ -169,7 +169,7 @@ export function WinsRecap({ now, currentUserId, tasks, seen, projects, members, 
           {workspaceId && (
             <Suspense fallback={null}>
               <SlackPostButton workspaceId={workspaceId} kind="standup" variant="ghost" label="Share to Slack"
-                title={userName ? `${userName.trim().split(/\s+/)[0]}'s week` : "My week"} getText={sharedText} />
+                title={userName ? `${userName.trim().split(/\s+/)[0]}'s week` : "My week"} getText={sharedText} filtered={accessOn(wsRow)} />
             </Suspense>
           )}
           <IconButton icon="copy" size="sm" label="Copy as text" onClick={() => void copy()} />

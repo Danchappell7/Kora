@@ -112,6 +112,15 @@ export function copyPeople(src: Pick<Project, "id" | "workspaceId" | "ownerId">,
   return [...new Set([...own, ...owner])];
 }
 
+/** The roles a copy's people keep (copyPeople's ids): each person's role on the source, and editor for
+ *  its owner (who has no row). A viewer stays a viewer, a commenter a commenter. */
+export function copyRoles(src: Pick<Project, "id" | "ownerId">, ctx: AccessCtx): Record<string, ProjectRole> {
+  const out: Record<string, ProjectRole> = {};
+  for (const m of ctx.members ?? []) if (m.projectId === src.id) out[m.userId] = m.role;
+  if (src.ownerId) out[src.ownerId] = "editor";
+  return out;
+}
+
 /** Who may change a project's people (D12): with the switch off, on a Whole workspace project,
  *  today's writers (owners, admins and members); with it on, or on a Members only or Private
  *  project whatever the switch says, the workspace's owner, the project's owner, its editors who

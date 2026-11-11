@@ -32,6 +32,12 @@ const viewOnlyWords = (tasks: readonly Task[], deps: MoveDeps) => {
   return names.length === 1 && names[0] ? `You can view ${names[0]}, but not change it` : tasks.length === 1 ? "You can view that task, but not change it" : "You can view these tasks, but not change them";
 };
 
+/** (0058) the projects someone can't see: "Payroll & contracts", "Payroll or Hiring", else "that project" / "their projects" */
+const blindProjects = (tasks: readonly Task[], deps: MoveDeps) => {
+  const names = [...new Set(tasks.map((t) => deps.projectName?.(t.projectId) ?? ""))];
+  return names.every(Boolean) && names.length ? names.join(" or ") : tasks.length === 1 ? "that project" : "their projects";
+};
+
 export interface WorkloadWeek { start: Date; label: string }
 
 /** Give tasks to `userId` and, with `weekStart`, move them into that week. */
@@ -52,13 +58,15 @@ export function useWorkloadMoves({ moveDeps, workspaceId, today, nameOf, workDay
     const undo: { id: string; patch: Partial<Task> }[] = [];
     const titles: string[] = [];
     const viewOnly: Task[] = [];
+    const blind: Task[] = [];
     let reassigned = 0, dated: string | undefined;
     for (const id of taskIds) {
       const t = deps.tasks.find((x) => x.id === id);
       // only this business's open work moves (a personal or another team's task never lands here)
       if (!t || t.archivedAt || t.status === "done" || !workspaceId || (t.workspaceId ?? null) !== workspaceId) continue;
-      // (0058: nor work you can only view)
+      // (0058: nor work you can only view, nor to someone who can't see its project)
       if (deps.canEdit && !deps.canEdit(t)) { viewOnly.push(t); continue; }
+      if (t.assigneeId !== userId && deps.canSee && !deps.canSee(userId, t)) { blind.push(t); continue; }
       const patch: Partial<Task> = {};
       const was: Partial<Task> = {};
       if (t.assigneeId !== userId) { patch.assigneeId = userId; was.assigneeId = t.assigneeId; reassigned++; }
@@ -77,14 +85,18 @@ export function useWorkloadMoves({ moveDeps, workspaceId, today, nameOf, workDay
       titles.push(t.title);
     }
     const who = firstName(nameOf(userId));
+    const blindWhere = blindProjects(blind, deps);
     if (!apply.length) {
-      deps.toast(viewOnly.length ? viewOnlyWords(viewOnly, deps) : taskIds.length === 1 ? "It's already there" : "They're already there");
+      deps.toast(viewOnly.length && !blind.length ? viewOnlyWords(viewOnly, deps)
+        : blind.length ? `${nameOf(userId) || "They"} can't see ${blindWhere}, so ${blind.length === 1 ? `${quote(blind[0].title)} stays` : "these tasks stay"} with ${blind.length === 1 ? "its assignee" : "their assignees"}`
+        : taskIds.length === 1 ? "It's already there" : "They're already there");
       return;
     }
     const what = apply.length === 1 ? quote(titles[0]) : `${apply.length} tasks`;
     const when = dated ? new Date(`${dated}T00:00:00`) : null;
     const due = when ? `due ${when.toLocaleDateString("en-GB", { weekday: "short" })} ${fmtDayMonth(when)}` : "";
     const message = (reassigned && due ? `Gave ${what} to ${who}, ${due}` : reassigned ? `Gave ${what} to ${who}` : `Moved ${what}, now ${due}`)
+      + (blind.length ? ` · ${blind.length} stayed put: ${who} can't see ${blindWhere}` : "")
       + (viewOnly.length ? ` · ${viewOnly.length} you can only view stayed put` : "");
     void deps.updateTasks(apply);
     deps.toast(message, () => { void deps.updateTasks(undo); });
@@ -192,11 +204,21 @@ export function RebalancePreview({ plan, nameOf, capacityOf, weekLabel, workspac
 }
 
 /** Apply a plan: one save, a toast with Undo. */
-export function applyRebalance(plan: RebalancePlan, deps: MoveDeps): void {
-  const { apply, undo } = rebalancePatches(plan);
-  if (!apply.length) return;
+export function applyRebalance(plan: RebalancePlan, deps: MoveDeps, nameOf?: (id: string) => string): void {
+  // (0058: the plan only offers people who can see the work; access may have changed since it was made)
+  const blind = plan.moves.filter((m) => {
+    const t = deps.tasks.find((x) => x.id === m.taskId);
+    return !!t && !!deps.canSee && !deps.canSee(m.to, t);
+  });
+  const moves = plan.moves.filter((m) => !blind.includes(m));
+  const { apply, undo } = rebalancePatches({ ...plan, moves });
+  const stayed = blind.length === 1
+    ? `${quote(blind[0].title)} stayed with ${firstName(nameOf?.(blind[0].from) || "its assignee")}: ${firstName(nameOf?.(blind[0].to) || "the person picked")} can't see its project`
+    : blind.length ? `${blind.length} tasks stayed put: the people picked can't see their projects` : "";
+  if (!apply.length) { if (stayed) deps.toast(stayed); return; }
   void deps.updateTasks(apply);
-  deps.toast(apply.length === 1 ? `Rebalanced: moved ${quote(plan.moves[0].title)}` : `Rebalanced: moved ${apply.length} tasks`, () => { void deps.updateTasks(undo); });
+  deps.toast((apply.length === 1 ? `Rebalanced: moved ${quote(moves[0].title)}` : `Rebalanced: moved ${apply.length} tasks`) + (stayed ? ` · ${stayed}` : ""),
+    () => { void deps.updateTasks(undo); });
 }
 
 /** "Week of 16 Nov" */

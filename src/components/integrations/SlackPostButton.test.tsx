@@ -42,6 +42,19 @@ describe("SlackPostButton", () => {
     expect(screen.getByRole("button", { name: "Posted to #team" })).toBeInTheDocument();
   });
 
+  it("0058: says its stand-up text leaves closed work out only when its caller built it that way", async () => {
+    await slack.connectSlack(WS, HOOK, "#team");
+    const first = render(<ToastProvider><SlackPostButton workspaceId={WS} kind="standup" getText={() => "Done: Launch"} filtered /></ToastProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Post to Slack, #team" }));
+    await waitFor(() => expect(slack.postToSlack).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(slack.postToSlack).mock.calls[0][1]).toMatchObject({ kind: "standup", filtered: true });
+    first.unmount();
+    render(<ToastProvider><SlackPostButton workspaceId={WS} kind="risks" getText={() => "Payroll is late"} /></ToastProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Post to Slack, #team" }));
+    await waitFor(() => expect(slack.postToSlack).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(slack.postToSlack).mock.calls[1][1]).not.toHaveProperty("filtered");
+  });
+
   it("nothing to post: says so and doesn't call Slack", async () => {
     await slack.connectSlack(WS, HOOK);
     render(<ToastProvider><SlackPostButton workspaceId={WS} kind="standup" getText={() => "  "} /></ToastProvider>);

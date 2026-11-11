@@ -147,12 +147,13 @@ describe("posting", () => {
     expect(invoke.mock.calls[2][1].body).toEqual({ action: "test", workspaceId: WS });
   });
 
-  it("0058: a stand-up or Radar post says its text leaves closed work out (an older tab's doesn't, and is asked to reload)", async () => {
+  it("0058: a stand-up or Radar post says its text leaves closed work out only when it did (a tab that thinks the switch is off, or an older one, doesn't, and is asked to reload where it's on)", async () => {
     invoke.mockResolvedValue({ data: { ok: true }, error: null });
-    await postToSlack(WS, { kind: "standup", text: "Done: Launch" });
-    await postToSlack(WS, { kind: "risks", text: "Launch is late" });
-    await postToSlack(WS, { kind: "status", text: "On track", projectId: PROJECT });
-    expect(invoke.mock.calls.map((c) => c[1].body.audience)).toEqual(["open", "open", undefined]);
+    await postToSlack(WS, { kind: "standup", text: "Done: Launch", filtered: true });
+    await postToSlack(WS, { kind: "risks", text: "Launch is late", filtered: true });
+    await postToSlack(WS, { kind: "status", text: "On track", projectId: PROJECT, filtered: true });
+    await postToSlack(WS, { kind: "standup", text: "Done: Launch, Payroll" });
+    expect(invoke.mock.calls.map((c) => c[1].body.audience)).toEqual(["open", "open", undefined, undefined]);
     invoke.mockResolvedValueOnce({ data: null, error: httpError(409, { error: "Reload Kanbo to post to Slack.", reason: "invalid" }) });
     expect(await postToSlack(WS, { kind: "standup", text: "x" })).toMatchObject({ ok: false, reason: "invalid", message: "Reload Kanbo to post to Slack." });
   });

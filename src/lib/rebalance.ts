@@ -57,6 +57,8 @@ export function planRebalance(input: {
   lastResort?: (id: string) => boolean;
   /** (0058) may this task be handed on: you can change it (none given: every one) */
   canMove?: (task: Task) => boolean;
+  /** (0058) may this person take this task on: they can see its project (none given: everyone) */
+  canReceive?: (userId: string, task: Task) => boolean;
 }): RebalancePlan {
   const { tasks, weekStart, today } = input;
   const team = input.members.filter((m) => !m.guest).map((m) => m.id);
@@ -88,7 +90,8 @@ export function planRebalance(input: {
       const away = (id: string) => (awayBefore(id, due) ? 1 : 0);
       const last = (id: string) => (input.lastResort?.(id) ? 1 : 0);
       const to = team
-        .filter((id) => id !== from && capOf[id] > 0 && load[id] + item.hours <= capOf[id] * ROOM && !(due && input.isOff?.(id, due)))
+        .filter((id) => id !== from && capOf[id] > 0 && load[id] + item.hours <= capOf[id] * ROOM && !(due && input.isOff?.(id, due))
+          && (!input.canReceive || input.canReceive(id, item.task)))
         .sort((a, b) => last(a) - last(b) || away(a) - away(b) || (capOf[b] * ROOM - load[b]) - (capOf[a] * ROOM - load[a]) || a.localeCompare(b))[0];
       if (!to) continue;
       moves.push({ taskId: item.task.id, title: item.task.title, from, to, due: due ?? null, hours: round1(item.hours) });

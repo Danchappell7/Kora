@@ -29,19 +29,22 @@ export function useAwayNoticed({ tasks, today, moveDeps, names }: {
   // (0058: only work you can change: a card never offers to move what you can only view)
   const noticed = useMemo(() => {
     if (!moveDeps) return [];
-    const canEdit = moveDeps().canEdit;
-    return awayNoticed({ tasks: canEdit ? tasks.filter(canEdit) : tasks, today, s, nameOf: (id) => getMember(id)?.name || nameRef.current?.(id) || "" });
+    const { canEdit, canSee } = moveDeps();
+    return awayNoticed({ tasks: canEdit ? tasks.filter(canEdit) : tasks, today, s, canSee, nameOf: (id) => getMember(id)?.name || nameRef.current?.(id) || "" });
   }, [tasks, today, s, moveDeps]);
   const onMove = useCallback((ids: string[], to: string, assignTo?: string) => {
     if (!moveDeps) return;
     const deps = moveDeps();
     const taskIds = deps.canEdit ? ids.filter((id) => { const t = deps.tasks.find((x) => x.id === id); return !t || deps.canEdit!(t); }) : ids;
     if (assignTo) {
-      const give = awayGivePatches([...deps.tasks], taskIds, assignTo);
-      if (!give.apply.length) return;
-      void deps.updateTasks(give.apply);
       const who = (getMember(assignTo)?.name || nameRef.current?.(assignTo) || "them").trim().split(/\s+/)[0];
-      deps.toast(`Gave ${give.apply.length === 1 ? "1 task" : `${give.apply.length} tasks`} to ${who}`, () => { void deps.updateTasks(give.undo); });
+      // (0058: only what they can see goes to them; the card offered someone who could, but access may have changed since)
+      const blind = deps.canSee ? taskIds.filter((id) => { const t = deps.tasks.find((x) => x.id === id); return !!t && !deps.canSee!(assignTo, t); }) : [];
+      const give = awayGivePatches([...deps.tasks], taskIds.filter((id) => !blind.includes(id)), assignTo);
+      const stayed = blind.length ? `${blind.length === 1 ? "1 task stays" : `${blind.length} tasks stay`} with ${blind.length === 1 ? "its assignee" : "their assignees"}: ${who} can't see ${blind.length === 1 ? "its project" : "their projects"}` : "";
+      if (!give.apply.length) { if (stayed) deps.toast(stayed.charAt(0).toUpperCase() + stayed.slice(1)); return; }
+      void deps.updateTasks(give.apply);
+      deps.toast(`Gave ${give.apply.length === 1 ? "1 task" : `${give.apply.length} tasks`} to ${who}${stayed ? ` · ${stayed}` : ""}`, () => { void deps.updateTasks(give.undo); });
       return;
     }
     const { apply, undo } = awayMovePatches([...deps.tasks], taskIds, to);

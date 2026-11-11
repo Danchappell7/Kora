@@ -99,6 +99,8 @@ export interface NewProject {
   visibility?: ProjectVisibility;
   /** 0058: people to add to it once it's made (editors; guests commenters) */
   memberIds?: string[];
+  /** 0058: their roles, when not editor (a copy keeps each person's role on its source) */
+  memberRoles?: Record<string, ProjectRole>;
 }
 
 /* fields the prototype derived on load; persisted as columns in Supabase */
@@ -2287,7 +2289,7 @@ export const store = {
   },
 
   async createProject(input: NewProject, userId: string): Promise<Project> {
-    const { templateId: _template, memberIds = [], visibility, ...rest } = input;
+    const { templateId: _template, memberIds = [], memberRoles = {}, visibility, ...rest } = input;
     const ws = input.workspaceId ? WORKSPACES.find((w) => w.id === input.workspaceId) : undefined;
     // 0058: who can see it goes in the same insert wherever 0058 is in (only New project, where the
     // switch is on, and a copy, which keeps its source's, say one); the server gives every other new
@@ -2298,8 +2300,11 @@ export const store = {
       const p: Project = { id, ...rest, ownerId: userId, ...(input.workspaceId && accessSchema() ? { visibility: vis ?? ws?.projectAccess?.defaultVisibility ?? "workspace" } : {}) };
       if (input.workspaceId && demoProjectMembers) {
         const added = memberIds.filter((u) => u !== userId && roleOf({ wsMembers: demoMembers }, input.workspaceId, u));
-        demoProjectMembers = [...demoProjectMembers, ...added.map((u) => ({ id: newId(), projectId: id, workspaceId: input.workspaceId!, userId: u,
-          role: (roleOf({ wsMembers: demoMembers }, input.workspaceId, u) === "guest" ? "commenter" : "editor") as ProjectRole, createdAt: new Date().toISOString() }))];
+        demoProjectMembers = [...demoProjectMembers, ...added.map((u) => {
+          const want: ProjectRole = memberRoles[u] ?? "editor";
+          return { id: newId(), projectId: id, workspaceId: input.workspaceId!, userId: u,
+            role: (roleOf({ wsMembers: demoMembers }, input.workspaceId, u) === "guest" && want === "editor" ? "commenter" : want), createdAt: new Date().toISOString() };
+        })];
         if (added.length) p.contributorIds = added;
       }
       return p;
@@ -2315,7 +2320,7 @@ export const store = {
         // then its people (best-effort: the project is made either way, and About shows who's on it)
         const added: string[] = [];
         for (const u of memberIds.filter((x) => x !== uid)) {
-          try { await store.setProjectMember(p.id, u, "editor"); added.push(u); }
+          try { await store.setProjectMember(p.id, u, memberRoles[u] ?? "editor"); added.push(u); }
           catch (e) { reportOnce("project-member-add", e, { op: "createProject" }); }
         }
         return added.length ? { ...p, contributorIds: [...new Set([...(p.contributorIds ?? []), ...added])] } : p;

@@ -31,12 +31,14 @@ export interface SlackPostButtonProps {
   label?: string;
   disabled?: boolean;
   onPosted?: () => void;
+  /** kind "standup" / "risks" (0058): getText leaves out Members only and Private work (the switch is on here) */
+  filtered?: boolean;
 }
 
 /** How long "Posted" stays on the button. */
 const POSTED_MS = 3000;
 
-export function SlackPostButton({ workspaceId, kind, getText, projectId, status, title, size = "sm", variant = "secondary", label = "Post to Slack", disabled, onPosted }: SlackPostButtonProps) {
+export function SlackPostButton({ workspaceId, kind, getText, projectId, status, title, size = "sm", variant = "secondary", label = "Post to Slack", disabled, onPosted, filtered }: SlackPostButtonProps) {
   const { status: slack } = useSlackStatus(workspaceId);
   const toast = useOptionalToast();
   const [phase, setPhase] = useState<"idle" | "posting" | "posted">("idle");
@@ -65,7 +67,7 @@ export function SlackPostButton({ workspaceId, kind, getText, projectId, status,
     try { text = getText()?.trim() ?? ""; } catch { text = ""; }
     if (!text) { say("signal", SLACK_COPY.nothingToPost); return; }
     setPhase("posting");
-    const r = await postToSlack(workspaceId, { kind, text, projectId, status, title });
+    const r = await postToSlack(workspaceId, { kind, text, projectId, status, title, ...(filtered ? { filtered: true } : {}) });
     if (!alive.current) return;
     if (r.ok) {
       setPhase("posted");
