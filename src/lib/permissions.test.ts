@@ -74,5 +74,9 @@ describe("removing someone says what they leave behind", () => {
     expect(removeMemberQuestion("Theo Vance", 1, 0)).toBe("Remove Theo Vance from this workspace? Theo has 1 open task. It'll stay assigned to Theo until you hand it on. Theo will also be taken off tasks they collaborate on or follow.");
     expect(removeMemberQuestion("Theo Vance", 0, 1)).toBe("Remove Theo Vance from this workspace? Theo owns 1 project. It'll stay in Theo's name until you hand it on. Theo will also be taken off tasks they collaborate on or follow.");
     expect(removeMemberQuestion("Maya Lin", 0, 0)).toBe("Remove Maya Lin from this workspace? They'll also be taken off tasks they collaborate on or follow.");
+    // (0058 in: the projects they own go to the workspace's owner)
+    expect(removeMemberQuestion("Theo Vance", 0, 2, "Daniel")).toBe("Remove Theo Vance from this workspace? Theo owns 2 projects. They go to Daniel unless you hand them on first. Theo will also be taken off tasks they collaborate on or follow.");
+    expect(removeMemberQuestion("Theo Vance", 3, 1, "Daniel")).toBe("Remove Theo Vance from this workspace? Theo has 3 open tasks and owns 1 project. The tasks stay assigned to Theo until you hand them on; the project goes to Daniel unless you hand it on first. Theo will also be taken off tasks they collaborate on or follow.");
+    expect(removeMemberQuestion("Theo Vance", 1, 0, "Daniel")).toBe("Remove Theo Vance from this workspace? Theo has 1 open task. It'll stay assigned to Theo until you hand it on. Theo will also be taken off tasks they collaborate on or follow.");
   });
 });

@@ -11,7 +11,7 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { Icon, IconButton, Avatar, Button, EmptyState, Meter, Pill, SectionLabel, Segmented, Sheet, StatusGlyph, ProjectDot } from "../primitives";
 import { getProject, getMember, KANBO_TODAY, PROJECTS } from "../../data/data";
 import { can, canManageMember, assignableRoles, removeMemberQuestion, guestLine, ROLE_META } from "../../lib/permissions";
-import { accessOn } from "../../lib/projectAccess";
+import { accessOn, accessSchema } from "../../lib/projectAccess";
 import { WORKSPACES } from "../../data/data";
 import type { Task, Workspace, WorkspaceMember, Role } from "../../data/types";
 import { AVATAR_ACCEPT, AVATAR_MESSAGES, avatarExtension, avatarMime } from "../../lib/avatarUpload";
@@ -355,6 +355,10 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
   // they leave behind and hands their open tasks on before they go
   const [removing, setRemoving] = useState(false);
   const owned = PROJECTS.filter((p) => (p.workspaceId ?? null) === workspace && p.ownerId === memberId && !p.archivedAt);
+  // (0058: once it's in, the projects they own go to the workspace's owner when they leave, so that
+  // inviting them back never gives them back what they owned)
+  const heirId = accessSchema() ? WORKSPACES.find((w) => w.id === workspace)?.ownerId : undefined;
+  const heir = heirId && heirId !== memberId ? ((getMember(heirId)?.name || handTo.find((x) => x.id === heirId)?.name || "").trim().split(/\s+/)[0] || "the workspace's owner") : undefined;
   const others = handTo.filter((x) => x.id !== memberId);
   const [handToId, setHandToId] = useState("");
   const target = others.some((x) => x.id === handToId) ? handToId : others[0]?.id ?? "";
@@ -448,9 +452,10 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
             {canLeaveOrRemove && removing ? (
               // leaving / removal also takes the person off this workspace's task followers and
               // collaborators (0042 remove_member), and a re-invite doesn't put them back.
-              // What they leave behind (open tasks, projects they own) stays theirs until handed on.
+              // Their open tasks stay theirs until handed on; the projects they own too before 0058,
+              // and go to the workspace's owner from 0058 on.
               <div className="kprof-confirm" role="group" aria-label={`Remove ${name}`}>
-                <p className="kprof-confirm-q">{removeMemberQuestion(name, openTasks.length, owned.length)}</p>
+                <p className="kprof-confirm-q">{removeMemberQuestion(name, openTasks.length, owned.length, heir)}</p>
                 {openTasks.length > 0 && onHandOn && others.length > 0 && (
                   <div className="kprof-inline">
                     <select className="kfield-select kprof-handto" value={target} onChange={(e) => setHandToId(e.target.value)} aria-label={`Hand ${first}'s open tasks to`}>

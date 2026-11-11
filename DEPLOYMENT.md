@@ -929,8 +929,10 @@ steps; nothing breaks while you wait.
      unassigned (the sync no longer stops on it).
    - `ics-feed`: a calendar names a project only where the task really is in
      it.
-   - `webhook-dispatch`: an endpoint follows whoever last set its address;
-     if they leave or become a guest it's switched off.
+   - `webhook-dispatch`: an endpoint follows whoever last set its address
+     (switch on or off); if they leave or become a guest it's switched off.
+   - `daily-reminders` also asks again, twice, before giving up on someone's
+     due list when a lookup fails (it runs once a day).
 
    It runs from `~/Downloads/kora-app` and stops with "The new code isn't in this
    folder yet." (before asking for your token) if the folder doesn't have it.
@@ -948,7 +950,11 @@ steps; nothing breaks while you wait.
    `sed -n '/^-- select$/,/;$/p' ~/Downloads/kora-app/supabase/migrations/0058_project_access.sql | sed 's/^-- \{0,1\}//' | pbcopy`.
    If it stops with "0058 needs …", run the file it names first, then 0058
    again. It's safe to run again: it keeps everyone's projects and settings,
-   and adds nobody back.
+   and adds nobody back. The one thing it changes that you may notice: a
+   project still owned by someone who has left that business becomes the
+   business owner's (so inviting that person back, even as a guest, doesn't
+   hand them their old projects). From then on that happens whenever someone
+   is removed or leaves; the Remove step on Team › People says so.
 3. **Reload the app** and check: Settings › Workspace (as the business's owner)
    shows **Project access** with the switch **off** and "When you turn it on:"
    saying what would change for each guest. Admins and members don't see it.

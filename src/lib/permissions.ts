@@ -47,11 +47,15 @@ export const guestLine = (on: boolean): string => (on
 
 /** What to ask before removing someone: what they leave behind, said plainly.
  *  `open` is their open tasks here, `owns` the projects they own here. */
-export function removeMemberQuestion(name: string, open: number, owns: number): string {
+export function removeMemberQuestion(name: string, open: number, owns: number, heir?: string): string {
   const first = name.trim().split(/\s+/)[0] || name;
   const tasks = `${open} open ${open === 1 ? "task" : "tasks"}`;
   const projects = `${owns} ${owns === 1 ? "project" : "projects"}`;
-  const left = open && owns ? `${first} has ${tasks} and owns ${projects}. They'll stay with ${first} until you hand them on. `
+  // (0058: once it's in, the projects someone owns go to the workspace's owner, `heir`, when they leave)
+  const goes = heir ? `${owns === 1 ? "It goes" : "They go"} to ${heir} unless you hand ${owns === 1 ? "it" : "them"} on first. ` : "";
+  const left = heir && open && owns ? `${first} has ${tasks} and owns ${projects}. The tasks stay assigned to ${first} until you hand them on; ${owns === 1 ? "the project goes" : "the projects go"} to ${heir} unless you hand ${owns === 1 ? "it" : "them"} on first. `
+    : heir && owns ? `${first} owns ${projects}. ${goes}`
+    : open && owns ? `${first} has ${tasks} and owns ${projects}. They'll stay with ${first} until you hand them on. `
     : open ? `${first} has ${tasks}. ${open === 1 ? "It'll" : "They'll"} stay assigned to ${first} until you hand ${open === 1 ? "it" : "them"} on. `
     : owns ? `${first} owns ${projects}. ${owns === 1 ? "It'll" : "They'll"} stay in ${first}'s name until you hand ${owns === 1 ? "it" : "them"} on. `
     : "";

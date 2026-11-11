@@ -17,8 +17,9 @@
 -- to contributor_ids (people taken off meanwhile, or who left the workspace, lose their rows;
 -- people added meanwhile get one on a Whole workspace project, and are added again in People &
 -- access on a Members only or Private one), so nobody who was taken off a project comes back, and
--- nobody gets into a closed one by listing themselves while the rules were out. Then switch each
--- workspace on again.
+-- nobody gets into a closed one by listing themselves while the rules were out. Anyone who left a
+-- workspace meanwhile is forgotten as 0058 forgets them (pa_forget_departed: the projects they own
+-- there go to its owner). Then switch each workspace on again.
 --
 -- Safe to run more than once. Nothing here needs 0058's own functions to be working.
 -- ============================================================

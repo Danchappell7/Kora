@@ -6,12 +6,21 @@ source). It needs 0041, 0042, 0043, 0046 and 0047, works with or without
 puts project access on its own tables), and is safe to run more than once:
 re-running keeps every member, visibility and setting.
 
-**Running it changes nothing anyone can see.** Every workspace starts with
-Project access switched off, and while it's off every read and write is exactly
-what it was before: every member and guest of a workspace reads every project.
-The PGlite suite proves this by running the same battery of reads and writes,
-as every kind of person, against the live database (0001–0050) and then with
-0058 in and the switch off: the answers are identical.
+**Running it changes nothing anyone can see**, with two exceptions. Every
+workspace starts with Project access switched off, and while it's off every read
+and write is exactly what it was before: every member and guest of a workspace
+reads every project. The PGlite suite proves this by running the same battery of
+reads and writes, as every kind of person, against the live database (0001–0050)
+and then with 0058 in and the switch off: the answers are identical.
+
+The exceptions. First, a project still owned by someone who has already left
+its workspace becomes the workspace owner's (the file does this once, and from then
+on whenever someone leaves). Otherwise, invited back later, even as a guest for
+one other project, they would own every project they had made, Private ones
+included. Nobody's access changes: the departed person has none, and the
+workspace's owner already sees everything. The VERIFY column `owners_still_in`
+checks it. Second, a webhook endpoint re-pointed after 0058 follows whoever set
+its new address, switch on or off (see "Webhooks while the switch is off" below).
 
 ## What it adds
 
@@ -130,11 +139,23 @@ No new secrets and no new schedule.
 - **The history** of something deleted for good (by hand or by the bin's
   30-day clear-out) keeps the project and access it had, so a Private task's
   or project's name never reaches admins who couldn't see it.
-- **Removing someone** from a workspace removes them from its projects.
-  Making someone a guest turns their editor roles into commenter. Either way,
-  held notices and queued webhooks they can't see any more are dropped, and a
-  webhook whose address they set is switched off ("the person who set its
-  address no longer has access").
+- **Removing someone** from a workspace (or their leaving) removes them from
+  its projects, hands the projects they own there to the workspace's owner, and
+  drops them from what the bin and the history captured of its projects'
+  people. So inviting them back gives them only what the invite says, and
+  restoring a project from the bin never puts them back on it. (Their open
+  tasks stay assigned to them until handed on, as before.) Making someone a
+  guest turns their editor roles into commenter. Either way, held notices and
+  queued webhooks they can't see any more are dropped, and a webhook whose
+  address they set is switched off ("the person who set its address no longer
+  has access").
+- **Webhooks while the switch is off.** The dispatcher judges an endpoint by
+  whoever last set its address (else whoever added it), switch on or off: an
+  endpoint an admin re-pointed to their own address stops when that admin
+  leaves. Before 0058 the endpoint's creator was the judge. This differs from
+  before 0058 with the switch off on purpose: an
+  address chosen by someone who has left shouldn't keep receiving the
+  workspace's events.
 - **Viewers** read and follow; they don't comment, react or give kudos.
 - **Signed-out requests** read none of a workspace's rows, as before: the rules
   apply to signed-in callers.

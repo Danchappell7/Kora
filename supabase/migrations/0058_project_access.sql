@@ -13,7 +13,11 @@
 --      The project's owner is always an editor and never has a row.
 --      Guests are never more than commenters, and see only the projects
 --      they're on (or own: someone made a guest after making projects keeps
---      them, as a commenter), and only those projects' people.
+--      them, as a commenter), and only those projects' people. Someone who
+--      leaves a workspace takes nothing with them: the projects they own there
+--      go to its owner, and the bin and the history forget their access, so
+--      inviting them back gives them only what the invite says (2p; this file
+--      does the same once for anyone who left before it).
 --   3. One rank per (person, project): 0 none, 1 view, 2 comment, 3 edit,
 --      from pa_rank_core() (the single table; src/lib/projectAccessMatrix.json
 --      holds the same 320 rows for the app's own tests). Read = 1, comment
@@ -292,11 +296,14 @@ returns integer language sql security definer stable set search_path = public as
       cross join lateral (select public.user_ws_role(auth.uid(), w.id) as role) r
      where w.id = p_ws and auth.uid() is not null), 0);
 $$;
+-- (a task's and an update's rank: per row in policies that have no G() prefix, so a workspace whose
+-- switch is off answers from the caller's role alone, as before this file: no project lookups)
 create or replace function public.pa_task_rank(p_task uuid)
 returns integer language sql security definer stable set search_path = public as $$
   select coalesce((
     select case when t.workspace_id is null
                 then case when t.user_id = auth.uid() and public.can_act() then 3 else 0 end
+                when not public.pa_on(t.workspace_id) then public.pa_rank_core(false, public.ws_role(t.workspace_id), null, false, null)
                 else public.pa_rank(t.workspace_id, t.project_id) end
       from public.tasks t where t.id = p_task), 0);
 $$;
@@ -305,6 +312,7 @@ returns integer language sql security definer stable set search_path = public as
   select coalesce((
     select case when s.workspace_id is null
                 then case when s.user_id = auth.uid() and public.can_act() then 3 else 0 end
+                when not public.pa_on(s.workspace_id) then public.pa_rank_core(false, public.ws_role(s.workspace_id), null, false, null)
                 else public.pa_rank(s.workspace_id, s.project_id) end
       from public.status_updates s where s.id = p_update), 0);
 $$;
@@ -834,12 +842,103 @@ begin
                             'note', 'Its project was deleted, so it''s back in “' || land_name || '”.');
 end; $$;
 
+-- 2p. someone who's left a workspace (their row deleted, or given to another account) takes nothing
+-- of it with them: the team projects they own there go to the workspace's owner (who
+-- sees everything anyway), and they drop out of what the bin and the history captured of its
+-- projects' access (each captured owner becomes the workspace's owner too, in a binned project's own
+-- snapshot as well). Otherwise, invited back (as a guest for one other project, say), they'd own
+-- every project they had made, Private ones included, with everything added since (a guest who owns
+-- a project keeps it, D16), and a restore from the bin would put them back on what they were on.
+-- Whatever the switch says: ownership is the switch-on rule's, and the switch can go on later.
+-- Only once they're out of it (another active row of theirs there keeps everything), and never while
+-- the workspace itself is closing. Answers how many projects changed hands.
+create or replace function public.pa_access_without(p_access jsonb, p_user uuid, p_heir uuid)
+returns jsonb language sql immutable set search_path = pg_catalog as $$
+  select case when p_access is null or jsonb_typeof(p_access) <> 'object' or p_user is null then p_access else
+    p_access
+    || case when jsonb_typeof(p_access -> 'members') = 'array' then jsonb_build_object('members', coalesce((
+         select jsonb_agg(e order by i) from jsonb_array_elements(p_access -> 'members') with ordinality a(e, i)
+          where e ->> 0 is distinct from p_user::text), '[]'::jsonb)) else '{}'::jsonb end
+    || case when p_access ->> 'owner' = p_user::text then jsonb_build_object('owner', p_heir) else '{}'::jsonb end end;
+$$;
+-- (a binned project's own row, as 0047 put it in the bin: who owns it, and its contributors before 0058)
+create or replace function public.pa_snapshot_without(p_snap jsonb, p_user uuid, p_heir uuid)
+returns jsonb language sql immutable set search_path = pg_catalog as $$
+  select case when jsonb_typeof(p_snap -> 'project') <> 'object' or p_user is null then p_snap else
+    jsonb_set(p_snap, '{project}', (p_snap -> 'project')
+      || case when p_snap #>> '{project,owner_id}' = p_user::text then jsonb_build_object('owner_id', p_heir) else '{}'::jsonb end
+      || case when jsonb_typeof(p_snap #> '{project,contributor_ids}') = 'array' then jsonb_build_object('contributor_ids', coalesce((
+           select jsonb_agg(c order by i) from jsonb_array_elements(p_snap #> '{project,contributor_ids}') with ordinality a(c, i)
+            where c #>> '{}' is distinct from p_user::text), '[]'::jsonb)) else '{}'::jsonb end) end;
+$$;
+create or replace function public.pa_forget_member(p_ws uuid, p_user uuid)
+returns integer language plpgsql security definer set search_path = public as $$
+declare
+  heir uuid;
+  uid text := p_user::text;
+  probe jsonb := jsonb_build_object('members', jsonb_build_array(jsonb_build_array(p_user::text)));
+  n integer := 0;
+begin
+  if p_ws is null or p_user is null or public.pa_ws_member_role(p_user, p_ws) <> 'none' then return 0; end if;
+  select w.owner_id into heir from public.workspaces w where w.id = p_ws;
+  if not found then return 0; end if;                      -- (the workspace closing: its projects go with it)
+  update public.projects set owner_id = heir where workspace_id = p_ws and owner_id = p_user;
+  get diagnostics n = row_count;
+  update public.trash x
+     set access = public.pa_access_without(x.access, p_user, heir),
+         snapshot = case when x.kind = 'project' then public.pa_snapshot_without(x.snapshot, p_user, heir) else x.snapshot end
+   where x.workspace_id = p_ws
+     and (x.access ->> 'owner' = uid or x.access @> probe
+          or (x.kind = 'project' and (x.snapshot #>> '{project,owner_id}' = uid or (x.snapshot #> '{project,contributor_ids}') ? uid)));
+  update public.project_ids_retired g set access = public.pa_access_without(g.access, p_user, heir)
+   where g.workspace_id = p_ws and (g.access ->> 'owner' = uid or g.access @> probe);
+  update public.audit_events e set access = public.pa_access_without(e.access, p_user, heir)
+   where e.workspace_id = p_ws and e.project_id is not null and e.access is not null
+     and (e.access ->> 'owner' = uid or e.access @> probe);
+  return n;
+end; $$;
+-- (every run of this file: whoever has already left a workspace, before 0058 or while its undo file
+-- had the triggers out; nothing on a later run unless someone left meanwhile)
+create or replace function public.pa_forget_departed()
+returns integer language plpgsql security definer set search_path = public as $$
+declare r record; n integer := 0;
+begin
+  for r in
+    select distinct x.ws, x.uid from (
+      select p.workspace_id as ws, p.owner_id as uid from public.projects p where p.workspace_id is not null and p.owner_id is not null
+      union select t.workspace_id, public.kanbo_uuid(t.access ->> 'owner') from public.trash t where t.workspace_id is not null and t.access is not null
+      union select t.workspace_id, public.kanbo_uuid(e ->> 0) from public.trash t
+              cross join lateral jsonb_array_elements(case when jsonb_typeof(t.access -> 'members') = 'array' then t.access -> 'members' else '[]'::jsonb end) e
+             where t.workspace_id is not null
+      union select t.workspace_id, public.kanbo_uuid(t.snapshot #>> '{project,owner_id}') from public.trash t
+             where t.workspace_id is not null and t.kind = 'project'
+      union select t.workspace_id, public.kanbo_uuid(c #>> '{}') from public.trash t
+              cross join lateral jsonb_array_elements(case when jsonb_typeof(t.snapshot #> '{project,contributor_ids}') = 'array'
+                                                           then t.snapshot #> '{project,contributor_ids}' else '[]'::jsonb end) c
+             where t.workspace_id is not null and t.kind = 'project'
+      union select g.workspace_id, public.kanbo_uuid(g.access ->> 'owner') from public.project_ids_retired g
+      union select g.workspace_id, public.kanbo_uuid(e ->> 0) from public.project_ids_retired g
+              cross join lateral jsonb_array_elements(case when jsonb_typeof(g.access -> 'members') = 'array' then g.access -> 'members' else '[]'::jsonb end) e
+      union select a.workspace_id, public.kanbo_uuid(a.access ->> 'owner') from public.audit_events a
+             where a.workspace_id is not null and a.project_id is not null and a.access is not null
+      union select a.workspace_id, public.kanbo_uuid(e ->> 0) from public.audit_events a
+              cross join lateral jsonb_array_elements(case when jsonb_typeof(a.access -> 'members') = 'array' then a.access -> 'members' else '[]'::jsonb end) e
+             where a.workspace_id is not null and a.project_id is not null and a.access is not null) x
+     where x.ws is not null and x.uid is not null and public.pa_ws_member_role(x.uid, x.ws) = 'none'
+  loop
+    n := n + public.pa_forget_member(r.ws, r.uid);
+  end loop;
+  return n;
+end; $$;
+
 do $internal$
 declare f text;
 begin
   foreach f in array array['public.pa_touch(uuid)', 'public.pa_webhook_project(text,jsonb)', 'public.pa_task_hidden_for(uuid,uuid)',
                            'public.pa_notice_payload(uuid,jsonb)', 'public.pa_flush_held(uuid,uuid)', 'public.pa_webhooks_viewer_gone(uuid,uuid)',
-                           'public.pa_restore_landing(uuid,jsonb,text,jsonb)'] loop
+                           'public.pa_restore_landing(uuid,jsonb,text,jsonb)', 'public.pa_access_without(jsonb,uuid,uuid)',
+                           'public.pa_snapshot_without(jsonb,uuid,uuid)', 'public.pa_forget_member(uuid,uuid)',
+                           'public.pa_forget_departed()'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
 end $internal$;
@@ -1376,8 +1475,9 @@ begin
   return null;
 end; $$;
 
--- workspace_members, after: leaving a workspace (or being removed) takes your project rows with you;
--- a guest's editor rows become commenter; a claimed invite brings its projects
+-- workspace_members, after: leaving a workspace (or being removed) takes your project rows with you,
+-- hands the projects you own there to its owner, and drops you from what the bin and the history
+-- captured (2p); a guest's editor rows become commenter; a claimed invite brings its projects
 create or replace function public.pa_trg_ws_members() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare g record; own uuid;
@@ -1386,16 +1486,20 @@ begin
   if tg_op = 'DELETE' then
     if old.user_id is not null then
       delete from public.project_members where workspace_id = old.workspace_id and user_id = old.user_id;
+      perform public.pa_forget_member(old.workspace_id, old.user_id);
       perform public.pa_flush_held(old.workspace_id, null);
     end if;
     return null;
   end if;
+  -- (a row made inactive isn't someone leaving: the app removes people by deleting their row, and
+  -- nothing in it sets an active row back to invited; only their project rows go, as before)
   if old.status = 'active' and new.status is distinct from 'active' and old.user_id is not null then
     delete from public.project_members where workspace_id = old.workspace_id and user_id = old.user_id;
     perform public.pa_flush_held(old.workspace_id, null);
   end if;
   if old.user_id is not null and new.user_id is distinct from old.user_id then
     delete from public.project_members where workspace_id = old.workspace_id and user_id = old.user_id;
+    perform public.pa_forget_member(old.workspace_id, old.user_id);
   end if;
   if new.status = 'active' and new.user_id is not null and new.role = 'guest' and old.role is distinct from 'guest' then
     update public.project_members set role = 'commenter'
@@ -2109,16 +2213,27 @@ begin
   end loop;
 
   -- the helpers (0043's can_see_task, 0042's can_edit_task, 0047's can_see_project and can_edit_project):
-  -- thin wrappers over the rank
+  -- the rank where the switch is on; where it's off, each one's old rule word for word (they're
+  -- asked once a row by policies that have no G() prefix: task plans, kudos, approvals, snoozes)
   execute $fn$
 create or replace function public.can_see_task(p_task uuid)
 returns boolean language sql security definer stable set search_path = public as $b$
-  select public.pa_task_rank(p_task) >= 1;
+  select exists (
+    select 1 from public.tasks t
+     where t.id = p_task
+       and ((t.workspace_id is null and t.user_id = auth.uid() and public.can_act())
+         or (t.workspace_id is not null and case when public.pa_on(t.workspace_id) then public.pa_rank(t.workspace_id, t.project_id) >= 1
+                                                 else public.is_member(t.workspace_id) end)));
 $b$ $fn$;
   execute $fn$
 create or replace function public.can_edit_task(p_task uuid)
 returns boolean language sql security definer stable set search_path = public as $b$
-  select public.pa_task_rank(p_task) >= 3;
+  select exists (
+    select 1 from public.tasks t
+     where t.id = p_task
+       and ((t.workspace_id is null and t.user_id = auth.uid() and public.can_act())
+         or (t.workspace_id is not null and case when public.pa_on(t.workspace_id) then public.pa_rank(t.workspace_id, t.project_id) >= 3
+                                                 else public.can_write(t.workspace_id) end)));
 $b$ $fn$;
   execute $fn$
 create or replace function public.can_see_project(p_project uuid)
@@ -2127,7 +2242,9 @@ returns boolean language sql security definer stable set search_path = public as
     select 1 from public.projects p
      where p.id = p_project
        and ((p.workspace_id is null and p.user_id = auth.uid() and public.can_act())
-         or (p.workspace_id is not null and public.pa_project_rank(p.workspace_id, p.id, p.visibility, p.owner_id) >= 1)));
+         or (p.workspace_id is not null and case when public.pa_on(p.workspace_id)
+                                                 then public.pa_project_rank(p.workspace_id, p.id, p.visibility, p.owner_id) >= 1
+                                                 else public.is_member(p.workspace_id) end)));
 $b$ $fn$;
   execute $fn$
 create or replace function public.can_edit_project(p_project uuid)
@@ -2136,7 +2253,9 @@ returns boolean language sql security definer stable set search_path = public as
     select 1 from public.projects p
      where p.id = p_project
        and ((p.workspace_id is null and p.user_id = auth.uid() and public.can_act())
-         or (p.workspace_id is not null and public.pa_project_rank(p.workspace_id, p.id, p.visibility, p.owner_id) >= 3)));
+         or (p.workspace_id is not null and case when public.pa_on(p.workspace_id)
+                                                 then public.pa_project_rank(p.workspace_id, p.id, p.visibility, p.owner_id) >= 3
+                                                 else public.can_write(p.workspace_id) end)));
 $b$ $fn$;
   revoke execute on function public.can_see_task(uuid) from public, anon;
   revoke execute on function public.can_edit_task(uuid) from public, anon;
@@ -2258,7 +2377,7 @@ returns boolean language sql security definer stable set search_path = public as
        and public.api_scope_ok(s.workspace_id)
        and ((s.workspace_id is null and s.user_id = auth.uid() and public.can_act())
          or (s.workspace_id is not null and public.is_member(s.workspace_id)
-             and public.pa_rank(s.workspace_id, s.project_id) >= 1)));
+             and (not public.pa_on(s.workspace_id) or public.pa_rank(s.workspace_id, s.project_id) >= 1))));
 $b$ $fn$;
     revoke execute on function public.can_see_status_update(uuid) from public, anon;
     grant execute on function public.can_see_status_update(uuid) to authenticated;
@@ -2388,6 +2507,13 @@ begin
   perform public.project_access_restore();
 end $restore$;
 
+-- 5e. people who left before this file (or while its undo file had the triggers out): what
+-- trg_ws_members_pa does when someone leaves (2p). Their team projects go to the workspace's owner.
+do $departed$
+begin
+  perform public.pa_forget_departed();
+end $departed$;
+
 -- ---------- 6. the history's projects (the first run only) ----------
 -- Rows written before this file: the project they're about (their access wasn't recorded).
 do $history$
@@ -2432,6 +2558,10 @@ insert into public.schema_migrations (version) values ('0058') on conflict (vers
 --   not has_function_privilege('authenticated', 'public.project_access_restore()', 'execute')        as restore_private,
 --   not has_function_privilege('authenticated', 'public.user_project_rank(uuid,uuid,text)', 'execute') as service_helpers_private,
 --   public.api_scope_intact()                                                                       as api_keys_still_scoped,
+--   not exists (select 1 from public.projects p where p.workspace_id is not null and p.owner_id is not null
+--                 and not exists (select 1 from public.workspace_members m where m.workspace_id = p.workspace_id
+--                                    and m.user_id = p.owner_id and m.status = 'active')
+--                 and not exists (select 1 from public.workspaces w where w.id = p.workspace_id and w.owner_id = p.owner_id)) as owners_still_in,
 --   (select count(*) from public.project_members) >= 0                                              as members_table;
 --
 -- everyone_still_off is true right after the first run. It turns false once an owner switches a

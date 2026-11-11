@@ -1636,6 +1636,106 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq("rows" in dm ? dm.rows[0].role : errOf(dm), "commenter", "demoted");
   });
 
+  await test("0058, switch on: someone removed and invited back as a guest for one project sees only that one (the projects they owned went to the workspace's owner; the bin forgot them, and a restore doesn't bring them back)", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [w.ws]);
+      // Meg owns PQ (Private), a Members only and a Whole workspace project of her own, and edits PP
+      const mine = async (name: string, vis: string) =>
+        (await run(w.id.ME, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, $2, $3::uuid, $4) returning id::text as id`, [w.id.ME, name, w.ws, vis]))[0].id as string;
+      const pz = await mine("Zebra Meg members", "members");
+      const px = await mine("Zebra Meg open", "workspace");
+      await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra Meg secret', $2, '', $3::uuid)`, [w.id.ME, pz, w.ws]);
+      // a project of hers and one she edits go to the bin first
+      const pb = (await run(w.id.ME, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility, contributor_ids) values ($1::uuid, $1::uuid, 'Zebra Meg binned', $2::uuid, 'members', $3::uuid[]) returning id::text as id`, [w.id.ME, w.ws, [w.id.MC]]))[0].id as string;
+      await run(w.id.ME, `delete from public.projects where id = $1::uuid`, [pb]);
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [w.proj.PP]);
+      const bins = await run(null, `select id::text as id, item_id::text as item from public.trash where item_id = any ($1::uuid[]) and restored_at is null`, [[pb, w.proj.PP]]);
+      const binOf = (p: string) => bins.find((b) => b.item === p)!.id as string;
+      await run(w.id.O, `select public.remove_member((select id from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid))`, [w.ws, w.id.ME]);
+      const owners = await run(null, `select id::text as id, owner_id::text as o from public.projects where id = any ($1::uuid[])`, [[w.proj.PQ, pz, px]]);
+      const binned = await run(null, `select item_id::text as item, access, snapshot #>> '{project,owner_id}' as snap_owner,
+          snapshot #> '{project,contributor_ids}' as snap_people from public.trash where id = any ($1::uuid[])`, [[binOf(pb), binOf(w.proj.PP)]]);
+      // invited back as a guest who should see PW only
+      const inv = (await run(w.id.O, `select (public.invite_member($1::uuid, 'me.pa@example.org', 'Meg', 'guest')).id::text as id`, [w.ws]))[0].id as string;
+      await run(w.id.O, `select public.set_invite_projects($1::uuid, $2::jsonb)`, [inv, JSON.stringify([{ project_id: w.proj.PW, role: "commenter" }])]);
+      await run(null, `update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()) where id = $1::uuid`, [w.id.ME]);
+      await run(w.id.ME, `select public.claim_invites()`);
+      const reads = await run(w.id.ME, `select name from public.projects where workspace_id = $1::uuid order by name`, [w.ws]);
+      const secret = await run(w.id.ME, `select 1 from public.tasks where project_id = $1`, [pz]);
+      const comment = (await run(w.id.ME, `select public.can_comment_task($1::uuid) as c`, [w.task.PQ]))[0].c;
+      const manages = errOf(await tryRun(w.id.ME, `select public.set_project_member($1::uuid, $2::uuid, 'viewer')`, [w.proj.PQ, w.id.M2]));
+      const binReads = await run(w.id.ME, `select 1 from public.trash where id = any ($1::uuid[])`, [[binOf(pb), binOf(w.proj.PP)]]);
+      const ppLeft = await run(w.id.ME, `select 1 from public.forms where project_id = $1 union all select 1 from public.status_updates where project_id = $1`, [w.proj.PP]);
+      // the owner restores both
+      await run(w.id.O, `select public.restore_from_trash($1::uuid)`, [binOf(w.proj.PP)]);
+      await run(w.id.O, `select public.restore_from_trash($1::uuid)`, [binOf(pb)]);
+      const rowsAfter = await run(null, `select project_id::text as p, role from public.project_members where user_id = $1::uuid order by 1`, [w.id.ME]);
+      const pbOwner = (await run(null, `select owner_id::text as o from public.projects where id = $1::uuid`, [pb]))[0].o;
+      const readsAfter = await run(w.id.ME, `select name from public.projects where workspace_id = $1::uuid order by name`, [w.ws]);
+      return { owners, binned, reads, secret: secret.length, comment, manages, binReads: binReads.length, ppLeft: ppLeft.length, rowsAfter, pbOwner, readsAfter, pb };
+    });
+    for (const o of got.owners) eq(o.o, w.id.O, "a project Meg owned is the workspace owner's now");
+    for (const b of got.binned) {
+      const a = b.access as { owner: string; members: [string, string][] };
+      ok(!a.members.some((m) => m[0] === w.id.ME), `the bin forgot Meg on ${b.item}`);
+      ok(a.owner !== w.id.ME, "and as its owner");
+      if (b.item === got.pb) {
+        eq(b.snap_owner, w.id.O, "the binned project's own row is the owner's");
+        ok(!(b.snap_people as string[]).includes(w.id.ME), "and doesn't list Meg");
+      }
+    }
+    eq(got.reads.map((r) => r.name), ["Zebra PW"], "Meg, back as a guest for PW, reads PW only");
+    eq([got.secret, got.comment], [0, false], "nothing of her old projects");
+    ok(/not found|not authorized/.test(got.manages), `nor manages one: ${got.manages || "managed"}`);
+    eq([got.binReads, got.ppLeft], [0, 0], "nor what's in the bin, nor what the binned PP left behind");
+    eq(got.rowsAfter, [{ p: w.proj.PW, role: "commenter" }], "a restore puts her on nothing she wasn't given");
+    eq(got.pbOwner, w.id.O, "and a restored project of hers is the workspace owner's");
+    eq(got.readsAfter.map((r) => r.name), ["Zebra PW"], "she still reads PW only");
+  });
+
+  await test("0058, switch off: the per-row checks older rules make (approvals, their reviewers, kudos, plans) answer from the role alone, with no project lookups", async () => {
+    const calls = await scenario(async (run) => {
+      const count = async (on: boolean) => {
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+        await run(null, `set local track_functions = 'all'`);
+        const before = await run(null, `select funcname as f, calls::int as n from pg_stat_xact_user_functions where funcname in ('can_see_task', 'pa_rank_for')`);
+        const tables = ["approvals", "approval_reviewers", "task_user_state", ...(await run(null, `select 1 from pg_class where oid = to_regclass('public.kudos')`)).length ? ["kudos"] : []];
+        for (const tb of tables) await run(w.id.ME, `select count(*) from public.${tb}`);
+        const after = await run(null, `select funcname as f, calls::int as n from pg_stat_xact_user_functions where funcname in ('can_see_task', 'pa_rank_for')`);
+        const n = (rows: Record<string, unknown>[], f: string) => Number(rows.find((r) => r.f === f)?.n ?? 0);
+        return { helper: n(after, "can_see_task") - n(before, "can_see_task"), rank: n(after, "pa_rank_for") - n(before, "pa_rank_for") };
+      };
+      return { off: await count(false), on: await count(true) };
+    });
+    ok(calls.off.helper > 0, `the helper is asked once a row: ${JSON.stringify(calls)}`);
+    eq(calls.off.rank, 0, "switched off, no rank is worked out");
+    ok(calls.on.rank > 0, `switched on, it is: ${JSON.stringify(calls)}`);
+  });
+
+  await test("0058: anyone who left before 0058 (or while its undo had the triggers out) is forgotten the same way when it runs (pa_forget_departed)", async () => {
+    const got = await scenario(async (run) => {
+      // R left long ago; the old rules left them owning PM, in a bin row's people and a history row's
+      await run(null, `set local session_replication_role = replica`);
+      await run(null, `update public.projects set owner_id = $2::uuid where id = $1::uuid`, [w.proj.PM, w.id.R]);
+      const tr = (await run(null, `insert into public.trash (workspace_id, user_id, kind, item_id, project_id, title, snapshot, access)
+          values ($1::uuid, $2::uuid, 'project', gen_random_uuid(), null, 'Zebra gone', jsonb_build_object('project', jsonb_build_object('owner_id', $3::text, 'contributor_ids', jsonb_build_array($3::text, $4::text))),
+                  jsonb_build_object('v', 1, 'visibility', 'private', 'owner', $3::text, 'members', jsonb_build_array(jsonb_build_array($3::text, 'editor'), jsonb_build_array($4::text, 'viewer'))))
+          returning id::text as id`, [w.ws, w.id.O, w.id.R, w.id.MC]))[0].id as string;
+      await run(null, `set local session_replication_role = origin`);
+      const n = (await run(null, `select public.pa_forget_departed() as n`))[0].n;
+      const again = (await run(null, `select public.pa_forget_departed() as n`))[0].n;
+      const pm = (await run(null, `select owner_id::text as o from public.projects where id = $1::uuid`, [w.proj.PM]))[0].o;
+      const t = (await run(null, `select access, snapshot from public.trash where id = $1::uuid`, [tr]))[0];
+      return { n, again, pm, t };
+    });
+    eq([got.n, got.again], [1, 0], "one project changed hands, once");
+    eq(got.pm, w.id.O, "PM is the workspace owner's");
+    const a = got.t.access as { owner: string; members: [string, string][] };
+    eq([a.owner, a.members], [w.id.O, [[w.id.MC, "viewer"]]], "the bin row forgot R (Mac stays)");
+    const s = got.t.snapshot as { project: { owner_id: string; contributor_ids: string[] } };
+    eq([s.project.owner_id, s.project.contributor_ids], [w.id.O, [w.id.MC]], "and so did its snapshot");
+  });
+
   await test("0058: a guest invited straight onto projects gets them when they join (set_invite_projects, then the claim)", async () => {
     const inv = await as<{ id: string }>(w.id.O, `select (public.invite_member($1::uuid, 'joiner.pa@example.org', 'Jo', 'guest')).id::text as id`, [w.ws]);
     ok(/invalid grants/.test(errOf(await attempt(w.id.O, `select public.set_invite_projects($1::uuid, '[{"project_id": "nope", "role": "viewer"}]'::jsonb)`, [inv[0].id]))), "junk");

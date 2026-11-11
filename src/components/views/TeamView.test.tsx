@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act, within, waitFor } from "@testing-librar
 import { TeamView, WorkspaceSettingsPanel } from "./TeamView";
 import type { Task, WorkspaceMember } from "../../data/types";
 import { WORKSPACES, setReferenceData } from "../../data/data";
+import { noteAccessSchema, resetAccessSchema } from "../../lib/projectAccess";
 
 const task = { id: "t1", title: "Q3 budget", projectId: "p-launch", status: "todo", assigneeId: "m-1", aiScore: 1 } as unknown as Task;
 
@@ -284,8 +285,22 @@ describe("TeamView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Theo Vance/ }));
     fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
     const step = screen.getByRole("group", { name: "Remove Theo Vance" });
-    expect(step).toHaveTextContent("Remove Theo Vance from this workspace? Theo has 3 open tasks and owns 1 project. They'll stay with Theo until you hand them on. Theo will also be taken off tasks they collaborate on or follow.");
+    // (0058 in: the project goes to the workspace's owner when he leaves, so a re-invite never gives it back)
+    expect(step).toHaveTextContent("Remove Theo Vance from this workspace? Theo has 3 open tasks and owns 1 project. The tasks stay assigned to Theo until you hand them on; the project goes to Daniel unless you hand it on first. Theo will also be taken off tasks they collaborate on or follow.");
     expect(step).toHaveTextContent("Change the owner of Platform Infra in its About tab.");
+  });
+
+  it("before 0058, the projects someone owns stay in their name", () => {
+    noteAccessSchema(false);
+    try {
+      const theirs = [1, 2, 3].map((i) => ({ ...task, id: `th${i}`, assigneeId: "m-2" })) as Task[];
+      team([member({ id: "w2", userId: "m-2", email: "theo@kanbo.app" })], { tasks: theirs });
+      fireEvent.click(screen.getByRole("button", { name: /Theo Vance/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Remove from workspace/ }));
+      expect(screen.getByRole("group", { name: "Remove Theo Vance" })).toHaveTextContent("Theo has 3 open tasks and owns 1 project. They'll stay with Theo until you hand them on.");
+    } finally {
+      resetAccessSchema();
+    }
   });
 
   it("hands someone's open tasks on before removing them (members and admins only, never to a guest)", () => {
