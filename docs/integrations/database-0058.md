@@ -347,11 +347,25 @@ person who saved it: it goes when someone else signs in there.)
   archiving its page doesn't archive it) until it's moved back, whoever set the
   sync up (one set up by an admin who isn't on the project it was moved into
   never brings it back as a new task). Nor, whoever set it up, does a sync
-  bring back a task deleted, binned or unlinked in Kanbo, or take in a page it
-  has seen before that's moved, in Notion, into its database from another (a
-  Private project's synced database, say), as with the switch off: the pages
-  a sync has seen are read whatever the person it runs as can see, and only
-  ever stop a page coming in. Coming the other way, a page whose
+  bring back a task deleted, binned or unlinked in Kanbo, as with the switch
+  off: the pages a sync has seen are read whatever the person it runs as can
+  see, and only ever stop a page coming in. One page is never two projects'
+  tasks: a page that's another database's here (linked to a task by another
+  database's sync or import, or held for one by the bin or by the record a
+  deleted task, project or link leaves) and is dragged, in Notion, into a
+  synced or imported database isn't taken in there, however new it is, on a
+  sync's first run too, and by an import, kept in sync or not (it counts as
+  skipped); a preview of that database leaves it out for anyone who can't see
+  the task it's linked to. Nor does the sync it left follow it: a page moved
+  out of a sync's database is left alone (nothing goes to it or comes from it,
+  and archiving it there doesn't archive its task) until it's moved back, and
+  the sync says so. Both ways round: a Private task's page dragged into an open
+  project's database, or an open task's into a Private project's. With the
+  switch off it's as before 0058: such a page comes in there too (unless
+  Kanbo has seen it before and it's older than that sync's last read), and
+  both syncs keep writing to it. A page that two syncs linked before that (on an older notion
+  function, say) is closed, link and cached title, to anyone who can't see
+  one of its tasks. Coming the other way, a page whose
   Owner can't see the project comes in unassigned (the database would refuse
   them as its assignee), and the rest of the run carries on. A database that
   syncs with a project you can't see can't be previewed or imported by you,
@@ -402,7 +416,13 @@ person who saved it: it goes when someone else signs in there.)
   over, or a sync removed and set up again, doesn't close it.
   Which project a task left isn't recorded, so once every one of them has
   gone, it's closed to all but the workspace's owners. With the switch off, no
-  database is ever refused for this, as before 0058.)
+  database is ever refused for this, as before 0058.) Disconnecting Notion
+  (Settings › Notion) switches every sync off, as before 0058, and
+  reconnecting doesn't switch them back on. With the switch on, an admin who
+  disconnects and reconnects (to change the secret, say) doesn't see the
+  syncs of Members only and Private projects they aren't on, so can't switch
+  those back on: each stays off until the workspace's owner, or an admin who
+  can edit that project, switches it on again. Tell them when you reconnect.
 - **Kanbo's older reasons.** A reason Kanbo saved on a task's row before
   this release (or that an older tab saves while the switch is off) stays
   there while the switch is off. The app never shows it, but anyone who can

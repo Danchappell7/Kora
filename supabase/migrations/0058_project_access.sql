@@ -648,10 +648,17 @@ $$;
 -- task's) in the bin (the links its row holds, judged by that row's access), once the project's deleted
 -- for good (the pages its row recorded, 1g), and once the task's deleted for good on its own or the link
 -- is removed (1i, judged by the project it was linked from). Unless the caller can see the task that a
--- live sync links the page to: the page is that task's then, whatever an import elsewhere made of it.
+-- live sync links the page to: the page is that task's then, whatever an import elsewhere made of it. But
+-- never while a live sync ALSO links it to a task the caller can't see: a page moved, in Notion, from one
+-- synced database into another could be taken in by both syncs (the notion function no longer lets it,
+-- with the switch on: heldElsewhere, movedOut), and the cache would then hold whichever task's title was
+-- written last, a Private one's included.
 create or replace function public.pa_notion_page_hidden(p_ws uuid, p_page text)
 returns boolean language sql security definer stable set search_path = public as $$
-  select (exists (select 1 from public.notion_links l
+  select exists (select 1 from public.notion_links l
+                  where l.workspace_id = p_ws and l.notion_page_id = p_page and l.kind = 'synced' and l.sync_id is not null
+                    and not public.can_see_task(l.task_id))
+      or ((exists (select 1 from public.notion_links l
                    where l.workspace_id = p_ws and l.notion_page_id = p_page
                      and (l.kind = 'synced' or l.notion_database_id is not null)
                      and not public.can_see_task(l.task_id))
@@ -668,9 +675,9 @@ returns boolean language sql security definer stable set search_path = public as
           or exists (select 1 from public.notion_pages_retired x
                       where x.workspace_id = p_ws and x.page_id = p_page
                         and public.pa_snapshot_rank(p_ws, x.project_id, x.access) < 1))
-     and not exists (select 1 from public.notion_links l
-                      where l.workspace_id = p_ws and l.notion_page_id = p_page and l.kind = 'synced' and l.sync_id is not null
-                        and public.can_see_task(l.task_id));
+         and not exists (select 1 from public.notion_links l
+                          where l.workspace_id = p_ws and l.notion_page_id = p_page and l.kind = 'synced' and l.sync_id is not null
+                            and public.can_see_task(l.task_id)));
 $$;
 
 -- 2i. the public helpers (can_see_task, can_edit_task, can_see_project, can_edit_project and

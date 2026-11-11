@@ -18,6 +18,7 @@ import { sqlVerifier } from "../../functions/_shared/api/auth.ts";
 import { handleApiRequest } from "../../functions/_shared/api/pipeline.ts";
 import { CREATOR_GONE_ERROR, CREATOR_GONE_REASON, runDispatch } from "../../functions/_shared/api/webhookDispatch.ts";
 import { claimSync, importDatabase, NotionActionError, OUT_OF_SIGHT_TEXT, runSync, syncsOutOfSight } from "../../functions/_shared/notionSync.ts";
+import { handleNotionRequest } from "../../functions/_shared/notionHandler.ts";
 import { accessInstalled, personRankSql, projectAccess } from "../../functions/_shared/projectAccess.ts";
 import { createTask, homeTasks, loadCard, loadProjectCard, projectOptions, workspaceContext, type SlackDb } from "../../functions/_shared/slackAppData.ts";
 import { homeView } from "../../functions/_shared/slackAppBlocks.ts";
@@ -4055,6 +4056,162 @@ async function projectAccessApiSuite(w: World) {
     eq((await asPerson<{ title: string }>(pg, w.bob, `select title from public.tasks where title like 'Exec salaries%'`)).length, 0, "bob reads nothing of the Private task");
     await pg.query(`delete from public.notion_syncs where id = any ($1::uuid[])`, [[rig.sync, priv.sync]]);
   });
+  /** A fake Notion with several databases, whose pages someone with both can drag from one into another (as in
+   *  Notion's own UI); two-way syncs and the notion function run on it, with ids of their own. */
+  let notionWorlds = 0;
+  const notionWorld = () => {
+    const tag = String(++notionWorlds).padStart(2, "0");
+    const DAY = 86_400_000;
+    type FPage = { id: string; db: string; created_time: string; last_edited_time: string; archived?: boolean; properties: Record<string, unknown> };
+    const pages = new Map<string, FPage>();
+    const shown = (p: FPage) => ({ object: "page", ...p, parent: { type: "database_id", database_id: p.db } });
+    const api = {
+      calls: 0,
+      async me() { return { id: "bot", bot: { workspace_name: "N" } }; },
+      async searchDatabases() { return { results: [], next_cursor: null, has_more: false }; },
+      async database(id: string) { return { object: "database", id, title: [{ plain_text: "Two homes" }], properties: { Name: { id: "title", name: "Name", type: "title" } } }; },
+      async query(dbId: string, body: Record<string, unknown>) {
+        this.calls++;
+        const since = (body.filter as { last_edited_time?: { on_or_after?: string } } | undefined)?.last_edited_time?.on_or_after;
+        const list = [...pages.values()].filter((p) => p.db === dbId && !p.archived && (!since || p.last_edited_time >= since))
+          .sort((a, b) => a.last_edited_time.localeCompare(b.last_edited_time));
+        return { results: list.map(shown), next_cursor: null, has_more: false };
+      },
+      async page(id: string) { this.calls++; return shown(pages.get(id)!); },
+      async updatePage(id: string, props: Record<string, Record<string, unknown>>) {
+        this.calls++;
+        const p = pages.get(id)!;
+        for (const [k, v] of Object.entries(props)) p.properties[k] = { type: Object.keys(v)[0], ...v };
+        p.last_edited_time = new Date().toISOString();
+        return shown(p);
+      },
+      async users() { return { results: [], next_cursor: null, has_more: false }; },
+    };
+    let n = 0;
+    const db = (k: number) => `0d0d0d0d-0000-4000-8000-59590000${tag}${String(k).padStart(2, "0")}`;
+    const add = (dbId: string, title: string, createdDaysAgo: number, editedDaysAgo = createdDaysAgo) => {
+      const id = `3d3d3d3d-0000-4000-8000-0000${tag}${String(++n).padStart(6, "0")}`;
+      pages.set(id, { id, db: dbId, created_time: new Date(Date.now() - createdDaysAgo * DAY).toISOString(),
+        last_edited_time: new Date(Date.now() - editedDaysAgo * DAY).toISOString(), properties: { Name: { type: "title", title: [{ plain_text: title }] } } });
+      return id;
+    };
+    const move = (id: string, dbId: string) => { const p = pages.get(id)!; p.db = dbId; p.last_edited_time = new Date().toISOString(); };
+    const text = (id: string) => JSON.stringify(pages.get(id)!.properties);
+    let made = 0;
+    const deps = { db: w.deps.db, notion: () => api, now: () => Date.now(), log: () => undefined,
+      newId: () => `7e7e7e7e-0000-4000-8000-0000${tag}${String(++made).padStart(6, "0")}` };
+    const sync = async (project: string, dbId: string, by: string) => (await one<{ id: string }>(
+      `insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
+       values ($1::uuid, $2::uuid, $3, '{"title": "Name"}'::jsonb, 'two_way', $4::uuid) returning id::text as id`, [w.w1, project, dbId, by])).id;
+    const run = async (syncId: string) => {
+      await pg.query(`update public.notion_syncs set last_run_at = null where id = $1::uuid`, [syncId]);
+      const row = await claimSync(w.deps.db.service, syncId, 60);
+      ok(row, "claimed");
+      return runSync(deps as never, row!, { deadline: Date.now() + 20_000 });
+    };
+    const call = async (who: string, body: Record<string, unknown>) => {
+      const res = await handleNotionRequest(new Request("https://kanbo.test/functions/v1/notion", { method: "POST", headers: { Authorization: `Bearer ${who}` }, body: JSON.stringify(body) }),
+        { ...deps, authUser: async (j: string) => j, cronSecret: "" } as never);
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    };
+    const taskOf = async (page: string, project: string) => (await one<{ id: string; title: string }>(
+      `select t.id::text as id, t.title from public.tasks t join public.notion_links l on l.task_id = t.id where l.notion_page_id = $1 and t.project_id = $2`, [page, project]));
+    return { api, pages, db, add, move, text, deps, sync, run, call, taskOf };
+  };
+  const notionToken = () => pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('n', 40))
+                                      on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.w1]);
+  // (c2 functions: the round-1 guard only caught a moved page older than the open database's cursor; a newer one, a
+  // first run or an import took it in, and both syncs then carried each other's edits across)
+  await test("0058, Notion, switch on: a page dragged in Notion between a Private project's synced database and an open one is never both projects' (newer than the cursor, a first run, an import, either way round); neither sync follows it out; a preview leaves it out", async () => {
+    const ari = await admin("ari-two-homes");
+    const open = await mk("Two homes open", "workspace"), priv = await mk("Two homes private", "private");
+    await notionToken();
+    const N = notionWorld();
+    const D = N.db(1), D2 = N.db(2), D3 = N.db(3);
+    const S = await N.sync(open, D, ari), S2 = await N.sync(priv, D2, w.alice);
+    // the open database is quiet (its cursor: 9 days ago); the Private one's page is 2 days old, renamed in Kanbo and pushed
+    N.add(D, "Open roadmap item", 10, 9);
+    eq((await N.run(S)).stats.created, 1, "the open sync's first page");
+    const p = N.add(D2, "Draft", 2);
+    eq((await N.run(S2)).stats.created, 1, "the Private sync's page");
+    const pt = (await N.taskOf(p, priv)).id;
+    await asPerson(pg, w.alice, `update public.tasks set title = 'Exec salaries: CEO 410k' where id = $1::uuid`, [pt]);
+    eq((await N.run(S2)).stats.pushed, 1, "pushed to its page");
+    // 1. dragged into the open database: newer than its cursor, still not taken in
+    N.move(p, D);
+    const after = await N.run(S);
+    eq([after.fatal, after.stats.created], [false, 0], `nothing made: ${JSON.stringify(after)}`);
+    // and the Private sync doesn't follow it there: its next edit stays in Kanbo
+    await asPerson(pg, w.alice, `update public.tasks set title = 'Exec salaries: CEO 450k, CFO 300k' where id = $1::uuid`, [pt]);
+    const out = await N.run(S2);
+    eq([out.fatal, out.stats.pushed], [false, 0], `nothing pushed to a page that has left its database: ${JSON.stringify(out)}`);
+    ok(String(out.error).includes("was moved to another place in Notion"), `and its sync says why: ${out.error}`);
+    ok(!N.text(p).includes("450k"), "the page keeps what it had");
+    eq((await N.run(S)).stats.created, 0, "still nothing made");
+    // 2. dragged into a database nobody syncs: ari's preview leaves it out, and his import with Keep in sync doesn't take it
+    // (an old page, edited just now in Notion)
+    const q = N.add(D2, "Draft two", 60, 0);
+    await N.run(S2);
+    const qt = (await N.taskOf(q, priv)).id;
+    await asPerson(pg, w.alice, `update public.tasks set title = 'Layoffs: Ops team, 12 roles' where id = $1::uuid`, [qt]);
+    eq((await N.run(S2)).stats.pushed, 1, "pushed");
+    N.add(D3, "Team offsite ideas", 30);
+    N.move(q, D3);
+    const preview = await N.call(ari, { action: "preview", workspaceId: w.w1, databaseId: D3 });
+    eq([preview.status, JSON.stringify(preview.body).includes("Layoffs"), JSON.stringify(preview.body).includes("Team offsite")], [200, false, true], `ari's preview: ${JSON.stringify(preview.body)}`);
+    const alicePreview = await N.call(w.alice, { action: "preview", workspaceId: w.w1, databaseId: D3 });
+    ok(JSON.stringify(alicePreview.body).includes("Layoffs"), "alice (who sees the Private project) still previews it");
+    const imported = await N.call(ari, { action: "import", workspaceId: w.w1, databaseId: D3, projectId: open, mapping: { title: "Name" }, keepInSync: true, direction: "two_way" });
+    eq([imported.status, (imported.body.result as { created: number })?.created], [200, 1], `only the offsite page comes in: ${JSON.stringify(imported.body)}`);
+    const S3 = (await one<{ id: string }>(`select id::text as id from public.notion_syncs where workspace_id = $1::uuid and database_id = $2`, [w.w1, D3])).id;
+    await asPerson(pg, w.alice, `update public.tasks set title = 'Layoffs: Ops team, 12 roles, announce 1 Dec' where id = $1::uuid`, [qt]);
+    eq((await N.run(S2)).stats.pushed, 0, "nor is the Private task's next edit pushed there");
+    eq((await N.run(S3)).stats.created, 0, "the new sync's next run makes nothing either");
+    // 3. the other way round: an open task's page dragged into the Private project's database
+    const r = N.add(D, "Weekly sync notes", 2, 0);
+    eq((await N.run(S)).stats.created, 1, "the open sync's page");
+    const rt = (await N.taskOf(r, open)).id;
+    N.move(r, D2);
+    eq((await N.run(S2)).stats.created, 0, "the Private sync doesn't take it in");
+    await asPerson(pg, w.bob, `update public.tasks set title = 'Cancel the Brightline deal' where id = $1::uuid`, [rt]);
+    eq((await N.run(S)).stats.pushed, 0, "bob's rename isn't pushed into the Private project's database");
+    ok(!N.text(r).includes("Brightline"), "the page keeps what it had");
+    N.pages.get(r)!.archived = true;
+    await N.run(S);
+    eq((await one<{ a: boolean }>(`select archived_at is not null as a from public.tasks where id = $1::uuid`, [rt])).a, false, "nor does archiving it there archive the open task");
+    // what bob (not on the Private project) reads: nothing of it, in the open project's tasks or in the page cache
+    const bobSees = JSON.stringify(await asPerson(pg, w.bob, `select t.title, c.title as cached from public.tasks t left join public.notion_links l on l.task_id = t.id
+      left join public.notion_page_cache c on c.workspace_id = l.workspace_id and c.notion_page_id = l.notion_page_id where t.project_id = any ($1::text[])`, [[open, priv]]));
+    ok(!/Exec salaries|Layoffs/.test(bobSees), `bob reads nothing of the Private tasks: ${bobSees}`);
+    eq(Number((await one<{ n: number }>(`select count(*)::int as n from public.notion_links where notion_page_id = any ($1::text[])`, [[p, q, r]])).n), 3, "each page has one link: its own sync's");
+    await pg.query(`delete from public.notion_syncs where id = any ($1::uuid[])`, [[S, S2, S3]]);
+  });
+  // (a page two live syncs link from before the notion function stopped it: the cache holds whichever title was
+  // written last, so the link is closed to anyone who can't see one of the tasks)
+  await test("0058, Notion, switch on: a page two syncs link (one to a Private task) is closed, link and cached title, to anyone who can't see that task, though they see the other", async () => {
+    const open = await mk("Two links open", "workspace"), priv = await mk("Two links private", "private");
+    await notionToken();
+    const N = notionWorld();
+    const S = await N.sync(open, N.db(1), w.alice), S2 = await N.sync(priv, N.db(2), w.alice);
+    const page = "3d3d3d3d-0000-4000-8000-00000000ffff";
+    const t1 = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id) values ($1::uuid, 'Board pay: CFO exit terms', $2, $3::uuid, '') returning id::text as id`, [w.alice, priv, w.w1])).id;
+    const t2 = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id) values ($1::uuid, 'Planning notes', $2, $3::uuid, '') returning id::text as id`, [w.alice, open, w.w1])).id;
+    await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind, created_by)
+                    values ($1::uuid, $2::uuid, $4, public.notion_norm_id($5), $6::uuid, 'synced', $8::uuid),
+                           ($1::uuid, $3::uuid, $4, public.notion_norm_id($7), $9::uuid, 'synced', $8::uuid)`, [w.w1, t1, t2, page, N.db(2), S2, N.db(1), w.alice, S]);
+    await pg.query(`insert into public.notion_page_cache (workspace_id, notion_page_id, title, fetched_at) values ($1::uuid, $2, 'Board pay: CFO exit terms', now())
+                    on conflict (workspace_id, notion_page_id) do update set title = excluded.title`, [w.w1, page]);
+    const reads = async (u: string) => [
+      Number((await asPerson<{ n: number }>(pg, u, `select count(*)::int as n from public.notion_links where notion_page_id = $1`, [page]))[0].n),
+      Number((await asPerson<{ n: number }>(pg, u, `select count(*)::int as n from public.notion_page_cache where notion_page_id = $1`, [page]))[0].n)];
+    eq(await reads(w.bob), [0, 0], "bob: neither the open task's link nor the cached title");
+    eq(await reads(w.alice), [2, 1], "alice (who sees both): both links and the title");
+    let said = "";
+    try { await asPerson(pg, w.bob, `select public.notion_link_page($1::uuid, $2)`, [t2, page]); } catch (e) { said = (e as Error).message; }
+    eq(said, "invalid page", "nor can bob link it again");
+    await pg.query(`delete from public.tasks where id = any ($1::uuid[])`, [[t1, t2]]);
+    await pg.query(`delete from public.notion_syncs where id = any ($1::uuid[])`, [[S, S2]]);
+  });
   await test("0058, Notion, switch on: an admin who can't see a Private project can't take its sync over, nor preview or import its database (kept in sync or not)", async () => {
     const nia = await admin("nia-notion");
     const dbId = "0d0d0d0d-0000-4000-8000-000000005803";
@@ -4400,6 +4557,27 @@ async function projectAccessApiSuite(w: World) {
   await test("0058, Notion, switch off: a page whose Owner is suspended comes in assigned to them, as before 0058", async () => {
     const got = await suspendedOwnerRun("susp-off", "0d0d0d0d-0000-4000-8000-000000005813");
     eq([got.fatal, got.error, got.assignedToSid], [false, null, true], `as before: ${got.logs}`);
+  });
+  await test("0058, Notion, switch off: a page dragged in Notion from one synced database into another comes in there, and its first sync still follows it, as before 0058", async () => {
+    const ari = await admin("ari-off-two-homes");
+    const open = await mk("Off: two homes open", "workspace"), other = await mk("Off: two homes private", "private");
+    await notionToken();
+    const N = notionWorld();
+    const D = N.db(1), D2 = N.db(2);
+    const S = await N.sync(open, D, ari), S2 = await N.sync(other, D2, w.alice);
+    N.add(D, "Off: open roadmap item", 10, 9);
+    await N.run(S);
+    const p = N.add(D2, "Off: draft", 2);
+    eq((await N.run(S2)).stats.created, 1, "the second sync's page");
+    const pt = (await N.taskOf(p, other)).id;
+    await asPerson(pg, w.alice, `update public.tasks set title = 'Off: renamed' where id = $1::uuid`, [pt]);
+    eq((await N.run(S2)).stats.pushed, 1, "pushed");
+    N.move(p, D);
+    eq((await N.run(S)).stats.created, 1, "dragged into the first database, it comes in there");
+    await asPerson(pg, w.alice, `update public.tasks set title = 'Off: renamed again' where id = $1::uuid`, [pt]);
+    eq((await N.run(S2)).stats.pushed, 1, "and its first sync still writes to it");
+    ok(N.text(p).includes("Off: renamed again"), "the page has the new title");
+    await pg.query(`delete from public.notion_syncs where id = any ($1::uuid[])`, [[S, S2]]);
   });
   await test("0058, Notion, switch off: a database imported once, whose tasks have since gone to someone's Personal list or another workspace (or sit in a Private project), still previews and imports for the workspace's owners and admins, as before 0058", async () => {
     const pia = await admin("pia-notion");

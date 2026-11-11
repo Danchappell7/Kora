@@ -34,7 +34,8 @@ import { parseNotionId, NOTION_TOKEN_RE } from "./notion.ts";
 import { isNotionError, type NotionApiError } from "./notionApi.ts";
 import { oneLine, pageMeta, previewRow, schemaOf, summariseDatabase, type NDatabase, type NPage, type PageMeta } from "./notionMap.ts";
 import {
-  claimSync, dueSyncs, importDatabase, NotionActionError, OUT_OF_SIGHT_TEXT, readToken, runSync, SYNC_TEXT, syncsOutOfSight, type SyncDeps,
+  claimSync, dueSyncs, importDatabase, NotionActionError, OUT_OF_SIGHT_TEXT, pagesOutOfSight, readToken, runSync, SYNC_TEXT, syncsOutOfSight,
+  type SyncDeps,
 } from "./notionSync.ts";
 
 export interface HandlerDeps extends SyncDeps {
@@ -307,7 +308,10 @@ async function manageAction(deps: HandlerDeps, userId: string, action: string, b
   if (action === "preview") {
     try {
       const res = await deps.notion(token, deps.now() + 20_000).query(databaseId, { page_size: 5 });
-      return json({ ok: true, rows: (res.results ?? []).filter((p) => p && typeof p.id === "string").slice(0, 5).map(previewRow) });
+      const rows = (res.results ?? []).filter((p) => p && typeof p.id === "string").slice(0, 5);
+      // (Project access: a page that's a task the caller can't see, dragged into this database in Notion)
+      const closed = await pagesOutOfSight(deps.db, userId, ws, rows.map((p) => p.id));
+      return json({ ok: true, rows: rows.filter((p) => !closed.has(p.id)).map(previewRow) });
     } catch (e) { return isNotionError(e) ? notionFailure(e, "database") : dbFailure(e, deps, "preview"); }
   }
 

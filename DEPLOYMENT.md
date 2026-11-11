@@ -968,8 +968,12 @@ steps; nothing breaks while you wait.
      syncing until it's moved back (also when the sync was set up by an admin
      who isn't on that project: it's never copied back as a new task), and
      whoever set a sync up, it never brings back a task deleted or unlinked
-     in Kanbo, nor takes in a page it has already seen that's moved, in
-     Notion, into its database from another (as with the switch off). A
+     in Kanbo (as with the switch off). Nor is one Notion page ever two
+     projects' tasks: a page that's another database's here, dragged in
+     Notion into a synced or imported database, isn't taken in there (a
+     first run and an import included) and drops out of a preview for anyone
+     who can't see its task, and the sync it left stops writing to it until
+     it's moved back. A
      database that syncs with a project you can't see can't be previewed or
      imported by you, nor its sync taken over (nor once that sync is removed,
      or when it was imported into such a project, nor while that project or
@@ -977,7 +981,8 @@ steps; nothing breaks while you wait.
      good; a task that has left the workspace counts only once none of the
      database's tasks is still here).
      With the switch off, a page's Owner is assigned and every database
-     previews and imports as today.
+     previews and imports as today (a page dragged between two synced
+     databases can come in, and both syncs then write to it, as today).
    - `ics-feed`: a calendar names a project only where the task really is in
      it.
    - `webhook-dispatch`: an endpoint follows whoever last set its address

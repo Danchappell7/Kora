@@ -35,10 +35,14 @@
 // are never taken over. An old page this workspace has seen before that
 // lost its link had its task deleted in Kanbo: it isn't brought back
 // (notion_page_cache remembers it); a page moved into the database from
-// elsewhere was never seen and is imported.
+// elsewhere was never seen and is imported. With Project access on (0058),
+// not one that's ANOTHER database's here (heldElsewhere): one page is never
+// two projects' tasks.
 // KANBO → NOTION (two-way). Linked tasks changed since their last sync are
 // merged with their page the same way, and only the fields Kanbo changed
-// are PATCHed. A page archived or in the trash archives its task.
+// are PATCHed. A page archived or in the trash archives its task. With
+// Project access on, a page moved (in Notion) out of the sync's database is
+// left alone (movedOut).
 //
 // NEVER OVER A PERSON'S EDIT. A field coming in from Notion is planned
 // against the task as it is in that same transaction: a batch locks the
@@ -274,6 +278,62 @@ export async function syncsOutOfSight(service: Tx, userId: string, ws: string, d
 }
 export const OUT_OF_SIGHT_TEXT = "This Notion database's pages are tasks in a project here that you can't see, so it can't be previewed or imported.";
 
+/**
+ * Of these pages (Notion ids, any spelling), the ones closed to this person (0058, Project access on): a
+ * page that a task they can't see is synced with or was imported from, live, in the bin or deleted for
+ * good (pa_notion_page_hidden, the read rule of notion_links and the page cache). A preview of a database
+ * that isn't closed to them leaves those out: a page dragged, in Notion, from a Private project's synced
+ * database into this one still holds what that sync last wrote (heldElsewhere keeps an import or a sync
+ * from taking it in). Asked as the person (the rule reads what they can see). Switched off, or before
+ * 0058, none.
+ */
+export async function pagesOutOfSight(db: NotionDb, userId: string, ws: string, pages: string[]): Promise<Set<string>> {
+  if (!pages.length || !(await accessInstalled(db.service)) || !(await onlyOwnProject(db.service, ws))) return new Set();
+  const r = await db.withUser({ userId, workspaceId: ws, readOnly: true }, (tx) => tx.query<{ p: string }>(
+    `select x.p from jsonb_array_elements_text($2::jsonb) as x(p)
+      where public.pa_notion_page_hidden($1::uuid, coalesce(public.notion_norm_id(x.p), x.p))`, [ws, J(pages)]));
+  return new Set(r.map((x) => x.p));
+}
+
+/**
+ * Of these pages (`pages`: notion_norm_id's form) found in the database `databaseId`, the ones that are
+ * ANOTHER database's in this workspace (0058, Project access on): linked to a task here by another
+ * database's sync or importer (a one-off import, or a sync since removed), or held for one by the bin
+ * (a binned task's or project's links), by a project deleted for good (1g) or by a task deleted for good
+ * or a link removed (1i). Someone with both databases in Notion can drag a page from one into the other.
+ * Taken in as well, the page would be two projects' tasks, and each sync would carry the other's edits
+ * across: a Private task's into a Whole workspace project, and its people's edits back into the Private
+ * task (the page cache would show the Private title on the open task's link too). So it isn't taken in,
+ * created or taken over, whoever the sync runs as, whatever its cursor says (a first run and an import
+ * included); it stays the other database's (movedOut leaves it alone there). Whoever can see that
+ * project, or not: the sync's project is everyone's who can see it, guests included. Links people add by
+ * hand name no database, and never hold a page. On the service connection; only with the switch on (the
+ * tables it reads are 0058's), so with it off, or before 0058, a moved page comes in as it always did.
+ */
+export async function heldElsewhere(service: Tx, ws: string, databaseId: string, pages: string[]): Promise<Set<string>> {
+  if (!pages.length) return new Set();
+  const r = await service.query<{ p: string }>(
+    `with d as (select coalesce(public.notion_norm_id($2), '') as db)
+     select x.p from d, jsonb_array_elements_text($3::jsonb) as x(p)
+      where exists (select 1 from public.notion_links l
+                     where l.workspace_id = $1::uuid and l.notion_page_id = x.p
+                       and (l.kind = 'synced' or l.notion_database_id is not null)
+                       and coalesce(l.notion_database_id, (select s.database_id from public.notion_syncs s where s.id = l.sync_id), '') <> d.db)
+         or exists (select 1 from public.trash r
+                     where r.workspace_id = $1::uuid and r.restored_at is null
+                       and r.snapshot -> 'notion_links' @> jsonb_build_array(jsonb_build_object('notion_page_id', x.p))
+                       and exists (select 1 from jsonb_array_elements(r.snapshot -> 'notion_links') e
+                                    where e ->> 'notion_page_id' = x.p
+                                      and (e ->> 'kind' = 'synced' or e ->> 'notion_database_id' is not null)
+                                      and coalesce(e ->> 'notion_database_id', '') <> d.db))
+         or exists (select 1 from public.project_ids_retired g
+                     where g.workspace_id = $1::uuid and g.notion_pages @> array[x.p] and not coalesce(d.db = any (g.notion_databases), false))
+         or exists (select 1 from public.notion_pages_retired n
+                     where n.workspace_id = $1::uuid and n.page_id = x.p and coalesce(n.database_id, '') <> d.db)`,
+    [ws, databaseId, J(pages)]);
+  return new Set(r.map((x) => x.p));
+}
+
 /** Tag labels → tag ids in the workspace, creating the missing ones (as the person). */
 async function tagIds(tx: Tx, userId: string, ws: string, ctx: Ctx, values: TagValue[]): Promise<string[]> {
   const missing = new Map<string, TagValue>();
@@ -458,6 +518,22 @@ interface Run {
 const note = (run: Run, s: string) => { if (run.notes.length < 20 && !run.notes.includes(s)) run.notes.push(s); };
 const timeLeft = (run: Run) => run.deadline - run.deps.now();
 const canAsk = (run: Run, reserveMs = 3000) => run.api.calls < run.maxRequests && timeLeft(run) > reserveMs;
+/**
+ * With Project access on (0058), a linked page that's been moved, in Notion, out of the sync's database
+ * (into another database, perhaps another project's synced one, or out of any) is left alone: nothing is
+ * pushed to it, pulled from it or cached from it, and its being archived there doesn't archive the task.
+ * Fetched by id, it would otherwise carry this project's edits into the other database's project, and
+ * that one's back (heldElsewhere keeps the other sync from taking it in; this keeps the old one from
+ * following it). Moved back, it syncs again. Judged by the page's parent (Notion-Version 2022-06-28:
+ * { type: "database_id", database_id }); a page with no parent at all isn't judged. Switched off, or
+ * before 0058, it follows its link wherever it goes, as before.
+ */
+const movedOut = (run: Run, page: NPage): boolean => {
+  const parent = page?.parent;
+  if (!run.ownProject || !parent || typeof parent !== "object") return false;
+  const db = typeof parent.database_id === "string" ? parseNotionId(parent.database_id) : null;
+  return db == null || db !== parseNotionId(run.databaseId);
+};
 
 /** Settle a linked task with its page on Kanbo's side, as the person: plan
  *  the merge, apply the fields that come in. Returns the link's bookkeeping
@@ -523,6 +599,9 @@ async function pullBatch(run: Run, pages: NPage[]) {
       `select notion_page_id as p from public.notion_page_cache where workspace_id = $1::uuid and notion_page_id in (select jsonb_array_elements_text($2::jsonb))`,
       [ws, J(unlinked)])).map((r) => r.p))
     : new Set<string>();
+  // (Project access on: pages that are another database's here, moved into this one in Notion, are never
+  // taken in, whatever the cursor says: heldElsewhere. Only the ones this sync doesn't link.)
+  const elsewhere = run.ownProject ? await heldElsewhere(deps.db.service, ws, run.databaseId, ids.filter((id) => !linked.has(id))) : new Set<string>();
 
   const linkTouches: LinkTouch[] = [];
   const adopted: (LinkTouch & { task: string })[] = [];
@@ -580,6 +659,8 @@ async function pullBatch(run: Run, pages: NPage[]) {
         if (existing.has(page.id)) { run.stats.skipped++; continue; }
         // (linked by this sync to a task the run's person can't see: out of the sync's reach, left alone)
         if (linked.has(page.id)) { run.stats.skipped++; continue; }
+        // (another database's page here, moved into this one: neither made nor taken over, heldElsewhere)
+        if (elsewhere.has(page.id)) { run.stats.skipped++; continue; }
         const own = plain.get(page.id);
         if (own?.t_id && own.t_ws === ws) {
           // one task, one synced page: a second page on the same task waits (its plain link stays)
@@ -809,6 +890,13 @@ async function pushChanged(run: Run, limit: number) {
       await touchLinks(deps.db.service, [{ id: row.link_id, s: row.updated_at, e: null }]);
       continue;
     }
+    // (moved, in Notion, out of the sync's database: left alone, and not fetched again until the task changes)
+    if (movedOut(run, page)) {
+      note(run, `“${oneLine(task.title, 60)}” was moved to another place in Notion, so it no longer syncs with this database.`);
+      run.stats.skipped++;
+      await touchLinks(deps.db.service, [{ id: row.link_id, s: row.updated_at, e: null }]);
+      continue;
+    }
     if (page.archived || page.in_trash) {
       await deps.db.withUser(scope, (tx) => archiveTask(tx, task.id, ws, run.ownProject ? run.projectId : null));
       await touchLinks(deps.db.service, [{ id: row.link_id, s: null, e: page.last_edited_time }]);
@@ -924,6 +1012,11 @@ async function sweepArchived(run: Run, limit: number) {
       if (isNotionError(e) && (e.kind === "rate_limited" || e.kind === "invalid_token")) throw e;
       if (isNotionError(e) && e.kind === "timeout") break;
       // gone or unshared: look at it again later, after the others
+      await deps.db.service.query(`update public.notion_page_cache set fetched_at = now() where workspace_id = $1::uuid and notion_page_id = $2`, [ws, r.notion_page_id]);
+      continue;
+    }
+    // (moved, in Notion, out of the sync's database: neither cached nor archived from here; looked at again later)
+    if (movedOut(run, page)) {
       await deps.db.service.query(`update public.notion_page_cache set fetched_at = now() where workspace_id = $1::uuid and notion_page_id = $2`, [ws, r.notion_page_id]);
       continue;
     }

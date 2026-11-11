@@ -253,7 +253,11 @@ their title and icon when they're over an hour old.
   it tries to update).
 - **Deleted tasks**: a task deleted in Kanbo isn't brought back when its page
   changes, and its Notion page is left alone. A page moved into the database
-  from elsewhere is imported like a new one.
+  from elsewhere is imported like a new one. With Project access switched on
+  (database update 0058), not one that's already another database's task
+  here: one Notion page is never two projects' tasks, so it isn't taken in,
+  and the sync it was moved out of leaves it alone until it's moved back (see
+  database-0058.md, Known limits › Notion).
 - **Not synced**: new Kanbo tasks don't create Notion pages, and nothing is
   ever deleted in Notion.
 - **The sync acts as the person who set it up** (shown in Settings). Every
