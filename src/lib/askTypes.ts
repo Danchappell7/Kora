@@ -36,6 +36,13 @@ export interface AskContext {
   projects: { id: string; name: string }[];
   /** 0052: the workspace's goals you can see (lib/goalFlow askGoals), slipping first: "which goals are slipping?" */
   goals?: AskGoal[];
+  /** 0058, where project access is on: the projects here you can see but not change. Ask changes none of
+   *  their tasks (save putting a teammate's on your own Today: that's your plan) and moves or creates
+   *  nothing into them. Checked on this device only (never sent with the question). */
+  viewOnly?: string[];
+  /** 0058, where project access is on: for a project here, the people who can't see it, so can't be
+   *  given its tasks. Checked on this device only. */
+  unseen?: Record<string, string[]>;
 }
 
 /** A task read out of pasted notes, before the person reviews it. */

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Task } from "../data/types";
 import type { AskAction, AskContext } from "./askTypes";
-import { validateActions, diffRows, headsUps, inversePatches, fmtDay, changeCount, MAX_ASK_CHANGES, CAP_REASON, GUEST_REASON } from "./askActions";
+import { validateActions, diffRows, headsUps, inversePatches, fmtDay, changeCount, MAX_ASK_CHANGES, CAP_REASON, GUEST_REASON, viewOnlyReason } from "./askActions";
 
 const task = (id: string, title: string, extra: Partial<Task> = {}): Task => ({
   id, title, description: "", status: "todo", priority: "medium", projectId: "p-launch", assigneeId: "u-me",
@@ -138,6 +138,41 @@ describe("validateActions", () => {
     expect(valid).toEqual([{ op: "open", route: { view: "plan" } }]);
     expect(changeCount(valid)).toBe(0);
     expect(rejected.map((r) => r.reason)).toEqual([GUEST_REASON, GUEST_REASON, GUEST_REASON, "Kanbo can only open the tasks it was asked about"]);
+  });
+
+  it("0058: never proposes a change the app would refuse — work you can only view, or a task for someone who can't see its project", () => {
+    // (project access on: Daniel can only view Brand Refresh; Sana can't see Q3 Product Launch)
+    const gated: AskContext = { ...ctx, viewOnly: ["p-brand"], unseen: { "p-launch": ["u-sana"] } };
+    const theirs = task("t6", "Pick the new type scale", { assigneeId: "u-maya", projectId: "p-brand" });
+    const mineThere = task("t7", "Sign off the logo", { projectId: "p-brand" });
+    const sent = [...tasks, theirs, mineThere];
+    const { valid, rejected } = validateActions([
+      upd("t3", { dueDate: "2026-10-09" }),                 // a view-only task: refused
+      upd("t1", { projectId: "p-brand" }),                  // a move into a view-only project: refused
+      { op: "create", task: { title: "Brief the agency", projectId: "p-brand" } },   // a create there: refused
+      upd("t4", { assigneeId: "u-sana" }),                  // someone who can't see the project: refused
+      { op: "create", task: { title: "Book the venue", assigneeId: "u-sana", projectId: "p-launch" } },
+      upd("t6", { planToday: true }),                       // your own plan on a teammate's task: yours to change
+      upd("t7", { planToday: true }),                       // …but on your own task it's the task's: refused
+      upd("t2", { assigneeId: "u-me", dueDate: "2026-10-03" }),   // a project you can change: fine
+      { op: "create", task: { title: "Order the banners" } },   // a create with no project: one you can change
+    ], sent, gated, true);
+    expect(valid).toEqual([
+      upd("t6", { planToday: true }),
+      upd("t2", { assigneeId: "u-me", dueDate: "2026-10-03" }),
+      { op: "create", task: { title: "Order the banners" } },
+    ]);
+    expect(rejected.map((r) => r.reason)).toEqual([
+      viewOnlyReason("Brand Refresh"), viewOnlyReason("Brand Refresh"), viewOnlyReason("Brand Refresh"),
+      "Sana Rao can't see Q3 Product Launch", "Sana Rao can't see Q3 Product Launch",
+      viewOnlyReason("Brand Refresh"),
+    ]);
+    // every project view only: a create can't land anywhere
+    const none = validateActions([{ op: "create", task: { title: "Order the banners" } }], sent, { ...gated, viewOnly: ["p-launch", "p-brand"] }, true);
+    expect(none.valid).toEqual([]);
+    expect(none.rejected.map((r) => r.reason)).toEqual(["You can only view the projects here"]);
+    // switched off (no lists): as before
+    expect(validateActions([upd("t3", { dueDate: "2026-10-09" })], sent, ctx, true).valid).toHaveLength(1);
   });
 
   it("copes with a non-array", () => {

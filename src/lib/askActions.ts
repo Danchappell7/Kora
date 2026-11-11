@@ -9,7 +9,9 @@
    · people and projects from this workspace;
    · never a delete, never an unknown op;
    · at most 25 changes; a guest (canAct = false) gets none (an
-     `open` only navigates, so it is still checked and kept).
+     `open` only navigates, so it is still checked and kept);
+   · 0058: nothing in a project you can only view (ctx.viewOnly), and
+     nobody given a task in a project they can't see (ctx.unseen).
    ============================================================ */
 import { PRIORITY_META, STATUS_META, getMember } from "../data/data";
 import type { Priority, Status, Task } from "../data/types";
@@ -24,6 +26,8 @@ export const MAX_ASK_CHANGES = 25;
 export const CAP_REASON = `Kanbo can change up to ${MAX_ASK_CHANGES} tasks at once`;
 export const GUEST_REASON = "Guests can ask, not change";
 export const NO_CHANGE_REASON = "Nothing would change";
+/** 0058: a project you can see but not change (the app's own words when it refuses one) */
+export const viewOnlyReason = (project: string) => `You can view ${project}, but not change it`;
 
 const STATUSES = Object.keys(STATUS_META) as Status[];
 const PRIORITIES = Object.keys(PRIORITY_META) as Priority[];
@@ -110,6 +114,30 @@ const current = (task: Task, field: AskField): unknown => {
 
 export interface RejectedAction { action: AskAction; reason: string }
 
+/** 0058: why this change can't be made by you (null: it can), by the app's own rules — patchTask
+ *  refuses an edit to a task you can only view and a move or create into a project you can only view,
+ *  and drops an assignee who can't see the project. Your own plan on a teammate's (or nobody's) task
+ *  is yours even there: putting it on your Today writes your plan, not the task. `task` null: a create. */
+function refusal(task: Task | null, patch: AskPatch, ctx: AskContext): string | null {
+  const viewOnly = ctx.viewOnly ?? [];
+  const unseen = ctx.unseen ?? {};
+  if (!viewOnly.length && !Object.keys(unseen).length) return null;
+  const name = (id: string) => ctx.projects.find((p) => p.id === id)?.name ?? "that project";
+  if (task && viewOnly.includes(task.projectId)) {
+    const yourPlan = Object.keys(patch).every((k) => k === "planToday") && task.assigneeId !== ctx.me;
+    if (!yourPlan) return viewOnlyReason(name(task.projectId));
+  }
+  if (patch.projectId && patch.projectId !== task?.projectId && viewOnly.includes(patch.projectId)) return viewOnlyReason(name(patch.projectId));
+  // (a create with no project goes to one you can change: none here, and it can't be made)
+  if (!task && !patch.projectId && ctx.projects.length && ctx.projects.every((p) => viewOnly.includes(p.id))) return "You can only view the projects here";
+  const to = patch.projectId ?? task?.projectId;
+  const who = patch.assigneeId;
+  if (to && who && who !== ctx.me && who !== task?.assigneeId && unseen[to]?.includes(who)) {
+    return `${ctx.members.find((m) => m.id === who)?.name ?? "They"} can't see ${name(to)}`;
+  }
+  return null;
+}
+
 /** Check every proposed action. Updates to the same task are merged (the
  *  later value wins), fields that wouldn't change anything are dropped, and
  *  anything past the 25th change is turned away. `sentTasks` are the tasks the
@@ -189,10 +217,14 @@ export function validateActions(actions: unknown, sentTasks: Task[], ctx: AskCon
         if (current(task, k) !== v) (patch as Record<string, unknown>)[k] = v;
       }
       if (!Object.keys(patch).length) { reject(action, NO_CHANGE_REASON); continue; }
+      const why = refusal(task, patch, ctx);
+      if (why) { reject(action, why); continue; }
       if (changes >= MAX_ASK_CHANGES) { reject(action, CAP_REASON); continue; }
       changes += 1;
       valid.push({ op: "update", id: action.id, patch });
     } else if (action.op === "create") {
+      const why = refusal(null, action.task, ctx);
+      if (why) { reject(action, why); continue; }
       if (changes >= MAX_ASK_CHANGES) { reject(action, CAP_REASON); continue; }
       changes += 1;
       valid.push(action);

@@ -383,6 +383,25 @@ describe("App · project access on (Foundrise)", () => {
   });
 });
 
+describe("App · Ask Kanbo counts only what it changed", () => {
+  it("a completion you don't confirm (it's blocked) isn't 'Applied', and has no Undo", async () => {
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    const confirm = spy(vi.spyOn(window, "confirm").mockReturnValue(false));
+    inWs("ws-foundrise", "/p/p-launch");
+    await boot();
+    expect(await screen.findByRole("heading", { name: "Q3 Product Launch" }, { timeout: 8000 })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const box = await screen.findByRole("combobox", { name: "Search or ask Kanbo" });
+    fireEvent.change(box, { target: { value: "mark prep launch-day comms plan done" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: /Apply 1 change/ }, { timeout: 8000 }));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.queryByText(/^Applied 1 change/)).toBeNull();
+    expect(upd).not.toHaveBeenCalled();
+  }, 60_000);
+});
+
 describe("App · project access off (Reco HQ)", () => {
   // (first: the next test turns it on, and the demo keeps that)
   it("no locks, and New project doesn't ask", async () => {
@@ -516,6 +535,20 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     await palette("Import tasks");
     const imp = await screen.findByRole("dialog", { name: /Import/ }, { timeout: 8000 });
     expect(/Fee review/.test(imp.textContent ?? "")).toBe(false);
+  }, 60_000);
+  it("0058: Ask Kanbo never offers to change a task you can only view (it says why), so it never claims a refused change", async () => {
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    inWs("ws-harbour", "/p/p-hb-fees");
+    await boot();
+    expect(await screen.findByRole("heading", { name: "Fee review" }, { timeout: 8000 })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const box = await screen.findByRole("combobox", { name: "Search or ask Kanbo" });
+    fireEvent.change(box, { target: { value: "push compare partner fee bands back a week" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(await screen.findByText(/Kanbo left out 1 change: You can view Fee review, but not change it\./, {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
+    expect(screen.queryByText(/^Applied/)).toBeNull();
+    expect(upd.mock.calls.filter(([id]) => id === "t-pa-5")).toEqual([]);
   }, 60_000);
   it("Projects › Requests shows its form, but it can't be filled in, changed or deleted there", async () => {
     inWs("ws-harbour", "/projects/requests");

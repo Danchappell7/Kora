@@ -2085,30 +2085,34 @@ export default function App() {
 
   const patchTaskRef = useRef<(id: string, patch: Partial<Task>) => void>(() => {});
   const bulkPatchRef = useRef<(ids: string[], patch: Partial<Task>, opts?: BulkOpts) => void>(() => {});
-  const patchTask = useCallback((id: string, patchIn: Partial<Task>) => {
+  /** One task's change, through every check. Returns whether anything was written: false when it was
+   *  refused (view only, a blocked completion, a move you can't make) or left nothing to change (an
+   *  assignee who can't see the project, the same status again), so callers never count it as done. */
+  const patchTask = useCallback((id: string, patchIn: Partial<Task>): boolean => {
     const all = tasksRef.current ?? [];
-    const prev = all.find((t) => t.id === id); if (!prev) return;
+    const prev = all.find((t) => t.id === id); if (!prev) return false;
     const patch: Partial<Task> = { ...patchIn };
     // following a task is open to everyone who can see it (guests included)
     const onlyFollow = Object.keys(patch).length > 0 && Object.keys(patch).every((k) => k === "followers");
-    if (!onlyFollow && denyEdit([prev])) return;
+    if (!onlyFollow && denyEdit([prev])) return false;
     // re-picking the same status must never restamp completedAt
     if ("status" in patch && (!patch.status || patch.status === prev.status)) { delete patch.status; delete patch.completedAt; }
-    if (patch.status === "done" && !confirmCompleteBlocked([prev])) return;
+    if (patch.status === "done" && !confirmCompleteBlocked([prev])) return false;
     soloDetach(prev, patch, new Set([id]));
     const note = retarget(prev, patch);
-    if ("workspaceId" in patch && (patch.workspaceId ?? null) !== (prev.workspaceId ?? null) && denyGuest([patch.workspaceId])) return;
-    if ("projectId" in patch && patch.projectId && patch.projectId !== prev.projectId && denyEdit([patch.projectId])) return;
+    if ("workspaceId" in patch && (patch.workspaceId ?? null) !== (prev.workspaceId ?? null) && denyGuest([patch.workspaceId])) return false;
+    if ("projectId" in patch && patch.projectId && patch.projectId !== prev.projectId && denyEdit([patch.projectId])) return false;
     Object.assign(patch, releasedPlan(prev, patch));
     const fx = newStatusFx();
     if (patch.status) Object.assign(patch, onStatusChange(prev, { ...prev, ...patch }, fx));
-    if (!Object.keys(patch).length) { if (note) toastInfo(note); return; }
+    if (!Object.keys(patch).length) { if (note) toastInfo(note); return false; }
     const patches = new Map<string, Partial<Task>>([[id, patch]]);
     cascadeToDescendants(prev, patch, all, patches);
     // a failed status change is retried as a whole, so its side effects run again too
     if (fx.logs.size) updateWithStatus(patches, fx, { retry: () => patchTaskRef.current(id, patchIn) });
     else updateTasks(patches);
     if (note) toastInfo(note);
+    return true;
   }, [denyGuest, denyEdit, confirmCompleteBlocked, soloDetach, retarget, onStatusChange, cascadeToDescendants, updateWithStatus, updateTasks, toastInfo]);
   patchTaskRef.current = patchTask;
 
@@ -2255,8 +2259,9 @@ export default function App() {
     const t = tasksRef.current?.find((x) => x.id === id); if (!t) return null;
     // (the Undo also puts back a plan a change of assignee cleared)
     const rowKeys = (p: Partial<Task>) => [...Object.keys(p), ...Object.keys(releasedPlan(t, p))];
+    // (null when nothing was written — refused, or nothing left to change — so no caller says it was done)
     if (ownerAfter(t, patch) === userIdRef.current) {
-      patchTask(id, patch);
+      if (!patchTask(id, patch)) return null;
       return { id, row: pickFields(t, rowKeys(patch)), plan: null };
     }
     const { personal, shared } = splitPersonal(patch);
@@ -2268,8 +2273,9 @@ export default function App() {
       plan = pickFields(seen, Object.keys(personal)) as GuardedUndo["plan"];
       writeOverlay(t, personal);
     }
-    if (Object.keys(shared).length) patchTask(id, shared);
-    return { id, row: pickFields(t, rowKeys(shared)), plan };
+    const wrote = Object.keys(shared).length > 0 && patchTask(id, shared);
+    if (!wrote && !plan) return null;
+    return { id, row: wrote ? pickFields(t, rowKeys(shared)) : {}, plan };
   }, [patchTask, denyPlan, writeOverlay]);
   const guardedPatch = useCallback((id: string, patch: Partial<Task>) => { guardedWrite(id, patch); }, [guardedWrite]);
   /** Put back what a guarded change replaced: the row's own fields that no longer
@@ -4423,8 +4429,17 @@ export default function App() {
   const importDefault = [rollout.importInto, openProject?.id].find((x): x is string => !!x && wsEditable.some((p) => p.id === x));
   const askProjects = wsProjects.map((p) => ({ id: p.id, name: p.name }));
   const askGoals = goalExtras || goals.length ? goalFlow.ask(workspace) : [];
-  const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects, askGoals]);
-  if (askContextRef.current?.key !== askKey) askContextRef.current = { key: askKey, value: { today: dayKey, me: currentUserId, members: assignees, projects: askProjects, goals: askGoals } };
+  // 0058 (project access on): what Ask may not propose — changes to work you can only view, and a task
+  // for someone who can't see its project (the apply would refuse both, lib/askActions)
+  const askViewOnly = wsGated ? wsProjects.filter((p) => viewOnlyProjects.has(p.id)).map((p) => p.id) : [];
+  const askUnseen: Record<string, string[]> = {};
+  if (wsGated && workspace) for (const p of wsProjects) {
+    const blind = assignees.filter((a) => a.id !== currentUserId && !!accessRoleOf(accessCtx, workspace, a.id) && rankFor(accessCtx, a.id, workspace, p.id) < 1).map((a) => a.id);
+    if (blind.length) askUnseen[p.id] = blind;
+  }
+  const askKey = JSON.stringify([dayKey, currentUserId, assignees, askProjects, askGoals, askViewOnly, askUnseen]);
+  if (askContextRef.current?.key !== askKey) askContextRef.current = { key: askKey, value: { today: dayKey, me: currentUserId, members: assignees, projects: askProjects, goals: askGoals,
+    ...(wsGated ? { viewOnly: askViewOnly, unseen: askUnseen } : {}) } };
   const askContext = askContextRef.current.value;
   const wsRules = automationRules.filter((r) => wsProjects.some((p) => p.id === r.projectId));
   const wsForms = forms.filter((f) => wsProjects.some((p) => p.id === f.projectId));
