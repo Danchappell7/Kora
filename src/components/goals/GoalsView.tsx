@@ -314,7 +314,7 @@ function GoalsReadOnly({ ordered, reads, projects, todayIso, gated = false }: {
         <div className="kpj-narrow">
           {ordered.length === 0 ? (
             <EmptyState art="target" title="Goals are for members"
-              body={`Members of this workspace set its goals and track them here. As a guest you can still open ${gated ? "the projects you're added to and comment on their tasks" : "every project and comment on its tasks"}.`} />
+              body={`Members of this workspace set its goals and track them here. As a guest you can still open ${gated ? "the projects you're added to" : "every project and comment on its tasks"}.`} />
           ) : (
             <>
               <div className="kpj-toolbar">

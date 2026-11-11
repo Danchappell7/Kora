@@ -532,14 +532,15 @@ describe("App · Daniel the guest (Northlight Studio)", () => {
   it("is told they see the projects they're added to", async () => {
     inWs("ws-northlight", "/projects");
     await boot();
-    expect(await screen.findByText(/you see the projects you're added to, and you can comment/)).toBeInTheDocument();
+    expect(await screen.findByText(/you see the projects you're added to, and read or comment on each as it allows/)).toBeInTheDocument();
   });
   it("Goals and Portfolios don't promise a guest every project", async () => {
     inWs("ws-northlight", "/projects/goals");
     await boot();
-    expect(await screen.findByText(/As a guest you can still open the projects you're added to and comment on their tasks\./)).toBeInTheDocument();
+    // (never a promise to comment: a guest may be on a project only to view it)
+    expect(await screen.findByText(/set its goals and track them here\. As a guest you can still open the projects you're added to\./)).toBeInTheDocument();
     window.history.pushState(null, "", "/projects/portfolios");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(await screen.findByText(/As a guest you can still open the projects you're added to\./)).toBeInTheDocument();
+    expect(await screen.findByText(/to see how they're going together\. As a guest you can still open the projects you're added to\./)).toBeInTheDocument();
   });
 });

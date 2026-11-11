@@ -141,12 +141,19 @@ const PASSWORD_SET_FLAG = "kanbo_password_set";
 const EXIT_MS = 160;
 const SAVED_MS = 2400;
 
+/** “Acme” · “Acme” and “Beta” · “Acme”, “Beta” and 2 more */
+const listNames = (names: readonly string[]): string => {
+  const q = names.map((n) => `“${n}”`);
+  if (q.length <= 2) return q.join(" and ");
+  return q.length === 3 ? `${q[0]}, ${q[1]} and ${q[2]}` : `${q[0]}, ${q[1]} and ${q.length - 2} more`;
+};
+
 const reducedMotion = () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
 
 export function SettingsModal({ open, onClose, initial, email, color, onUpload, onSave, onExport, onDeleteAccount, notifyPrefs = {}, onSaveNotifyPrefs, appearance, onChangeAppearance, theme, onChangeTheme,
   section, onSection, renderWorkspace, tagsPanel, calendar, slack, notion, developers, billing, onImport, isAdmin, isGuest, onGoPeople, onSignOut,
-  onNotifyPrefsStored, momentum }: {
+  onNotifyPrefsStored, momentum, ownedWithAccess }: {
   open: boolean;
   onClose: () => void;
   initial: ProfileDraft;
@@ -205,6 +212,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   onGoPeople?: () => void;
   /** Account › Sign out (defaults to the auth provider's own sign-out) */
   onSignOut?: () => void;
+  /** 0058: the team workspaces you own with Project access switched on (Delete account says whoever takes
+   *  one over sees every project there, Private ones included) */
+  ownedWithAccess?: string[];
 }) {
   const auth = useAuth();
   const uid = auth.user?.id ?? null;
@@ -998,6 +1008,10 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
                 <li><strong>Deleted for good:</strong> your profile, your profile photo, and your personal tasks and projects.</li>
                 <li><strong>Kept for your team:</strong> tasks and projects you created in team workspaces stay where they are. Your comments stay too, still showing your name.</li>
                 <li><strong>Workspaces you own</strong> pass to their next admin or, if there isn't one, to the longest-standing person left in the workspace. A workspace with nobody else in it is deleted.</li>
+                {/* (0058: the heir becomes its owner, and an owner sees every project, including the Private ones they were kept off) */}
+                {!!ownedWithAccess?.length && (
+                  <li><strong>Project access is on</strong> in {listNames(ownedWithAccess)}: whoever takes {ownedWithAccess.length === 1 ? "it" : "each one"} over becomes its owner and sees every project there, Members only and Private ones included. To choose who, make them the owner first (Team › People › Make owner).</li>
+                )}
               </ul>
               <p className="kset-panel-text">
                 Want a copy first?{" "}

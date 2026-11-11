@@ -154,6 +154,21 @@ describe("Delete account", () => {
     expect(screen.queryByText(/without your name/i)).not.toBeInTheDocument();
   });
 
+  it("with project access on in a workspace you own, says its next owner sees every project there (0058)", async () => {
+    renderSettings({ ownedWithAccess: ["Acme"] });
+    goTo("Account");
+    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    expect(screen.getByText(/whoever takes it over becomes its owner and sees every project there, Members only and Private ones included/i)).toBeInTheDocument();
+    expect(screen.getByText(/“Acme”/)).toBeInTheDocument();
+    expect(screen.getByText(/make them the owner first/i)).toBeInTheDocument();
+  });
+  it("says nothing of it otherwise (switched off, or no workspace of yours)", () => {
+    renderSettings({ ownedWithAccess: [] });
+    goTo("Account");
+    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    expect(screen.queryByText(/Private ones included/i)).not.toBeInTheDocument();
+  });
+
   it("removes the profile photo from the public bucket before the account goes", async () => {
     const props = renderSettings();
     await uploadGif();

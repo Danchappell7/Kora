@@ -4969,7 +4969,7 @@ export default function App() {
         {activeReadOnly && (
           <Notice tone="neutral" icon="lock" role="note">
             {accessOn(workspaces.find((w) => w.id === workspace))
-              ? <>You're a guest in {activeWsName}: you see the projects you're added to, and you can comment. Ask a workspace admin for member access to edit.</>
+              ? <>You're a guest in {activeWsName}: you see the projects you're added to, and read or comment on each as it allows. Ask a workspace admin for member access to edit.</>
               : <>You're a guest in {activeWsName} — you can view and comment. Ask a workspace admin for member access to edit.</>}
           </Notice>
         )}
@@ -5191,6 +5191,8 @@ export default function App() {
         notion={{ projects: projects.filter((p) => (p.workspaceId ?? null) === workspace), onOpenProject: (pid) => setRoute({ view: "project", projectId: pid }) }}
         // Settings › Developers: every team workspace you're in, with your role (guests too: the panels explain)
         developers={{ workspaces: workspaces.filter((w) => w.id && roleIn(w.id)).map((w) => ({ id: w.id!, name: w.name, role: roleIn(w.id)! })), currentWorkspaceId: workspace }}
+        // Delete account: the team workspaces you own with Project access on (their heir sees every project, 0058)
+        ownedWithAccess={workspaces.filter((w) => w.id && roleIn(w.id) === "owner" && accessOn(w)).map((w) => w.name)}
         billing={{ enabled: BILLING_ENABLED, subscription, onUpgrade: () => setUpgradeOpen(true), onManageBilling: manageBilling }}
         // (Settings closes itself first, so the import dialog isn't underneath)
         onImport={activeReadOnly ? undefined : () => openImport()} /></Deferred>

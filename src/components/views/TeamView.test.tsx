@@ -224,7 +224,7 @@ describe("TeamView", () => {
     team([]);   // (the demo's Foundrise has it on)
     openInvite();
     fireEvent.change(screen.getByLabelText("Invite as role"), { target: { value: "guest" } });
-    expect(screen.getByText("Sees only the projects they're added to and can comment on their tasks, but can't change anything.", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Sees only the projects they're added to, and reads or comments on their tasks as each one allows, but can't change anything.", { exact: false })).toBeInTheDocument();
   });
 
   it("0058: a guest's invite brings the projects they'll see, chosen in the sheet (or arriving from a project)", async () => {

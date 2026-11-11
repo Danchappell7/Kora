@@ -39,10 +39,11 @@ export const ROLE_META: Record<Role, { label: string; blurb: string }> = {
 export const GUEST_LINE = "Can see every project in this workspace and comment on its tasks, but can't change anything. Team reports (Pulse, Workload, Insights) are for members.";
 
 /** A guest's short blurb: with project access on (0058) they see only the projects they're added to. */
-export const guestBlurb = (on: boolean): string => (on ? "Sees only the projects they're added to, and can comment" : ROLE_META.guest.blurb);
+// (added to a project to view it, or to comment too: never promised comments everywhere)
+export const guestBlurb = (on: boolean): string => (on ? "Sees only the projects they're added to, to view or comment" : ROLE_META.guest.blurb);
 /** A guest's fuller line, project access on or off. */
 export const guestLine = (on: boolean): string => (on
-  ? "Sees only the projects they're added to and can comment on their tasks, but can't change anything. Team reports (Pulse, Workload, Insights) are for members."
+  ? "Sees only the projects they're added to, and reads or comments on their tasks as each one allows, but can't change anything. Team reports (Pulse, Workload, Insights) are for members."
   : GUEST_LINE);
 
 /** What to ask before removing someone: what they leave behind, said plainly.
