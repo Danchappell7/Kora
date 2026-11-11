@@ -103,7 +103,7 @@ describe("giving and taking back", () => {
   });
   it("the server's refusals come back as KudosFailure", async () => {
     for (const [msg, reason] of [["task not done", "not_done"], ["kudos need a team task", "team_only"], ["not for yourself", "self"],
-      ["too many kudos", "too_many"], ["invalid recipient", "invalid"], ["not authorized", "not_allowed"], ["task not found", "not_found"]] as const) {
+      ["too many kudos", "too_many"], ["invalid recipient", "recipient"], ["not authorized", "not_allowed"], ["task not found", "not_found"]] as const) {
       rpc.mockResolvedValueOnce(pgErr(msg));
       const e = await giveKudos(TASK).catch((x) => x);
       expect(kudosFailure(e)).toBe(reason);
