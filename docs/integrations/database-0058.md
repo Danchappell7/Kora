@@ -6,7 +6,7 @@ source). It needs 0041, 0042, 0043, 0046 and 0047, works with or without
 puts project access on its own tables), and is safe to run more than once:
 re-running keeps every member, visibility and setting.
 
-**Running it changes nothing anyone can see**, with two exceptions. Every
+**Running it changes nothing anyone can see**, with the exceptions below. Every
 workspace starts with Project access switched off, and while it's off every read
 and write is exactly what it was before: every member and guest of a workspace
 reads every project. The PGlite suite proves this by running the same battery of
@@ -21,6 +21,14 @@ included. Nobody's access changes: the departed person has none, and the
 workspace's owner already sees everything. The VERIFY column `owners_still_in`
 checks it. Second, a webhook endpoint re-pointed after 0058 follows whoever set
 its new address, switch on or off (see "Webhooks while the switch is off" below).
+Third, a bin entry's summary no longer names a project or a parent task that
+isn't in its own workspace (a Personal task's: not its owner's own): 0047 looked
+both up by id alone, so a task of your own naming someone else's project and task
+showed their name and title in your bin. Rows already there lose that line when
+the file runs. Fourth, switch on or off, a task from a Members only or Private
+project that has gone comes back from the bin only with its project, never into
+the workspace's first project, and such a project leaves its workspace (to
+Personal or another one) only once its tasks and updates have gone.
 
 ## What it adds
 
@@ -29,7 +37,7 @@ its new address, switch on or off (see "Webhooks while the switch is off" below)
 | The switch | `workspaces.project_access`, `project_access_default`, `project_access_member_private`, `project_access_changed_at`; `set_project_access(ws, on, default, members_may_make_private)` | The workspace's owner only (Settings › Workspace › Project access). Off by default. "New projects start as" (Whole workspace, Members only or Private) applies to every new project, from the app, the API, MCP, Slack and packs. "Members can make projects private": owners and admins always can. The app can't write these columns any other way. |
 | Who can see a project | `projects.visibility` (`workspace`, `members`, `private`); `set_project_visibility(project, visibility)` | **Whole workspace**: everyone in the workspace (guests only if they're added). **Members only**: the project's people, plus the workspace's owners and admins. **Private**: the project's people, plus the workspace's owner. Changed by the workspace's owner, the project's owner, its editors (not guests), and admins (not on Private projects). Nobody but the owner can change it so that they'd lose access themselves. Every project there today is Whole workspace. |
 | A project's people | `project_members` (editor, commenter, viewer); `set_project_member`, `remove_project_member` | Filled once from each project's contributors (editors; guests are commenters; never the project's owner, who always edits). A guest is never more than a commenter (someone made a guest after making a project still owns it, and comments on it). Read by anyone who can see the project. Written only through the functions; `contributor_ids` is kept in step both ways, so older tabs keep working. |
-| Guests invited onto projects | `project_member_invites`; `set_invite_projects(invite, grants)` | Owners and admins choose the projects a new guest will see; they become that guest's project rows when the invite is accepted. |
+| Guests invited onto projects | `project_member_invites`; `set_invite_projects(invite, grants)`, `remove_invite_project(invite, project)` | Owners and admins choose the projects a new guest will see; they become that guest's project rows when the invite is accepted. A pending grant is read by the project's managers (who see it in People & access and can take it off) and by owners and admins on projects they can see. `set_invite_projects` changes only the grants on projects the caller manages: one on a project they can't see (made Private since by its owner) is kept, so an admin's edit of an invite never drops it. Re-inviting a pending guest adds the new projects to what the invite brings. |
 | What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
 
 What each person can do on a project (one rank, the same table the app uses,
@@ -118,7 +126,10 @@ No new secrets and no new schedule.
   project if that was Members only or Private ("Restore the project first";
   once the project is deleted for good it can't come back). A project in the
   bin is read-only (an old tab or the offline queue can't add work to it;
-  the workspace's owner still can). When a Members only or Private project is
+  the workspace's owner still can), and anything left in it counts as closed
+  on a meeting's agenda and in Slack posts. A bin entry's summary names its
+  parent task only when that's in the same project (switching on drops the
+  line from entries binned while it was off). When a Members only or Private project is
   deleted for good, anything still in it (written while the switch was off,
   say) goes to the bin as items of its own, with the project's access, rather
   than becoming work everyone reads. Its id is never used for a new project.
@@ -135,7 +146,12 @@ No new secrets and no new schedule.
   nobody can add themselves or take one over while it's off and keep that
   when it's turned back on. Moving a project out of its workspace (to
   Personal, or another workspace) follows the same rule, switch on or off: a
-  move there and back can't hand anyone a project or drop its people.
+  move there and back can't hand anyone a project or drop its people. Nor does
+  a project leave a workspace whose switch is on (or leave at all, if it's
+  Members only or Private) with its tasks or updates still in it: nothing moves
+  them with it, and what it left would be loose work everyone there reads.
+  Restoring a task whose Members only or Private project has gone works the
+  same with the switch off as on (only with its project).
 - **The history** of something deleted for good (by hand or by the bin's
   30-day clear-out) keeps the project and access it had, so a Private task's
   or project's name never reaches admins who couldn't see it.
@@ -148,7 +164,9 @@ No new secrets and no new schedule.
   guest turns their editor roles into commenter. Either way, held notices and
   queued webhooks they can't see any more are dropped, and a webhook whose
   address they set is switched off ("the person who set its address no longer
-  has access").
+  has access"). The same goes for any other role change: an admin made a
+  member, or an owner who hands the business over and becomes an admin, no
+  longer gets queued deliveries of work they can't see any more.
 - **Webhooks while the switch is off.** The dispatcher judges an endpoint by
   whoever last set its address (else whoever added it), switch on or off: an
   endpoint an admin re-pointed to their own address stops when that admin
@@ -176,10 +194,22 @@ templates; exports; and a device's offline copy until its next load.
   shared more widely than the project. Coming the other way, a page whose
   Owner can't see the project comes in unassigned (the database would refuse
   them as its assignee).
-- **Task history names.** A task's history row keeps the name its author had
+- **Names a guest can read.** A task's history row keeps the name its author had
   when it was written (0038 falls back to their email when they had no name),
   so a guest reading a task in their project can see the name of a teammate
-  who isn't one of their project's people.
+  who isn't one of their project's people. The same holds for an update
+  reply's author (`status_update_comments.author_name`), approvals' reviewer
+  and requester names, live presence, and the name of whoever connected Notion
+  (`notion_status`). Names only: never their work.
+- **Asking for an update.** `ask_for_update` (0053) answers "archived" or
+  "already asked recently" before 0058's check refuses it, so an admin who has
+  a Private project's id (from a goal or a portfolio) can tell whether it's
+  archived or was asked about lately. Nothing of its content.
+- **The full undo.** While the undo file has the rules out, the Owner picker
+  is open to any writer again. A Members only or Private project taken over
+  then (or kept by someone removed and invited back meanwhile) stays theirs
+  when 0058 is run again: check the owners of closed projects afterwards, and
+  hand them back in About.
 
 ## Rollback
 
@@ -187,7 +217,7 @@ templates; exports; and a device's offline copy until its next load.
 |---|---|---|
 | One workspace (normal) | Its owner switches Project access off in Settings › Workspace. In an emergency, in the SQL editor: `update public.workspaces set project_access = false where id = '<workspace id>';` | Instant: the next query uses today's rule, and open apps reload. People, visibility and settings are kept for next time. |
 | Every workspace | `update public.workspaces set project_access = false where project_access;` | The same, everywhere. |
-| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). While it's out, the app keeps a project's people in its contributors list again (as before 0058). Running 0058 again afterwards puts every rule back and brings project people back to that list: anyone taken off meanwhile, or who left the workspace, loses their place, and anyone added to a Whole workspace project gets one, so nobody who was taken off comes back. Anyone added to a Members only or Private project meanwhile is added again in People & access (with the rules out, anyone could have listed themselves). A commented-out last block drops the data too: only if you're sure. |
+| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). While it's out, the app keeps a project's people in its contributors list again (as before 0058). Running 0058 again afterwards puts every rule back and brings project people back to that list: anyone taken off meanwhile, or who left the workspace, loses their place, and anyone added to a Whole workspace project gets one, so nobody who was taken off comes back. Anyone added to a Members only or Private project meanwhile is added again in People & access (with the rules out, anyone could have listed themselves). Owners changed meanwhile aren't put back: check the owners of Members only and Private projects. A commented-out last block drops the data too: only if you're sure. |
 
 ## Tests
 

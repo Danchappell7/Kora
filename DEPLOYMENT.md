@@ -950,11 +950,15 @@ steps; nothing breaks while you wait.
    `sed -n '/^-- select$/,/;$/p' ~/Downloads/kora-app/supabase/migrations/0058_project_access.sql | sed 's/^-- \{0,1\}//' | pbcopy`.
    If it stops with "0058 needs …", run the file it names first, then 0058
    again. It's safe to run again: it keeps everyone's projects and settings,
-   and adds nobody back. The one thing it changes that you may notice: a
-   project still owned by someone who has left that business becomes the
-   business owner's (so inviting that person back, even as a guest, doesn't
-   hand them their old projects). From then on that happens whenever someone
-   is removed or leaves; the Remove step on Team › People says so.
+   and adds nobody back. What it changes that you may notice: a project still
+   owned by someone who has left that business becomes the business owner's
+   (so inviting that person back, even as a guest, doesn't hand them their old
+   projects; from then on that happens whenever someone is removed or leaves,
+   and the Remove step on Team › People says so); a bin entry's "Sub-task of"
+   or project line goes where it named another business's (or another
+   person's) work; and a task from a Members only or Private project that's
+   been deleted comes back from the bin only with its project, even with the
+   switch off.
 3. **Reload the app** and check: Settings › Workspace (as the business's owner)
    shows **Project access** with the switch **off** and "When you turn it on:"
    saying what would change for each guest. Admins and members don't see it.
@@ -980,7 +984,10 @@ steps; nothing breaks while you wait.
    project you make private syncs to Notion, its tasks keep going to that Notion
    database: stop its sync first if that database is shared more widely. From now on,
    inviting a guest (Team › People › Invite people, role Guest) asks "Projects
-   they can see". Do the other businesses on later days, one at a time.
+   they can see" (inviting the same person again adds to their projects), and
+   a project's People & access lists the pending invites that bring it, for
+   anyone who manages that project to take off. Do the other businesses on
+   later days, one at a time.
 5. **Rollback, if you need it.** Switch Project access off in Settings ›
    Workspace: instant, and the people, visibility and settings are kept for next
    time. If the app can't be reached, in the SQL editor:
@@ -994,7 +1001,9 @@ steps; nothing breaks while you wait.
    `sed -n '/^-- select$/,/;$/p' ~/Downloads/kora-app/supabase/rollback/0058_project_access_undo.sql | sed 's/^-- \{0,1\}//' | pbcopy`.
    It keeps the data. Running 0058 again after it puts
    everything back; anyone added to a Members only or Private project while it
-   was out is added again in About › People & access.
+   was out is added again in About › People & access, and an owner changed
+   while it was out isn't put back (check the Owner in About of each Members
+   only and Private project).
 
 If 0025, 0041, 0042, 0043, 0046, 0047 or 0048 is ever run again, nothing more
 is needed: each puts project access back itself (0052 to 0056 too).

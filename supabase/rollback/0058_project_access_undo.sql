@@ -19,7 +19,10 @@
 -- access on a Members only or Private one), so nobody who was taken off a project comes back, and
 -- nobody gets into a closed one by listing themselves while the rules were out. Anyone who left a
 -- workspace meanwhile is forgotten as 0058 forgets them (pa_forget_departed: the projects they own
--- there go to its owner). Then switch each workspace on again.
+-- there go to its owner), unless they're back in it by then. Owners aren't put back: while this is
+-- out, any writer may set a project's owner (and someone removed and invited back keeps what they
+-- owned), so check the owner of each Members only and Private project after 0058 runs again (About).
+-- Then switch each workspace on again.
 --
 -- Safe to run more than once. Nothing here needs 0058's own functions to be working.
 -- ============================================================
