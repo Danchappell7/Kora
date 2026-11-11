@@ -1023,6 +1023,17 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq([got.movedC, got.movedF], [["ME", "S"], ["ME", "S"]], "moved into PP: Moe (not on it) goes; Sid (on it) stays");
   });
 
+  await test("0058, switch on: a task's dependency on a task you can't see isn't read with it (no hidden id); switched off, as before", async () => {
+    const dep: [string, unknown[]] = [`insert into public.task_dependencies (task_id, depends_on) values ($1::uuid, $2::uuid)`, [w.task.PW, w.task.PP]];
+    const read = async (who: Who, off = false) => {
+      const r = await attempt(w.id[who], `select depends_on::text as d from public.task_dependencies where task_id = $1::uuid`, [w.task.PW],
+        off ? [dep, [`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]]] : [dep]);
+      return "rows" in r ? r.rows.map((x) => (x.d === w.task.PP ? "PP" : x.d)) : errOf(r);
+    };
+    eq([await read("O"), await read("ME"), await read("A"), await read("M2"), await read("GC"), await read("M2", true)],
+       [["PP"], ["PP"], [], [], [], ["PP"]], "who reads that PW's task waits on PP's: Oona and Meg (who see PP); not Ari, Moe or Gail; switched off, Moe as before");
+  });
+
   await test("0058, switch on: a sub-task has its parent's project, on insert, on a parent change and when the parent moves", async () => {
     const r = await attempt(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, 'child', $2, 'nobody', $3::uuid, $4::uuid) returning project_id`,
       [w.id.ME, w.proj.PW, w.ws, w.task.PP]);

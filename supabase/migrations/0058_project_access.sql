@@ -2358,6 +2358,10 @@ language sql immutable set search_path = pg_catalog as $$
                    'not public.pa_task_gated(task_id) or public.can_comment_task(task_id)'
   union all select 'comments', 'project access: delete own', 'delete', false,
                    'not public.pa_task_gated(task_id) or public.can_see_task(task_id)', null
+  -- (a dependency's other end: its read rule (0042) asks only for the dependent task, so a member reading a
+  -- Whole workspace task would learn the id of a Private task it waits on)
+  union all select 'task_dependencies', 'project access: read', 'select', false,
+                   'not public.pa_task_gated(depends_on) or public.can_see_task(depends_on)', null
   union all select 'attachments', 'project access: attach', 'insert', false, null, 'public.can_comment_task(task_id)'
   union all select 'attachments', 'project access: remove files', 'delete', false,
                    'not public.pa_task_gated(task_id) or public.can_see_task(task_id)', null

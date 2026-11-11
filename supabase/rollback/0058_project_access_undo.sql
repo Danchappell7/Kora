@@ -78,6 +78,7 @@ begin
     ('audit_events', 'project access: read'),
     ('goal_links', 'project access: read'),
     ('saved_views', 'project access: read'),
+    ('task_dependencies', 'project access: read'),
     ('notion_syncs', 'project access: read'),
     ('notion_links', 'project access: read'),
     ('notion_page_cache', 'project access: read'),
