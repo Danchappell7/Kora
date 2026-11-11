@@ -11,8 +11,9 @@
 -- visibility (which nobody can change from the app or the API while this is out: section 3),
 -- the workspaces' settings (every switch is turned off: with no rules behind
 -- it, a switch that says "on" would only mislead the app), trash.access,
--- audit_events.project_id / access, webhooks.url_set_by and the ids of projects deleted for
--- good (project_ids_retired: nothing reads it while 0058 is out). While it's out, the app keeps a
+-- audit_events.project_id / access, webhooks.url_set_by, the ids of projects deleted for
+-- good (project_ids_retired) and where Members only and Private projects left a workspace from
+-- (project_departures): nothing reads those two while 0058 is out. While it's out, the app keeps a
 -- project's people in contributor_ids again (as before 0058) and nothing keeps project_members
 -- in step. Running 0058 again afterwards puts every rule back and brings project_members back
 -- to contributor_ids (people taken off meanwhile, or who left the workspace, lose their rows;
@@ -477,6 +478,136 @@ end; $$;
   grant execute on function public.ask_for_update(uuid) to authenticated;
 end $ask$;
 
+-- (0046_api_webhooks_notion.sql)
+create or replace function public.notion_status(p_ws uuid)
+returns jsonb language sql security definer stable set search_path = public as $$
+  select case when p_ws is null or not public.is_member(p_ws) then null else jsonb_build_object(
+    'connected',         i.notion_token is not null,
+    'workspace_name',    i.notion_workspace_name,
+    'bot_id',            i.notion_bot_id,
+    'token_hint',        case when i.notion_token is not null and public.ws_role(p_ws) in ('owner', 'admin')
+                              then '…' || right(i.notion_token, 4) end,
+    'connected_at',      i.notion_connected_at,
+    'connected_by_name', case when i.notion_connected_by is not null then public.kanbo_person_name(i.notion_connected_by) end,
+    'can_manage',        public.ws_role(p_ws) in ('owner', 'admin'),
+    'can_link',          public.can_write(p_ws),
+    'sync_count',        (select count(*) from public.notion_syncs s where s.workspace_id = p_ws)) end
+  from (select 1) as one
+  left join public.workspace_integrations i on i.workspace_id = p_ws;
+$$;
+revoke execute on function public.notion_status(uuid) from public, anon;
+grant execute on function public.notion_status(uuid) to authenticated;
+
+-- (0055_shared_availability.sql, only where 0055 is in)
+do $rate$
+begin
+  if to_regclass('public.bill_rates') is null then return; end if;
+  execute $fn$
+create or replace function public.set_bill_rate(p_ws uuid, p_project uuid, p_rate numeric)
+returns public.bill_rates language plpgsql security definer set search_path = public as $$
+declare r public.bill_rates;
+begin
+  if public.ws_role(p_ws) not in ('owner', 'admin') then raise exception 'not authorized'; end if;
+  if p_project is not null and not exists (select 1 from public.projects p where p.id = p_project and p.workspace_id = p_ws) then
+    raise exception 'not authorized';
+  end if;
+  if p_rate is not null and (p_rate < 0 or p_rate > 100000) then raise exception 'invalid rate'; end if;
+  perform pg_advisory_xact_lock(hashtext('kanbo.bill_rate:' || p_ws::text));
+  if p_rate is null then
+    delete from public.bill_rates where workspace_id = p_ws and project_id is not distinct from p_project;
+    return null;
+  end if;
+  update public.bill_rates set hourly_rate = round(p_rate, 2), updated_by = auth.uid(), updated_at = now()
+    where workspace_id = p_ws and project_id is not distinct from p_project returning * into r;
+  if not found then
+    insert into public.bill_rates (workspace_id, project_id, hourly_rate, updated_by)
+      values (p_ws, p_project, round(p_rate, 2), auth.uid()) returning * into r;
+  end if;
+  return r;
+end; $$;
+  $fn$;
+  revoke execute on function public.set_bill_rate(uuid, uuid, numeric) from public, anon;
+  grant execute on function public.set_bill_rate(uuid, uuid, numeric) to authenticated;
+end $rate$;
+
+-- (0056_meetings.sql, only where 0056 is in)
+do $meet$
+begin
+  if to_regclass('public.meetings') is null then return; end if;
+  execute $fn$
+create or replace function public.start_meeting(p_ws uuid, p_preset text, p_title text, p_workspace_ids uuid[],
+  p_agenda jsonb, p_attendees uuid[], p_doc_project uuid, p_previous uuid)
+returns public.meetings language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := auth.uid();
+  wss uuid[];
+  t text := btrim(coalesce(p_title, ''));
+  prev uuid;
+  who uuid;
+  r public.meetings;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  if p_ws is null or p_preset is null or p_preset not in ('team', 'leadership') then raise exception 'invalid meeting'; end if;
+  wss := array(select distinct x from unnest(array[p_ws] || coalesce(p_workspace_ids, '{}'::uuid[])) x where x is not null order by 1);
+  if cardinality(wss) > 12 or (p_preset = 'team' and cardinality(wss) <> 1) then raise exception 'invalid meeting'; end if;
+  if not public.meeting_can_read(p_preset, p_ws, wss) then raise exception 'not authorized'; end if;
+  if char_length(t) < 1 or char_length(t) > 120 then raise exception 'invalid meeting'; end if;
+  if p_agenda is null or jsonb_typeof(p_agenda) <> 'array' or jsonb_array_length(p_agenda) > 200
+     or octet_length(p_agenda::text) > 262144 then
+    raise exception 'invalid agenda';
+  end if;
+  if p_doc_project is not null and not public.meeting_doc_ok(p_ws, null, p_doc_project) then raise exception 'not authorized'; end if;
+  if (select count(*) from public.meetings m where m.started_by = me and m.started_at > now() - interval '1 day') >= 40 then
+    raise exception 'too many meetings';
+  end if;
+  -- one live meeting of a kind over the same businesses at a time, whichever of them hosts it (a Group
+  -- meeting's host can differ week to week); one left running for 12 hours is closed, without a recap
+  perform pg_advisory_xact_lock(hashtext('kanbo.meeting:' || array_to_string(wss, ',') || ':' || p_preset));
+  update public.meetings set status = 'ended', ended_at = now(), updated_at = now()
+   where workspace_id = any (wss) and workspace_ids = wss and preset = p_preset and status = 'live' and started_at < now() - interval '12 hours';
+  if exists (select 1 from public.meetings m
+              where m.workspace_id = any (wss) and m.workspace_ids = wss and m.preset = p_preset and m.status = 'live') then
+    raise exception 'already running';
+  end if;
+  -- the meeting before: the last of this kind over the same businesses (its actions open this one)
+  select m.id into prev from public.meetings m
+   where m.id = p_previous and m.workspace_id = any (wss) and m.workspace_ids = wss and m.preset = p_preset and m.status = 'ended';
+  insert into public.meetings (workspace_id, workspace_ids, preset, title, agenda, presenter_id, started_by, previous_id, doc_project_id)
+    values (p_ws, wss, p_preset, t, p_agenda, me, me, prev, p_doc_project)
+    returning * into r;
+  insert into public.meeting_attendees (meeting_id, user_id, invited, joined_at) values (r.id, me, true, now());
+  for who in select distinct x from unnest(coalesce(p_attendees, '{}'::uuid[])) x where x is not null and x <> me limit 100 loop
+    if public.meeting_user_ok(who, p_preset, p_ws, wss) then
+      insert into public.meeting_attendees (meeting_id, user_id, invited) values (r.id, who, true) on conflict do nothing;
+    end if;
+  end loop;
+  return r;
+end; $$;
+  $fn$;
+  revoke execute on function public.start_meeting(uuid, text, text, uuid[], jsonb, uuid[], uuid, uuid) from public, anon;
+  grant execute on function public.start_meeting(uuid, text, text, uuid[], jsonb, uuid[], uuid, uuid) to authenticated;
+  execute $fn$
+create or replace function public.add_meeting_item(p_meeting uuid, p_kind text, p_body text, p_agenda_key text,
+  p_owner uuid, p_due date, p_task uuid)
+returns public.meeting_items language plpgsql security definer set search_path = public as $$
+declare
+  m public.meetings;
+  r public.meeting_items;
+begin
+  m := public.meeting_for_caller(p_meeting);
+  if not public.meeting_open_for_items(m) then raise exception 'meeting closed'; end if;
+  perform public.meeting_item_ok(m, p_kind, p_body, p_agenda_key, p_owner, p_due, p_task);
+  if (select count(*) from public.meeting_items i where i.meeting_id = p_meeting) >= 300 then raise exception 'too many items'; end if;
+  insert into public.meeting_items (meeting_id, workspace_id, kind, body, agenda_key, owner_id, due_on, task_id, created_by)
+    values (p_meeting, m.workspace_id, p_kind, btrim(p_body), p_agenda_key, p_owner, p_due, p_task, auth.uid())
+    returning * into r;
+  return r;
+end; $$;
+  $fn$;
+  revoke execute on function public.add_meeting_item(uuid, text, text, text, uuid, date, uuid) from public, anon;
+  grant execute on function public.add_meeting_item(uuid, text, text, text, uuid, date, uuid) to authenticated;
+end $meet$;
+
 -- ---------- 7. it's no longer recorded ----------
 delete from public.schema_migrations where version = '0058';
 
@@ -486,6 +617,7 @@ delete from public.schema_migrations where version = '0058';
 -- drop table if exists public.project_member_invites;
 -- drop table if exists public.project_members;
 -- drop table if exists public.project_ids_retired;
+-- drop table if exists public.project_departures;
 -- alter table public.projects drop column if exists visibility;
 -- alter table public.workspaces drop column if exists project_access, drop column if exists project_access_default,
 --   drop column if exists project_access_member_private, drop column if exists project_access_changed_at;

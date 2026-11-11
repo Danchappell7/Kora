@@ -188,6 +188,25 @@ revoke all on public.project_ids_retired from public, anon, authenticated;
 do $svc$ begin
   grant select, insert, update, delete on public.project_ids_retired to service_role;
 exception when undefined_object then null; end $svc$;
+-- 1h. a Members only or Private project that left a workspace (moved to Personal, or to another
+-- workspace), with the access it had there. Nothing moves its bin entries with it, nor what an old tab,
+-- the offline queue or the off window writes under its id afterwards, nor the webhook events waiting
+-- for it: all of that still names it in the workspace it left, and mustn't fall to the loose rule there
+-- (every member reads and edits it). It keeps that access, read-only, as 1g's work does (pa_rank_for).
+-- Moved back, its row goes (the live project's access applies again). Service only.
+create table if not exists public.project_departures (
+  id           uuid not null,
+  workspace_id uuid not null references public.workspaces (id) on delete cascade,
+  access       jsonb,
+  left_at      timestamptz not null default now(),
+  constraint project_departures_pkey primary key (id, workspace_id)
+);
+create index if not exists project_departures_ws_idx on public.project_departures (workspace_id);
+alter table public.project_departures enable row level security;
+revoke all on public.project_departures from public, anon, authenticated;
+do $svc$ begin
+  grant select, insert, update, delete on public.project_departures to service_role;
+exception when undefined_object then null; end $svc$;
 
 -- ---------- 2. the access functions ----------
 -- 2a. THE RANK (the single table: SQL, the edge functions and the app mirror it)
@@ -251,7 +270,8 @@ revoke execute on function public.pa_is_client() from public, anon, authenticate
 -- purged (0047), and mustn't fall to the loose rule meanwhile. Nor does one deleted for good (1g):
 -- work an old tab, the offline queue or the off window wrote into it after the delete stays its
 -- people's. Either way it's read-only (view at most) but for the workspace's owners: nothing new is
--- written into a project that's gone, to outlive it.
+-- written into a project that's gone, to outlive it. Nor does a Members only or Private one that has
+-- left the workspace (1h): what still names it here keeps the access it had here.
 create or replace function public.pa_rank_for(p_user uuid, p_ws uuid, p_project text)
 returns integer language sql security definer stable set search_path = public as $$
   select coalesce((
@@ -276,7 +296,9 @@ returns integer language sql security definer stable set search_path = public as
                    where x.item_id = public.kanbo_uuid(p_project) and x.kind = 'project' and x.workspace_id = w.id and x.restored_at is null
                    order by x.deleted_at desc limit 1),
                  (select g.access from public.project_ids_retired g
-                   where g.id = public.kanbo_uuid(p_project) and g.workspace_id = w.id)) as access
+                   where g.id = public.kanbo_uuid(p_project) and g.workspace_id = w.id),
+                 (select d.access from public.project_departures d
+                   where d.id = public.kanbo_uuid(p_project) and d.workspace_id = w.id)) as access
          where p.id is null and public.kanbo_uuid(p_project) is not null) b on true
      where w.id = p_ws and p_user is not null), 0);
 $$;
@@ -334,14 +356,15 @@ returns integer language sql security definer stable set search_path = public as
 $$;
 
 -- 2d. the bin's and the history's captured access: {"v":1,"visibility":…,"owner":"<uuid>","members":[["<uuid>","editor"],…]}
--- (the live project's; for one deleted for good, what it had then: 1g)
+-- (the live project's; for one deleted for good, what it had then: 1g; for one that left, what it had here: 1h)
 create or replace function public.pa_access_snapshot(p_ws uuid, p_project text)
 returns jsonb language sql security definer stable set search_path = public as $$
   select case when p.id is not null then jsonb_build_object(
     'v', 1, 'visibility', p.visibility, 'owner', p.owner_id,
     'members', coalesce((select jsonb_agg(jsonb_build_array(m.user_id, m.role) order by m.created_at, m.id)
                            from public.project_members m where m.project_id = p.id), '[]'::jsonb))
-    else (select g.access from public.project_ids_retired g where g.id = public.kanbo_uuid(p_project) and g.workspace_id = p_ws) end
+    else coalesce((select g.access from public.project_ids_retired g where g.id = public.kanbo_uuid(p_project) and g.workspace_id = p_ws),
+                  (select d.access from public.project_departures d where d.id = public.kanbo_uuid(p_project) and d.workspace_id = p_ws)) end
     from (select 1) one
     left join public.projects p on p.id = public.kanbo_uuid(p_project) and p.workspace_id = p_ws;
 $$;
@@ -357,8 +380,9 @@ returns integer language sql security definer stable set search_path = public as
              where e ->> 0 = p_user::text limit 1));
 $$;
 -- what's known of a project that's gone: its newest bin row's access while it's in the bin, else
--- what it had when it was deleted for good (1g), else its newest history row's (the purge row keeps
--- what its delete captured). Null: nothing known (a loose id, or a project deleted before this file)
+-- what it had when it was deleted for good (1g), else what it had here when it left the workspace (1h),
+-- else its newest history row's (the purge row keeps what its delete captured). Null: nothing known (a
+-- loose id, or a project deleted before this file)
 create or replace function public.pa_gone_access(p_ws uuid, p_project text)
 returns jsonb language sql security definer stable set search_path = public as $$
   select coalesce(
@@ -366,6 +390,7 @@ returns jsonb language sql security definer stable set search_path = public as $
       where x.item_id = public.kanbo_uuid(p_project) and x.workspace_id = p_ws and x.kind = 'project' and x.restored_at is null
       order by x.deleted_at desc limit 1),
     (select g.access from public.project_ids_retired g where g.id = public.kanbo_uuid(p_project) and g.workspace_id = p_ws),
+    (select d.access from public.project_departures d where d.id = public.kanbo_uuid(p_project) and d.workspace_id = p_ws),
     (select e.access from public.audit_events e
       where e.workspace_id = p_ws and e.target_kind = 'project' and e.target_id = p_project
         and e.project_id is not null and e.access is not null
@@ -633,8 +658,8 @@ returns uuid[] language sql security definer stable set search_path = public as 
    where t.id = any (coalesce(p_ids, '{}')) and public.user_can_see_task(p_user, t.id);
 $$;
 -- the projects in a workspace that aren't open to everyone there (the switch is on and they're
--- Members only or Private; or such a project is in the bin, or was deleted for good, and work an
--- old tab wrote into it since still names it): '{}' while it's off
+-- Members only or Private; or such a project is in the bin, or was deleted for good, or has left the
+-- workspace (1h), and work an old tab wrote into it since still names it): '{}' while it's off
 create or replace function public.closed_project_ids(p_ws uuid)
 returns text[] language sql security definer stable set search_path = public as $$
   select case when public.pa_on(p_ws)
@@ -648,7 +673,11 @@ returns text[] language sql security definer stable set search_path = public as 
                         and not exists (select 1 from public.projects p where p.id = x.item_id and p.workspace_id = p_ws)
                      union
                      select g.id::text from public.project_ids_retired g
-                      where g.workspace_id = p_ws and coalesce(g.access ->> 'visibility', 'workspace') <> 'workspace') c), '{}')
+                      where g.workspace_id = p_ws and coalesce(g.access ->> 'visibility', 'workspace') <> 'workspace'
+                     union
+                     select d.id::text from public.project_departures d
+                      where d.workspace_id = p_ws and coalesce(d.access ->> 'visibility', 'workspace') <> 'workspace'
+                        and not exists (select 1 from public.projects p where p.id = d.id and p.workspace_id = p_ws)) c), '{}')
               else '{}'::text[] end;
 $$;
 create or replace function public.project_is_open(p_ws uuid, p_project text)
@@ -803,8 +832,10 @@ end; $$;
 -- project (switched off, 0047's own way). From a Members only or Private one, whatever the switch
 -- says: nowhere but that project ('restore its project first', or, deleted for good, 'its project
 -- was deleted for good'; otherwise, restored in the off window, it would be open to everyone once the
--- switch is back on). Someone on the task who can't
--- see where it lands drops off it (an assignee: its owner takes it, as D10's server writes).
+-- switch is back on). A project that has moved out of the workspace (1h) has gone from it too ('its
+-- project left this workspace'). Someone on the task who can't see where it lands drops off it (an
+-- assignee: its owner takes it, as D10's server writes; someone suspended keeps their place, judged by
+-- the projects they'll see again, as trg_tasks_pa judges them).
 -- Answers {snapshot, note} with the snapshot's tasks moved, or null (nothing moves: 0047's own way).
 create or replace function public.pa_restore_landing(p_ws uuid, p_snap jsonb, p_project text, p_access jsonb)
 returns jsonb language plpgsql security definer stable set search_path = public as $$
@@ -819,12 +850,17 @@ declare
   who uuid;
   k text;
   on_ boolean := p_ws is not null and public.pa_on(p_ws);
+  left_ws boolean;
+  moved_out boolean := false;
 begin
   if p_ws is null then return null; end if;
   for x in select e from jsonb_array_elements(src) e loop
     pid := x ->> 'project_id';
+    -- (gone from this workspace: deleted, or moved to Personal or another workspace (1h). 0047 asks only
+    -- whether it's anywhere, and would put work back here under a project that has left)
     if public.kanbo_uuid(pid) is not null and public.kanbo_uuid(x ->> 'workspace_id') = p_ws
-       and not exists (select 1 from public.projects p where p.id = public.kanbo_uuid(pid)) then
+       and not exists (select 1 from public.projects p where p.id = public.kanbo_uuid(pid) and p.workspace_id = p_ws) then
+      left_ws := exists (select 1 from public.projects p where p.id = public.kanbo_uuid(pid));
       -- (switched off too, the rollback window: 0047 would put it in the workspace's first project, where
       -- everyone reads it once the switch is back on)
       if public.pa_gone_visibility(p_ws, pid, case when pid = p_project then p_access end) <> 'workspace' then
@@ -832,9 +868,13 @@ begin
                                                   and b.kind = 'project' and b.restored_at is null) then
           raise exception 'restore its project first' using hint = 'It was in a Members only or Private project, and comes back with it.';
         end if;
+        if left_ws then
+          raise exception 'its project left this workspace' using hint = 'It was in a Members only or Private project that has moved out of this workspace, so it can''t come back here on its own.';
+        end if;
         raise exception 'its project was deleted for good' using hint = 'It was in a Members only or Private project, so it can''t come back on its own.';
       end if;
       if not on_ then continue; end if;          -- (switched off: a Whole workspace project's work goes 0047's way)
+      if left_ws then moved_out := true; end if;
       if land_id is null then
         select p.id, p.name, coalesce(p.owner_id, w.owner_id) into land_id, land_name, land_owner
           from public.projects p join public.workspaces w on w.id = p.workspace_id
@@ -846,14 +886,14 @@ begin
       end if;
       x := x || jsonb_build_object('project_id', land_id::text, 'section_id', null);
       who := public.kanbo_uuid(x ->> 'assignee_id');
-      if who is not null and public.pa_rank_for(who, p_ws, land_id::text) < 1 then
+      if who is not null and coalesce(public.pa_assignee_rank(who, p_ws, land_id::text), 0) < 1 then
         x := x || jsonb_build_object('assignee_id', land_owner::text);
       end if;
       foreach k in array array['collaborators', 'followers'] loop
         if jsonb_typeof(x -> k) = 'array' then
           x := jsonb_set(x, array[k], coalesce((
             select jsonb_agg(c order by i) from jsonb_array_elements_text(x -> k) with ordinality a(c, i)
-             where public.kanbo_uuid(c) is null or public.pa_rank_for(public.kanbo_uuid(c), p_ws, land_id::text) >= 1), '[]'::jsonb));
+             where public.kanbo_uuid(c) is null or coalesce(public.pa_assignee_rank(public.kanbo_uuid(c), p_ws, land_id::text), 0) >= 1), '[]'::jsonb));
         end if;
       end loop;
     end if;
@@ -861,7 +901,8 @@ begin
   end loop;
   if land_id is null then return null; end if;
   return jsonb_build_object('snapshot', jsonb_set(p_snap, '{tasks}', out_t),
-                            'note', 'Its project was deleted, so it''s back in “' || land_name || '”.');
+                            'note', case when moved_out then 'Its project has left this workspace, so it''s back in “' || land_name || '”.'
+                                         else 'Its project was deleted, so it''s back in “' || land_name || '”.' end);
 end; $$;
 
 -- 2p. someone who's left a workspace (their row deleted, or given to another account) takes nothing
@@ -914,6 +955,8 @@ begin
           or (x.kind = 'project' and (x.snapshot #>> '{project,owner_id}' = uid or (x.snapshot #> '{project,contributor_ids}') ? uid)));
   update public.project_ids_retired g set access = public.pa_access_without(g.access, p_user, heir)
    where g.workspace_id = p_ws and (g.access ->> 'owner' = uid or g.access @> probe);
+  update public.project_departures d set access = public.pa_access_without(d.access, p_user, heir)
+   where d.workspace_id = p_ws and (d.access ->> 'owner' = uid or d.access @> probe);
   update public.audit_events e set access = public.pa_access_without(e.access, p_user, heir)
    where e.workspace_id = p_ws and e.project_id is not null and e.access is not null
      and (e.access ->> 'owner' = uid or e.access @> probe);
@@ -941,6 +984,9 @@ begin
       union select g.workspace_id, public.kanbo_uuid(g.access ->> 'owner') from public.project_ids_retired g
       union select g.workspace_id, public.kanbo_uuid(e ->> 0) from public.project_ids_retired g
               cross join lateral jsonb_array_elements(case when jsonb_typeof(g.access -> 'members') = 'array' then g.access -> 'members' else '[]'::jsonb end) e
+      union select d.workspace_id, public.kanbo_uuid(d.access ->> 'owner') from public.project_departures d
+      union select d.workspace_id, public.kanbo_uuid(e ->> 0) from public.project_departures d
+              cross join lateral jsonb_array_elements(case when jsonb_typeof(d.access -> 'members') = 'array' then d.access -> 'members' else '[]'::jsonb end) e
       union select a.workspace_id, public.kanbo_uuid(a.access ->> 'owner') from public.audit_events a
              where a.workspace_id is not null and a.project_id is not null and a.access is not null
       union select a.workspace_id, public.kanbo_uuid(e ->> 0) from public.audit_events a
@@ -1421,8 +1467,9 @@ begin
     raise exception 'not authorized';
   end if;
   -- (and only once its work has gone: nothing moves a project's tasks, updates, sections, fields, rules
-  -- or forms with it, and what it left behind would be loose work every member of its old workspace
-  -- reads and edits)
+  -- or forms with it, nor what of it waits in the bin, and what it left behind would be loose work every
+  -- member of its old workspace reads and edits. Anything that names it there later keeps the access it
+  -- had there: pa_trg_projects_after records it, 1h)
   if direct and new.workspace_id is distinct from old.workspace_id and old.workspace_id is not null
      and (public.pa_on(old.workspace_id) or old.visibility <> 'workspace')
      and (exists (select 1 from public.tasks t where t.workspace_id = old.workspace_id and t.project_id = old.id::text)
@@ -1430,8 +1477,10 @@ begin
           or exists (select 1 from public.sections x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
           or exists (select 1 from public.custom_field_defs x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
           or exists (select 1 from public.automation_rules x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
-          or exists (select 1 from public.forms x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)) then
-    raise exception 'move its tasks first' using hint = 'A project leaves its workspace only once its tasks, updates, sections, fields, rules and forms have gone.';
+          or exists (select 1 from public.forms x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
+          or exists (select 1 from public.trash x where x.workspace_id = old.workspace_id and x.project_id = old.id::text
+                                                    and x.kind <> 'project' and x.restored_at is null)) then
+    raise exception 'move its tasks first' using hint = 'A project leaves its workspace only once its tasks, updates, sections, fields, rules and forms have gone, from the bin too.';
   end if;
   if new.workspace_id is null then new.visibility := 'workspace'; end if;     -- moved to Personal: nothing to gate
   -- (judged where it was, else where it's going: an owner change on the way out or in counts too)
@@ -1536,6 +1585,19 @@ begin
   end if;
 
   if new.workspace_id is distinct from old.workspace_id then
+    -- (1h: a Members only or Private project keeps, in the workspace it leaves, the access it had there,
+    -- for whatever still names it there; back in a workspace, what it had left behind there is its again)
+    if old.workspace_id is not null and old.visibility <> 'workspace' then
+      insert into public.project_departures (id, workspace_id, access)
+      values (old.id, old.workspace_id, jsonb_build_object(
+                'v', 1, 'visibility', old.visibility, 'owner', old.owner_id,
+                'members', coalesce((select jsonb_agg(jsonb_build_array(m.user_id, m.role) order by m.created_at, m.id)
+                                       from public.project_members m where m.project_id = old.id), '[]'::jsonb)))
+      on conflict (id, workspace_id) do update set access = excluded.access, left_at = now();
+    end if;
+    if new.workspace_id is not null then
+      delete from public.project_departures where id = new.id and workspace_id = new.workspace_id;
+    end if;
     perform set_config('kanbo.pa_sync', 'on', true);
     if new.workspace_id is null then
       delete from public.project_members where project_id = new.id;
@@ -1705,16 +1767,18 @@ begin
         (select w.owner_id from public.workspaces w where w.id = new.workspace_id))::text;
     end if;
   end if;
+  -- (collaborators and followers as the assignee: someone suspended or awaiting approval keeps their
+  -- place, judged by the projects they'll see once they can act again; someone who has left goes)
   if moved or new.collaborators is distinct from old.collaborators then
     new.collaborators := coalesce(array(
       select c from unnest(coalesce(new.collaborators, '{}'::text[])) with ordinality a(c, i)
-       where public.kanbo_uuid(c) is null or public.pa_rank_for(public.kanbo_uuid(c), new.workspace_id, new.project_id) >= 1
+       where public.kanbo_uuid(c) is null or coalesce(public.pa_assignee_rank(public.kanbo_uuid(c), new.workspace_id, new.project_id), 0) >= 1
        order by i), '{}');
   end if;
   if moved or new.followers is distinct from old.followers then
     new.followers := coalesce(array(
       select f from unnest(coalesce(new.followers, '{}'::text[])) with ordinality a(f, i)
-       where public.kanbo_uuid(f) is null or public.pa_rank_for(public.kanbo_uuid(f), new.workspace_id, new.project_id) >= 1
+       where public.kanbo_uuid(f) is null or coalesce(public.pa_assignee_rank(public.kanbo_uuid(f), new.workspace_id, new.project_id), 0) >= 1
        order by i), '{}');
   end if;
   return new;
@@ -1924,7 +1988,9 @@ begin
 end; $$;
 
 -- kudos (0048): its recipient can see the task; from the app, its giver can comment on it (a viewer
--- can't react, nor leave a note: give_kudos and update_kudos ask only can_see_task)
+-- can't react, nor leave a note: give_kudos and update_kudos ask only can_see_task). A changed note or
+-- emoji goes into the recipient's Inbox item (update_kudos rewrites it in place, past the Inbox gate), so
+-- it too is only for a recipient who can still see the task: otherwise 'invalid recipient', as giving.
 create or replace function public.pa_trg_kudos() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare t record;
@@ -1934,7 +2000,12 @@ begin
   if public.pa_is_client() and not public.pa_restoring() and public.pa_rank_for(new.from_user, t.workspace_id, t.project_id) < 2 then
     raise exception 'not authorized';
   end if;
-  if tg_op = 'INSERT' and public.pa_rank_for(new.to_user, t.workspace_id, t.project_id) < 1 then raise exception 'invalid recipient'; end if;
+  if (tg_op = 'INSERT' or (not public.pa_restoring()
+                           and (new.note is distinct from old.note or new.emoji is distinct from old.emoji
+                                or new.to_user is distinct from old.to_user)))
+     and public.pa_rank_for(new.to_user, t.workspace_id, t.project_id) < 1 then
+    raise exception 'invalid recipient';
+  end if;
   return new;
 end; $$;
 
@@ -2103,10 +2174,18 @@ begin
   return new;
 end; $$;
 
--- notion_syncs (0046): into a project you can edit (notion_save_sync; the bin putting one back is the restore's to judge)
+-- notion_syncs (0046): into a project you can edit (notion_save_sync; the bin putting one back is the restore's to judge).
+-- One database syncs with one project a workspace (notion_save_sync upserts on it): re-pointing a sync
+-- is also taking it from its project, so that needs edit rights there too. Otherwise an admin who can't
+-- see a Private project would take its sync over, and its pages would come into a project of theirs.
 create or replace function public.pa_trg_notion_syncs() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
+  if public.pa_is_client() and not public.pa_restoring() and new.workspace_id is not null and public.pa_on(new.workspace_id)
+     and tg_op = 'UPDATE' and new.project_id is distinct from old.project_id
+     and not public.can_edit_project(old.project_id) then
+    raise exception 'already syncs' using hint = 'This Notion database already syncs with a project here that you can''t change.';
+  end if;
   if public.pa_is_client() and not public.pa_restoring() and new.workspace_id is not null and public.pa_on(new.workspace_id)
      and (tg_op = 'INSERT' or new.project_id is distinct from old.project_id)
      and not public.can_edit_project(new.project_id) then
@@ -2624,6 +2703,149 @@ end; $b$ $fn$;
     n := n + 1;
   end if;
 
+  -- 0046's notion_status: with the switch on, sync_count counts only the syncs of projects the caller
+  -- can see (the notion_syncs rows they read), never a Members only or Private project's. Switch off: 0046's.
+  execute $fn$
+create or replace function public.notion_status(p_ws uuid)
+returns jsonb language sql security definer stable set search_path = public as $b$
+  select case when p_ws is null or not public.is_member(p_ws) then null else jsonb_build_object(
+    'connected',         i.notion_token is not null,
+    'workspace_name',    i.notion_workspace_name,
+    'bot_id',            i.notion_bot_id,
+    'token_hint',        case when i.notion_token is not null and public.ws_role(p_ws) in ('owner', 'admin')
+                              then '…' || right(i.notion_token, 4) end,
+    'connected_at',      i.notion_connected_at,
+    'connected_by_name', case when i.notion_connected_by is not null then public.kanbo_person_name(i.notion_connected_by) end,
+    'can_manage',        public.ws_role(p_ws) in ('owner', 'admin'),
+    'can_link',          public.can_write(p_ws),
+    'sync_count',        (select count(*) from public.notion_syncs s
+                           where s.workspace_id = p_ws and (not public.pa_on(p_ws) or public.can_see_project(s.project_id)))) end
+  from (select 1) as one
+  left join public.workspace_integrations i on i.workspace_id = p_ws;
+$b$; $fn$;
+  revoke execute on function public.notion_status(uuid) from public, anon;
+  grant execute on function public.notion_status(uuid) to authenticated;
+  n := n + 1;
+
+  -- 0055's set_bill_rate (only where 0055 is in): with the switch on, a project the caller can't see is
+  -- 'not authorized' before anything else is said about it (its rate checked: that would say it's a
+  -- project of this workspace; trg_bill_rates_pa only ever saw the write). Switch off: 0055's.
+  if to_regclass('public.bill_rates') is not null then
+    execute $fn$
+create or replace function public.set_bill_rate(p_ws uuid, p_project uuid, p_rate numeric)
+returns public.bill_rates language plpgsql security definer set search_path = public as $b$
+declare r public.bill_rates;
+begin
+  if public.ws_role(p_ws) not in ('owner', 'admin') then raise exception 'not authorized'; end if;
+  if p_project is not null and not exists (select 1 from public.projects p where p.id = p_project and p.workspace_id = p_ws) then
+    raise exception 'not authorized';
+  end if;
+  if p_project is not null and public.pa_on(p_ws) and public.pa_rank(p_ws, p_project::text) < 1 then
+    raise exception 'not authorized';
+  end if;
+  if p_rate is not null and (p_rate < 0 or p_rate > 100000) then raise exception 'invalid rate'; end if;
+  perform pg_advisory_xact_lock(hashtext('kanbo.bill_rate:' || p_ws::text));
+  if p_rate is null then
+    delete from public.bill_rates where workspace_id = p_ws and project_id is not distinct from p_project;
+    return null;
+  end if;
+  update public.bill_rates set hourly_rate = round(p_rate, 2), updated_by = auth.uid(), updated_at = now()
+    where workspace_id = p_ws and project_id is not distinct from p_project returning * into r;
+  if not found then
+    insert into public.bill_rates (workspace_id, project_id, hourly_rate, updated_by)
+      values (p_ws, p_project, round(p_rate, 2), auth.uid()) returning * into r;
+  end if;
+  return r;
+end; $b$; $fn$;
+    revoke execute on function public.set_bill_rate(uuid, uuid, numeric) from public, anon;
+    grant execute on function public.set_bill_rate(uuid, uuid, numeric) to authenticated;
+    n := n + 1;
+  end if;
+
+  -- 0056's start_meeting and add_meeting_item (only where 0056 is in): with the switch on, a notes
+  -- project the caller can't see (or the meeting's audience can't open), or a task they can't see, is
+  -- 'not authorized' before the day's limit, 'already running' or the item cap say it's a live project
+  -- (or task) of this workspace (trg_meetings_pa and trg_meeting_items_pa only ever saw the write).
+  -- Switch off: 0056's.
+  if to_regclass('public.meetings') is not null then
+    execute $fn$
+create or replace function public.start_meeting(p_ws uuid, p_preset text, p_title text, p_workspace_ids uuid[],
+  p_agenda jsonb, p_attendees uuid[], p_doc_project uuid, p_previous uuid)
+returns public.meetings language plpgsql security definer set search_path = public as $b$
+declare
+  me uuid := auth.uid();
+  wss uuid[];
+  t text := btrim(coalesce(p_title, ''));
+  prev uuid;
+  who uuid;
+  r public.meetings;
+begin
+  if me is null or not public.can_act() then raise exception 'not authorized'; end if;
+  if p_ws is null or p_preset is null or p_preset not in ('team', 'leadership') then raise exception 'invalid meeting'; end if;
+  wss := array(select distinct x from unnest(array[p_ws] || coalesce(p_workspace_ids, '{}'::uuid[])) x where x is not null order by 1);
+  if cardinality(wss) > 12 or (p_preset = 'team' and cardinality(wss) <> 1) then raise exception 'invalid meeting'; end if;
+  if not public.meeting_can_read(p_preset, p_ws, wss) then raise exception 'not authorized'; end if;
+  if char_length(t) < 1 or char_length(t) > 120 then raise exception 'invalid meeting'; end if;
+  if p_agenda is null or jsonb_typeof(p_agenda) <> 'array' or jsonb_array_length(p_agenda) > 200
+     or octet_length(p_agenda::text) > 262144 then
+    raise exception 'invalid agenda';
+  end if;
+  if p_doc_project is not null and not public.meeting_doc_ok(p_ws, null, p_doc_project) then raise exception 'not authorized'; end if;
+  if p_doc_project is not null and exists (select 1 from unnest(wss) x where public.pa_on(x))
+     and (public.pa_rank(p_ws, p_doc_project::text) < 1 or not public.pa_project_audience_open(p_preset, wss, p_doc_project::text)) then
+    raise exception 'not authorized';
+  end if;
+  if (select count(*) from public.meetings m where m.started_by = me and m.started_at > now() - interval '1 day') >= 40 then
+    raise exception 'too many meetings';
+  end if;
+  -- one live meeting of a kind over the same businesses at a time, whichever of them hosts it (a Group
+  -- meeting's host can differ week to week); one left running for 12 hours is closed, without a recap
+  perform pg_advisory_xact_lock(hashtext('kanbo.meeting:' || array_to_string(wss, ',') || ':' || p_preset));
+  update public.meetings set status = 'ended', ended_at = now(), updated_at = now()
+   where workspace_id = any (wss) and workspace_ids = wss and preset = p_preset and status = 'live' and started_at < now() - interval '12 hours';
+  if exists (select 1 from public.meetings m
+              where m.workspace_id = any (wss) and m.workspace_ids = wss and m.preset = p_preset and m.status = 'live') then
+    raise exception 'already running';
+  end if;
+  -- the meeting before: the last of this kind over the same businesses (its actions open this one)
+  select m.id into prev from public.meetings m
+   where m.id = p_previous and m.workspace_id = any (wss) and m.workspace_ids = wss and m.preset = p_preset and m.status = 'ended';
+  insert into public.meetings (workspace_id, workspace_ids, preset, title, agenda, presenter_id, started_by, previous_id, doc_project_id)
+    values (p_ws, wss, p_preset, t, p_agenda, me, me, prev, p_doc_project)
+    returning * into r;
+  insert into public.meeting_attendees (meeting_id, user_id, invited, joined_at) values (r.id, me, true, now());
+  for who in select distinct x from unnest(coalesce(p_attendees, '{}'::uuid[])) x where x is not null and x <> me limit 100 loop
+    if public.meeting_user_ok(who, p_preset, p_ws, wss) then
+      insert into public.meeting_attendees (meeting_id, user_id, invited) values (r.id, who, true) on conflict do nothing;
+    end if;
+  end loop;
+  return r;
+end; $b$; $fn$;
+    revoke execute on function public.start_meeting(uuid, text, text, uuid[], jsonb, uuid[], uuid, uuid) from public, anon;
+    grant execute on function public.start_meeting(uuid, text, text, uuid[], jsonb, uuid[], uuid, uuid) to authenticated;
+    execute $fn$
+create or replace function public.add_meeting_item(p_meeting uuid, p_kind text, p_body text, p_agenda_key text,
+  p_owner uuid, p_due date, p_task uuid)
+returns public.meeting_items language plpgsql security definer set search_path = public as $b$
+declare
+  m public.meetings;
+  r public.meeting_items;
+begin
+  m := public.meeting_for_caller(p_meeting);
+  if not public.meeting_open_for_items(m) then raise exception 'meeting closed'; end if;
+  perform public.meeting_item_ok(m, p_kind, p_body, p_agenda_key, p_owner, p_due, p_task);
+  if p_task is not null and public.pa_on(m.workspace_id) and not public.can_see_task(p_task) then raise exception 'not authorized'; end if;
+  if (select count(*) from public.meeting_items i where i.meeting_id = p_meeting) >= 300 then raise exception 'too many items'; end if;
+  insert into public.meeting_items (meeting_id, workspace_id, kind, body, agenda_key, owner_id, due_on, task_id, created_by)
+    values (p_meeting, m.workspace_id, p_kind, btrim(p_body), p_agenda_key, p_owner, p_due, p_task, auth.uid())
+    returning * into r;
+  return r;
+end; $b$; $fn$;
+    revoke execute on function public.add_meeting_item(uuid, text, text, text, uuid, date, uuid) from public, anon;
+    grant execute on function public.add_meeting_item(uuid, text, text, text, uuid, date, uuid) to authenticated;
+    n := n + 2;
+  end if;
+
   -- 0047's approval_json: with the switch on, can_decide also needs comment rights on the task (D7: a
   -- reviewer who's only a viewer now, or can't see it, isn't offered a decision trg_approval_reviewers_pa
   -- would refuse). Switch off: 0047's, line for line.
@@ -2788,7 +3010,13 @@ returns boolean language sql stable set search_path = pg_catalog, public as $$
                            || case when to_regclass('public.status_update_comments') is not null
                                    then array['public.can_see_status_update(uuid)', 'public.status_update_project_ok(text,uuid)'] else '{}'::text[] end
                            || case when to_regclass('public.update_asks') is not null
-                                   then array['public.ask_for_update(uuid)'] else '{}'::text[] end) f(sig)
+                                   then array['public.ask_for_update(uuid)'] else '{}'::text[] end
+                           || array['public.notion_status(uuid)']
+                           || case when to_regclass('public.bill_rates') is not null
+                                   then array['public.set_bill_rate(uuid,uuid,numeric)'] else '{}'::text[] end
+                           || case when to_regclass('public.meetings') is not null
+                                   then array['public.start_meeting(uuid,text,text,uuid[],jsonb,uuid[],uuid,uuid)',
+                                              'public.add_meeting_item(uuid,text,text,text,uuid,date,uuid)'] else '{}'::text[] end) f(sig)
        where not coalesce((select position('public.pa_' in p.prosrc) > 0 from pg_catalog.pg_proc p
                             where p.oid = to_regprocedure(f.sig)), false))
     and not exists (select 1 from pg_catalog.pg_attrdef ad join pg_catalog.pg_attribute a on a.attrelid = ad.adrelid and a.attnum = ad.adnum
@@ -2859,6 +3087,7 @@ insert into public.schema_migrations (version) values ('0058') on conflict (vers
 --   not has_table_privilege('authenticated', 'public.project_members', 'insert')
 --     and not has_table_privilege('authenticated', 'public.project_members', 'delete')               as members_through_functions,
 --   not has_table_privilege('authenticated', 'public.project_ids_retired', 'select')                 as retired_ids_private,
+--   not has_table_privilege('authenticated', 'public.project_departures', 'select')                  as departures_private,
 --   has_function_privilege('authenticated', 'public.set_project_access(uuid,boolean,text,boolean)', 'execute')
 --     and not has_function_privilege('anon', 'public.set_project_access(uuid,boolean,text,boolean)', 'execute') as switch_fn,
 --   not has_function_privilege('authenticated', 'public.project_access_restore()', 'execute')        as restore_private,

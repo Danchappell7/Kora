@@ -878,6 +878,77 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     }
   });
 
+  // (r3) a Members only or Private project that has left the workspace takes nothing it left behind
+  // there to the loose rule: its bin entries hold the move up, and work written under its id since (an
+  // old tab, the off window) keeps the access it had there, read-only, as a deleted one's does (1h)
+  await test("0058: a Members only or Private project that has left the workspace leaves nothing loose behind (its bin holds the move up; later work under its id keeps its access; its webhook events don't fan out; it never comes back from the bin here)", async () => {
+    for (const via of ["Personal", "ws2"] as const) {
+      const got = await scenario(async (run, _exec, tryRun) => {
+        const out: Record<string, unknown> = {};
+        if (via === "ws2") {
+          await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'me.pa@example.org', 'Meg', 'member', 'active')`, [w.ws2, w.id.ME]);
+        }
+        const leave = () => tryRun(w.id.ME, via === "Personal"
+          ? `update public.projects set workspace_id = null, user_id = $2::uuid where id = $1::uuid returning id`
+          : `update public.projects set workspace_id = $3::uuid, owner_id = $2::uuid where id = $1::uuid returning id`,
+          via === "Personal" ? [w.proj.PQ, w.id.ME] : [w.proj.PQ, w.id.ME, w.ws2]);
+        // Meg's Private PQ, emptied but for a task of hers in the bin
+        await run(w.id.ME, `update public.tasks set project_id = $2 where workspace_id = $3::uuid and project_id = $1 and id <> $4::uuid`, [w.proj.PQ, w.proj.PW, w.ws, w.task.PQ]);
+        await run(w.id.ME, `update public.tasks set parent_id = null where id = $1::uuid`, [w.task.PQ]);
+        for (const tb of ["status_updates", "sections", "custom_field_defs", "automation_rules", "forms"]) {
+          await run(null, `delete from public.${tb} where workspace_id = $1::uuid and project_id = $2`, [w.ws, w.proj.PQ]);
+        }
+        await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [w.task.PQ]);
+        out.withBin = errOf(await leave());
+        await run(null, `delete from public.trash where workspace_id = $1::uuid and project_id = $2`, [w.ws, w.proj.PQ]);
+        // a webhook event about it is waiting for Ari's endpoint (Ari can't see PQ)
+        await run(null, `update public.webhook_outbox set processed_at = now() where processed_at is null`);
+        const hook = (await run(null, `insert into public.webhooks (workspace_id, created_by, url, events, secret) values ($1::uuid, $2::uuid, 'https://hooks.example.com/ari-pq', array['task.created'], $3) returning id::text as id`,
+          [w.ws, w.id.A, "whsec_" + "c".repeat(43)]))[0].id;
+        await run(w.id.ME, `insert into public.tasks (user_id, title, description, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra exit memo', 'price: 4.2m', $2, '', $3::uuid) returning id`, [w.id.ME, w.proj.PQ, w.ws]);
+        await run(null, `delete from public.tasks where workspace_id = $1::uuid and title = 'Zebra exit memo'`, [w.ws]);
+        await run(null, `delete from public.trash where workspace_id = $1::uuid and project_id = $2`, [w.ws, w.proj.PQ]);
+        out.left = okOf(await leave());
+        await run(null, `select public.webhook_claim_outbox(500)`);
+        out.fannedOut = Number((await run(null, `select count(*)::int as n from public.webhook_deliveries d join public.webhook_outbox o on o.id = d.outbox_id
+                                                   where d.webhook_id = $1::uuid and d.state = 'pending' and o.payload::text like '%4.2m%' and o.payload::text like $2`, [hook, `%${w.proj.PQ}%`]))[0].n);
+        // an old tab of Meg's, switched on: refused; switched off (the rollback window): it lands
+        out.lateOn = errOf(await tryRun(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra late', $2, '', $3::uuid) returning id`, [w.id.ME, w.proj.PQ, w.ws]));
+        await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+        const late = (await run(w.id.ME, `insert into public.tasks (user_id, title, description, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra late', 'Salaries: 95k', $2, '', $3::uuid) returning id::text as id`, [w.id.ME, w.proj.PQ, w.ws]))[0].id as string;
+        const binned = (await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra binned late', $2, '', $3::uuid) returning id::text as id`, [w.id.ME, w.proj.PQ, w.ws]))[0].id as string;
+        await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [binned]);
+        const bin = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid`, [binned]))[0].id as string;
+        out.offRestore = errOf(await tryRun(w.id.M2, `select public.restore_from_trash($1::uuid) as r`, [bin]));
+        await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [w.ws]);
+        const reads: Record<string, [number, boolean, number]> = {};
+        for (const k of ["O", "A", "ME", "M2", "GC"] as const) {
+          reads[k] = [(await run(w.id[k], `select id from public.tasks where id = $1::uuid`, [late])).length,
+                      okOf(await tryRun(w.id[k], `update public.tasks set title = 'Zebra late!' where id = $1::uuid returning id`, [late])),
+                      (await run(w.id[k], `select id from public.trash where id = $1::uuid`, [bin])).length];
+        }
+        out.reads = reads;
+        out.onRestore = errOf(await tryRun(w.id.ME, `select public.restore_from_trash($1::uuid) as r`, [bin]));
+        out.closed = (await run(null, `select public.project_is_open($1::uuid, $2) as o`, [w.ws, w.proj.PQ]))[0].o;
+        // moved back: it's the live project again, and nothing is left recorded
+        out.back = okOf(await tryRun(w.id.ME, `update public.projects set workspace_id = $2::uuid where id = $1::uuid returning id`, [w.proj.PQ, w.ws]));
+        const rec = await tryRun(null, `select count(*)::int as n from public.project_departures where id = $1::uuid and workspace_id = $2::uuid`, [w.proj.PQ, w.ws]);
+        out.recorded = "rows" in rec ? Number(rec.rows[0].n) : rec.error;
+        return out;
+      });
+      eq(got.withBin, "move its tasks first", `${via}: a binned task holds the move up`);
+      eq(got.left, true, `${via}: emptied (the bin too), it leaves`);
+      eq(got.fannedOut, 0, `${via}: what was waiting about it never goes to Ari's endpoint`);
+      ok(/row-level security/.test(String(got.lateOn)), `${via}: an old tab's write into it, switched on: ${got.lateOn || "written"}`);
+      eq(got.offRestore, "its project left this workspace", `${via}: the bin never puts its work back here (switched off too)`);
+      eq(got.reads, { O: [1, true, 1], A: [0, false, 0], ME: [1, false, 1], M2: [0, false, 0], GC: [0, false, 0] },
+        `${via}: what was written into it here since is its people's, read-only (the owner edits): [reads, edits, reads its bin row]`);
+      eq(got.onRestore, "its project left this workspace", `${via}: switched on, its owner can't restore it here either`);
+      eq(got.closed, false, `${via}: closed to the Slack stand-up`);
+      eq([got.back, got.recorded], [true, 0], `${via}: moved back, nothing is left recorded`);
+    }
+  });
+
   // ---------------------------------------------------------------- 7. triggers on tasks
   await test("0058, switch on: an assignee who can't see the project is refused from the app (42501) and handed to the owner from the server", async () => {
     const r = await attempt(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'x', $2, $3, $4::uuid) returning id`, [w.id.ME, w.proj.PP, w.id.M2, w.ws]);
@@ -929,6 +1000,27 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     ok(/assignee can't see this project/.test(got.newForRex), `nobody gives Rex a new task (a repeat, a copy): ${got.newForRex}`);
     eq(got.newForSid, "ok", "Sid can be given one on PP");
     ok(/assignee can't see this project/.test(got.reassignToRex), `nor hands one to him: ${got.reassignToRex}`);
+  });
+
+  await test("0058, switch on: someone suspended keeps their place as a collaborator and follower when someone else follows the task, edits its collaborators or moves it (as the assignee does); someone who has left goes", async () => {
+    const got = await scenario(async (run) => {
+      // Sid (an editor of PP, suspended) and Rex (who has left) on a PW task, with Moe
+      await run(null, `set session_replication_role = replica`);
+      await run(null, `update public.tasks set collaborators = $2::text[], followers = $2::text[] where id = $1::uuid`, [w.task.PW, [w.id.M2, w.id.S, w.id.R]]);
+      await run(null, `set session_replication_role = default`);
+      await run(w.id.ME, `select public.toggle_task_follow($1::uuid, true)`, [w.task.PW]);
+      const followed = await run(null, `select followers::text[] as f from public.tasks where id = $1::uuid`, [w.task.PW]);
+      await run(w.id.A, `update public.tasks set collaborators = collaborators || $2::text where id = $1::uuid`, [w.task.PW, w.id.ME]);
+      const collab = await run(null, `select collaborators::text[] as c from public.tasks where id = $1::uuid`, [w.task.PW]);
+      // moved into PP (Sid is on it; Moe isn't)
+      await run(w.id.O, `update public.tasks set project_id = $2, assignee_id = $3 where id = $1::uuid`, [w.task.PW, w.proj.PP, w.id.ME]);
+      const moved = await run(null, `select collaborators::text[] as c, followers::text[] as f from public.tasks where id = $1::uuid`, [w.task.PW]);
+      return { followed: people(followed[0].f as string[]), collab: people(collab[0].c as string[]),
+               movedC: people(moved[0].c as string[]), movedF: people(moved[0].f as string[]) };
+    });
+    eq(got.followed, ["M2", "ME", "S"], "following: Sid stays, Rex (gone) goes");
+    eq(got.collab, ["M2", "ME", "S"], "an edit of the collaborators: the same");
+    eq([got.movedC, got.movedF], [["ME", "S"], ["ME", "S"]], "moved into PP: Moe (not on it) goes; Sid (on it) stays");
   });
 
   await test("0058, switch on: a sub-task has its parent's project, on insert, on a parent change and when the parent moves", async () => {
@@ -1013,6 +1105,37 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       const off = await attempt(w.id.MV, `select public.give_kudos($1::uuid, '🎉', 'well done', null) ->> 'note' as r`, [w.task.PM],
         [[`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]]]);
       eq("rows" in off ? off.rows[0].r : errOf(off), "well done", "switch off: today's rule");
+    });
+    await test("0058, switch on: a kudos note changed after its recipient lost sight of the task never reaches their Inbox (taken off the project, or the project narrowed)", async () => {
+      const got = await scenario(async (run, _exec, tryRun) => {
+        // Meg thanks Mac (a commenter on PM, on its done task with her) for it; then Mac loses sight of it
+        await run(null, `update public.tasks set collaborators = array[$2] where id = $1::uuid`, [w.task.PM, w.id.MC]);
+        await run(w.id.ME, `select public.give_kudos($1::uuid, '🎉', 'thanks!', $2::uuid)`, [w.task.PM, w.id.MC]);
+        const meta = async () => ((await run(w.id.MC, `select meta from public.activity where user_id = $1::uuid and kind = 'kudos' and task_id = $2::uuid`, [w.id.MC, w.task.PM]))[0]?.meta ?? null) as Record<string, unknown> | null;
+        const before = await meta();
+        await run(w.id.O, `select public.remove_project_member($1::uuid, $2::uuid)`, [w.proj.PM, w.id.MC]);
+        const removed = await tryRun(w.id.ME, `select public.update_kudos($1::uuid, '🏆', 'Northwind price agreed at 4.2m: thank you') as r`, [w.task.PM]);
+        const afterRemoved = await meta();
+        // (put back, then the project narrows to Private: Mac isn't on it)
+        await run(w.id.O, `select public.set_project_member($1::uuid, $2::uuid, 'commenter')`, [w.proj.PM, w.id.MC]);
+        const back = await tryRun(w.id.ME, `select public.update_kudos($1::uuid, '👏', 'still yours') ->> 'note' as r`, [w.task.PM]);
+        await run(w.id.O, `select public.remove_project_member($1::uuid, $2::uuid)`, [w.proj.PM, w.id.MC]);
+        await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [w.proj.PM]);
+        const narrowed = await tryRun(w.id.ME, `select public.update_kudos($1::uuid, '🔥', 'private launch date is 3 Dec') as r`, [w.task.PM]);
+        const afterNarrowed = await run(null, `select meta from public.activity where user_id = $1::uuid and kind = 'kudos' and task_id = $2::uuid`, [w.id.MC, w.task.PM]);
+        // switched off: as before 0058
+        await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+        const off = await tryRun(w.id.ME, `select public.update_kudos($1::uuid, '💯', 'off note') ->> 'note' as r`, [w.task.PM]);
+        return { before: before?.note, removed: errOf(removed), afterRemoved: afterRemoved?.note ?? "unread",
+                 back: "rows" in back ? back.rows[0].r : errOf(back), narrowed: errOf(narrowed),
+                 afterNarrowed: (afterNarrowed[0]?.meta as Record<string, unknown> | undefined)?.note, off: "rows" in off ? off.rows[0].r : errOf(off) };
+      });
+      eq(got.before, "thanks!", "Mac's Inbox item");
+      eq(got.removed, "invalid recipient", "taken off the project: the change is refused");
+      eq(got.back, "still yours", "back on it: the change goes");
+      eq(got.narrowed, "invalid recipient", "the project made Private without him: refused");
+      eq(got.afterNarrowed, "still yours", "his Inbox item keeps the note he could see");
+      eq(got.off, "off note", "switched off: as before 0058");
     });
   }
 
@@ -1154,6 +1277,62 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       eq(got.ended2, "ended", "the leadership meeting ends after the switch went on");
     });
   }
+
+  // (r3) nothing a definer function answers before its write says a hidden project (or task) is a live one here
+  await test("0058, switch on: start_meeting, add_meeting_item, set_bill_rate and notion_status say nothing about a project or task you can't see", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, string | number> = {};
+      const ghost = "00000000-0000-4000-8000-00000000dead";
+      if (tables.has56) {
+        // Meg's team meeting is running; Moe (on neither PP nor PQ) names a notes project
+        await run(w.id.ME, `select id from public.start_meeting($1::uuid, 'team', 'Standup', null, '[]'::jsonb, null, null, null)`, [w.ws]);
+        for (const [k, pid] of [["PP", w.proj.PP], ["PQ", w.proj.PQ], ["ghost", ghost], ["PW", w.proj.PW]] as const) {
+          out[`start ${k}`] = errOf(await tryRun(w.id.M2, `select id from public.start_meeting($1::uuid, 'team', 'x', null, '[]'::jsonb, null, $2::uuid, null)`, [w.ws, pid]));
+        }
+        // Moe's own meeting at the 300-item cap: a hidden task is 'not authorized', a visible one 'too many items'
+        await run(null, `update public.meetings set status = 'ended', ended_at = now() where workspace_id = $1::uuid`, [w.ws]);
+        const m = (await run(w.id.M2, `select id::text as id from public.start_meeting($1::uuid, 'team', 'Moe', null, '[]'::jsonb, null, null, null)`, [w.ws]))[0].id;
+        await run(null, `insert into public.meeting_items (meeting_id, workspace_id, kind, body, created_by) select $1::uuid, $2::uuid, 'note', 'n' || g, $3::uuid from generate_series(1, 300) g`, [m, w.ws, w.id.M2]);
+        out["item PP"] = errOf(await tryRun(w.id.M2, `select id from public.add_meeting_item($1::uuid, 'action', 'x', null, null, null, $2::uuid)`, [m, w.task.PP]));
+        out["item PW"] = errOf(await tryRun(w.id.M2, `select id from public.add_meeting_item($1::uuid, 'action', 'x', null, null, null, $2::uuid)`, [m, w.task.PW]));
+      }
+      if (tables.has55) {
+        for (const [k, pid] of [["PP", w.proj.PP], ["ghost", ghost], ["PM", w.proj.PM]] as const) {
+          out[`rate ${k}`] = errOf(await tryRun(w.id.A, `select public.set_bill_rate($1::uuid, $2::uuid, -1) as r`, [w.ws, pid]));
+        }
+      }
+      // notion_status: its count is the syncs each person reads (a new one on Meg's Private PQ: Oona and Meg only)
+      await run(null, `insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('q', 30))
+                       on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.ws]);
+      await run(null, `insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
+                       values ($1::uuid, $2::uuid, 'feedfeed-feed-4eed-8eed-feedfeedfeed', '{"title": "Name"}'::jsonb, 'two_way', $3::uuid)`, [w.ws, w.proj.PQ, w.id.ME]);
+      const counts = async (k: Who) => [Number((await run(w.id[k], `select public.notion_status($1::uuid) ->> 'sync_count' as n`, [w.ws]))[0].n),
+        Number((await run(w.id[k], `select count(*)::int as n from public.notion_syncs where workspace_id = $1::uuid`, [w.ws]))[0].n)].join(" of ");
+      const all = Number((await run(null, `select count(*)::int as n from public.notion_syncs where workspace_id = $1::uuid`, [w.ws]))[0].n);
+      for (const k of ["O", "ME", "A", "M2", "GC"] as const) out[`syncs ${k}`] = (await counts(k)) === `${all} of ${all}` ? "all" : await counts(k);
+      // switched off: as before 0058
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      if (tables.has56) {
+        await run(null, `update public.meetings set status = 'ended', ended_at = now() where workspace_id = $1::uuid`, [w.ws]);
+        await run(w.id.ME, `select id from public.start_meeting($1::uuid, 'team', 'Standup 2', null, '[]'::jsonb, null, null, null)`, [w.ws]);
+        out["off start PP"] = errOf(await tryRun(w.id.M2, `select id from public.start_meeting($1::uuid, 'team', 'x', null, '[]'::jsonb, null, $2::uuid, null)`, [w.ws, w.proj.PP]));
+      }
+      if (tables.has55) out["off rate PP"] = errOf(await tryRun(w.id.A, `select public.set_bill_rate($1::uuid, $2::uuid, -1) as r`, [w.ws, w.proj.PP]));
+      out["off syncs M2"] = await counts("M2") === `${all} of ${all}` ? "all" : await counts("M2");
+      return out;
+    });
+    const want: Record<string, string | number> = {};
+    if (tables.has56) Object.assign(want, { "start PP": "not authorized", "start PQ": "not authorized", "start ghost": "not authorized", "start PW": "already running",
+                                            "item PP": "not authorized", "item PW": "too many items", "off start PP": "already running" });
+    if (tables.has55) Object.assign(want, { "rate PP": "not authorized", "rate ghost": "not authorized", "rate PM": "invalid rate", "off rate PP": "invalid rate" });
+    Object.assign(want, { "syncs O": "all", "syncs ME": "all", "off syncs M2": "all" });
+    for (const k of ["A", "M2", "GC"]) {
+      const [n, of] = String(got[`syncs ${k}`]).split(" of ");
+      want[`syncs ${k}`] = n === of && n !== "all" ? got[`syncs ${k}`] : "as many as the syncs they read";
+    }
+    const sorted = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
+    eq(sorted(got), sorted(want), "the answers (notion_status: \"n of m\" is its count of the m syncs they read)");
+  });
 
   // ---------------------------------------------------------------- 12. switch off again: the rollback
   await test("0058: turning the switch off is the rollback: every read and write is exactly what it was (members and visibility kept)", async () => {
