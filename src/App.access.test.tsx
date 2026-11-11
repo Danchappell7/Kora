@@ -550,6 +550,44 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     expect(screen.queryByText(/^Applied/)).toBeNull();
     expect(upd.mock.calls.filter(([id]) => id === "t-pa-5")).toEqual([]);
   }, 60_000);
+  it("0058: deleting a tag takes it off the tasks you can change, never off Fee review's (the server would refuse the row)", async () => {
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    spy(vi.spyOn(window, "confirm").mockReturnValue(true));
+    inWs("ws-harbour", "/today");
+    await boot();
+    fireEvent.keyDown(document.body, { key: ",", metaKey: true });
+    const dialog = await screen.findByRole("dialog", { name: /settings/i });
+    fireEvent.click(await within(dialog).findByRole("tab", { name: /^Tags/ }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Delete tag Research" }));
+    // (Northwind Review's board-pack task, which Daniel can edit, loses it)
+    await waitFor(() => expect(upd.mock.calls.some(([, p]) => "tags" in p)).toBe(true), { timeout: 8000 });
+    expect(upd.mock.calls.filter(([id]) => id === "t-pa-5")).toEqual([]);
+    expect(screen.queryByText(/Couldn't save/)).toBeNull();
+  }, 60_000);
+  it("0058: Prioritise my tasks ranks your own Fee review task on screen without writing its row (the server would refuse it)", async () => {
+    // (Fee review's task is Daniel's for this test: the store's demo copy is made once, so the load is changed)
+    const boot0 = store.bootstrap.bind(store);
+    spy(vi.spyOn(store, "bootstrap").mockImplementation(async (...a: Parameters<typeof store.bootstrap>) => {
+      const b = await boot0(...a);
+      return { ...b, tasks: b.tasks.map((t) => (t.id === "t-pa-5" ? { ...t, assigneeId: "m-self" } : t)) };
+    }));
+    const rank = spy(vi.spyOn(store, "aiPrioritize").mockImplementation(async (tasks: { id: string }[]) => ({
+      items: tasks.map((t, i) => ({ id: t.id, score: 90 - i, reason: "Ranked for the test" })), summary: "Ranked", source: "ai" as const,
+    }) as unknown as Awaited<ReturnType<typeof store.aiPrioritize>>));
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    inWs("ws-harbour", "/today");
+    await boot();
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    const dlg = await screen.findByRole("dialog", { name: "Command palette" }, { timeout: 8000 });
+    fireEvent.change(within(dlg).getAllByRole("combobox")[0], { target: { value: "Prioritise my tasks" } });
+    const opts = await within(dlg).findAllByRole("option", { name: /Prioritise my tasks/ }, { timeout: 8000 });
+    fireEvent.click(opts.find((o) => /^Prioritise my tasks/.test(o.textContent ?? ""))!);
+    await waitFor(() => expect(rank).toHaveBeenCalled(), { timeout: 8000 });
+    expect((rank.mock.calls[0][0] as { id: string }[]).map((t) => t.id)).toContain("t-pa-5");
+    // (the Northwind task Daniel can change is written as before)
+    await waitFor(() => expect(upd.mock.calls.some(([, p]) => "aiScore" in p)).toBe(true), { timeout: 8000 });
+    expect(upd.mock.calls.filter(([id]) => id === "t-pa-5")).toEqual([]);
+  }, 60_000);
   it("Projects › Requests shows its form, but it can't be filled in, changed or deleted there", async () => {
     inWs("ws-harbour", "/projects/requests");
     await boot();

@@ -3181,7 +3181,12 @@ export default function App() {
   }, [denyGuest, applyTags, settleTmp, updateTasks, toastError]);
 
   // tag edits touch tasks everywhere — only those you can edit are rewritten
-  const editableTasks = useCallback((pred: (t: Task) => boolean) => (tasksRef.current ?? []).filter((t) => pred(t) && roleIn(t.workspaceId) !== "guest"), [roleIn]);
+  // the tasks a tag change may rewrite: ones you can change (0058: never in a project you can only view —
+  // the server would refuse the row, and "Couldn't save" would follow; with project access off, a guest's)
+  const editableTasks = useCallback((pred: (t: Task) => boolean) => {
+    const ctx = accessNow();
+    return (tasksRef.current ?? []).filter((t) => pred(t) && taskRank(t, ctx) >= 3);
+  }, [accessNow]);
 
   const deleteTag = useCallback((id: string) => {
     if (denyGuest([workspaceRef.current])) return;
@@ -3585,15 +3590,17 @@ export default function App() {
       const res = await store.aiPrioritize(scope, toLocalISO(new Date()));
       const byId = new Map(scope.map((t) => [t.id, t]));
       const own = new Map<string, Partial<Task>>();
+      const shown = new Set<string>();   // (0058) your own task in a project you can only view: shown, never written
+      const ctx = accessNow();
       let theirs = 0;
       for (const i of res.items) {
         const t = byId.get(i.id); if (!t) continue;
         const p = { aiScore: i.score, aiReason: i.reason };
-        if (t.assigneeId === me) own.set(i.id, p);
+        if (t.assigneeId === me) { own.set(i.id, p); if (taskRank(t, ctx) < 3) shown.add(i.id); }
         else { writeScoreOverlay(me, i.id, p); theirs++; }
       }
       applyLocal(own);
-      own.forEach((p, id) => { writeTask(id, p).catch(() => { /* scores are advisory — a failed write just recomputes next time */ }); });
+      own.forEach((p, id) => { if (!shown.has(id)) writeTask(id, p).catch(() => { /* scores are advisory — a failed write just recomputes next time */ }); });
       if (theirs) setOverlayRev((n) => n + 1);
       if (announce) {
         toastSuccess(res.summary);
@@ -3607,7 +3614,7 @@ export default function App() {
       if (announce) toastError("Couldn't prioritise right now.");
       return "none";
     } finally { setAiBusy(false); }
-  }, [denyGuest, roleIn, applyLocal, writeTask, toastSuccess, toastError, toastInfo]);
+  }, [denyGuest, roleIn, accessNow, applyLocal, writeTask, toastSuccess, toastError, toastInfo]);
   const rankForToday = useCallback(() => rankMyTasks(false), [rankMyTasks]);
   // the palette's "Prioritise my tasks": My tasks in Kanbo's order, then rank
   const autoPrioritize = useCallback(() => {
