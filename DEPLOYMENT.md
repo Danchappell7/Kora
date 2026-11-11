@@ -928,7 +928,10 @@ steps; nothing breaks while you wait.
    - `notion`: a Notion page whose Owner can't see the project comes in
      unassigned (the sync no longer stops on it, nor rolls back its run); and
      where it's switched on, a synced task moved to another project stops
-     syncing until it's moved back.
+     syncing until it's moved back (also when the sync was set up by an admin
+     who isn't on that project: it's never copied back as a new task). A
+     database that syncs with a project you can't see can't be previewed or
+     imported by you, nor its sync taken over.
    - `ics-feed`: a calendar names a project only where the task really is in
      it.
    - `webhook-dispatch`: an endpoint follows whoever last set its address
@@ -961,8 +964,12 @@ steps; nothing breaks while you wait.
    and the Remove step on Team › People says so); a bin entry's "Sub-task of"
    or project line goes where it named another business's (or another
    person's) work; and a task from a Members only or Private project that's
-   been deleted comes back from the bin only with its project, even with the
-   switch off.
+   been deleted (or has moved to another business) comes back from the bin
+   only with its project, even with the switch off. From now on Team ›
+   People asks before making someone a guest (or an admin a member) and names
+   what they'd lose: made a guest, their "Can edit" project roles become "Can
+   comment", whatever the switch says, and stay so if they're made a member
+   again.
 3. **Reload the app** and check: Settings › Workspace (as the business's owner)
    shows **Project access** with the switch **off** and "When you turn it on:"
    saying what would change for each guest. Admins and members don't see it.

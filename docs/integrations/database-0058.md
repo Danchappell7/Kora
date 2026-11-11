@@ -26,9 +26,12 @@ isn't in its own workspace (a Personal task's: not its owner's own): 0047 looked
 both up by id alone, so a task of your own naming someone else's project and task
 showed their name and title in your bin. Rows already there lose that line when
 the file runs. Fourth, switch on or off, a task from a Members only or Private
-project that has gone comes back from the bin only with its project, never into
-the workspace's first project, and such a project leaves its workspace (to
-Personal or another one) only once its tasks and updates have gone.
+project that has gone (deleted, or moved to Personal or another workspace) comes
+back from the bin only with its project, never into the workspace's first
+project, and such a project leaves its workspace (to Personal or another one)
+only once its tasks, updates and bin entries have gone. Fifth, making someone a
+guest turns their editor roles into commenter whatever the switch says (they
+aren't put back if they're made a member again); the app asks first.
 
 ## What it adds
 
@@ -38,7 +41,7 @@ Personal or another one) only once its tasks and updates have gone.
 | Who can see a project | `projects.visibility` (`workspace`, `members`, `private`); `set_project_visibility(project, visibility)` | **Whole workspace**: everyone in the workspace (guests only if they're added). **Members only**: the project's people, plus the workspace's owners and admins. **Private**: the project's people, plus the workspace's owner. Changed by the workspace's owner, the project's owner, its editors (not guests), and admins (not on Private projects). Nobody but the owner can change it so that they'd lose access themselves. Every project there today is Whole workspace. |
 | A project's people | `project_members` (editor, commenter, viewer); `set_project_member`, `remove_project_member` | Filled once from each project's contributors (editors; guests are commenters; never the project's owner, who always edits). A guest is never more than a commenter (someone made a guest after making a project still owns it, and comments on it). Read by anyone who can see the project. Written only through the functions; `contributor_ids` is kept in step both ways, so older tabs keep working. |
 | Guests invited onto projects | `project_member_invites`; `set_invite_projects(invite, grants)`, `remove_invite_project(invite, project)` | Owners and admins choose the projects a new guest will see; they become that guest's project rows when the invite is accepted. A pending grant is read by the project's managers (who see it in People & access and can take it off) and by owners and admins on projects they can see. `set_invite_projects` changes only the grants on projects the caller manages: one on a project they can't see (made Private since by its owner) is kept, so an admin's edit of an invite never drops it. Re-inviting a pending guest adds the new projects to what the invite brings. |
-| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
+| What the bin and the history knew | `trash.access`, `audit_events.project_id` / `access`, `webhooks.url_set_by`, `project_ids_retired`, `project_departures` | A deleted item keeps the access its project had, so the bin and the history show it only to people who could see it. A project deleted for good keeps its id: no new project can take it over, with what the bin and the history still hold of the old one. A Members only or Private project that moves to Personal or another workspace leaves a record of the access it had where it was: anything that still names it there (work an old tab writes under its id, webhook events waiting for it) keeps that access, read-only, rather than becoming everyone's. A webhook's deliveries follow whoever last set its address, and what's still queued when the address changes goes only where that person can see. |
 
 What each person can do on a project (one rank, the same table the app uses,
 `src/lib/projectAccessMatrix.json`): **view** (read, follow, plan, mark updates
@@ -149,8 +152,13 @@ No new secrets and no new schedule.
   move there and back can't hand anyone a project or drop its people. Nor does
   a project leave a workspace whose switch is on (or leave at all, if it's
   Members only or Private) with its tasks, updates, sections, custom fields,
-  rules or forms still in it: nothing moves them with it, and what it left
-  would be loose work everyone there reads.
+  rules or forms still in it, nor with its tasks still in the bin: nothing
+  moves them with it, and what it left would be loose work everyone there
+  reads. Once a Members only or Private project has left, whatever still names
+  it there (written by an old tab or the offline queue, or while the switch was
+  off) keeps the access it had there, read-only, as a deleted project's work
+  does, and the bin won't put its work back there ("its project left this
+  workspace"). Moved back, it's the live project again.
   Restoring a task whose Members only or Private project has gone works the
   same with the switch off as on (only with its project).
 - **The history** of something deleted for good (by hand or by the bin's
@@ -162,7 +170,9 @@ No new secrets and no new schedule.
   people. So inviting them back gives them only what the invite says, and
   restoring a project from the bin never puts them back on it. (Their open
   tasks stay assigned to them until handed on, as before.) Making someone a
-  guest turns their editor roles into commenter. Either way, held notices and
+  guest turns their editor roles into commenter, whatever the switch says, and
+  they stay commenter if the person is made a member again (Team › People asks
+  first and names what they'd lose). Either way, held notices and
   queued webhooks they can't see any more are dropped, and a webhook whose
   address they set is switched off ("the person who set its address no longer
   has access"). The same goes for any other role change: an admin made a
@@ -178,7 +188,12 @@ No new secrets and no new schedule.
   a task they already had when it moves (as before: nothing there is theirs to
   see), but is never given a new one: a repeat or a copy of their task, or a
   rule naming them, gives it to whoever made the change instead (the app says
-  so).
+  so). Collaborators and followers follow the same rule: someone suspended
+  keeps their place when someone else follows the task, edits its
+  collaborators or moves it.
+- **Sub-tasks** live in their parent's project. Moved to another project on
+  its own (the task panel, a drop, a bulk move), a sub-task becomes a task of
+  its own there; the database would otherwise keep it with its parent.
 - **Approvals.** A reviewer who can only view the task now (or can't see it)
   isn't offered a decision (`can_decide`), and the request's asker sees who
   can't review it and, when it can't finish, that it should be cancelled and
@@ -186,7 +201,15 @@ No new secrets and no new schedule.
 - **Update replies.** An @mention in a reply to a project update asks for a
   reply, so it reaches only people who can reply (never a viewer), as Asks do.
 - **Asking for an update** about a project you can't see is "not
-  authorized", before anything is said about it.
+  authorized", before anything is said about it. So are starting a meeting
+  whose notes go in such a project, adding a task you can't see to a meeting's
+  notes and actions, and setting a bill rate on such a project (none of them
+  says first that it's a live project here). Notion's status counts only the
+  syncs of projects you can see, and a task's dependencies list only the tasks
+  you can see.
+- **Kudos.** A changed kudos note or emoji goes to its recipient's Inbox only
+  while they can still see the task; otherwise the change is refused, as giving
+  kudos to them would be.
 - **Webhooks while the switch is off.** The dispatcher judges an endpoint by
   whoever last set its address (else whoever added it), switch on or off: an
   endpoint an admin re-pointed to their own address stops when that admin
@@ -213,10 +236,14 @@ templates; exports; and a device's offline copy until its next load.
   read that Notion database sees them. Stop the sync first if the database is
   shared more widely than the project. With the switch on, a synced task moved
   to another project stops syncing (nothing of it goes out or comes in, and
-  archiving its page doesn't archive it) until it's moved back. Coming the
-  other way, a page whose Owner can't see the project comes in unassigned (the
-  database would refuse them as its assignee), and the rest of the run carries
-  on.
+  archiving its page doesn't archive it) until it's moved back, whoever set the
+  sync up (one set up by an admin who isn't on the project it was moved into
+  never brings it back as a new task). Coming the other way, a page whose
+  Owner can't see the project comes in unassigned (the database would refuse
+  them as its assignee), and the rest of the run carries on. A database that
+  syncs with a project you can't see can't be previewed or imported by you,
+  kept in sync or not, and its sync can't be taken over by naming the same
+  database for another project ("already syncs").
 - **Names a guest can read.** A task's history row keeps the name its author had
   when it was written (0038 falls back to their email when they had no name),
   so a guest reading a task in their project can see the name of a teammate
