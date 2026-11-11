@@ -30,9 +30,28 @@ export const STASH_PREFIX = "kanbo-offline-stash-";
  *  (another account's filters can hide your tasks; their "inbox seen" time
  *  can mark your notifications as read; their finished onboarding would
  *  skip yours; their per-browser task templates would move up into your
- *  template library — lib/templates adoptLocalTemplates). Kept across your
- *  own sign-out and sign-in. */
-export const PER_ACCOUNT_KEYS = ["kanbo-filters", "kanbo-inbox-seen", "kanbo-onboarded", "kanbo-templates"];
+ *  template library — lib/templates adoptLocalTemplates; their saved project
+ *  templates hold a project's name, task titles and notes, which may be a
+ *  project the next person can't see). Kept across your own sign-out and
+ *  sign-in. ("kanbo-filters" is the name before filters were kept per list.) */
+export const PER_ACCOUNT_KEYS = ["kanbo-filters", "kanbo-inbox-seen", "kanbo-onboarded", "kanbo-templates", "kanbo-project-templates"];
+/** the same, kept under one key per list or page: task-list filters are
+ *  "kanbo-filters:<my | project id>" (lib/taskOps filtersKey) */
+export const PER_ACCOUNT_PREFIXES = ["kanbo-filters:"];
+
+/** Drop another account's snapshot and view state (exact keys, then every key under a per-account prefix). */
+function dropTheirs(s: Storage | null): void {
+  if (!s) return;
+  try {
+    [SNAPSHOT_KEY, ...PER_ACCOUNT_KEYS].forEach((k) => s.removeItem(k));
+    const doomed: string[] = [];
+    for (let i = 0; i < s.length; i++) {
+      const k = s.key(i);
+      if (k && PER_ACCOUNT_PREFIXES.some((p) => k.startsWith(p))) doomed.push(k);
+    }
+    doomed.forEach((k) => s.removeItem(k));
+  } catch { /* ignore */ }
+}
 
 /** The account whose edits this tab's in-memory queue holds. offlineQueue
  *  reads storage once per tab, so another tab changing OWNER_KEY doesn't
@@ -103,13 +122,11 @@ export function claimLocalData(uid: string): boolean {
     offlineQueue.clear();
     if (storedForUid) { try { s?.setItem(QUEUE_KEY, storedForUid); } catch { /* ignore */ } }
     // 2. drop the other account's snapshot + view state first (frees space), then park their edits
-    if (storeOwner !== uid) {
-      try { [SNAPSHOT_KEY, ...PER_ACCOUNT_KEYS].forEach((k) => s?.removeItem(k)); } catch { /* ignore */ }
-    }
+    if (storeOwner !== uid) dropTheirs(s);
     stash(s, memOwner, theirs);
   } else if (storeOwner && storeOwner !== uid) {
     // the stored cache is someone else's even though this tab's queue isn't
-    try { [SNAPSHOT_KEY, ...PER_ACCOUNT_KEYS].forEach((k) => s?.removeItem(k)); } catch { /* ignore */ }
+    dropTheirs(s);
   }
 
   // 3. bring back anything of theirs parked earlier

@@ -154,6 +154,8 @@ export interface ProjectTemplate {
   /** starter tasks to create: a built-in's, or a project's top-level tasks when saved from it */
   tasks?: ProjectBlueprintTask[];
 }
+/** this browser's saved project templates, the signed-in account's own: they hold a project's name,
+ *  task titles and notes, so auth/localData (PER_ACCOUNT_KEYS) drops them when someone else signs in here */
 const PKEY = "kanbo-project-templates";
 
 export const BUILTIN_PROJECT_TEMPLATES: ProjectTemplate[] = [

@@ -52,9 +52,12 @@ describe("local data belongs to one account at a time", () => {
     t.claimLocalData("user-a");
     t.offlineQueue.enqueueCreate(task("t1"), "user-a");
     localStorage.setItem(t.SNAPSHOT_KEY, "{}");
-    localStorage.setItem("kanbo-filters", '{"priority":"high"}');
+    localStorage.setItem("kanbo-filters:my", '{"priority":"high"}');
+    localStorage.setItem("kanbo-filters:p-secret", '{"hideDone":true}');
     localStorage.setItem("kanbo-inbox-seen", "123");
     localStorage.setItem("kanbo-templates", '[{"id":"tpl-1","name":"Theirs"}]');
+    // (a project template holds a project's name, its task titles and notes)
+    localStorage.setItem("kanbo-project-templates", '[{"id":"ptpl-1","name":"Acquisition of Target Co","emoji":"🔒","color":"#000","tasks":[{"title":"Draft SPA for Target Co","description":"Price £4.2m"}]}]');
     localStorage.setItem("kanbo-theme", "light");
     sessionStorage.setItem("kanbo-needs-password", "invite");
     t.clearLocalUserData();
@@ -67,22 +70,46 @@ describe("local data belongs to one account at a time", () => {
     // the same person signs back in (after the sign-out reload): nothing to reset
     t = await freshTab();
     expect(t.claimLocalData("user-a")).toBe(false);
-    expect(localStorage.getItem("kanbo-filters")).toBe('{"priority":"high"}');
+    expect(localStorage.getItem("kanbo-filters:my")).toBe('{"priority":"high"}');
     expect(localStorage.getItem("kanbo-inbox-seen")).toBe("123");
     expect(localStorage.getItem("kanbo-templates")).not.toBeNull();
+    expect(localStorage.getItem("kanbo-project-templates")).not.toBeNull();
 
     // someone else signs in: their view state goes, and the page must reload
     localStorage.setItem("kanbo-onboarded", "1");
     t = await freshTab();
     expect(t.claimLocalData("user-b")).toBe(true);
-    expect(localStorage.getItem("kanbo-filters")).toBeNull();
+    // (every list's filters: another account's can hide user-b's tasks)
+    expect(localStorage.getItem("kanbo-filters:my")).toBeNull();
+    expect(localStorage.getItem("kanbo-filters:p-secret")).toBeNull();
     expect(localStorage.getItem("kanbo-inbox-seen")).toBeNull();
     expect(localStorage.getItem("kanbo-onboarded")).toBeNull();
     // (their per-browser templates never move up into user-b's library)
     expect(localStorage.getItem("kanbo-templates")).toBeNull();
+    // (nor are user-a's project templates offered in user-b's New project)
+    expect(localStorage.getItem("kanbo-project-templates")).toBeNull();
+    expect(localStorage.getItem("kanbo-theme")).toBe("light");
     // …and after that reload, no loop
     t = await freshTab();
     expect(t.claimLocalData("user-b")).toBe(false);
+  });
+
+  it("a project template saved on this device (a project's name, task titles and notes) isn't offered to the next account", async () => {
+    const t = await freshTab();
+    const tpl = await import("../lib/templates");
+    const { filtersKey, readFilters } = await import("../lib/taskOps");
+    t.claimLocalData("user-a");
+    expect(tpl.storeProjectTemplate({ name: "Acquisition of Target Co", emoji: "🔒", color: "#64748B",
+      tasks: [{ title: "Draft SPA for Target Co", description: "Price £4.2m, earn-out 18 months" }] })).not.toBeNull();
+    localStorage.setItem(filtersKey("my"), JSON.stringify({ priority: "urgent", hideDone: true }));
+    t.clearLocalUserData();                       // user-a signs out…
+    expect(t.claimLocalData("user-a")).toBe(false); // …and back in: still theirs
+    expect(tpl.getUserProjectTemplates().map((x) => x.name)).toEqual(["Acquisition of Target Co"]);
+    t.clearLocalUserData();
+    t.claimLocalData("user-b");                   // someone else signs in at the same desk
+    expect(tpl.getUserProjectTemplates()).toEqual([]);
+    expect(tpl.getProjectTemplates().some((x) => /Target Co/.test(x.name))).toBe(false);
+    expect(readFilters("my")).toMatchObject({ priority: "all", hideDone: false });
   });
 
   it("clears another tab's in-memory edits when a different account signs in elsewhere", async () => {

@@ -244,12 +244,12 @@ describe("sign-out on a shared device", () => {
 describe("switching accounts on one device", () => {
   it("reloads before showing a different account than the one this device last held", async () => {
     localStorage.setItem("kanbo-local-owner", "user-a");
-    localStorage.setItem("kanbo-filters", JSON.stringify({ priority: "high" }));
+    localStorage.setItem("kanbo-filters:my", JSON.stringify({ priority: "high" }));
     signedIn("user-b");
     const { nav } = await boot("/");
     await waitFor(() => expect(nav.reload).toHaveBeenCalled());
     expect(text("user")).toBe("none");
-    expect(localStorage.getItem("kanbo-filters")).toBeNull();
+    expect(localStorage.getItem("kanbo-filters:my")).toBeNull();
     expect(localStorage.getItem("kanbo-local-owner")).toBe("user-b");
   });
 
