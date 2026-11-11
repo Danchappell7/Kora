@@ -840,6 +840,9 @@ export interface TaskDetailProps {
   readOnly?: boolean;
   /** 0058: false for a viewer (project access): no composer, replies or reactions, only Follow */
   canComment?: boolean;
+  /** 0058: may you add files (and remove your own)? A commenter may where project access is on (D8:
+   *  attaching needs rank 2). Omit: whoever isn't read-only, as before (a guest with it off can't). */
+  canAttach?: boolean;
   /** 0058: who can see this task's project (user ids): the only people offered as assignee, collaborator
    *  or @mention. Omit: everyone in its workspace (as before). */
   people?: string[];
@@ -937,7 +940,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, people: canSee, reviewers, canMoveTo, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, canAttach: canAttachProp, people: canSee, reviewers, canMoveTo, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -1021,6 +1024,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const filesLoadedAt = useRef(0);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const canAttach = canAttachProp ?? !readOnly;
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
@@ -1445,7 +1449,9 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     setThread((t) => t.filter((x) => !removedIds.has(x.id)));
     if (replyingTo && removedIds.has(replyingTo)) setReplyingTo(null);
     if (editingComment && removedIds.has(editingComment)) setEditingComment(null);
-    onPatch(task.id, { comments: Math.max(0, (task.comments || 0) - removedIds.size) });
+    // (the task's comment count is the task row's: someone who can only view or comment on it can't write
+    // that, and would be told they can't change it after the delete went through; it catches up on reload)
+    if (!readOnly) onPatch(task.id, { comments: Math.max(0, (task.comments || 0) - removedIds.size) });
     store.deleteComment(c.id).catch(reportError);
   };
   const del = () => {
@@ -1472,7 +1478,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     toast?.success("Saved as a template");
   };
   const onPickFiles = async (list: FileList | File[] | null) => {
-    if (readOnly || !list || list.length === 0) return;
+    if (!canAttach || !list || list.length === 0) return;
     const forTask = task.id;
     setUploading(true);
     for (const f of Array.from(list)) {
@@ -1487,7 +1493,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
   };
-  const canRemoveFile = (a: Attachment) => !readOnly && canDeleteAttachment(a, currentUserId, !store.configured);
+  const canRemoveFile = (a: Attachment) => canAttach && canDeleteAttachment(a, currentUserId, !store.configured);
   const removeFile = async (a: Attachment) => {
     if (!canRemoveFile(a)) return;
     if (!window.confirm(`Delete “${a.name}” from this task? This can't be undone.`)) return;
@@ -1571,7 +1577,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
     ...(onDuplicate && !readOnly ? [{ id: "duplicate", label: "Duplicate", name: "Duplicate task", icon: "copy" as IconName, title: "Duplicate task", run: () => { onDuplicate(task.id); onClose(); } }] : []),
     ...(!readOnly && moveTargets.length > 1 ? [{ id: "move", label: "Move to project…", icon: "arrowRight" as IconName, run: () => projectMenu.current?.open() }] : []),
     { id: "template", label: onSaveAsTemplate ? "Save as template…" : "Save as template", icon: "briefcase", run: onSaveAsTemplate ? () => onSaveAsTemplate(task.id) : saveAsTemplate },
-    ...(!readOnly ? [{ id: "attach", label: "Attach file", icon: "folder" as IconName, run: () => fileRef.current?.click() }] : []),
+    ...(canAttach ? [{ id: "attach", label: "Attach file", icon: "folder" as IconName, run: () => fileRef.current?.click() }] : []),
     ...(onToggleTaskReaction && !readOnly ? [{ id: "react", label: "Add reaction", icon: "message" as IconName, run: () => { setReactsOpen(true); requestAnimationFrame(() => reactsRef.current?.querySelector<HTMLElement>("button")?.focus()); } }] : []),
     ...(!readOnly && task.archivedAt && onUnarchive ? [{ id: "unarchive", label: "Unarchive", name: `Unarchive “${task.title}”`, icon: "refresh" as IconName, title: "Unarchive task", sepBefore: true, run: () => { onUnarchive(task.id); onClose(); } }] : []),
     ...(!readOnly && !task.archivedAt && onArchive ? [{ id: "archive", label: "Archive", name: `Archive “${task.title}”`, icon: "archive" as IconName, title: "Archive task", sepBefore: true, run: () => { onArchive(task.id); onClose(); } }] : []),
@@ -1784,13 +1790,13 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
         <span className="ktd-vsep" aria-hidden="true" />
         <IconButton icon="x" size="sm" label="Close task" className="ktd-tip-end" onClick={onClose} />
       </div>
-      {!readOnly && <input ref={fileRef} type="file" multiple onChange={(e) => onPickFiles(e.target.files)} hidden />}
+      {canAttach && <input ref={fileRef} type="file" multiple onChange={(e) => onPickFiles(e.target.files)} hidden />}
 
       {/* ================= body ================= */}
       <div className="ktd-body" data-drop={dragOver || undefined}
-        onDragOver={(e) => { if (!readOnly && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+        onDragOver={(e) => { if (canAttach && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
-        onDrop={(e) => { if (!readOnly && e.dataTransfer.files?.length) { e.preventDefault(); setDragOver(false); onPickFiles(e.dataTransfer.files); } }}>
+        onDrop={(e) => { if (canAttach && e.dataTransfer.files?.length) { e.preventDefault(); setDragOver(false); onPickFiles(e.dataTransfer.files); } }}>
 
         {parent && (
           <button type="button" className="ktd-parent" onClick={() => openTask(parent.id)}>
@@ -2180,7 +2186,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
           <section className="ktd-sec" aria-labelledby={`${uid}-files`}>
             <div className="ksection">
               <h3 className="ksection-title" id={`${uid}-files`}>Files{files.length > 0 && <span className="ksection-count">{files.length}</span>}</h3>
-              {!readOnly && (
+              {canAttach && (
                 <div className="ksection-action">
                   <Button variant="ghost" size="sm" icon="plus" loading={uploading} onClick={() => fileRef.current?.click()} style={{ color: "var(--ink-2)" }}>{uploading ? "Uploading…" : "Attach"}</Button>
                 </div>
@@ -2213,7 +2219,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
             <CoverPicker task={task} attachments={files} project={proj} readOnly={readOnly}
               projectCovers={!!demoAwareBoardSettings(proj?.id, proj?.boardSettings)?.covers}
               onChange={(cover) => onPatch(task.id, { coverAttachmentId: cover })}
-              onUpload={readOnly ? undefined : () => fileRef.current?.click()} />
+              onUpload={canAttach ? () => fileRef.current?.click() : undefined} />
           </div>
         )}
 

@@ -460,6 +460,10 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
       await waitFor(() => expect(add).toHaveBeenCalled(), { timeout: 8000 });
       await new Promise((r) => setTimeout(r, 300));
       expect(upd.mock.calls.filter((c) => "comments" in c[1])).toEqual([]);
+      // (and a commenter may attach a file, D8; the row itself stays read-only)
+      fireEvent.click(within(panel).getByRole("button", { name: /More actions|Actions/i }));
+      expect(await screen.findByRole("menuitem", { name: "Attach file" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: /^Delete/ })).toBeNull();
     }
   }, 60_000);
   it("0058: a task's Project picker offers only projects you can edit (and its own): never Fee review", async () => {
