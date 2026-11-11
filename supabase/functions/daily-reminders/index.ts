@@ -67,7 +67,7 @@ import { digestEmail, digestThreads, dueEmail, filterDigestItems, type DigestIte
 import { digestUpdates, emptyRhythmReport, ownerPrefs, remindOwner, updateOwners, type RemindDeps } from "../_shared/updateReminders.ts";
 import { deliverNotice, drainQueue, supabaseDrainDeps, supabaseQueueStore, type SendOutcome } from "../_shared/notifyQueue.ts";
 import { AccessLookupFailed, projectAccess } from "../_shared/projectAccess.ts";
-import { digestItemProjects, dueTasksTheySee, projectsTheySee, scopeKey, type DigestScope } from "../_shared/notifyAccess.ts";
+import { digestItemProjects, dueTasksTheySee, inArchivedProject, projectsTheySee, scopeKey, type ArchivedProject, type DigestScope } from "../_shared/notifyAccess.ts";
 
 interface TaskRow {
   id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
@@ -160,7 +160,7 @@ async function dueReminders(supa: Supa, env: Env): Promise<Response> {
   for (const t of tasks) {
     const a = t.assignee_id ?? "";
     if (!UUID.test(a)) continue;
-    if (t.project_id && archivedProjects.has(t.project_id)) continue;
+    if (inArchivedProject(t, a, archivedProjects)) continue;
     if (t.workspace_id && !activeIn.get(t.workspace_id)?.has(a)) continue;
     (byAssignee.get(a) ?? byAssignee.set(a, []).get(a)!).push(t);
   }
@@ -256,13 +256,13 @@ async function dueReminders(supa: Supa, env: Env): Promise<Response> {
   return json({ sent, skipped, failed, alreadySentToday: already, pushed, held, inDigest, unchecked, people: byAssignee.size, tasks: tasks.length });
 }
 
-/** projects among these tasks' that are archived */
-async function archivedProjectIds(supa: Supa, tasks: { project_id: string | null }[]): Promise<Set<string>> {
+/** projects among these tasks' that are archived, with where each is (inArchivedProject says which task is in one) */
+async function archivedProjectIds(supa: Supa, tasks: { project_id: string | null }[]): Promise<Map<string, ArchivedProject>> {
   const projIds = [...new Set(tasks.map((t) => t.project_id).filter((p): p is string => !!p && UUID.test(p)))];
-  const out = new Set<string>();
+  const out = new Map<string, ArchivedProject>();
   for (let i = 0; i < projIds.length; i += 200) {
-    const { data } = await supa.from("projects").select("id").in("id", projIds.slice(i, i + 200)).not("archived_at", "is", null);
-    for (const p of data ?? []) out.add(p.id);
+    const { data } = await supa.from("projects").select("id,workspace_id,user_id").in("id", projIds.slice(i, i + 200)).not("archived_at", "is", null);
+    for (const p of data ?? []) out.set(p.id, { workspaceId: p.workspace_id ?? null, owner: p.user_id ?? null });
   }
   return out;
 }
@@ -360,7 +360,7 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
       .order("due_date").limit(100);
     const rows = (ts ?? []) as (DueTask & { user_id: string; workspace_id: string | null; project_id: string | null })[];
     const archived = await archivedProjectIds(supa, rows);
-    const open = rows.filter((t) => canSee(t) && !(t.project_id && archived.has(t.project_id)));
+    const open = rows.filter((t) => canSee(t) && !inArchivedProject(t, userId, archived));
     const theirs = new Set(await access.visibleTaskIds(userId, open.map((t) => t.id)));
     due = open.filter((t) => theirs.has(t.id)).map((t) => ({ id: t.id, title: t.title, due_date: t.due_date }));
   }

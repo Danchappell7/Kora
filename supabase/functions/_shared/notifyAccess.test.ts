@@ -4,7 +4,7 @@
 // everyone in the workspace, as today. A failed check sends nothing.
 import { describe, expect, it, vi } from "vitest";
 import { projectAccess } from "./projectAccess.ts";
-import { digestItemProjects, dueTasksTheySee, projectNoticeGate, projectsTheySee, scopeKey, taskNoticeGate } from "./notifyAccess.ts";
+import { digestItemProjects, dueTasksTheySee, inArchivedProject, projectNoticeGate, projectsTheySee, scopeKey, taskNoticeGate } from "./notifyAccess.ts";
 import { AccessLookupFailed } from "./projectAccess.ts";
 import type { DigestItem } from "./notifyCompose.ts";
 
@@ -176,5 +176,25 @@ describe("the morning due list (daily-reminders runs it once a day)", () => {
     const { access, rpc } = before0058();
     expect(await dueTasksTheySee(access, MAYA, [TASK, TASK2], { sleep })).toEqual([TASK, TASK2]);
     expect(rpc).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the due list's archived projects (daily-reminders)", () => {
+  const OTHER_WS = "88888888-8888-4888-8888-888888888888";
+  const MINE = "99999999-9999-4999-8999-999999999999";
+  const archived = new Map([
+    [PAY, { workspaceId: WS, owner: OWNER }],          // a team project (Private, say), archived
+    [MINE, { workspaceId: null, owner: THEO }],        // Theo's own personal project, archived
+  ]);
+  it("leaves off a task in an archived project only where the task really is in it", () => {
+    expect(inArchivedProject({ project_id: PAY, workspace_id: WS }, MAYA, archived)).toBe(true);
+    expect(inArchivedProject({ project_id: MINE, workspace_id: null }, THEO, archived)).toBe(true);
+    expect(inArchivedProject({ project_id: TASK, workspace_id: WS }, MAYA, archived)).toBe(false);   // not archived
+    expect(inArchivedProject({ project_id: null, workspace_id: null }, THEO, archived)).toBe(false);
+  });
+  it("a project id put on a task that isn't in it (tasks.project_id is free text) tells nothing: a Personal task naming a team project, or someone else's", () => {
+    expect(inArchivedProject({ project_id: PAY, workspace_id: null }, THEO, archived)).toBe(false);
+    expect(inArchivedProject({ project_id: MINE, workspace_id: null }, MAYA, archived)).toBe(false);
+    expect(inArchivedProject({ project_id: PAY, workspace_id: OTHER_WS }, THEO, archived)).toBe(false);
   });
 });

@@ -165,3 +165,19 @@ export async function dueTasksTheySee(access: ProjectAccess, userId: string, ids
     }
   }
 }
+
+/** An archived project, as the due list and the digest read it (with the service role): where it is. */
+export interface ArchivedProject { workspaceId: string | null; owner: string | null }
+/**
+ * Is a task on `person`'s due list in an archived project (left off the list, as the app hides it)? A
+ * project counts only where the task really is in it: a team task's own workspace's, or, for a Personal
+ * task, `person`'s own personal project (the calendar feed's rule: icsFeed). tasks.project_id is free
+ * text, so anyone can put another project's id on a Personal task of their own: that names nothing, and
+ * mustn't tell them from their email whether that project (a Private one they can't see, say) is archived.
+ */
+export function inArchivedProject(t: { project_id: string | null; workspace_id: string | null }, person: string,
+  archived: ReadonlyMap<string, ArchivedProject>): boolean {
+  const p = t.project_id ? archived.get(t.project_id) : undefined;
+  if (!p) return false;
+  return t.workspace_id ? p.workspaceId === t.workspace_id : p.workspaceId === null && p.owner === person;
+}
