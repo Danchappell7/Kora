@@ -258,6 +258,25 @@ describe("GET: a Members only or Private project (0058, Project access on)", () 
     expect((await get()).status).toBe(200);
     expect(db.rpcs).toEqual([]);
   });
+  it("asks about the project it loaded, by that project's own id: a form filed under the id in capitals still names nothing", async () => {
+    // (forms.project_id is free text; Postgres finds a uuid column's row whatever the case of the text it's given)
+    const P = "dddddddd-2222-4222-8222-eeeeeeeeeeee";
+    db.rows("projects")[0].id = P;
+    form().project_id = P.toUpperCase();
+    const from = db.from.bind(db);
+    db.from = (t: string) => {
+      const q = from(t);
+      if (t === "projects") { const eq = q.eq.bind(q); q.eq = (c: string, v: unknown) => eq(c, c === "id" ? String(v).toLowerCase() : v); }
+      return q;
+    };
+    const asked: string[] = [];
+    db.access = { open: (p) => { asked.push(p); return p !== P; } };
+    const r = await get();
+    expect(r.status).toBe(200);
+    expect(asked).toEqual([P]);
+    expect((r.body.form as { project: unknown }).project).toEqual({ name: "Design requests", emoji: "", color: expect.any(String) });
+    expect(JSON.stringify(r.body)).not.toContain("Website refresh");
+  });
 });
 
 describe("POST: filing a request", () => {

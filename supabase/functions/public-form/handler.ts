@@ -361,9 +361,11 @@ export async function handlePublicForm(req: PublicFormRequest, deps: PublicFormD
     const { form, project, workspace } = found.target;
     // a Members only or Private project (0058, switched on) isn't named on a page anyone with the link can read.
     // When that can't be told just now, the page still opens, with the form's own name (it names nothing)
+    // (asked about the project as loaded, by its own id: forms.project_id is free text, and an id there in
+    // capitals still loads the project)
     let open = true;
-    if (form.workspace_id && UUID.test(String(form.project_id))) {
-      try { open = await projectAccess(db).projectIsOpen(form.workspace_id, String(form.project_id)); } catch (e) {
+    if (form.workspace_id && UUID.test(String(project.id))) {
+      try { open = await projectAccess(db).projectIsOpen(form.workspace_id, String(project.id)); } catch (e) {
         log?.("public-form: project access lookup failed", dbError(e));
         open = false;
       }
