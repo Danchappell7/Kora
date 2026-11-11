@@ -228,7 +228,7 @@ describe("store — plans that follow you (task_user_state)", () => {
     expect(rows).toContainEqual({ task_id: U(4), user_id: "user-a", plan_today: true, plan_day: today, scheduled: null });
   });
 
-  it("Kanbo's reason never goes on a task row: a write carrying one clears the column and keeps the text in the writer's own plan, a new task carries none, and a load brings someone else's row's none (the person's own plan's shows on their own task)", async () => {
+  it("Kanbo's reason never goes on a task row: a write carrying one clears the column and keeps the text in the writer's own plan, a new task carries none, and a load brings no row's reason, not even on your own task (your own plan's shows there)", async () => {
     // Prioritise ranks all your open tasks in one batch, so a reason can name one in a Private project; the
     // row is read by everyone who can see the task (and by every business, with All businesses on)
     const SECRET = "Unblocks “Renew Theo's contract” — finish it first.";
@@ -242,7 +242,9 @@ describe("store — plans that follow you (task_user_state)", () => {
     const b = await store.bootstrap({ id: "user-a" });
     const byId = new Map(b.tasks.map((t) => [t.id, t]));
     expect(byId.get(U(2))).toMatchObject({ aiScore: 80, aiReason: undefined });       // bob's: his score, none of his reason
-    expect(byId.get(U(1))?.aiReason).toBe("Older reason of mine");                     // yours
+    // yours, but the row's: written before by whoever ranked it (perhaps someone who handed it to you), and
+    // it can name a task you can't see. Only your own plan's shows
+    expect(byId.get(U(1))).toMatchObject({ aiScore: 90, aiReason: undefined });
     expect(byId.get(U(3))?.aiReason).toBe("Your own reason");                          // yours, from your plan
     await store.updateTask(U(1), { aiScore: 99, aiReason: SECRET });
     await store.createTask({ ...b.tasks[0], id: "tmp-1", title: "A copy", aiReason: SECRET }, "user-a");

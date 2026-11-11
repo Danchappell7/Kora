@@ -176,6 +176,10 @@ create index if not exists trash_notion_links_idx on public.trash using gin ((sn
   where restored_at is null;
 create index if not exists trash_notion_syncs_idx on public.trash using gin ((snapshot -> 'notion_syncs') jsonb_path_ops)
   where restored_at is null;
+-- (and the links that name a database: user_notion_database_hidden reads them per preview, import and link
+-- read)
+create index if not exists notion_links_database_idx on public.notion_links (workspace_id, notion_database_id)
+  where notion_database_id is not null;
 -- 1f. whose access a webhook's deliveries follow once its address changes hands (null: its creator's)
 alter table public.webhooks add column if not exists url_set_by uuid references auth.users (id) on delete set null;
 -- 1g. the ids of team projects deleted for good (their bin row purged, by hand or by housekeeping),
@@ -776,7 +780,9 @@ $$;
 --     (notion_links_guard fires only on writes to the link), and which project here it left isn't
 --     recorded. So the database is judged by its tasks still here; a task that has left counts only when
 --     none is (its pages may still hold what a two-way sync wrote from a closed project), and then it's
---     closed to all but the workspace's owners, who see every project.
+--     closed to all but the workspace's owners, who see every project. A task still here is one that any
+--     of the database's links names, a sync's too (still_here: Keep in sync takes an import's plain links
+--     over, and a live sync is judged by its project, above); a plain link by its task's project.
 --   - Such a project is in the bin, or its tasks are: the syncs and links their bin entries hold, each
 --     judged by its row's access (a binned task's link whose sync is still here is that sync's project's,
 --     as a live one is). Once the project is deleted for good, the databases its row recorded (1g); once
@@ -789,12 +795,16 @@ returns boolean language sql security definer stable set search_path = public as
   with linked as (
     select coalesce(t.workspace_id = l.workspace_id, false) as here, t.project_id
       from public.notion_links l join public.tasks t on t.id = l.task_id
-     where l.workspace_id = p_ws and l.sync_id is null and l.notion_database_id = p_db)
+     where l.workspace_id = p_ws and l.sync_id is null and l.notion_database_id = p_db),
+  -- (a task of the database's still here, whichever link names it: plain, or a sync's)
+  still_here as (
+    select 1 from public.notion_links l join public.tasks t on t.id = l.task_id
+     where l.workspace_id = p_ws and l.notion_database_id = p_db and t.workspace_id = p_ws)
   select p_user is not null and p_db is not null and public.pa_on(p_ws) and (
        exists (select 1 from public.notion_syncs s
                 where s.workspace_id = p_ws and s.database_id = p_db and public.pa_rank_for(p_user, p_ws, s.project_id::text) < 1)
     or exists (select 1 from linked k where k.here and public.pa_rank_for(p_user, p_ws, k.project_id) < 1)
-    or (exists (select 1 from linked k where not k.here) and not exists (select 1 from linked k where k.here)
+    or (exists (select 1 from linked k where not k.here) and not exists (select 1 from still_here)
         and public.user_ws_role(p_user, p_ws) <> 'owner')
     or exists (select 1 from public.trash r
                 where r.workspace_id = p_ws and r.restored_at is null
@@ -812,9 +822,18 @@ returns boolean language sql security definer stable set search_path = public as
                   and not exists (select 1 from public.notion_syncs s where s.id = x.sync_id)
                   -- (one whose task had left the workspace, which names no project here, as a link whose
                   -- task has left: only once none of the database's tasks is still here)
-                  and (x.project_id is not null or not exists (select 1 from linked k where k.here))
+                  and (x.project_id is not null or not exists (select 1 from still_here))
                   and public.pa_snapshot_rank_for(p_user, p_ws, x.project_id, x.access) < 1));
 $$;
+-- (the caller's, for notion_links' read rule: a link someone added by hand to a database's id, made before
+-- that database closed to the caller, would read its title from the page cache, and the notion function
+-- would fetch it again on request; notion_link_page refuses a new one)
+create or replace function public.pa_notion_database_hidden(p_ws uuid, p_db text)
+returns boolean language sql security definer stable set search_path = public as $$
+  select public.user_notion_database_hidden(auth.uid(), p_ws, p_db);
+$$;
+revoke execute on function public.pa_notion_database_hidden(uuid, text) from public, anon;
+grant execute on function public.pa_notion_database_hidden(uuid, text) to authenticated;
 do $svc$
 declare f text;
 begin
@@ -1338,6 +1357,24 @@ begin
   return n;
 end; $$;
 
+-- 2s. Kanbo's ranking reasons left on a workspace's task rows (tasks.ai_reason): the app before this
+-- release wrote each one there, worked out from a batch of its writer's tasks, so it can name a task in
+-- a project that someone reading the row (who joins later, say, or is handed the task) must not see. The
+-- reason is its assignee's own, and the app keeps it in their plan (0043's task_user_state, which it
+-- mirrored there too): switching on clears the rows' (not copied into anyone's plan: the row doesn't say
+-- whose it was, and a task handed on keeps its last assignee's). It counts as an edit of those tasks
+-- (0046 moves their updated_at), so a Notion sync looks at each once more and finds nothing new. With
+-- the switch on, no row takes one again (pa_trg_tasks). Answers how many.
+create or replace function public.pa_clear_reasons(p_ws uuid)
+returns integer language plpgsql security definer set search_path = public as $$
+declare n integer;
+begin
+  if p_ws is null then return 0; end if;
+  update public.tasks set ai_reason = null where workspace_id = p_ws and ai_reason is not null;
+  get diagnostics n = row_count;
+  return n;
+end; $$;
+
 do $internal$
 declare f text;
 begin
@@ -1346,7 +1383,8 @@ begin
                            'public.pa_restore_landing(uuid,jsonb,text,jsonb)', 'public.pa_access_without(jsonb,uuid,uuid)',
                            'public.pa_snapshot_without(jsonb,uuid,uuid)', 'public.pa_forget_member(uuid,uuid)',
                            'public.pa_forget_departed()', 'public.pa_summary_scoped(text,uuid,uuid,text,jsonb,boolean)',
-                           'public.pa_scrub_bin(uuid)', 'public.pa_snap_part(jsonb,uuid[])', 'public.pa_split_bin(uuid)'] loop
+                           'public.pa_scrub_bin(uuid)', 'public.pa_snap_part(jsonb,uuid[])', 'public.pa_split_bin(uuid)',
+                           'public.pa_clear_reasons(uuid)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
 end $internal$;
@@ -1366,9 +1404,15 @@ end $internal$;
 -- the whole workspace meanwhile: the undo file keeps visibility as it was). Nobody who was taken off a
 -- project comes back.
 -- (the undo file's guard, which kept every project's visibility as it was while this file was out,
--- goes: from here on trg_projects_pa_guard decides who changes it. Every run.)
+-- goes: from here on trg_projects_pa_guard decides who changes it; and so do its stand-ins for the bin's
+-- capture and purge triggers, which recorded each new bin entry's access, and each project deleted for
+-- good, meanwhile: trg_trash_pa_capture and trg_trash_pa_purge do again. Every run.)
 drop trigger if exists trg_projects_visibility_kept on public.projects;
 drop function if exists public.project_visibility_kept();
+drop trigger if exists trg_trash_access_kept on public.trash;
+drop function if exists public.trash_access_kept();
+drop trigger if exists trg_trash_purge_kept on public.trash;
+drop function if exists public.trash_purge_kept();
 
 do $seed$
 declare resync boolean;
@@ -1694,11 +1738,12 @@ begin
   return new;
 end; $$;
 -- workspaces, after: switching on (set_project_access, or the SQL editor) drops held notices and
--- pending webhooks for people who won't see their work, splits the bin's entries that took another
--- project's sub-tasks along (2r), and the bin's summaries forget a parent's title from another project
--- (a sub-task binned while it was off, or before 0058: 2q); so does the workspace changing owners (the
--- old owner may be an admin now, who doesn't see every project). An old owner with no member row of
--- their own has left with the hand-over: they take nothing with them (2p), as if their row had gone.
+-- pending webhooks for people who won't see their work (so does the workspace changing owners: the
+-- old owner may be an admin now, who doesn't see every project), splits the bin's entries that took
+-- another project's sub-tasks along (2r), the bin's summaries forget a parent's title from another
+-- project (a sub-task binned while it was off, or before 0058: 2q), and its task rows lose Kanbo's
+-- ranking reasons (2s). An old owner with no member row of their own has left with the hand-over:
+-- they take nothing with them (2p), as if their row had gone.
 create or replace function public.pa_trg_workspaces_after() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare switched_on boolean := new.project_access and not coalesce(old.project_access, false);
@@ -1706,6 +1751,7 @@ begin
   if switched_on then
     perform public.pa_split_bin(new.id);
     perform public.pa_scrub_bin(new.id);
+    perform public.pa_clear_reasons(new.id);
   end if;
   if new.owner_id is distinct from old.owner_id and old.owner_id is not null then
     perform public.pa_forget_member(new.id, old.owner_id);
@@ -1763,6 +1809,14 @@ begin
           raise exception 'not authorized';
         end if;
       end if;
+    end if;
+    -- (a new project given to someone else has an owner an owner change could give it: an active
+    -- non-guest here, as the UPDATE below asks; while the switch is on, or a project that isn't Whole
+    -- workspace)
+    if client and not restoring and new.owner_id is not null and new.owner_id is distinct from auth.uid()
+       and (public.pa_on(new.workspace_id) or new.visibility <> 'workspace')
+       and public.user_ws_role(new.owner_id, new.workspace_id) not in ('owner', 'admin', 'member') then
+      raise exception 'invalid owner';
     end if;
     if not restoring then
       -- its people: who's active here and isn't its owner, plus its maker (an active non-guest who isn't the owner)
@@ -2064,7 +2118,7 @@ end; $$;
 -- suspended or awaiting approval by the project they'll see once they can act (pa_assignee_rank), and
 -- someone who has left the workspace keeps a task they already had when it moves (nothing here is
 -- theirs to see, wherever it goes: as before, and as remove_member leaves it), but is never given one.
--- And no client stores Kanbo's ranking reason (ai_reason) on the row: it's its assignee's own.
+-- And a team task's row never holds Kanbo's ranking reason (ai_reason): it's its assignee's own.
 create or replace function public.pa_trg_tasks() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -2075,6 +2129,14 @@ declare
   ar integer;
 begin
   if new.workspace_id is null or not public.pa_on(new.workspace_id) then return new; end if;
+  -- (Kanbo's reason for ranking a task is its assignee's own, kept in their plan (0043's task_user_state):
+  -- one on the row is read by everyone who can see the task, and one worked out from a batch that held
+  -- their tasks in other projects can name a Members only or Private one's (one written before the switch
+  -- went on can name one that someone who joins later, or is handed the task, must not see). So the row
+  -- holds none here, whoever writes it: an older tab, the API's next occurrence, the bin putting a task
+  -- back, a task moved in from elsewhere, a hand-on. Switching on clears those already there
+  -- (pa_trg_workspaces_after: pa_clear_reasons). Clearing one is fine)
+  if new.ai_reason is not null then new.ai_reason := null; end if;
   if public.pa_restoring() then
     -- (back from the bin under a parent that's in another project now: it comes back on its own)
     if new.parent_id is not null then
@@ -2084,14 +2146,6 @@ begin
       end if;
     end if;
     return new;
-  end if;
-  -- (Kanbo's reason for ranking a task is its assignee's own, kept in their plan (0043's task_user_state):
-  -- one on the row is read by everyone who can see the task, and one worked out from a batch that held
-  -- their tasks in other projects can name a Members only or Private one's. So a client stores none on a
-  -- team task here, and an older tab's is dropped; clearing one is fine)
-  if public.pa_is_client() and new.ai_reason is not null
-     and (tg_op = 'INSERT' or new.ai_reason is distinct from old.ai_reason) then
-    new.ai_reason := null;
   end if;
   if new.parent_id is not null
      and (tg_op = 'INSERT' or new.parent_id is distinct from old.parent_id or new.project_id is distinct from old.project_id
@@ -2838,9 +2892,12 @@ language sql immutable set search_path = pg_catalog as $$
                    'not shared or user_id = auth.uid() or ' || g.p || 'public.pa_view_rank(workspace_id, query) >= 1', null from g
   union all select 'notion_syncs', 'project access: read', 'select', false, g.p || 'public.can_see_project(project_id)', null from g
   -- (a link to a page that a task you can't see is synced with or was imported from, live, in the bin or
-  -- deleted for good: its page title is that task's, kept so by a two-way sync: pa_notion_page_hidden)
+  -- deleted for good: its page title is that task's, kept so by a two-way sync: pa_notion_page_hidden. Nor
+  -- one added by hand to a database closed to you: its title is the database's: pa_notion_database_hidden)
   union all select 'notion_links', 'project access: read', 'select', false,
-                   g.p || '(public.can_see_task(task_id) and not public.pa_notion_page_hidden(workspace_id, notion_page_id))', null from g
+                   g.p || '(public.can_see_task(task_id) and not public.pa_notion_page_hidden(workspace_id, notion_page_id) '
+                   || 'and (kind = ''synced'' or notion_database_id is not null '
+                   || 'or not public.pa_notion_database_hidden(workspace_id, notion_page_id)))', null from g
   union all select 'notion_page_cache', 'project access: read', 'select', false,
                    g.p || 'exists (select 1 from public.notion_links l where l.workspace_id = notion_page_cache.workspace_id '
                    || 'and l.notion_page_id = notion_page_cache.notion_page_id)', null from g

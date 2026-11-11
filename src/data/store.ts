@@ -239,9 +239,11 @@ interface TaskRow {
   slack_permalink?: string | null;
 }
 
-/** A task row as the app holds it, for `uid`. Kanbo's reason for ranking a task (ai_reason) is its
- *  assignee's: on anyone else's task it isn't loaded (see patchToRow). */
-function rowToTask(r: TaskRow, uid?: string): Task {
+/** A task row as the app holds it. Kanbo's reason for ranking a task (ai_reason) is never loaded from the
+ *  row: it's its assignee's own, and only their plan (task_user_state: fillOwnPlan) holds it. One the app
+ *  wrote there before (see patchToRow) was worked out from its writer's tasks, and can name a task the
+ *  assignee now (someone it was handed to, say) mustn't see; 0058 clears those when the switch goes on. */
+function rowToTask(r: TaskRow): Task {
   const subs = (r.subtasks ?? []).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   return {
     id: r.id,
@@ -274,7 +276,7 @@ function rowToTask(r: TaskRow, uid?: string): Task {
     focusMin: r.focus_min,
     comments: r.comments,
     aiScore: r.ai_score,
-    aiReason: (uid === undefined || r.assignee_id === uid ? r.ai_reason : null) ?? undefined,
+    aiReason: undefined,
     energy: r.energy ?? energyOf({ tags: r.tags ?? [] } as Task),
     dur: r.dur ?? r.focus_min,
     scheduled: r.scheduled ?? null,
@@ -1988,7 +1990,7 @@ export const store = {
     const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
     setReferenceData(ref);
     const boot: Bootstrap = {
-      tasks: planLive ? mergeOwnPlans(taskRows.map((r) => rowToTask(r, uid)), uid, todayISO()) : taskRows.map((r) => rowToTask(r, uid)),
+      tasks: planLive ? mergeOwnPlans(taskRows.map(rowToTask), uid, todayISO()) : taskRows.map(rowToTask),
       projects,
       tags,
       workspaces,

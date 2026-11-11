@@ -1029,7 +1029,9 @@ steps; nothing breaks while you wait.
    the app) on every computer and phone they use: a tab left open since before
    the website update keeps the old screens, which don't know which projects are
    private (its Slack stand-up and Radar posts are refused until it's
-   reloaded, and the reasons its Prioritise saves on tasks are dropped). In each guest's projects, open About › Contributors and tick them (a guest is
+   reloaded, and the reasons its Prioritise saves on tasks are dropped; switching
+   on clears the older ones from the tasks too, and each person's own stay in
+   their plan). In each guest's projects, open About › Contributors and tick them (a guest is
    added as a commenter), until the preview names every guest with the projects
    they should keep, and no longer says a guest has open tasks they won't see
    (the preview names them: add the guest to that project, or hand the task
@@ -1068,7 +1070,8 @@ steps; nothing breaks while you wait.
    (paste, **Run**), then its VERIFY query, every column `true`:
    `sed -n '/^-- select$/,/;$/p' ~/Downloads/kora-app/supabase/rollback/0058_project_access_undo.sql | sed 's/^-- \{0,1\}//' | pbcopy`.
    It keeps the data, and while it's out nobody can change a project's
-   visibility from the app or the API. Running 0058 again after it puts
+   visibility from the app or the API, nor move a Members only or Private
+   project out of its business. Running 0058 again after it puts
    everything back; anyone added to a Members only or Private project while it
    was out is added again in About › People & access, and an owner changed
    while it was out isn't put back (check the Owner in About of each Members

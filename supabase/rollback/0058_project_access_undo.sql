@@ -8,13 +8,16 @@
 --
 -- This file removes 0058's rules and puts the helpers' old bodies back, KEEPING THE DATA:
 -- who's on which project (project_members, project_member_invites), each project's
--- visibility (which nobody can change from the app or the API while this is out: section 3),
+-- visibility (which nobody can change from the app or the API while this is out, nor move a
+-- Members only or Private project out of its workspace, nor reuse an id 0058 retired: section 3),
 -- the workspaces' settings (every switch is turned off: with no rules behind
--- it, a switch that says "on" would only mislead the app), trash.access,
+-- it, a switch that says "on" would only mislead the app), trash.access (which the bin goes on
+-- recording while this is out: section 3b),
 -- audit_events.project_id / access, webhooks.url_set_by, the ids of projects deleted for
 -- good (project_ids_retired), where Members only and Private projects left a workspace from
 -- (project_departures) and the Notion pages tasks left behind (notion_pages_retired): nothing reads
--- those three while 0058 is out (nor records a page left behind meanwhile). While it's out, the app keeps a
+-- those three while 0058 is out (but section 3, which keeps the first two's ids from new projects; nor
+-- does anything record a page left behind meanwhile). While it's out, the app keeps a
 -- project's people in contributor_ids again (as before 0058) and nothing keeps project_members
 -- in step. Running 0058 again afterwards puts every rule back and brings project_members back
 -- to contributor_ids (people taken off meanwhile, or who left the workspace, lose their rows;
@@ -136,8 +139,15 @@ end $undo$;
 -- and the service role still may): a Members only or Private project opened up meanwhile would stay open
 -- when 0058 runs again, and whoever listed themselves on it would be on it. Nor a team project's id, as
 -- with 0058 in: its work (which names it by a text id) would be left loose, and a project made under the
--- old id meanwhile would have it, and the say over who sees it, when 0058 runs again. 0058 takes this
--- out again.
+-- old id meanwhile would have it, and the say over who sees it, when 0058 runs again. Nor does a Members
+-- only or Private project leave its workspace (for someone's Personal list, or another workspace) from the
+-- app or the API: nothing moves its work with it, and with no departure recorded (0058's
+-- trg_projects_pa_after is out) what it left behind would be loose work every member reads and edits when
+-- 0058 runs again, and whoever moved it could bring it back as theirs. Nor, whoever asks, is a project made
+-- (or renumbered) under an id deleted for good or one a Members only or Private project left a workspace
+-- under (project_ids_retired, project_departures: kept while this is out), as with 0058 in: that project
+-- would take over what still names the id (its history, its bin entries) when 0058 runs again. The bin
+-- putting a project back is still it. 0058 takes this out again.
 do $vis$
 begin
   if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'projects' and column_name = 'visibility') then
@@ -145,9 +155,28 @@ begin
     execute $fn$
 create or replace function public.project_visibility_kept() returns trigger
 language plpgsql security definer set search_path = public as $b$
+declare restoring boolean := coalesce(current_setting('kanbo.restoring', true), '') = 'on'
+                             or coalesce(current_setting('kanbo.trash_bypass', true), '') = 'on';
 begin
+  if tg_op = 'INSERT' or new.id is distinct from old.id then
+    if to_regclass('public.project_ids_retired') is not null then
+      if exists (select 1 from public.project_ids_retired g where g.id = new.id) then
+        raise exception 'id in use' using errcode = 'unique_violation';
+      end if;
+    end if;
+    if not restoring and to_regclass('public.project_departures') is not null then
+      if exists (select 1 from public.project_departures d where d.id = new.id) then
+        raise exception 'id in use' using errcode = 'unique_violation';
+      end if;
+    end if;
+  end if;
+  if tg_op = 'INSERT' then return new; end if;
   if coalesce(auth.role(), '') in ('authenticated', 'anon') then
     if new.id is distinct from old.id and coalesce(old.workspace_id, new.workspace_id) is not null then
+      raise exception 'not authorized';
+    end if;
+    if new.workspace_id is distinct from old.workspace_id and old.workspace_id is not null
+       and coalesce(old.visibility, 'workspace') <> 'workspace' then
       raise exception 'not authorized';
     end if;
     new.visibility := old.visibility;
@@ -156,10 +185,93 @@ begin
 end; $b$ $fn$;
     revoke execute on function public.project_visibility_kept() from public, anon, authenticated;
     drop trigger if exists trg_projects_visibility_kept on public.projects;
-    create trigger trg_projects_visibility_kept before update of visibility, id on public.projects
+    create trigger trg_projects_visibility_kept before insert or update of visibility, id, workspace_id on public.projects
       for each row execute function public.project_visibility_kept();
   end if;
 end $vis$;
+
+-- ---------- 3b. the bin still records who could see what it takes, and what it deletes for good ----------
+-- (trash.access, as 0058's capture trigger does, without its functions: the project's visibility, owner and
+-- people as they are when its work, or the project itself, goes to the bin.) A Members only or Private
+-- project deleted while this is out leaves its updates, fields, rules and forms behind under its id, and
+-- once 0058 runs again they, and the bin entry, keep the access its row records; with none recorded they'd
+-- fall to the loose rule (every member reads and edits them), and a restore would bring back whoever listed
+-- themselves on its contributors meanwhile. Nor is a project deleted for good meanwhile (purge_trash, or
+-- the bin's daily clean-up) forgotten: its id is retired with that access (project_ids_retired, as 0058's
+-- purge trigger does), so what it left behind keeps it and no new project takes the id. 0058 takes both
+-- out again.
+do $bin$
+begin
+  if to_regclass('public.trash') is not null and to_regclass('public.project_members') is not null
+     and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'trash' and column_name = 'access')
+     and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'projects' and column_name = 'visibility') then
+    execute $fn$
+create or replace function public.trash_access_kept() returns trigger
+language plpgsql security definer set search_path = public as $b$
+declare pid uuid := public.kanbo_uuid(new.project_id);
+begin
+  if new.access is not null or new.workspace_id is null or pid is null then return new; end if;
+  select jsonb_build_object('v', 1, 'visibility', p.visibility, 'owner', p.owner_id,
+           'members', coalesce((select jsonb_agg(jsonb_build_array(m.user_id, m.role) order by m.created_at, m.id)
+                                  from public.project_members m where m.project_id = p.id), '[]'::jsonb))
+    into new.access
+    from public.projects p where p.id = pid and p.workspace_id = new.workspace_id;
+  if new.access is null and to_regclass('public.project_ids_retired') is not null then
+    select g.access into new.access from public.project_ids_retired g where g.id = pid and g.workspace_id = new.workspace_id;
+  end if;
+  if new.access is null and to_regclass('public.project_departures') is not null then
+    select d.access into new.access from public.project_departures d where d.id = pid and d.workspace_id = new.workspace_id;
+  end if;
+  return new;
+end; $b$ $fn$;
+    revoke execute on function public.trash_access_kept() from public, anon, authenticated;
+    drop trigger if exists trg_trash_access_kept on public.trash;
+    create trigger trg_trash_access_kept before insert on public.trash
+      for each row execute function public.trash_access_kept();
+  end if;
+  if to_regclass('public.trash') is not null and to_regclass('public.project_ids_retired') is not null
+     and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'trash' and column_name = 'access') then
+    execute $fn$
+create or replace function public.trash_purge_kept() returns trigger
+language plpgsql security definer set search_path = public as $b$
+begin
+  if old.kind = 'project' and old.restored_at is null and old.workspace_id is not null
+     and not exists (select 1 from public.projects p where p.id = old.item_id)
+     and exists (select 1 from public.workspaces w where w.id = old.workspace_id) then     -- (not the workspace closing)
+    insert into public.project_ids_retired (id, workspace_id, access, notion_databases, notion_pages)
+    values (old.item_id, old.workspace_id,
+            coalesce(old.access, (select e.access from public.audit_events e
+                                   where e.workspace_id = old.workspace_id and e.target_kind = 'project' and e.target_id = old.item_id::text
+                                     and e.access is not null
+                                   order by e.created_at desc, e.id desc limit 1)),
+            array(select distinct x from (
+                    select e ->> 'database_id' as x from jsonb_array_elements(case when jsonb_typeof(old.snapshot -> 'notion_syncs') = 'array'
+                                                                                  then old.snapshot -> 'notion_syncs' else '[]'::jsonb end) e
+                    union
+                    select e ->> 'notion_database_id' from jsonb_array_elements(case when jsonb_typeof(old.snapshot -> 'notion_links') = 'array'
+                                                                                     then old.snapshot -> 'notion_links' else '[]'::jsonb end) e
+                     where not exists (select 1 from public.notion_syncs n where n.id = public.kanbo_uuid(e ->> 'sync_id'))) d
+                   where x is not null order by 1),
+            array(select distinct e ->> 'notion_page_id'
+                    from jsonb_array_elements(case when jsonb_typeof(old.snapshot -> 'notion_links') = 'array'
+                                                   then old.snapshot -> 'notion_links' else '[]'::jsonb end) e
+                   where e ->> 'notion_page_id' is not null and (e ->> 'kind' = 'synced' or e ->> 'notion_database_id' is not null)
+                   order by 1))
+    on conflict (id) do update set workspace_id = excluded.workspace_id,
+                                   access = coalesce(excluded.access, public.project_ids_retired.access), retired_at = now(),
+                                   notion_databases = array(select distinct x from unnest(public.project_ids_retired.notion_databases
+                                                                                          || excluded.notion_databases) x order by 1),
+                                   notion_pages = array(select distinct x from unnest(public.project_ids_retired.notion_pages
+                                                                                      || excluded.notion_pages) x order by 1);
+  end if;
+  return old;
+end; $b$ $fn$;
+    revoke execute on function public.trash_purge_kept() from public, anon, authenticated;
+    drop trigger if exists trg_trash_purge_kept on public.trash;
+    create trigger trg_trash_purge_kept before delete on public.trash
+      for each row execute function public.trash_purge_kept();
+  end if;
+end $bin$;
 
 -- ---------- 4. the functions the app calls go (the app then says project access isn't switched on yet) ----------
 drop function if exists public.set_project_access(uuid, boolean, text, boolean);
@@ -771,6 +883,12 @@ delete from public.schema_migrations where version = '0058';
 -- ---------- 8. only if you're sure: this loses who's on which project ----------
 -- Uncomment and run on its own, after everything above, to take 0058's data out too.
 --
+-- drop trigger if exists trg_projects_visibility_kept on public.projects;
+-- drop function if exists public.project_visibility_kept();
+-- drop trigger if exists trg_trash_access_kept on public.trash;
+-- drop function if exists public.trash_access_kept();
+-- drop trigger if exists trg_trash_purge_kept on public.trash;
+-- drop function if exists public.trash_purge_kept();
 -- drop table if exists public.project_member_invites;
 -- drop table if exists public.project_members;
 -- drop table if exists public.project_ids_retired;
@@ -793,5 +911,7 @@ delete from public.schema_migrations where version = '0058';
 --   not exists (select 1 from pg_trigger where tgname in ('trg_projects_pa_guard', 'trg_tasks_pa', 'trg_activity_pa_gate'))  as triggers_gone,
 --   position('pa_' in (select prosrc from pg_proc where oid = 'public.can_see_task(uuid)'::regprocedure)) = 0     as old_helpers,
 --   not exists (select 1 from public.workspaces where project_access)                                    as every_switch_off,
---   exists (select 1 from pg_trigger where tgname = 'trg_projects_visibility_kept')                        as visibility_kept;
+--   exists (select 1 from pg_trigger where tgname = 'trg_projects_visibility_kept')                        as visibility_kept,
+--   exists (select 1 from pg_trigger where tgname = 'trg_trash_access_kept')
+--     and exists (select 1 from pg_trigger where tgname = 'trg_trash_purge_kept')                            as bin_access_kept;
 -- ============================================================
