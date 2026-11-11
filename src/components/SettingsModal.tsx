@@ -196,7 +196,9 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
   /** Settings › Calendar & integrations › Notion (shown with Slack, for the same workspace):
    *  that workspace's projects (archived ones too) for "Import into…", and how to open one
    *  (Settings closes first, asking about unsaved profile changes as usual) */
-  notion?: { projects: Array<Pick<Project, "id" | "name" | "emoji" | "color" | "archivedAt">>; onOpenProject?: (projectId: string) => void };
+  notion?: { projects: Array<Pick<Project, "id" | "name" | "emoji" | "color" | "archivedAt"> & Partial<Pick<Project, "visibility">>>; onOpenProject?: (projectId: string) => void;
+    /** 0058: the workspace's project access is on (Notion is for Whole workspace projects then) */
+    projectAccessOn?: boolean };
   /** Settings › Developers (API keys, the API reference, webhooks): every team workspace you're
    *  in, with your role there. Hidden without it, and for guests. */
   developers?: { workspaces: DevWorkspace[]; currentWorkspaceId: string | null };
@@ -826,7 +828,8 @@ export function SettingsModal({ open, onClose, initial, email, color, onUpload, 
       {slack && (
         <Suspense fallback={sectionLoading("Notion")}>
           <NotionPanel workspaceId={slack.workspaceId} workspaceName={slack.workspaceName} role={slack.role ?? null}
-            projects={notion?.projects ?? []} onOpenProject={notion?.onOpenProject ? (id) => requestClose(() => notion.onOpenProject?.(id)) : undefined} />
+            projects={notion?.projects ?? []} projectAccessOn={notion?.projectAccessOn === true}
+            onOpenProject={notion?.onOpenProject ? (id) => requestClose(() => notion.onOpenProject?.(id)) : undefined} />
         </Suspense>
       )}
     </>

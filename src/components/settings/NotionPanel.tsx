@@ -22,6 +22,7 @@ import { Button, Icon, Pill, ProjectDot, Segmented, Sheet, Toggle, spectrumColor
 import { IdentityFields, IdentityPreview, freshSpectrum } from "../project/IdentityPicker";
 import { SetGroup, SetIntro, SetNote, SetRow } from "../integrations/settingsBits";
 import { timeAgo } from "../../data/data";
+import { NOTION_CLOSED } from "../../lib/projectAccess";
 import {
   NOTION_COPY, NOTION_INTEGRATIONS_URL, NotionError, NOTION_TOKEN_RE, connectNotion, deleteNotionSync, disconnectNotion,
   getNotionDatabaseSchema, importNotionDatabase, listNotionDatabases, listNotionSyncs, loadNotionStatus, previewNotionDatabase,
@@ -37,7 +38,11 @@ export interface NotionPanelProps {
   /** your role there (null in Personal) */
   role: Role | null;
   /** the workspace's projects, for "Import into…" */
-  projects: Array<Pick<Project, "id" | "name" | "emoji" | "color" | "archivedAt">>;
+  projects: Array<Pick<Project, "id" | "name" | "emoji" | "color" | "archivedAt"> & Partial<Pick<Project, "visibility">>>;
+  /** 0058: the workspace's project access is on. Notion is for Whole workspace projects then: Members only
+   *  and Private ones aren't offered to import into (the server refuses them too), and a new project
+   *  from an import is Whole workspace. */
+  projectAccessOn?: boolean;
   /** after an import: open the project it filled */
   onOpenProject?: (projectId: string) => void;
 }
@@ -76,7 +81,7 @@ function useNotionStatus(workspaceId: string | null) {
   return { ...state, reload, set };
 }
 
-export function NotionPanel({ workspaceId, workspaceName, role, projects, onOpenProject }: NotionPanelProps) {
+export function NotionPanel({ workspaceId, workspaceName, role, projects, onOpenProject, projectAccessOn = false }: NotionPanelProps) {
   const { status, problem, loading, reload, set } = useNotionStatus(workspaceId);
 
   if (!workspaceId) {
@@ -103,15 +108,15 @@ export function NotionPanel({ workspaceId, workspaceName, role, projects, onOpen
   }
   return (
     <NotionBody key={workspaceId} workspaceId={workspaceId} wsName={workspaceName?.trim() || "this workspace"} status={status} role={role}
-      projects={projects} onOpenProject={onOpenProject} onStatus={set} />
+      projects={projects} onOpenProject={onOpenProject} onStatus={set} projectAccessOn={projectAccessOn} />
   );
 }
 
 /* ------------------------------------------------------------ connected / not */
 
-function NotionBody({ workspaceId, wsName, status, role, projects, onOpenProject, onStatus }: {
+function NotionBody({ workspaceId, wsName, status, role, projects, onOpenProject, onStatus, projectAccessOn }: {
   workspaceId: string; wsName: string; status: NotionStatus; role: Role | null;
-  projects: NotionPanelProps["projects"]; onOpenProject?: (id: string) => void; onStatus: (s: NotionStatus) => void;
+  projects: NotionPanelProps["projects"]; onOpenProject?: (id: string) => void; onStatus: (s: NotionStatus) => void; projectAccessOn: boolean;
 }) {
   const ids = "knt" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const canManage = status.canManage && (role == null || role === "owner" || role === "admin");
@@ -293,7 +298,7 @@ function NotionBody({ workspaceId, wsName, status, role, projects, onOpenProject
 
       {canManage && status.connected && (
         <ImportWizard open={wizard} onClose={() => { setWizard(false); window.setTimeout(() => importRef.current?.focus(), 0); }}
-          workspaceId={workspaceId} projects={projects} onOpenProject={onOpenProject} />
+          workspaceId={workspaceId} projects={projects} onOpenProject={onOpenProject} projectAccessOn={projectAccessOn} />
       )}
     </div>
   );
@@ -458,8 +463,9 @@ type Step = "pick" | "map" | "project" | "done";
 const STEP_TITLES: Record<Exclude<Step, "done">, string> = { pick: "Choose a database", map: "Check the fields", project: "Choose a project" };
 const NONE = "";
 
-function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
+function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject, projectAccessOn }: {
   open: boolean; onClose: () => void; workspaceId: string; projects: NotionPanelProps["projects"]; onOpenProject?: (id: string) => void;
+  projectAccessOn: boolean;
 }) {
   const ids = "knw" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [step, setStep] = useState<Step>("pick");
@@ -471,7 +477,11 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
   const [rows, setRows] = useState<NotionPreviewRow[] | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapping, setMapping] = useState<NotionFieldMapping | null>(null);
-  const live = projects.filter((p) => !p.archivedAt);
+  // (0058: with project access on, Notion is for Whole workspace projects: Members only and Private ones
+  // aren't offered, and the wizard says so)
+  const unarchived = projects.filter((p) => !p.archivedAt);
+  const live = projectAccessOn ? unarchived.filter((p) => (p.visibility ?? "workspace") === "workspace") : unarchived;
+  const leftOut = unarchived.length - live.length;
   const [target, setTarget] = useState<"new" | "existing">("new");
   const [projectId, setProjectId] = useState("");
   const [name, setName] = useState("");
@@ -660,12 +670,15 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
               <label className="knt-radio"><input type="radio" name={`${ids}-t`} checked={target === "new"} onChange={() => setTarget("new")} />A new project</label>
               <label className="knt-radio"><input type="radio" name={`${ids}-t`} checked={target === "existing"} disabled={!live.length} onChange={() => setTarget("existing")} />An existing project</label>
             </div>
+            {!live.length && leftOut > 0 && <p className="knt-wz-note">{NOTION_CLOSED.importNote}</p>}
             {target === "existing" ? (
               <div className="kset-field">
                 <label htmlFor={`${ids}-p`}>Project</label>
-                <select id={`${ids}-p`} className="knt-select" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+                <select id={`${ids}-p`} className="knt-select" value={projectId} onChange={(e) => setProjectId(e.target.value)}
+                  aria-describedby={leftOut > 0 ? `${ids}-closed` : undefined}>
                   {live.map((p) => <option key={p.id} value={p.id}>{p.emoji ? `${p.emoji} ` : ""}{p.name}</option>)}
                 </select>
+                {leftOut > 0 && <p id={`${ids}-closed`} className="knt-wz-note">{NOTION_CLOSED.importNote}</p>}
               </div>
             ) : (
               <div className="kpj-dialog knt-newp">
@@ -676,6 +689,7 @@ function ImportWizard({ open, onClose, workspaceId, projects, onOpenProject }: {
                   </div>
                 </IdentityPreview>
                 <IdentityFields name={name} emoji={emoji} color={color} onEmoji={setEmoji} onColor={setColor} />
+                {projectAccessOn && <p className="knt-wz-note">It starts as Whole workspace: Members only and Private projects don't connect to Notion yet.</p>}
               </div>
             )}
             <div className="knt-keep">

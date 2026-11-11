@@ -59,7 +59,7 @@ import { MemberProjects, type MemberProjectRow } from "./components/project/Memb
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, cantBeGiven, copyPeople, copyRoles, detachSoloMove, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankCore, rankFor, roleChangeLoss, roleChangeQuestion, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, notionContainmentText, accessOn, accessSchema, canManagePeople as canManageAccess, cantBeGiven, copyPeople, copyRoles, detachSoloMove, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankCore, rankFor, roleChangeLoss, roleChangeQuestion, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -1514,7 +1514,14 @@ export default function App() {
     patches.forEach((p, id) => Object.keys(p).forEach((k) => fieldSeqRef.current.set(`${id}:${k}`, seq)));
     const entries = [...patches];
     const written: (string | null)[] = [];
-    return Promise.all(entries.map(([id, p], i) => writeTask(id, p).then((sid) => { written[i] = sid; return true; }, (e) => { reportError(e, { op: opts.op ?? "updateTask" }); return false; })))
+    // (0058's containment rule: a Notion-linked task refused a Members only or Private project. Retrying
+    // won't change that, so the toast says why instead)
+    let notionRefusal: string | null = null;
+    return Promise.all(entries.map(([id, p], i) => writeTask(id, p).then((sid) => { written[i] = sid; return true; }, (e) => {
+      reportError(e, { op: opts.op ?? "updateTask" });
+      if (!notionRefusal && /notion closed project/i.test(String((e as { message?: unknown })?.message ?? ""))) notionRefusal = notionContainmentText(e);
+      return false;
+    })))
       .then((oks) => {
         const me = userIdRef.current;
         // assignment emails go out once the new assignee is actually saved
@@ -1535,6 +1542,10 @@ export default function App() {
         }
         if (restore.size) setTasks((ts) => ts && ts.map((t) => { const r = restore.get(t.id); return r ? { ...t, ...r } : t; }));
         opts.onFailed?.(failed.map(([id]) => id));
+        if (notionRefusal) {
+          toastError(failed.length === 1 ? notionRefusal : `${notionRefusal} (${failed.length} changes undone)`);
+          return false;
+        }
         const again = new Map(failed);
         toastAction(opts.failMessage ? opts.failMessage(failed.length) : failed.length === 1 ? "Couldn't save — change undone" : `Couldn't save ${failed.length} changes — undone`, "Retry", () => {
           if (opts.retry) { opts.retry(); return; }
@@ -3393,6 +3404,8 @@ export default function App() {
       return false;
     }
   }, [accessRefused, toastSuccess]);
+  // (0058's containment rule: what keeps the switch from going on, for its preview)
+  const loadNotionBlockers = useCallback((workspaceId: string) => store.projectAccessNotionBlockers(workspaceId), []);
   const setProjectVisibility = useCallback(async (projectId: string, v: ProjectVisibility): Promise<boolean> => {
     try {
       const saved = await store.setProjectVisibility(projectId, v);
@@ -4359,6 +4372,8 @@ export default function App() {
   // (an approval's reviewers comment on it: never a viewer, D10)
   const detailReviewers = detailTask && detailGated && detailProject ? accessPeople(detailProject.id, accessCtx, 2).map((m) => m.userId!) : undefined;
   const detailAudience = detailGated && detailProject && visibilityOf(detailProject) !== "workspace" ? `Only people on ${detailProject.name} can see this.` : undefined;
+  // (0058's containment rule: Notion is for Whole workspace projects while project access is on)
+  const detailNotionClosed = !!detailGated && !!detailProject && visibilityOf(detailProject) !== "workspace";
 
   // scope tasks by route: "My tasks" stays within the workspace you're viewing — your
   // personal tasks never mix with a team workspace's, and vice versa
@@ -5113,7 +5128,7 @@ export default function App() {
         <ErrorBoundary key={detailId} inline floating name="task-panel" onHome={() => setDetailId(null)} homeLabel="Close">
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
           <TaskDetail taskId={detailId} ai={aiOn} onApprovalsChange={onApprovalsChange} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
-            readOnly={detailReadOnly} canComment={detailRank >= 2} canAttach={detailRank >= 3 || (detailGated && detailRank >= 2)} people={detailPeople} reviewers={detailReviewers} audienceNote={detailAudience}
+            readOnly={detailReadOnly} canComment={detailRank >= 2} canAttach={detailRank >= 3 || (detailGated && detailRank >= 2)} people={detailPeople} reviewers={detailReviewers} audienceNote={detailAudience} notionClosed={detailNotionClosed}
             canMoveTo={(pid) => projectRank(pid, accessCtx) >= 3}
             docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })}
             onSaveAsTemplate={(id) => setSaveTemplateFor(id)}
@@ -5199,6 +5214,7 @@ export default function App() {
             <UpdateRhythmPanel workspace={workspaces.find((w) => w.id === workspace)} onChange={updateWorkspaceRhythm} />
             {/* 0058: Project access (the workspace's owner only; nothing before 0058) */}
             <ProjectAccessPanel workspace={workspaces.find((w) => w.id === workspace)} ctx={accessCtx} onChange={setWorkspaceAccess} tasks={tasks ?? []}
+              loadNotionBlockers={loadNotionBlockers}
               nameOf={(id) => getMember(id)?.name || wsMembers.find((m) => m.userId === id)?.name} />
             <WorkspaceSettingsPanel workspace={workspace} workspaces={workspaces} myRole={myRole} currentUserId={currentUserId}
               onUpdateWorkspace={updateWorkspace} onUploadLogo={uploadWorkspaceLogo} onDeleteWorkspace={deleteWorkspace} onNewWorkspace={() => setNewWorkspaceOpen(true)} />
@@ -5222,7 +5238,8 @@ export default function App() {
         // Slack for the active team workspace: owners/admins manage it, everyone sees if it's connected
         slack={{ workspaceId: workspace, workspaceName: activeWsName, role: myRole ?? null }}
         // Notion sits under Slack for the same workspace; imports land in its projects (archived ones keep their names in sync rows)
-        notion={{ projects: projects.filter((p) => (p.workspaceId ?? null) === workspace), onOpenProject: (pid) => setRoute({ view: "project", projectId: pid }) }}
+        notion={{ projects: projects.filter((p) => (p.workspaceId ?? null) === workspace), onOpenProject: (pid) => setRoute({ view: "project", projectId: pid }),
+          projectAccessOn: accessOn(workspaces.find((w) => w.id === workspace)) }}
         // Settings › Developers: every team workspace you're in, with your role (guests too: the panels explain)
         developers={{ workspaces: workspaces.filter((w) => w.id && roleIn(w.id)).map((w) => ({ id: w.id!, name: w.name, role: roleIn(w.id)! })), currentWorkspaceId: workspace }}
         // Delete account: the team workspaces you own with Project access on (their heir sees every project, 0058)

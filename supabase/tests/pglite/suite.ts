@@ -3739,6 +3739,32 @@ async function projectAccessApiSuite(w: World) {
     eq(rows.map((r) => [r.project_id, r.assignee_id]), [[pay, w.alice], [pay, w.alice]], "both in Board pay, both now alice's");
     eq([rows[0].collaborators, rows[0].followers], [[dora], []], "bob dropped, dora kept");
   });
+  await test("0058 via REST and MCP, switch on: a task with a Notion page link (or a sub-task with one) doesn't move into a Members only or Private project; the answer says why and nothing changes (0058's containment rule)", async () => {
+    const made = await rest(w, aliceKey, "POST", "/tasks", { title: "Notion-linked brief", projectId: w.launch });
+    eq(made.status, 201, "made in Launch");
+    const sub = await rest(w, aliceKey, "POST", "/tasks", { title: "Linked step", parentId: made.json.id });
+    eq(sub.status, 201, "and a sub-task");
+    const link = async (task: string) => (await one<{ id: string }>(
+      `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind) values ($1::uuid, $2::uuid, gen_random_uuid()::text, 'reference') returning id::text as id`, [w.w1, task])).id;
+    const sentence = "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project.";
+    const where = async () => (await pg.query<{ p: string }>(`select project_id as p from public.tasks where id = any ($1::uuid[]) order by title`, [[made.json.id, sub.json.id]])).rows.map((r) => r.p);
+    const l1 = await link(made.json.id);
+    const moved = await rest(w, aliceKey, "PATCH", `/tasks/${made.json.id}`, { projectId: pay });
+    eq([moved.status, moved.json?.error?.details?.fields?.projectId], [422, sentence], `REST: ${JSON.stringify(moved.json)}`);
+    const viaMcp = await tool(w, alice, "update_task", { taskId: made.json.id, projectId: leads });
+    eq([viaMcp.isError, viaMcp.content[0].text.includes(sentence)], [true, true], `MCP: ${viaMcp.content[0].text}`);
+    eq(await where(), [w.launch, w.launch], "nothing moved");
+    // (only the sub-task linked: it would go along with its parent)
+    await pg.query(`delete from public.notion_links where id = $1::uuid`, [l1]);
+    await link(sub.json.id);
+    const withKid = await rest(w, aliceKey, "PATCH", `/tasks/${made.json.id}`, { projectId: pay });
+    eq([withKid.status, withKid.json?.error?.details?.fields?.projectId], [422, sentence], `REST, a linked sub-task: ${JSON.stringify(withKid.json)}`);
+    eq(await where(), [w.launch, w.launch], "nothing moved either");
+    // (a Whole workspace project takes it, links and all)
+    const open = await mk("Zebra open", "workspace");
+    eq((await rest(w, aliceKey, "PATCH", `/tasks/${made.json.id}`, { projectId: open })).status, 200, "into a Whole workspace project");
+    await pg.query(`delete from public.tasks where id = any ($1::uuid[])`, [[sub.json.id, made.json.id]]);
+  });
   await test("0058 via REST, switch on: a repeating task's next occurrence comes to you when its assignee can't see the project any more", async () => {
     const t = await rest(w, aliceKey, "POST", "/tasks", { title: "Monthly payroll check", projectId: pay, assigneeId: dora, dueDate: "2026-11-10" });
     eq(t.status, 201, "made, for dora");
@@ -3879,7 +3905,59 @@ async function projectAccessApiSuite(w: World) {
     eq(await after("stays"), ["member.joined", "task.created", "task.created"], "an endpoint whose viewer stays hears all of it");
     await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [Object.values(hooks)]);
   });
+  await test("0058, Notion, switch on, the containment rule: an import into a Members only or Private project is refused before a task is made (kept in sync or not), a new project for an import is Whole workspace whatever new projects start as, and a sync's run never links a task moved into one; switched off, an import into one goes through as before", async () => {
+    await pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('n', 40))
+                    on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.w1]);
+    const dbId = "0d0d0d0d-0000-4000-8000-00000000c0c1";
+    const pages = [{ object: "page", id: "5e5e5e5e-0000-4000-8000-00000000c0c1", created_time: "2026-11-09T10:00:00.000Z", last_edited_time: "2026-11-10T10:00:00.000Z",
+                     properties: { Name: { type: "title", title: [{ plain_text: "Contained: a page" }] } } }];
+    const api = {
+      calls: 0,
+      async me() { return { id: "bot" }; },
+      async searchDatabases() { return { results: [], next_cursor: null, has_more: false }; },
+      async database() { return { id: dbId, title: [{ plain_text: "Contained" }], properties: { Name: { id: "title", name: "Name", type: "title" } } }; },
+      async query() { this.calls++; return { results: pages, next_cursor: null, has_more: false }; },
+      async page(id: string) { return pages.find((p) => p.id === id)!; },
+      async updatePage() { return {}; },
+      async users() { return { results: [], next_cursor: null, has_more: false }; },
+    };
+    let n = 0;
+    const deps = { db: w.deps.db, notion: () => api, now: () => Date.now(), newId: () => `7a7a7a7a-0000-4000-8000-${String(++n).padStart(12, "0")}`, log: () => undefined };
+    const imp = async (projectId: string | null, keepInSync: boolean) => {
+      try {
+        const r = await importDatabase(deps as never, api as never, { userId: w.alice, workspaceId: w.w1, databaseId: dbId, mapping: { title: "Name" }, projectId,
+          newProject: projectId ? null : { name: "Contained import", emoji: "", color: "#336699" }, keepInSync, direction: "two_way" }, Date.now() + 20_000);
+        return { got: `created ${r.created}`, project: r.projectId };
+      } catch (e) { return { got: e instanceof NotionActionError ? `${e.status} ${e.message}` : String(e), project: null }; }
+    };
+    const made = async () => (await pg.query<{ n: number }>(`select count(*)::int as n from public.tasks where title = 'Contained: a page'`)).rows[0].n;
+    const closedText = "409 Members only and Private projects don't connect to Notion yet. Choose a Whole workspace project.";
+    eq([(await imp(pay, true)).got, (await imp(leads, false)).got, await made()], [closedText, closedText, 0], "into Board pay (Private), kept in sync; into Hiring leads (Members only), once: nothing made");
+    eq((await pg.query(`select 1 from public.notion_syncs where database_id = $1`, [dbId])).rows.length, 0, "no sync saved");
+    // a new project for it is Whole workspace, though new projects here start as Private
+    await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, null, 'private')`, [w.w1]);
+    const fresh = await imp(null, false);
+    eq([fresh.got, (await one<{ v: string }>(`select visibility as v from public.projects where id = $1::uuid`, [fresh.project])).v], ["created 1", "workspace"], "a new project");
+    await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, null, 'workspace')`, [w.w1]);
+    // a sync's run: the task it made, moved into Board pay, isn't linked again there (its link can't follow it in)
+    const t = (await one<{ id: string }>(`select id::text as id from public.tasks where project_id = $1 and title = 'Contained: a page'`, [fresh.project])).id;
+    const moved = await rest(w, aliceKey, "PATCH", `/tasks/${t}`, { projectId: pay });
+    eq(moved.status, 422, `the import's task, linked, doesn't move into Board pay: ${JSON.stringify(moved.json)}`);
+    await pg.query(`delete from public.tasks where project_id = $1`, [fresh.project]);
+    await pg.query(`delete from public.projects where id = $1::uuid`, [fresh.project]);
+    await pg.query(`delete from public.trash where item_id = $1::uuid`, [fresh.project]);
+    // switched off: into Board pay, as before
+    await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
+    eq((await imp(pay, false)).got, "created 1", "switched off, into Board pay");
+    await pg.query(`delete from public.tasks where project_id = $1 and title = 'Contained: a page'`, [pay]);
+    await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, true)`, [w.w1]);
+  });
   // a Notion two-way sync on a Whole workspace project, run as alice, whose pages name gus (a guest on Launch only) and bob
+  // (the Notion tests below build what 0058's containment rule (2t) now refuses with the switch on: a
+  // Private or Members only project's sync, import or Notion-linked task, the state the undo window can
+  // leave. They test the older closure machinery, which stays as defence in depth, so the rule is lifted
+  // for them with the SQL editor's setting, and put back after the last of them)
+  await pg.query(`select set_config('kanbo.notion_contain', 'off', false)`);
   await test("0058, Notion, switch on: a page whose Owner can't see the project comes in unassigned; the sync never stops on it", async () => {
     const target = await mk("Notion launch", "workspace");
     await pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('n', 40))
@@ -4488,6 +4566,7 @@ async function projectAccessApiSuite(w: World) {
     const got = await suspendedOwnerRun("susp-on", "0d0d0d0d-0000-4000-8000-000000005812");
     eq([got.fatal, got.error, got.assignedToSid], [false, null, true], `a Whole workspace project's: ${got.logs}`);
   });
+  await pg.query(`select set_config('kanbo.notion_contain', '', false)`);
   await test("0058, the digest, switch on: an update about a Members only project in the bin counts for those it had, and not for the rest", async () => {
     const gone = await mk("Zebra binned members", "members");
     await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'viewer')`, [gone, w.bob]);

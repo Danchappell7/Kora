@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import MATRIX from "./projectAccessMatrix.json";
 import {
-  accessErrorText, accessOn, accessSchema, audienceOpen, canManagePeople, canSetVisibility, cantBeGiven, copyPeople, copyRoles, detachSoloMove, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
+  accessErrorText, notionContainmentText, NOTION_CLOSED, accessOn, accessSchema, audienceOpen, canManagePeople, canSetVisibility, cantBeGiven, copyPeople, copyRoles, detachSoloMove, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
   noteAccessSchema, peopleFor, projectRank, rankCore, rankFor, resetAccessSchema, roleChangeLoss, roleChangeQuestion, seesCount, taskRank, turnOnPreview, type AccessCtx,
 } from "./projectAccess";
 import type { Project, ProjectMember, ProjectVisibility, Workspace, WorkspaceMember } from "../data/types";
@@ -279,6 +279,18 @@ describe("people, projects and previews", () => {
     expect(accessErrorText({ code: "access_missing" })).toBe("Project access isn't switched on yet.");
     expect(accessErrorText({ message: "not authorized" })).toBe("You can't change who has access to this project.");
     expect(accessErrorText({ code: "offline", message: "x" })).toBe("You're offline. Try again when you're back.");
+  });
+  it("the Notion containment rule's refusals are said as the database's sentence (its hint), never as 'couldn't save'", () => {
+    const narrow = { message: "notion closed project", hint: "Members only and Private projects don't connect to Notion yet. Remove this project's Notion sync and page links first." };
+    expect(accessErrorText(narrow)).toBe(narrow.hint);
+    expect(notionContainmentText(narrow)).toBe(narrow.hint);
+    // (no hint, or one that isn't a sentence: the app's own)
+    expect(accessErrorText({ message: "notion closed project" })).toBe(NOTION_CLOSED.project);
+    expect(accessErrorText({ message: "notion closed project", hint: "<b>x</b>" })).toBe(NOTION_CLOSED.project);
+    const on = { message: "notion in closed projects", hint: "2 Members only or Private projects still connect to Notion (1 sync, 3 tasks with Notion links): “Payroll” and “Hiring”. Members only and Private projects don't connect to Notion yet: remove their Notion syncs in Settings › Notion and the Notion links on their tasks, or make them Whole workspace, then turn project access on." };
+    expect(accessErrorText(on)).toBe(on.hint);
+    expect(accessErrorText({ message: "notion in closed projects" })).toMatch(/^Some Members only or Private projects still connect to Notion\./);
+    expect(notionContainmentText({ message: "not authorized" })).toBeNull();
   });
 });
 

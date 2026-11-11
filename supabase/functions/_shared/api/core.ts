@@ -33,6 +33,9 @@ export const invalid = (fields: FieldErrors, message = "Some fields need attenti
 export const badQuery = (fields: FieldErrors) =>
   new ApiFail(400, "bad_request", "Some query parameters need attention.", { fields });
 
+/** 0058's containment rule, as the API (and MCP) say it about a move. */
+export const NOTION_CLOSED_MOVE = "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project.";
+
 /** The message a workspace key gets when it reaches outside its workspace. */
 export const OUTSIDE_WORKSPACE = "This key is limited to one workspace. Use a personal key to reach other workspaces or your Personal list.";
 
@@ -58,6 +61,11 @@ export function pgFailure(e: unknown): ApiFail | null {
   // this is the backstop (a suspended account, a project that changed meanwhile)
   if (/assignee can't see this project/.test(String((e as { message?: unknown })?.message ?? ""))) {
     return invalid({ assigneeId: "That person can't see this project." });
+  }
+  // 0058's containment rule: a task with Notion page links doesn't move into a Members only or Private
+  // project while Project access is on (moved itself, or under a parent there). Nothing was changed
+  if (/notion closed project/.test(String((e as { message?: unknown })?.message ?? ""))) {
+    return invalid({ projectId: NOTION_CLOSED_MOVE });
   }
   switch (pgKind(e)) {
     case "rls": return forbidden("You don't have permission to do that.");

@@ -119,6 +119,7 @@ class SyncStop extends Error {}
 /** Any failure in a run → the sentence Settings shows. */
 export function syncErrorText(e: unknown, what: "database" | "page" = "database"): string {
   if (e instanceof SyncStop || e instanceof NotionActionError) return e.message;
+  if (isClosedProjectRefusal(e)) return CLOSED_TEXT.sync;
   if (isNotionError(e)) {
     switch (e.kind) {
       case "invalid_token": return SYNC_TEXT.invalidToken;
@@ -277,6 +278,40 @@ export async function syncsOutOfSight(service: Tx, userId: string, ws: string, d
   return r[0]?.hidden === true;
 }
 export const OUT_OF_SIGHT_TEXT = "This Notion database's pages are tasks in a project here that you can't see, so it can't be previewed or imported.";
+
+/**
+ * Notion is for Whole workspace projects while Project access is on (0058's containment rule, 2t): no
+ * Members only or Private project has a Notion sync, an import or a task with a Notion link. The database
+ * refuses every way in ('notion closed project', its hint one of these sentences); the function says so
+ * first, before it asks Notion for anything or makes a task.
+ */
+export const CLOSED_TEXT = {
+  any: "Members only and Private projects don't connect to Notion yet.",
+  import: "Members only and Private projects don't connect to Notion yet. Choose a Whole workspace project.",
+  link: "Members only and Private projects don't connect to Notion yet. Make this project Whole workspace to link Notion pages to its tasks.",
+  sync: "Members only and Private projects don't connect to Notion yet. Remove this sync, or make its project Whole workspace.",
+} as const;
+
+/** Is this database refusal the containment rule's (0058, 2t)? */
+export function isClosedProjectRefusal(e: unknown): boolean {
+  return /notion closed project/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
+}
+
+/**
+ * Is this project (a live one, by its id as tasks store it) Members only or Private in a workspace whose
+ * switch is on (0058's containment rule)? On the service connection; read through to_jsonb, so before
+ * 0058 (no visibility, no switch) it's never. One in the bin or gone isn't a target here (the database
+ * still judges those).
+ */
+export async function closedForNotion(service: Tx, ws: string, projectId: string | null | undefined): Promise<boolean> {
+  if (!projectId) return false;
+  const r = await service.query<{ shut: boolean }>(
+    `select coalesce((to_jsonb(w) ->> 'project_access')::boolean, false)
+            and coalesce((select to_jsonb(p) ->> 'visibility' from public.projects p
+                           where p.id::text = lower($2) and p.workspace_id = w.id), 'workspace') <> 'workspace' as shut
+       from public.workspaces w where w.id = $1::uuid`, [ws, projectId]);
+  return r[0]?.shut === true;
+}
 
 /**
  * Of these pages (Notion ids, any spelling), the ones closed to this person (0058, Project access on): a
@@ -1178,6 +1213,11 @@ async function importLeased(deps: SyncDeps, api: NotionApi, input: ImportInput,
   const ws = scope.workspaceId;
   // (a database that syncs with a project the caller can't see: its pages are that project's tasks)
   if (await syncsOutOfSight(deps.db.service, scope.userId, ws, databaseId)) throw new NotionActionError(403, "not_allowed", OUT_OF_SIGHT_TEXT);
+  // (Notion is for Whole workspace projects while Project access is on: never into a Members only or
+  // Private one, before a task is made; the database refuses the sync and every link too)
+  if (input.projectId && await closedForNotion(deps.db.service, ws, input.projectId)) throw new NotionActionError(409, "invalid", CLOSED_TEXT.import);
+  // (and a new project for it is Whole workspace then, whatever new projects start as)
+  const openNew = !!input.newProject && await onlyOwnProject(deps.db.service, ws);
   // one sync a database: asked on the service connection, as the person's own read leaves out the syncs
   // of projects they can't see (0058), and notion_save_sync would then take that sync over
   if (input.keepInSync) {
@@ -1188,8 +1228,9 @@ async function importLeased(deps: SyncDeps, api: NotionApi, input: ImportInput,
   const { projectId, syncId } = await deps.db.withUser(scope, async (tx) => {
     let pid = input.projectId;
     if (input.newProject) {
-      const made = await tx.query<{ id: string }>(
-        `insert into public.projects (user_id, owner_id, name, emoji, color, workspace_id) values ($1::uuid, $1::uuid, $2, $3, $4, $5::uuid) returning id::text as id`,
+      const made = await tx.query<{ id: string }>(openNew
+        ? `insert into public.projects (user_id, owner_id, name, emoji, color, workspace_id, visibility) values ($1::uuid, $1::uuid, $2, $3, $4, $5::uuid, 'workspace') returning id::text as id`
+        : `insert into public.projects (user_id, owner_id, name, emoji, color, workspace_id) values ($1::uuid, $1::uuid, $2, $3, $4, $5::uuid) returning id::text as id`,
         [input.userId, input.newProject.name, input.newProject.emoji, input.newProject.color, ws]);
       pid = made[0]?.id ?? null;
       if (!pid) throw new NotionActionError(403, "not_allowed", "You can't add projects to this workspace.");

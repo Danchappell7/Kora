@@ -27,7 +27,7 @@ import {
 import { demoCalendarAccounts, demoCalendarEvents, type DemoCalendarAccount } from "./demoCalendars";
 import { parseSections, sectionsAsText } from "../lib/updateSections";
 import { noteUpdateColumns } from "../lib/updateSchema";
-import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings, RolloutPlan, ProjectMember, ProjectRole, ProjectVisibility, ProjectAccessSettings } from "./types";
+import type { Task, Member, Project, Workspace, WorkspaceMember, Subtask, TagDef, Comment, Activity, ActivityKind, Attachment, Subscription, Plan, SubStatus, Status, Priority, EnergyKind, Recurrence, Role, Profile, AccessRequest, CalProvider, CalendarConnection, ExternalEvent, ExtCalendar, CalendarWarning, CustomValue, CustomFieldDef, Section, SavedSearch, Goal, GoalStatus, GoalCheckin, GoalExtras, GoalLink, GoalLinkKind, GoalPatch, Portfolio, StatusUpdate, StatusKind, UpdateSections, AutomationRule, AutomationAction, FormDef, FormFieldKey, WorkspaceEvent, TaskUserState, TaskUserStatePatch, NotifyPrefs, BoardSettings, RolloutPlan, ProjectMember, ProjectRole, ProjectVisibility, ProjectAccessSettings, NotionBlocker } from "./types";
 import type { AiOutcome, AskAction, AskContext, AskResult, ExtractedTask } from "../lib/askTypes";
 import type { TemplateApplyDeps } from "../lib/templates";
 import {
@@ -1655,7 +1655,25 @@ function accessFailure(error: { message?: string; code?: string } | unknown): Er
   if (code === "42883" || code === "PGRST202") return Object.assign(new Error("Project access isn't switched on yet."), { code: "access_missing" });
   if (/^not authorized$/i.test(msg)) return Object.assign(new Error(msg), { code: "not_authorized" });
   if (/^not found$/i.test(msg)) return Object.assign(new Error(msg), { code: "not_found" });
-  return Object.assign(new Error(msg || "Couldn't save that."), code ? { code } : {});
+  // (0058's containment rule keeps its sentence in the hint)
+  const hint = String((error as { hint?: unknown })?.hint ?? "");
+  return Object.assign(new Error(msg || "Couldn't save that."), code ? { code } : {}, hint ? { hint } : {});
+}
+/** project_access_notion_blockers()'s answer (0058) → NotionBlocker[]; bad rows are left out. */
+export function parseNotionBlockers(raw: unknown): NotionBlocker[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((x) => {
+    const r = x as Record<string, unknown> | null;
+    if (!r || typeof r !== "object" || typeof r.project_id !== "string") return [];
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+    return [{
+      projectId: r.project_id,
+      name: typeof r.name === "string" && r.name ? r.name : null,
+      visibility: VISIBILITY_SET.has(String(r.visibility)) ? (r.visibility as ProjectVisibility) : null,
+      syncs: n(r.syncs),
+      linkedTasks: n(r.linked_tasks),
+    }];
+  });
 }
 function offlineGuard(): void {
   if (isOffline()) throw Object.assign(new Error("You're offline. Try again when you're back."), { code: "offline" });
@@ -2416,6 +2434,20 @@ export const store = {
     const r = (data ?? {}) as { on?: boolean; default?: string; member_private?: boolean; changed_at?: string | null };
     return { on: r.on === true, defaultVisibility: (VISIBILITY_SET.has(String(r.default)) ? r.default : "workspace") as ProjectVisibility,
       membersMayMakePrivate: r.member_private === true, changedAt: r.changed_at ?? null };
+  },
+
+  /** What stands in the way of turning project access on (0058's containment rule): the Members only and
+   *  Private projects that still connect to Notion, with their syncs and Notion-linked tasks (the workspace's
+   *  owner only; [] for anyone else, in the demo, and before 0058 or once its undo file has run). */
+  async projectAccessNotionBlockers(workspaceId: string): Promise<NotionBlocker[]> {
+    if (!supabase) return [];
+    const { data, error } = await supabase.rpc("project_access_notion_blockers", { p_ws: workspaceId });
+    if (error) {
+      const f = accessFailure(error);
+      if ((f as { code?: string }).code === "access_missing") return [];
+      throw f;
+    }
+    return parseNotionBlockers(data);
   },
 
   /** Who can see a project (its managers; Private needs an owner, an admin, or a workspace that lets members). */

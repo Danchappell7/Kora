@@ -1,7 +1,7 @@
 /* Settings › Workspace › Project access (0058): the owner's only; off, it says what turning it on
    would do for each guest; on or off asks first; the defaults save at once. Nothing before 0058. */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ProjectAccessPanel } from "./ProjectAccessPanel";
 import { noteAccessSchema, resetAccessSchema, type AccessCtx } from "../../lib/projectAccess";
 import type { Workspace, WorkspaceMember } from "../../data/types";
@@ -40,6 +40,35 @@ describe("ProjectAccessPanel", () => {
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.click(within(ask).getByRole("button", { name: "Turn it on" }));
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(W, { on: true }));
+  });
+
+  it("off, with a Members only or Private project that still connects to Notion: the preview lists it and what to do, and \"Turn it on\" waits until they're cleared (0058's containment rule)", async () => {
+    const onChange = vi.fn(async () => true);
+    const blockers = [
+      { projectId: "p2", name: "Growth", visibility: "private" as const, syncs: 1, linkedTasks: 3 },
+      { projectId: "p9", name: null, visibility: null, syncs: 0, linkedTasks: 1 },
+    ];
+    const load = vi.fn(async () => blockers);
+    const { rerender } = render(<ProjectAccessPanel workspace={ws(false)} ctx={ctx("me", false)} onChange={onChange} loadNotionBlockers={load} />);
+    expect(await screen.findByText("“Growth” is Private and still has 1 Notion sync and 3 tasks with Notion links.")).toBeInTheDocument();
+    expect(screen.getByText("A Members only or Private project that's been deleted or moved and still has 1 task with Notion links.")).toBeInTheDocument();
+    expect(screen.getByText(/^Members only and Private projects don't connect to Notion yet\. Before turning this on, remove their Notion syncs \(Settings › Notion\)/)).toBeInTheDocument();
+    expect(load).toHaveBeenCalledWith(W);
+    await act(async () => { fireEvent.click(screen.getByRole("switch", { name: "Turn on project access" })); });
+    const ask = screen.getByRole("alertdialog");
+    expect(ask.textContent).toMatch(/^2 Members only or Private projects still connect to Notion, so project access can't be turned on yet\./);
+    expect(within(ask).getByRole("button", { name: "Turn it on" })).toBeDisabled();
+    expect(onChange).not.toHaveBeenCalled();
+    // cleared (asked again when the question opens): it goes on
+    load.mockResolvedValue([]);
+    await act(async () => { fireEvent.click(within(ask).getByRole("button", { name: "Cancel" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("switch", { name: "Turn on project access" })); });
+    await waitFor(() => expect(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Turn it on" })).toBeEnabled());
+    expect(screen.queryByText(/still has 1 Notion sync/)).toBeNull();
+    // (nobody but the owner asks)
+    load.mockClear();
+    rerender(<ProjectAccessPanel workspace={ws(false)} ctx={ctx("a", false)} onChange={onChange} loadNotionBlockers={load} />);
+    expect(load).not.toHaveBeenCalled();
   });
 
   it("on: the counts, the default for new projects, and whether members may make projects private", async () => {

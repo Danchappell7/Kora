@@ -14,3 +14,5 @@
 .kpas-guest { color: var(--ink); }
 /* (what turning it on would take from someone: said plainly, in ink, not dimmed) */
 .kpas-warn { color: var(--ink); }
+/* (0058's containment rule: the Members only and Private projects that still connect to Notion) */
+.kpas-preview-sub { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }

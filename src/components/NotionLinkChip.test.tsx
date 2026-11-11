@@ -33,6 +33,17 @@ describe("NotionLinkChip", () => {
     expect(within(section).queryByRole("button")).toBeNull();
   });
 
+  it("project access on, a Members only or Private project's task: no page is linked to it (Notion is for Whole workspace projects); links from before still show and can go", async () => {
+    const { container, rerender } = render(<NotionLinkChip taskId="t-9" workspaceId={WS} canEdit closed />);
+    await settle();
+    expect(container).toBeEmptyDOMElement();
+    rerender(<NotionLinkChip taskId="t-4" workspaceId={WS} canEdit closed />);
+    const section = await screen.findByRole("region", { name: /Notion/ });
+    expect(within(section).getAllByRole("link").length).toBeGreaterThan(0);
+    expect(within(section).queryByRole("button", { name: "Link a page" })).toBeNull();
+    expect(within(section).getAllByRole("button", { name: /^Unlink / }).length).toBeGreaterThan(0);
+  });
+
   it("links a pasted page and unlinks it", async () => {
     render(<NotionLinkChip taskId="t-9" workspaceId={WS} canEdit />);
     fireEvent.click(await screen.findByRole("button", { name: "Link a page" }));

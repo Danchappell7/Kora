@@ -78,7 +78,10 @@ project's access, and nobody but the workspace's owner can add to it.
    with a preview of what turning it on will do.
 4. For each business, when you're ready: add each guest to the projects they
    should see (the project's About tab, or the invite sheet), choose the
-   default for new projects, then switch it on. Then mark HR, finance and
+   default for new projects, clear Notion from any project that's already
+   Members only or Private (the preview lists them: Notion is for Whole
+   workspace projects while the switch is on, and it won't go on before),
+   then switch it on. Then mark HR, finance and
    leadership projects Members only or Private in their About tab. Each
    business can be done on a different day.
 
@@ -288,6 +291,32 @@ No new secrets and no new schedule.
 - **Viewers** read and follow; they don't comment, react or give kudos.
   Commenters (and guests added to comment) also attach files to a task and
   remove their own, in the app as in the database.
+- **Notion is for Whole workspace projects while the switch is on** (the
+  containment rule). No Members only or Private project has a Notion sync, a
+  Notion import or a task with a Notion link of any kind, and the database
+  refuses every way in, whoever asks (the app, the API, MCP, the notion
+  function, the SQL editor): saving a sync for one or pointing a sync at one,
+  importing into one, linking a page to one of its tasks (or re-pointing a
+  link there), moving a task with Notion links into one (on its own, with its
+  parent, put under a task there, from another workspace; by the app, the
+  API, MCP, the planner or the bin), restoring from the bin a task with links
+  into one or such a project with its sync or linked tasks, making a project
+  that has a sync or linked tasks Members only or Private (Members only to
+  Private too), and turning the switch on while a Members only or Private
+  project still has them. Each refusal is "notion closed project" (switching
+  on: "notion in closed projects") with the sentence as its hint, which the
+  app, the API and MCP show as it is: "Members only and Private projects
+  don't connect to Notion yet. …", then what to do; switching on says how
+  many, which, and where to remove them. The app says it first: Settings ›
+  Notion offers only Whole workspace projects to import into (a new project
+  from an import is Whole workspace), a Members only or Private project's
+  task offers no "Link a page", and Settings › Workspace › Project access
+  lists the projects to clear (`project_access_notion_blockers`, the owner
+  only; in the SQL editor, `pa_notion_blockers('<ws id>')`) and keeps "Turn
+  it on" unavailable until they're cleared. With the switch off nothing
+  changes. The page and database closure (below, Known limits) stays, for
+  what the rule doesn't reach and for anything older than it. The VERIFY
+  block's `notion_contained` checks it.
 - **Signed-out requests** read none of a workspace's rows, as before: the rules
   apply to signed-in callers.
 - **Every change** to the switch, a visibility or a project's people touches
@@ -338,11 +367,27 @@ person who saved it: it goes when someone else signs in there.)
   failure count (Settings › Webhooks) move with every delivery it makes,
   including ones about Private projects that the delivery log hides from
   you. They say when, never what.
-- **Notion.** A two-way Notion sync set up on a project keeps copying its tasks
-  into its Notion database after the project is made Members only or Private
-  (it runs as the person who set it up, who can still see it). Anyone who can
-  read that Notion database sees them. Stop the sync first if the database is
-  shared more widely than the project. With the switch on, a synced task moved
+- **Notion is for Whole workspace projects while the switch is on.** A
+  Members only or Private project can't have a Notion sync, an import or
+  Notion-linked tasks then (How it works). So a project that needs Notion stays
+  Whole workspace, or loses its Notion first. With the switch off a project
+  can be made Members only or Private with its sync and links (a two-way sync
+  keeps copying its tasks into its Notion database, as it runs as the person
+  who set it up), and the switch then won't go on until they're removed. A
+  task or project in the bin that has Notion links or a sync, from a Members
+  only or Private project (binned while the switch was off, or a task binned
+  from a project made Private since), can't be restored while the switch is
+  on: make the task's project Whole workspace first, or turn the switch off,
+  restore it, remove its Notion sync and links, and turn it on again. An
+  import already running when its project is made Members only or Private
+  (it takes seconds) stops part-way, and the tasks it made by then stay, with
+  no Notion link. The SQL editor can lift the rule for a transaction
+  (`set local kanbo.notion_contain = 'off'`), as the tests do to build the
+  older states below; nothing in Kanbo does. Everything below is defence in
+  depth: for what the rule doesn't reach (a task moved between Whole
+  workspace projects, a page dragged between databases in Notion), and for
+  Notion that predates it (the undo window).
+- **Notion, below the rule.** With the switch on, a synced task moved
   to another project stops syncing (nothing of it goes out or comes in, and
   archiving its page doesn't archive it) until it's moved back, whoever set the
   sync up (one set up by an admin who isn't on the project it was moved into
@@ -458,7 +503,7 @@ person who saved it: it goes when someone else signs in there.)
 |---|---|---|
 | One workspace (normal) | Its owner switches Project access off in Settings › Workspace. In an emergency, in the SQL editor: `update public.workspaces set project_access = false where id = '<workspace id>';` | Instant: the next query uses today's rule, and open apps reload. People, visibility and settings are kept for next time. |
 | Every workspace | `update public.workspaces set project_access = false where project_access;` | The same, everywhere. |
-| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). While it's out, the app keeps a project's people in its contributors list again (as before 0058). Running 0058 again afterwards puts every rule back and brings project people back to that list: anyone taken off meanwhile, or who left the workspace, loses their place, and anyone added to a Whole workspace project gets one, so nobody who was taken off comes back. Anyone added to a Members only or Private project meanwhile is added again in People & access (with the rules out, anyone could have listed themselves). Visibility can't be changed from the app or the API while it's out (the SQL editor still can), nor can a Members only or Private project be moved out of its workspace, nor a project be made under the id of one deleted for good or one that left, and the bin goes on recording who could see what it takes (and which projects it deletes for good), so no project is opened up meanwhile. Owners changed meanwhile aren't put back: check the owners of Members only and Private projects. A commented-out last block drops the data too: only if you're sure. |
+| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). While it's out, the app keeps a project's people in its contributors list again (as before 0058). Running 0058 again afterwards puts every rule back and brings project people back to that list: anyone taken off meanwhile, or who left the workspace, loses their place, and anyone added to a Whole workspace project gets one, so nobody who was taken off comes back. Anyone added to a Members only or Private project meanwhile is added again in People & access (with the rules out, anyone could have listed themselves). Visibility can't be changed from the app or the API while it's out (the SQL editor still can), nor can a Members only or Private project be moved out of its workspace, nor a project be made under the id of one deleted for good or one that left, and the bin goes on recording who could see what it takes (and which projects it deletes for good), so no project is opened up meanwhile. Owners changed meanwhile aren't put back: check the owners of Members only and Private projects. Nor is Notion kept out of Members only and Private projects meanwhile: once 0058 is back, a workspace won't switch on while one of them has a Notion sync or Notion-linked tasks (Project access lists them). A commented-out last block drops the data too: only if you're sure. |
 
 ## Tests
 
@@ -469,4 +514,9 @@ helper, live channel, search result, file and person; switching off again
 equals the first run; then the functions, triggers, notices, webhooks, bin,
 meetings and performance (5 000 tasks behind the switch); then 0058 twice,
 the undo file, and every older file run again; and last, 0051–0057 applied
-after 0058. The same suite runs on the two full migration sets.
+after 0058. The same suite runs on the two full migration sets. Its world gives
+the Members only and Private projects a Notion sync and a linked task (the
+state from before the containment rule), so the older Notion closure is tested
+on them with the rule lifted for the session; the containment tests put the
+rule back and check every refusal with the switch on, and each one going
+through with it off.

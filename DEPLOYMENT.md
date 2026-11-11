@@ -983,6 +983,12 @@ steps; nothing breaks while you wait.
      With the switch off, a page's Owner is assigned and every database
      previews and imports as today (a page dragged between two synced
      databases can come in, and both syncs then write to it, as today).
+     Where it's switched on, Notion is for Whole workspace projects: an
+     import into a Members only or Private project, and a page linked to one
+     of its tasks, are refused with "Members only and Private projects don't
+     connect to Notion yet", before Notion is asked anything (the database
+     refuses them too), and a new project made by an import is Whole
+     workspace.
    - `ics-feed`: a calendar names a project only where the task really is in
      it.
    - `webhook-dispatch`: an endpoint follows whoever last set its address
@@ -1029,6 +1035,15 @@ steps; nothing breaks while you wait.
    shows **Project access** with the switch **off** and "When you turn it on:"
    saying what would change for each guest. Admins and members don't see it.
    Every project, lock-free, reads as before.
+   **Notion check, before turning it on:** Notion is for Whole workspace
+   projects while it's on, so the switch won't go on while a Members only or
+   Private project still has a Notion sync or tasks with Notion links (it
+   says how many and where). The preview lists them under "Members only and
+   Private projects don't connect to Notion yet". For each: remove its sync in
+   Settings › Notion and the Notion links on its tasks (the task's Notion
+   section › Unlink), or make the project Whole workspace. The same list, in the
+   SQL editor: `select * from public.pa_notion_blockers('<workspace id>');`
+   (no rows: ready).
 4. **Turn it on for one business first.** Pick the one with the fewest guests.
    A day or so before, ask everyone in it to reload Kanbo (or close and reopen
    the app) on every computer and phone they use: a tab left open since before
@@ -1041,19 +1056,22 @@ steps; nothing breaks while you wait.
    they should keep, and no longer says a guest has open tasks they won't see
    (the preview names them: add the guest to that project, or hand the task
    on). If a project is already Members only or Private, the preview names who'd
-   lose it. Choose "New projects start as" and whether members may make
-   projects private, then switch it on and confirm. (Switching on also frees any
+   lose it. If it lists Members only or Private projects that still connect
+   to Notion, clear them first (step 3's Notion check): "Turn it on" stays
+   unavailable until they're gone. Choose "New projects start as" and whether
+   members may make projects private, then switch it on and confirm. (Switching on also frees any
    sub-task that was moved to another project on its own: it stays where it is,
    as a task of its own. One that's in the bin with its old parent becomes a bin
    entry of its own, in its own project.) Then mark that business's
    HR, finance and leadership projects Members only or Private (About › People &
    access › Manage); it asks before anyone loses access and names them. Check
    it as a guest would (or ask one): they see only their projects. Each
-   person's profile on Team › People lists the projects they're on. If a
-   project you make private syncs to Notion, its tasks keep going to that Notion
-   database: stop its sync first if that database is shared more widely (a
-   synced task moved into a Members only or Private project stops syncing by
-   itself). Live doc editing is checked when someone opens the doc and when
+   person's profile on Team › People lists the projects they're on. A project
+   with a Notion sync or tasks with Notion links can't be made Members only or
+   Private while it's on ("Members only and Private projects don't connect to
+   Notion yet. Remove this project's Notion sync and page links first."):
+   remove them first, in Settings › Notion and on its tasks. Nor does a task
+   with Notion links move into one (the move is undone and says why). Live doc editing is checked when someone opens the doc and when
    their sign-in token refreshes, so someone taken off a project (or left out
    when it's narrowed) could keep receiving that doc's live edits for up to an
    hour with a client other than Kanbo; if that matters for a business, shorten

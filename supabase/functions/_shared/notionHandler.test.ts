@@ -102,6 +102,54 @@ describe("notion function: the edges", () => {
     const r0 = await read(await handleNotionRequest(post({ action: "preview", workspaceId: ws, databaseId }, { Authorization: "Bearer jwt" }), d0));
     expect([r0.status, asked]).toEqual([200, 1]);
   });
+  it("Project access on: nothing of Notion comes into a Members only or Private project. An import into one, or a page linked to one of its tasks, is refused with its sentence before Notion is asked; the database's own refusal reads as its hint", async () => {
+    const ws = crypto.randomUUID();
+    const task = crypto.randomUUID();
+    const project = crypto.randomUUID();
+    const sql: string[] = [];
+    let shut = true;
+    let linkErr: unknown = null;
+    const tx: Tx = {
+      query: async (text: string) => {
+        sql.push(text);
+        if (/user_can_act/.test(text)) return [{ ok: true }] as never[];
+        if (/api_rate_hit/.test(text)) return [{ allowed: true, retry_after: 0 }] as never[];
+        if (/notion_status/.test(text)) return [{ s: { connected: true, can_manage: true, can_link: true, workspace_name: null } }] as never[];
+        if (/notion_token/.test(text)) return [{ t: "secret_" + "x".repeat(30) }] as never[];
+        if (/to_regprocedure/.test(text)) return [{ on: true }] as never[];
+        if (/user_notion_database_hidden/.test(text)) return [{ hidden: false }] as never[];
+        if (/as shut/.test(text)) return [{ shut }] as never[];
+        if (/from public\.tasks where id/.test(text)) return [{ ws, project }] as never[];
+        if (/notion_link_page/.test(text)) { if (linkErr) throw linkErr; return [{ l: { id: "l1" } }] as never[]; }
+        return [] as never[];
+      },
+    };
+    let asked = 0;
+    const d = deps({
+      authUser: async () => "aaaaaaaa-0000-4000-8000-000000000001", db: { service: tx, withUser: async (_s, fn) => fn(tx) },
+      notion: () => ({
+        page: async () => { asked++; return { object: "page", id: "89abcdef-0123-4567-89ab-cdef01234567", properties: {}, url: "https://www.notion.so/x" }; },
+        database: async () => { asked++; throw new Error("not this"); },
+      }) as never,
+    });
+    const auth = { Authorization: "Bearer jwt" };
+    const imp = await read(await handleNotionRequest(post({ action: "import", workspaceId: ws, databaseId: "0123456789abcdef0123456789abcdef", projectId: project,
+      keepInSync: true, mapping: { title: "Name" } }, auth), d));
+    expect(imp).toMatchObject({ status: 409, body: { reason: "invalid", error: "Members only and Private projects don't connect to Notion yet. Choose a Whole workspace project." } });
+    const link = await read(await handleNotionRequest(post({ action: "link_page", taskId: task, url: "https://www.notion.so/x-89abcdef0123456789abcdef01234567" }, auth), d));
+    expect(link).toMatchObject({ status: 409, body: { reason: "invalid",
+      error: "Members only and Private projects don't connect to Notion yet. Make this project Whole workspace to link Notion pages to its tasks." } });
+    expect(asked).toBe(0);
+    expect(sql.some((x) => /notion_link_page/.test(x))).toBe(false);
+    // (the project narrowed after that check: the database's refusal, its hint as the sentence)
+    shut = false;
+    linkErr = Object.assign(new Error("notion closed project"), { code: "P0001", hint: "Members only and Private projects don't connect to Notion yet. Make this project Whole workspace to link Notion pages to its tasks." });
+    const late = await read(await handleNotionRequest(post({ action: "link_page", taskId: task, url: "https://www.notion.so/x-89abcdef0123456789abcdef01234567" }, auth), d));
+    expect(late).toMatchObject({ status: 409, body: { reason: "invalid", error: "Members only and Private projects don't connect to Notion yet. Make this project Whole workspace to link Notion pages to its tasks." } });
+    linkErr = Object.assign(new Error("notion closed project"), { code: "P0001" });
+    const bare = await read(await handleNotionRequest(post({ action: "link_page", taskId: task, url: "https://www.notion.so/x-89abcdef0123456789abcdef01234567" }, auth), d));
+    expect(bare).toMatchObject({ status: 409, body: { error: "Members only and Private projects don't connect to Notion yet." } });
+  });
   it("constant-time comparison", () => {
     expect(safeEq("abc", "abc")).toBe(true);
     expect(safeEq("abc", "abd")).toBe(false);

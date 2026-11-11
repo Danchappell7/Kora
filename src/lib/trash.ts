@@ -122,6 +122,7 @@ export function trashFailure(e: unknown): TrashFailure {
   if (/no project to restore into/i.test(msg)) return "no_project";
   if (/restore its project first/i.test(msg)) return "project_first";
   if (/its project was deleted for good/i.test(msg)) return "project_gone";
+  if (/notion closed project/i.test(msg)) return "notion_closed";
   if (/not authorized|not allowed|permission denied/i.test(msg)) return "not_allowed";
   if (/not found/i.test(msg)) return "not_found";
   return "error";
@@ -325,6 +326,9 @@ export function trashFailureText(why: TrashFailure, kind: TrashKind = "task"): s
     case "no_project": return "There's no project in this workspace to put it back into. Make a project first, then try again.";
     case "project_first": return "It was in a Members only or Private project, so it comes back only with that project. Restore the project first.";
     case "project_gone": return "It was in a Members only or Private project that's been deleted for good, so it can't come back.";
+    case "notion_closed": return kind === "project"
+      ? "Members only and Private projects don't connect to Notion yet, and this project has a Notion sync or Notion-linked tasks. The workspace's owner can turn project access off to restore it."
+      : "Members only and Private projects don't connect to Notion yet, and this task has Notion page links. Make its project Whole workspace to restore it.";
     case "not_allowed": return "You can't do that in this workspace.";
     case "not_found": return "It's no longer in the bin: someone restored it or deleted it for good.";
     case "unavailable": return "The recycle bin isn't switched on yet.";

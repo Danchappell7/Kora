@@ -28,6 +28,9 @@
 -- there go to its owner), unless they're back in it by then. Owners aren't put back: while this is
 -- out, any writer may set a project's owner (and someone removed and invited back keeps what they
 -- owned), so check the owner of each Members only and Private project after 0058 runs again (About).
+-- Nor does anything keep Notion out of Members only and Private projects while this is out (0058's
+-- containment rule): once 0058 runs again, a workspace isn't switched on while one of them has a Notion
+-- sync or Notion-linked tasks (select * from public.pa_notion_blockers('<ws id>') lists them).
 -- Then switch each workspace on again.
 --
 -- Safe to run more than once. Nothing here needs 0058's own functions to be working.
@@ -124,6 +127,9 @@ begin
     ('forms', 'trg_forms_pa_token'),
     ('notion_syncs', 'trg_notion_syncs_pa'),
     ('notion_links', 'trg_notion_links_pa_gone'),
+    ('notion_links', 'trg_notion_links_pa_closed'),
+    ('tasks', 'trg_tasks_pa_notion'),
+    ('projects', 'trg_projects_pa_notion'),
     ('update_asks', 'trg_update_asks_pa'),
     ('bill_rates', 'trg_bill_rates_pa'),
     ('meetings', 'trg_meetings_pa'),
@@ -281,6 +287,7 @@ drop function if exists public.remove_project_member(uuid, uuid);
 drop function if exists public.set_invite_projects(uuid, jsonb);
 drop function if exists public.remove_invite_project(uuid, uuid);
 drop function if exists public.set_project_owner(uuid, uuid);
+drop function if exists public.project_access_notion_blockers(uuid);
 
 -- ---------- 5. every switch off (the settings, members and visibility are kept for next time) ----------
 do $off$

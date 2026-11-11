@@ -15,10 +15,12 @@
 //   databases    owner/admin         { workspaceId, query? } → { databases }
 //   schema       owner/admin         { workspaceId, databaseId } → { schema }
 //   preview      owner/admin         { workspaceId, databaseId } → { rows }   (5 pages)
-//   import       owner/admin         NotionImportRequest (+ resume?) → { result }   (one at a time per database)
+//   import       owner/admin         NotionImportRequest (+ resume?) → { result }   (one at a time per database;
+//                                    a Whole workspace project while Project access is on)
 //   sync_now     owner/admin         { syncId } → { stats, error, fatal }
 //   page         members             { workspaceId, pageId, force? } → { page }   (a linked page's title / icon)
-//   link_page    can edit the task   { taskId, url } → { link }
+//   link_page    can edit the task   { taskId, url } → { link }   (never a Members only or Private
+//                                    project's task while Project access is on: 0058's containment rule)
 //   cron         x-cron-secret       { mode: "sync" } → { due, ran, results }
 //
 // Who may do what is decided by the database, as the caller: notion_status()
@@ -34,8 +36,8 @@ import { parseNotionId, NOTION_TOKEN_RE } from "./notion.ts";
 import { isNotionError, type NotionApiError } from "./notionApi.ts";
 import { oneLine, pageMeta, previewRow, schemaOf, summariseDatabase, type NDatabase, type NPage, type PageMeta } from "./notionMap.ts";
 import {
-  claimSync, dueSyncs, importDatabase, NotionActionError, OUT_OF_SIGHT_TEXT, pagesOutOfSight, readToken, runSync, SYNC_TEXT, syncsOutOfSight,
-  type SyncDeps,
+  claimSync, CLOSED_TEXT, closedForNotion, dueSyncs, importDatabase, isClosedProjectRefusal, NotionActionError, OUT_OF_SIGHT_TEXT,
+  pagesOutOfSight, readToken, runSync, SYNC_TEXT, syncsOutOfSight, type SyncDeps,
 } from "./notionSync.ts";
 
 export interface HandlerDeps extends SyncDeps {
@@ -90,6 +92,12 @@ function dbFailure(e: unknown, deps: HandlerDeps, where: string): Response {
   const msg = String((e as { message?: unknown })?.message ?? "");
   if (code === "42883" || code === "42P01" || /does not exist/i.test(msg)) return refuse(503, "unavailable", TEXT.unavailable);
   if (/notion not connected/i.test(msg)) return refuse(409, "not_connected", TEXT.notConnected);
+  // (0058's containment rule: Notion is for Whole workspace projects while Project access is on; the
+  // database's hint is the sentence for what was tried)
+  if (isClosedProjectRefusal(e)) {
+    const hint = String((e as { hint?: unknown })?.hint ?? "");
+    return refuse(409, "invalid", /^Members only and Private projects don't connect to Notion yet\. .{3,200}\.$/.test(hint) ? hint : CLOSED_TEXT.any);
+  }
   if (/not allowed|not authorized/i.test(msg)) return refuse(403, "not_allowed", TEXT.manageOnly);
   if (/invalid token/i.test(msg)) return refuse(400, "invalid_token", "That doesn't look like a Notion integration secret. It starts with ntn_ or secret_.");
   if (/invalid project/i.test(msg)) return refuse(400, "invalid", "That project isn't in this workspace.");
@@ -318,6 +326,11 @@ async function manageAction(deps: HandlerDeps, userId: string, action: string, b
   // ---- import ----
   const projectId = b.projectId == null || b.projectId === "" ? null : str(b.projectId, 40);
   if (projectId !== null && !UUID.test(projectId)) return refuse(400, "invalid", "Choose a project to import into.");
+  // (0058's containment rule: never into a Members only or Private project while Project access is on,
+  // said before Notion is asked anything; importDatabase and the database refuse it too)
+  try {
+    if (projectId && await closedForNotion(deps.db.service, ws, projectId)) return refuse(409, "invalid", CLOSED_TEXT.import);
+  } catch (e) { return dbFailure(e, deps, "access"); }
   let newProject: { name: string; emoji: string; color: string } | null = null;
   if (!projectId) {
     const np = b.newProject as Record<string, unknown> | null | undefined;
@@ -411,7 +424,7 @@ async function linkPage(deps: HandlerDeps, userId: string, b: Record<string, unk
   if (!pageId) return refuse(400, "invalid", "That isn't a link to a Notion page. Copy it from Notion with Share › Copy link.");
   try {
     const t = await deps.db.withUser({ userId, readOnly: true }, (tx) =>
-      tx.query<{ ws: string | null }>(`select workspace_id::text as ws from public.tasks where id = $1::uuid`, [taskId]));
+      tx.query<{ ws: string | null; project: string | null }>(`select workspace_id::text as ws, project_id as project from public.tasks where id = $1::uuid`, [taskId]));
     if (!t[0]) return refuse(404, "not_found", "That task isn't there any more, or you can't change it.");
     const ws = t[0].ws;
     if (!ws) return refuse(400, "invalid", "Notion pages can only be linked to team tasks.");
@@ -419,6 +432,9 @@ async function linkPage(deps: HandlerDeps, userId: string, b: Record<string, unk
     if (!st) return refuse(404, "not_found", "That task isn't there any more, or you can't change it.");
     if (!st.connected) return refuse(409, "not_connected", TEXT.notConnected);
     if (!st.can_link) return refuse(403, "not_allowed", "Guests can't link Notion pages.");
+    // (0058's containment rule: never to a task of a Members only or Private project while Project access
+    // is on, said before Notion is asked about the page; notion_link_page refuses it too)
+    if (await closedForNotion(deps.db.service, ws, t[0].project)) return refuse(409, "invalid", CLOSED_TEXT.link);
     const lim = await hit(deps, `kanbo:notion:link:u:${userId}`, 60, 30);
     if (!lim.allowed) return refuse(429, "rate_limited", TEXT.tooMany, lim.retryAfter);
     const token = await readToken(deps.db.service, ws);

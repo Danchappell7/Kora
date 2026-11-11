@@ -92,6 +92,8 @@ const routes: Route[] = [
   { method: "GET", path: "/dupe", handler: async () => { throw Object.assign(new Error("duplicate key value"), { code: "23505" }); } },
   // 0058's task trigger refusing an assignee who can't see the project
   { method: "GET", path: "/assignee", handler: async () => { throw Object.assign(new Error("assignee can't see this project"), { code: "42501" }); } },
+  // 0058's containment rule refusing a Notion-linked task's move into a Members only or Private project
+  { method: "GET", path: "/notion-move", handler: async () => { throw Object.assign(new Error("notion closed project"), { code: "P0001", hint: "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project." }); } },
   { method: "GET", path: "/boom", handler: async () => { throw Object.assign(new Error("syntax error at or near \"selec\" in select * from secret_table"), { code: "42601" }); } },
   { method: "POST", path: "/boom", handler: async () => { throw new Error("kaput"); } },
   // writes in a transaction as the user (like the real handlers)
@@ -407,6 +409,10 @@ describe("errors", () => {
     // Project access (0058): the database refusing an assignee reads as the API's own answer about that field
     const who = await call(WRITE, "GET", "/assignee");
     expect([who.status, who.json.error.code, who.json.error.details]).toEqual([422, "validation_failed", { fields: { assigneeId: "That person can't see this project." } }]);
+    // and refusing a Notion-linked task's move (the containment rule): said about the project, never a 500
+    const moved = await call(WRITE, "GET", "/notion-move");
+    expect([moved.status, moved.json.error.code, moved.json.error.details]).toEqual([422, "validation_failed",
+      { fields: { projectId: "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project." } }]);
     const boom = await call(WRITE, "GET", "/boom");
     expect(boom.status).toBe(500);
     expect(isError(boom.json, 500, "internal")).toBe(true);

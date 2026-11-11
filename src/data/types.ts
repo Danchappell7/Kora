@@ -86,6 +86,17 @@ export interface ProjectAccessSettings {
   changedAt?: string | null;
 }
 
+/** 0058's containment rule: a Members only or Private project that still connects to Notion (its syncs
+ *  and its tasks with Notion links), which keeps project access from being turned on. `name` and
+ *  `visibility` are null for one that's been deleted or has left the workspace. */
+export interface NotionBlocker {
+  projectId: string;
+  name: string | null;
+  visibility: ProjectVisibility | null;
+  syncs: number;
+  linkedTasks: number;
+}
+
 /** 0057: a workspace's rollout plan. Each part is optional; the champion and the pilot group are
  *  the workspace's owners, admins and members (user ids). */
 export interface RolloutPlan {
@@ -1193,8 +1204,9 @@ export interface TrashRestoreResult {
   note: string | null;
   counts: TrashCounts | null;
 }
-/** (project_first / project_gone, 0058: a task of a Members only or Private project that's gone comes back only with it) */
-export type TrashFailure = "not_allowed" | "not_found" | "conflict" | "no_project" | "project_first" | "project_gone" | "unavailable" | "network" | "error";
+/** (project_first / project_gone, 0058: a task of a Members only or Private project that's gone comes back only with it;
+ *  notion_closed, 0058's containment rule: it would bring Notion links or a sync into a Members only or Private project) */
+export type TrashFailure = "not_allowed" | "not_found" | "conflict" | "no_project" | "project_first" | "project_gone" | "notion_closed" | "unavailable" | "network" | "error";
 /** restore_trash_items(): one answer per id, newest delete first. */
 export interface TrashBulkResult {
   id: string;

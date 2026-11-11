@@ -331,10 +331,34 @@ export function audienceOpen(preset: "team" | "leadership", ws: Pick<Workspace, 
 export const VISIBILITY_LABEL: Record<ProjectVisibility, string> = { workspace: "Whole workspace", members: "Members only", private: "Private" };
 export const ROLE_LABEL: Record<ProjectRole, string> = { editor: "Can edit", commenter: "Can comment", viewer: "Can view" };
 
+/** 0058's containment rule (Notion is for Whole workspace projects while project access is on), as the
+ *  database says it: 'notion closed project' (a project with Notion made narrower, a linked task moved in)
+ *  or 'notion in closed projects' (switching on while one still connects to Notion). Its hint is the
+ *  sentence (switching on: how many, where, and what to do). Null for anything else. */
+export function notionContainmentText(e: unknown): string | null {
+  const msg = String((e as { message?: unknown })?.message ?? e ?? "");
+  const hint = String((e as { hint?: unknown })?.hint ?? "");
+  const fine = (fallback: string) => (/^[0-9A-Z].{10,600}\.$/.test(hint) && /connect to Notion/.test(hint) ? hint : fallback);
+  if (/notion in closed projects/i.test(msg)) {
+    return fine("Some Members only or Private projects still connect to Notion. Remove their Notion syncs (Settings › Notion) and their tasks' Notion links, or make them Whole workspace, then turn project access on.");
+  }
+  if (/notion closed project/i.test(msg)) return fine(NOTION_CLOSED.project);
+  return null;
+}
+/** The containment rule's sentences, where the app says it first (as the database's hints do). */
+export const NOTION_CLOSED = {
+  project: "Members only and Private projects don't connect to Notion yet. Remove this project's Notion sync and page links first.",
+  move: "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project.",
+  link: "Members only and Private projects don't connect to Notion yet. Make this project Whole workspace to link Notion pages to its tasks.",
+  importNote: "Members only and Private projects don't connect to Notion yet, so they aren't listed.",
+} as const;
+
 /** A refusal from one of 0058's functions, said from your side. */
 export function accessErrorText(e: unknown): string {
   const code = String((e as { code?: unknown })?.code ?? "");
   const msg = String((e as { message?: unknown })?.message ?? e ?? "");
+  const notion = notionContainmentText(e);
+  if (notion) return notion;
   if (code === "access_missing") return "Project access isn't switched on yet.";
   if (code === "offline") return "You're offline. Try again when you're back.";
   if (/not a member of this workspace/i.test(msg)) return "They're not in this workspace any more.";

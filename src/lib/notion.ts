@@ -19,7 +19,8 @@
      errors: 'not allowed' | 'invalid token' | 'notion not connected' | 'invalid database' |
              'invalid direction' | 'invalid mapping' | 'invalid project' | 'sync not found' |
              'task not found' | 'notion links need a team task' | 'invalid page' |
-             'too many links' | 'link not found'
+             'too many links' | 'link not found' | 'notion closed project' (0058: a Members only or
+             Private project while project access is on; the hint is the sentence)
 
    Edge function "notion" (POST /functions/v1/notion, the user's JWT) — a3
    defines the actions (see api-contracts.md): connect, test, databases,
@@ -143,6 +144,7 @@ export function notionFailure(e: unknown): NotionFailure {
   if (code === "42883" || code === "PGRST202" || /could not find the function|does not exist/i.test(msg)) return "unavailable";
   if (/failed to fetch|network|load failed/i.test(msg)) return "network";
   if (/not connected/i.test(msg)) return "not_connected";
+  if (/notion closed project/i.test(msg)) return "invalid";
   if (/not allowed|not authorized/i.test(msg)) return "not_allowed";
   if (/invalid token/i.test(msg)) return "invalid_token";
   if (/rate.?limit/i.test(msg)) return "rate_limited";
@@ -178,7 +180,18 @@ export const NOTION_COPY = {
   notFound: "That isn't there any more.",
   rateLimited: "That's a lot of requests in a short time. Try again in a minute.",
   failed: "Something went wrong. Try again.",
+  /** 0058's containment rule: Notion is for Whole workspace projects while project access is on */
+  closed: "Members only and Private projects don't connect to Notion yet.",
+  closedLink: "Members only and Private projects don't connect to Notion yet. Make this project Whole workspace to link Notion pages to its tasks.",
+  closedSync: "Members only and Private projects don't connect to Notion yet. Choose a Whole workspace project.",
 } as const;
+
+/** 0058's containment rule said by the database ('notion closed project'): its hint is the sentence. */
+export function notionClosedText(e: unknown): string | null {
+  if (!/notion closed project/i.test(errText(e))) return null;
+  const hint = String((e as { hint?: unknown })?.hint ?? "");
+  return /^Members only and Private projects don't connect to Notion yet\. .{3,200}\.$/.test(hint) ? hint : NOTION_COPY.closed;
+}
 
 /** What the wizard first proposes (people confirm it): the same guess the server would make. */
 export function suggestNotionMapping(schema: NotionDatabaseSchema): NotionFieldMapping {
@@ -202,6 +215,8 @@ function rpcError(e: unknown): NotionError {
   if (e instanceof NotionError) return e;
   if (isMissing(e)) { schemaMissing = true; return new NotionError("unavailable", NOTION_COPY.unavailable); }
   if (isNetworkError(e)) return new NotionError("network", isOffline() ? NOTION_COPY.offline : NOTION_COPY.network);
+  const closed = notionClosedText(e);
+  if (closed) return new NotionError("invalid", closed);
   const reason = notionFailure(e);
   const msg = errText(e).toLowerCase();
   switch (reason) {

@@ -121,6 +121,33 @@ describe("NotionPanel", () => {
     expect(sync.mapping.description).toBeUndefined();
   });
 
+  it("project access on: only Whole workspace projects are offered to import into, it says why, and a new project starts as Whole workspace (0058's containment rule)", async () => {
+    const mixed = [
+      { ...PROJECTS[0], visibility: "private" as const },
+      { ...PROJECTS[1], visibility: "workspace" as const },
+      { ...PROJECTS[2], visibility: "members" as const },
+    ];
+    const { unmount } = render(<NotionPanel workspaceId="ws-foundrise" workspaceName="Foundrise" role="owner" projects={mixed} projectAccessOn />);
+    fireEvent.click(await screen.findByRole("button", { name: "Import a database" }));
+    let dialog = await screen.findByRole("dialog", { name: "Import a Notion database" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Content calendar/ }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Next" }));
+    const select = await within(dialog).findByRole("combobox", { name: "Project" });
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["🎨 Brand Refresh"]);
+    expect(select).toHaveAccessibleDescription("Members only and Private projects don't connect to Notion yet, so they aren't listed.");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "A new project" }));
+    expect(within(dialog).getByText("It starts as Whole workspace: Members only and Private projects don't connect to Notion yet.")).toBeInTheDocument();
+    unmount();
+    // switched off: every live project, and nothing said
+    render(<NotionPanel workspaceId="ws-foundrise" workspaceName="Foundrise" role="owner" projects={mixed} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Import a database" }));
+    dialog = await screen.findByRole("dialog", { name: "Import a Notion database" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Content calendar/ }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Next" }));
+    expect(within(await within(dialog).findByRole("combobox", { name: "Project" })).getAllByRole("option")).toHaveLength(3);
+    expect(within(dialog).queryByText(/don't connect to Notion yet/)).toBeNull();
+  });
+
   it("a new project gets its name from the database and an identity", async () => {
     render(<NotionPanel workspaceId="ws-foundrise" workspaceName="Foundrise" role="owner" projects={[]} />);
     fireEvent.click(await screen.findByRole("button", { name: "Import a database" }));

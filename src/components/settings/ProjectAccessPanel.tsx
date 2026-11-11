@@ -5,13 +5,15 @@
    members may make projects private. While it's off it says what
    turning it on would do: each guest and the projects they'd still
    see (and their open tasks they wouldn't), and who'd lose sight of
-   any project that's already Members only or Private. Turning it on
-   or off asks first; off again is the rollback,
+   any project that's already Members only or Private, and (0058's
+   containment rule) the Members only and Private projects that still
+   connect to Notion, which keep it from being turned on until they're
+   cleared. Turning it on or off asks first; off again is the rollback,
    instant, with everyone's projects and settings kept for next time.
    Before 0058 it isn't shown at all.
    ============================================================ */
-import { useState } from "react";
-import type { ProjectAccessSettings, ProjectVisibility, Task, Workspace } from "../../data/types";
+import { useEffect, useState } from "react";
+import type { NotionBlocker, ProjectAccessSettings, ProjectVisibility, Task, Workspace } from "../../data/types";
 import { Button } from "../primitives";
 import { SetGroup, SetNote, SetRow } from "../integrations/settingsBits";
 import { accessSchema, roleOf, turnOnPreview, VISIBILITY_LABEL, VISIBILITIES, type AccessCtx } from "../../lib/projectAccess";
@@ -32,13 +34,22 @@ function lostLine(g: { name: string; lost: { project: string; openTasks: number 
   const where = listOf(g.lost.map((x) => (x.project === "no project" ? "tasks with no project" : x.project)));
   return `${g.name} has ${plural(n, "open task")} in ${where}. Add them to ${g.lost.length === 1 ? "it" : "those"} first, or they won't see ${n === 1 ? "it" : "them"}.`;
 }
+/** 0058's containment rule: "“Payroll” is Private and still has 1 Notion sync and 3 tasks with Notion links." */
+export function notionBlockerLine(b: NotionBlocker): string {
+  const what = [b.syncs ? plural(b.syncs, "Notion sync") : "", b.linkedTasks ? plural(b.linkedTasks, "task") + " with Notion links" : ""].filter(Boolean);
+  const who = b.name ? `“${b.name}” is ${VISIBILITY_LABEL[b.visibility ?? "private"]}` : "A Members only or Private project that's been deleted or moved";
+  return `${who} and still has ${what.length ? listOf(what) : "Notion links"}.`;
+}
+/** Before the list: why they stand in the way, and what to do. */
+export const NOTION_BLOCKERS_HEAD = "Members only and Private projects don't connect to Notion yet. Before turning this on, remove their Notion syncs (Settings › Notion) and the Notion links on their tasks, or make them Whole workspace:";
+
 /** "Payroll & contracts is Private: Theo Vance (2 open tasks) and Sana Rao won't see it." */
 function closedLine(c: { name: string; visibility: ProjectVisibility; losing: { name: string; openTasks: number }[] }): string {
   const who = listOf(c.losing.map((x) => (x.openTasks ? `${x.name} (${plural(x.openTasks, "open task")})` : x.name)));
   return `${c.name} is ${VISIBILITY_LABEL[c.visibility]}: ${who} won't see it.`;
 }
 
-export function ProjectAccessPanel({ workspace, ctx, nameOf, tasks = [], onChange }: {
+export function ProjectAccessPanel({ workspace, ctx, nameOf, tasks = [], onChange, loadNotionBlockers }: {
   workspace: Workspace | undefined;
   ctx: AccessCtx;
   nameOf?: (userId: string) => string | undefined;
@@ -46,9 +57,23 @@ export function ProjectAccessPanel({ workspace, ctx, nameOf, tasks = [], onChang
   tasks?: Pick<Task, "workspaceId" | "projectId" | "assigneeId" | "status" | "archivedAt" | "collaborators">[];
   /** save the switch or a setting; resolves false when it was refused (the caller has said why) */
   onChange: (workspaceId: string, patch: Partial<Pick<ProjectAccessSettings, "on" | "defaultVisibility" | "membersMayMakePrivate">>) => Promise<boolean>;
+  /** 0058's containment rule: the Members only and Private projects that still connect to Notion (asked
+   *  while it's off, and again when you go to turn it on). Omit: nothing listed (the server still refuses). */
+  loadNotionBlockers?: (workspaceId: string) => Promise<NotionBlocker[]>;
 }): JSX.Element | null {
   const [asking, setAsking] = useState<null | "on" | "off">(null);
   const [busy, setBusy] = useState(false);
+  const [blockers, setBlockers] = useState<NotionBlocker[]>([]);
+  const wsKey = workspace?.id ?? null;
+  const isOwner = !!wsKey && roleOf(ctx, wsKey, ctx.me) === "owner";
+  const isOn = !!workspace?.projectAccess?.on;
+  useEffect(() => {
+    const none = (b: NotionBlocker[]) => (b.length ? [] : b);
+    if (!wsKey || !isOwner || isOn || !loadNotionBlockers || !accessSchema()) { setBlockers(none); return; }
+    let live = true;
+    loadNotionBlockers(wsKey).then((b) => { if (live) setBlockers(b); }, () => { if (live) setBlockers(none); });
+    return () => { live = false; };
+  }, [wsKey, isOwner, isOn, asking, loadNotionBlockers]);
   if (!workspace?.id || !accessSchema()) return null;
   if (roleOf(ctx, workspace.id, ctx.me) !== "owner") return null;
   const wsId = workspace.id;
@@ -63,7 +88,11 @@ export function ProjectAccessPanel({ workspace, ctx, nameOf, tasks = [], onChang
   const closing = preview.closed.filter((x) => x.losing.length > 0);
   const losers = new Set(closing.flatMap((x) => x.losing.map((l) => l.userId)));
   const strandedGuests = preview.guests.filter((g) => g.lost.length > 0);
-  const askOn = [
+  const notionStop = !s.on && blockers.length > 0;
+  const askOn = notionStop ? [
+    `${blockers.length === 1 ? "1 Members only or Private project still connects" : `${blockers.length} Members only or Private projects still connect`} to Notion, so project access can't be turned on yet.`,
+    "Remove their Notion syncs (Settings › Notion) and the Notion links on their tasks, or make them Whole workspace, then try again.",
+  ].join(" ") : [
     `Turn on project access for ${workspace.name}? Guests will only see the projects they're on.`,
     losers.size ? `${plural(losers.size, "member")} won't see the Members only or Private projects they're not on.` : "",
     strandedGuests.length ? `${plural(strandedGuests.length, "guest")} won't see some of their own open tasks.` : "",
@@ -86,7 +115,8 @@ export function ProjectAccessPanel({ workspace, ctx, nameOf, tasks = [], onChang
               ? askOn
               : `Turn off project access? Everyone at ${workspace.name}, guests included, will see every project again. Project people and settings are kept for next time.`}</p>
             <span className="kpas-ask-actions">
-              <Button size="sm" variant="primary" loading={busy} onClick={() => void save({ on: asking === "on" })}>{asking === "on" ? "Turn it on" : "Turn it off"}</Button>
+              <Button size="sm" variant="primary" loading={busy} disabled={asking === "on" && notionStop}
+                onClick={() => void save({ on: asking === "on" })}>{asking === "on" ? "Turn it on" : "Turn it off"}</Button>
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => setAsking(null)}>Cancel</Button>
             </span>
           </div>
@@ -106,6 +136,11 @@ export function ProjectAccessPanel({ workspace, ctx, nameOf, tasks = [], onChang
                 ? <li>Members and admins: nothing changes until a project is Members only or Private.</li>
                 : <li>Already set: {c.private} private · {c.members} members only.{closing.length === 0 && " Everyone on them keeps them."}</li>}
               {closing.map((x) => <li key={`closed-${x.projectId}`} className="kpas-warn">{closedLine(x)}</li>)}
+              {blockers.length > 0 && (
+                <li className="kpas-warn kpas-notion">{NOTION_BLOCKERS_HEAD}
+                  <ul className="kpas-preview-sub">{blockers.map((b) => <li key={`notion-${b.projectId}`}>{notionBlockerLine(b)}</li>)}</ul>
+                </li>
+              )}
               <li>You can turn it off any time. Nothing is lost.</li>
             </ul>
           </div>

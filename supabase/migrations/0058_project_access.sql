@@ -44,7 +44,11 @@
 --      managers take it off a pending invite) and set_project_owner() (About ›
 --      Owner: the column's own check refuses some owners). Every access change
 --      touches workspaces.project_access_changed_at, so every open app reloads.
---   6. Turning the switch off again is the rollback: instant, nothing lost.
+--   6. Notion is for Whole workspace projects while the switch is on (2t): no Members only or Private
+--      project has a Notion sync, a Notion import or a task with a Notion link, and every way in is
+--      refused with a sentence (a sync, an import, a link, a linked task moved in, a project with them
+--      made narrower, the switch turned on while one has them, the bin putting them back).
+--   7. Turning the switch off again is the rollback: instant, nothing lost.
 --      In an emergency, the SQL editor may switch it off directly:
 --        update public.workspaces set project_access = false where id = '<ws id>';
 --
@@ -1382,6 +1386,122 @@ begin
   return n;
 end; $$;
 
+-- 2t. Notion is for Whole workspace projects while the switch is on (the containment rule). No Members
+-- only or Private project has a Notion sync, nor a task with a Notion link of any kind (one someone
+-- added, a sync's, an import's), whoever writes it and however it'd get there: a new sync or a sync
+-- re-pointed (notion_save_sync, the bin putting one back), a link added (notion_link_page, the notion
+-- function's imports and syncs, the bin putting one back), a linked task moved in (on its own, as a
+-- parent's sub-task, by the app, the API, MCP, the planner, a template or pack), a project with any of
+-- those made Members only or Private, or the switch turned on while one has them (each refused with a
+-- sentence for the app: trg_notion_links_pa_closed, trg_tasks_pa_notion, trg_notion_syncs_pa,
+-- trg_projects_pa_notion, trg_workspaces_pa_guard). The page and database closure above (2j:
+-- pa_notion_page_hidden, user_notion_database_hidden, notion_pages_retired) stays, for what's older
+-- than this rule (the undo window, a workspace switched on before it). Switch off: nothing changes.
+-- (kanbo.notion_contain = 'off' lifts it for the SQL editor, as kanbo.restoring does the bin's checks:
+-- no client sets a setting. The test suite builds the older states that way.)
+create or replace function public.pa_notion_contain()
+returns boolean language sql stable set search_path = pg_catalog as $$
+  select coalesce(current_setting('kanbo.notion_contain', true), '') <> 'off';
+$$;
+-- Is this project (as a task stores it) Members only or Private here? A live one by its visibility; one
+-- in the bin, deleted for good or gone from the workspace by the access it had here (pa_rank_for's rule).
+create or replace function public.pa_project_closed(p_ws uuid, p_project text)
+returns boolean language sql security definer stable set search_path = public as $$
+  select p_ws is not null and public.kanbo_uuid(p_project) is not null and coalesce(
+    (select p.visibility <> 'workspace' from public.projects p where p.id = public.kanbo_uuid(p_project) and p.workspace_id = p_ws),
+    (select coalesce(a.x ->> 'visibility', 'workspace') <> 'workspace'
+       from (select coalesce(
+               (select r.access from public.trash r
+                 where r.item_id = public.kanbo_uuid(p_project) and r.kind = 'project' and r.workspace_id = p_ws and r.restored_at is null
+                 order by r.deleted_at desc limit 1),
+               (select g.access from public.project_ids_retired g where g.id = public.kanbo_uuid(p_project) and g.workspace_id = p_ws),
+               (select d.access from public.project_departures d where d.id = public.kanbo_uuid(p_project) and d.workspace_id = p_ws)) as x) a
+      where a.x is not null),
+    false);
+$$;
+-- Is (p_ws, p_project) a Members only or Private project of a workspace whose switch is on, so nothing of
+-- Notion's may come into it? It takes the locks that keep the answer true until the caller's transaction
+-- ends: the project's row (FOR SHARE: making it narrower waits, or this waits for that and reads what it
+-- made), and, for a closed one, the workspace's (FOR SHARE: the switch going on waits, or this waits).
+-- The caller holds the task's row already (a move), or takes it first (a new link).
+create or replace function public.pa_notion_shut(p_ws uuid, p_project text)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare v text; on_ boolean;
+begin
+  if p_ws is null or not public.pa_notion_contain() then return false; end if;
+  select p.visibility into v from public.projects p
+   where p.id = public.kanbo_uuid(p_project) and p.workspace_id = p_ws for share;
+  if found then
+    if v = 'workspace' then return false; end if;
+  elsif not public.pa_project_closed(p_ws, p_project) then
+    return false;
+  end if;
+  select w.project_access into on_ from public.workspaces w where w.id = p_ws for share;
+  return coalesce(on_, false);
+end; $$;
+-- The sentences (the app, the API, MCP and the notion function show them as they are)
+create or replace function public.pa_notion_closed_text(p_what text)
+returns text language sql immutable set search_path = pg_catalog as $$
+  select 'Members only and Private projects don''t connect to Notion yet. ' || case p_what
+    when 'move' then 'Remove this task''s Notion page links first, or keep it in a Whole workspace project.'
+    when 'link' then 'Make this project Whole workspace to link Notion pages to its tasks.'
+    when 'sync' then 'Choose a Whole workspace project.'
+    when 'restore task' then 'This task has Notion page links: make its project Whole workspace to restore it.'
+    when 'restore project' then 'This project has a Notion sync or Notion-linked tasks: the workspace''s owner can turn project access off to restore it.'
+    else 'Remove this project''s Notion sync and page links first.' end;
+$$;
+-- The Members only and Private projects here that still connect to Notion: their syncs, and their tasks
+-- with a Notion link (one deleted, in the bin or gone from the workspace counts by the access it had:
+-- no name). Switching on is refused while there are any (pa_trg_workspaces_guard).
+create or replace function public.pa_notion_blockers(p_ws uuid)
+returns table (project_id text, name text, visibility text, syncs integer, linked_tasks integer)
+language sql security definer stable set search_path = public as $$
+  with linked as (
+    select t.project_id as pid, count(*)::int as n
+      from public.tasks t
+     where t.workspace_id = p_ws and t.project_id is not null
+       and exists (select 1 from public.notion_links l where l.task_id = t.id)
+     group by t.project_id),
+  synced as (
+    select s.project_id::text as pid, count(*)::int as n
+      from public.notion_syncs s join public.projects p on p.id = s.project_id and p.workspace_id = p_ws
+     where s.workspace_id = p_ws
+     group by s.project_id)
+  select k.pid, p.name, p.visibility, coalesce(s.n, 0), coalesce(l.n, 0)
+    from (select pid from linked union select pid from synced) k
+    left join linked l on l.pid = k.pid
+    left join synced s on s.pid = k.pid
+    left join public.projects p on p.id = public.kanbo_uuid(k.pid) and p.workspace_id = p_ws
+   where p_ws is not null and public.pa_project_closed(p_ws, k.pid)
+   order by p.name nulls last, k.pid;
+$$;
+-- (switching on with any: the sentence names how many and where, and how to clear them)
+create or replace function public.pa_notion_refuse_on(p_ws uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare b record; names text[] := '{}'; n integer := 0; syncs integer := 0; tasks integer := 0; rest integer; msg text;
+begin
+  for b in select * from public.pa_notion_blockers(p_ws) loop
+    n := n + 1; syncs := syncs + b.syncs; tasks := tasks + b.linked_tasks;
+    if b.name is not null and cardinality(names) < 3 then names := names || ('“' || left(b.name, 60) || '”'); end if;
+  end loop;
+  if n = 0 then return; end if;
+  rest := n - cardinality(names);
+  msg := case when n = 1 then '1 Members only or Private project still connects' else n || ' Members only or Private projects still connect' end
+      || ' to Notion (' || concat_ws(', ',
+           case when syncs = 1 then '1 sync' when syncs > 1 then syncs || ' syncs' end,
+           case when tasks = 1 then '1 task with Notion links' when tasks > 1 then tasks || ' tasks with Notion links' end) || ')'
+      || case when cardinality(names) = 0 then ''
+              else ': ' || case when rest > 0 then array_to_string(names, ', ') || ' and ' || rest || ' more'
+                                when cardinality(names) = 1 then names[1]
+                                else array_to_string(names[1:cardinality(names) - 1], ', ') || ' and ' || names[cardinality(names)] end end
+      || '. Members only and Private projects don''t connect to Notion yet: remove '
+      || case when n = 1 then 'its' else 'their' end || ' Notion syncs in Settings › Notion and the Notion links on '
+      || case when n = 1 then 'its' else 'their' end || ' tasks, or make '
+      || case when n = 1 then 'it' else 'them' end || ' Whole workspace, then turn project access on.';
+  raise exception 'notion in closed projects' using hint = msg,
+    detail = jsonb_build_object('projects', n, 'syncs', syncs, 'linked_tasks', tasks)::text;
+end; $$;
+
 do $internal$
 declare f text;
 begin
@@ -1391,7 +1511,9 @@ begin
                            'public.pa_snapshot_without(jsonb,uuid,uuid)', 'public.pa_forget_member(uuid,uuid)',
                            'public.pa_forget_departed()', 'public.pa_summary_scoped(text,uuid,uuid,text,jsonb,boolean)',
                            'public.pa_scrub_bin(uuid)', 'public.pa_snap_part(jsonb,uuid[])', 'public.pa_split_bin(uuid)',
-                           'public.pa_clear_reasons(uuid)'] loop
+                           'public.pa_clear_reasons(uuid)', 'public.pa_notion_contain()', 'public.pa_project_closed(uuid,text)',
+                           'public.pa_notion_shut(uuid,text)', 'public.pa_notion_closed_text(text)',
+                           'public.pa_notion_blockers(uuid)', 'public.pa_notion_refuse_on(uuid)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
 end $internal$;
@@ -1472,7 +1594,10 @@ end $seed$;
 
 -- ---------- 4. the functions the app calls ----------
 -- Errors (the app matches them): 'not authorized' · 'not found' · 'invalid visibility' ·
--- 'invalid role' · 'invalid grants' · 'not a member of this workspace'.
+-- 'invalid role' · 'invalid grants' · 'not a member of this workspace' · 'notion closed project' (a
+-- project with a Notion sync or Notion-linked tasks made Members only or Private, 2t; its hint is the
+-- sentence) · 'notion in closed projects' (switching on while one still connects to Notion; the hint
+-- names how many and where).
 
 -- The switch and its settings: the workspace's owner only. A null argument keeps what's there.
 -- Answers {on, default, member_private, changed_at}.
@@ -1512,6 +1637,19 @@ begin
   return jsonb_build_object('on', w.project_access, 'default', w.project_access_default,
                             'member_private', w.project_access_member_private, 'changed_at', w.project_access_changed_at);
 end; $$;
+
+-- What stands in the way of switching on (the containment rule, 2t): the Members only and Private projects
+-- here that still connect to Notion, each with its syncs and its tasks that have Notion links (Settings ›
+-- Workspace › Project access lists them before it's turned on). The workspace's owner only; anyone else
+-- gets an empty list. Answers [{project_id, name, visibility, syncs, linked_tasks}] (name and visibility
+-- null for a project that's been deleted or has left the workspace).
+create or replace function public.project_access_notion_blockers(p_ws uuid)
+returns jsonb language sql security definer stable set search_path = public as $$
+  select case when auth.uid() is null or p_ws is null or public.ws_role(p_ws) <> 'owner' or not public.can_act() then '[]'::jsonb
+    else coalesce((select jsonb_agg(jsonb_build_object('project_id', b.project_id, 'name', b.name, 'visibility', b.visibility,
+                                                       'syncs', b.syncs, 'linked_tasks', b.linked_tasks) order by b.name nulls last, b.project_id)
+                     from public.pa_notion_blockers(p_ws) b), '[]'::jsonb) end;
+$$;
 
 -- Who can see a project: its managers (D12, the switch-on rule whatever the switch says). Private needs
 -- an owner or admin, or a workspace that lets members; nobody but the workspace's owner may change it so
@@ -1703,6 +1841,7 @@ do $rpc$
 declare f text;
 begin
   foreach f in array array['public.set_project_access(uuid,boolean,text,boolean)', 'public.set_project_visibility(uuid,text)',
+                           'public.project_access_notion_blockers(uuid)',
                            'public.set_project_member(uuid,uuid,text)', 'public.remove_project_member(uuid,uuid)',
                            'public.set_invite_projects(uuid,jsonb)', 'public.remove_invite_project(uuid,uuid)',
                            'public.set_project_owner(uuid,uuid)'] loop
@@ -1736,6 +1875,11 @@ begin
   if (new.project_access, new.project_access_default, new.project_access_member_private)
      is distinct from (old.project_access, old.project_access_default, old.project_access_member_private) then
     new.project_access_changed_at := now();
+  end if;
+  -- switching on: never while a Members only or Private project still connects to Notion (the
+  -- containment rule, 2t: the sentence says how many, where, and what to do), whoever asks
+  if new.project_access and not coalesce(old.project_access, false) and public.pa_notion_contain() then
+    perform public.pa_notion_refuse_on(new.id);
   end if;
   -- switching on: a sub-task that was moved to another project on its own while it was off stands on
   -- its own from now on (D11), so its parent's delete or move never takes it along
@@ -2685,7 +2829,23 @@ end; $$;
 -- it had here (1h), as notion_delete_sync does, so its owners can sync the database elsewhere again.)
 create or replace function public.pa_trg_notion_syncs() returns trigger
 language plpgsql security definer set search_path = public as $$
+declare kept boolean := false;
 begin
+  -- (the containment rule, 2t: never into a Members only or Private project while the switch is on,
+  -- whoever writes it, the bin putting one back too. The bin's insert of a database that syncs with
+  -- another project by now writes nothing (restore_from_trash says its sync wasn't restored): that one's
+  -- row is held (FOR KEY SHARE) so it stays there until the restore ends)
+  if tg_op = 'INSERT' and public.pa_restoring() then
+    perform 1 from public.notion_syncs x where x.workspace_id = new.workspace_id and x.database_id = new.database_id for key share;
+    kept := found;
+  end if;
+  -- (judged where the project is: a sync row names its workspace, and only notion_save_sync checks the two agree)
+  if (tg_op = 'INSERT' and not kept or tg_op = 'UPDATE' and new.project_id is distinct from old.project_id)
+     and public.pa_notion_shut(coalesce((select p.workspace_id from public.projects p where p.id = new.project_id), new.workspace_id),
+                               new.project_id::text) then
+    raise exception 'notion closed project'
+      using hint = public.pa_notion_closed_text(case when public.pa_restoring() then 'restore project' else 'sync' end);
+  end if;
   if public.pa_is_client() and not public.pa_restoring() and new.workspace_id is not null and public.pa_on(new.workspace_id)
      and tg_op = 'UPDATE' and new.project_id is distinct from old.project_id
      and public.pa_rank(new.workspace_id, old.project_id::text) < 3 then
@@ -2705,6 +2865,80 @@ begin
      and not exists (select 1 from public.notion_syncs s where s.workspace_id = new.workspace_id and s.database_id = new.database_id)
      and public.user_notion_database_hidden(auth.uid(), new.workspace_id, new.database_id) then
     raise exception 'invalid database' using hint = 'This Notion database''s pages are tasks in a project here that you can''t see.';
+  end if;
+  return new;
+end; $$;
+
+-- notion_links (0046), the containment rule (2t): while the switch is on, no task of a Members only or
+-- Private project gets a Notion link of any kind (one someone adds, a sync's or an import's, the bin
+-- putting one back), whoever writes it. The task's row is held (FOR SHARE) first, so a move of it waits
+-- for this, or this for the move and judges where it went; pa_notion_shut holds the project's and the
+-- workspace's. (A link whose task isn't a team task is 0046's guard's to refuse.)
+create or replace function public.pa_trg_notion_links_closed() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare t record;
+begin
+  if not public.pa_notion_contain() or (tg_op = 'UPDATE' and new.task_id is not distinct from old.task_id) then return new; end if;
+  -- (a link that's there already: the bin's insert of it writes nothing, and anyone else's fails. Held
+  -- (FOR KEY SHARE) so it stays there until this ends)
+  if tg_op = 'INSERT' then
+    perform 1 from public.notion_links x where x.task_id = new.task_id and x.notion_page_id = new.notion_page_id for key share;
+    if found then return new; end if;
+  end if;
+  select x.workspace_id, x.project_id into t from public.tasks x where x.id = new.task_id for share;
+  if t.workspace_id is not null and public.pa_notion_shut(t.workspace_id, t.project_id) then
+    -- (the bin putting it back: its project's own restore, while that project's entry is still in the bin,
+    -- or a task's into a live project)
+    raise exception 'notion closed project' using hint = public.pa_notion_closed_text(case
+      when not public.pa_restoring() then 'link'
+      when exists (select 1 from public.trash r where r.item_id = public.kanbo_uuid(t.project_id) and r.kind = 'project'
+                     and r.workspace_id = t.workspace_id and r.restored_at is null) then 'restore project'
+      else 'restore task' end);
+  end if;
+  return new;
+end; $$;
+
+-- tasks (the containment rule, 2t): a task with a Notion link never moves into a Members only or Private
+-- project while the switch is on (refused, never unlinked): on its own, as a sub-task its parent takes
+-- along (pa_trg_tasks_after's update comes through here), re-parented under a task there (trg_tasks_pa
+-- has moved it to its parent's project by now: it sorts first), or into another workspace's. Whoever
+-- writes it: the app, the API, MCP, the planner, the bin.
+create or replace function public.pa_trg_tasks_notion() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.workspace_id is null or not public.pa_notion_contain()
+     or (new.project_id is not distinct from old.project_id and new.workspace_id is not distinct from old.workspace_id) then
+    return new;
+  end if;
+  if exists (select 1 from public.notion_links l where l.task_id = new.id)
+     and public.pa_notion_shut(new.workspace_id, new.project_id) then
+    raise exception 'notion closed project' using hint = public.pa_notion_closed_text('move');
+  end if;
+  return new;
+end; $$;
+
+-- projects (the containment rule, 2t): one with a Notion sync, or a task with a Notion link, is never made
+-- Members only or Private while the switch is on (Members only to Private included), nor taken, as one,
+-- into a workspace whose switch is on. The workspace's row is held (FOR NO KEY UPDATE: this goes on to
+-- touch it) so the switch going on waits for this, or this for it. A new project has neither yet: what
+-- comes into it is the other triggers' to judge.
+create or replace function public.pa_trg_projects_notion() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare on_ boolean;
+begin
+  if new.workspace_id is null or new.visibility = 'workspace' or not public.pa_notion_contain()
+     or (new.visibility is not distinct from old.visibility and new.workspace_id is not distinct from old.workspace_id) then
+    return new;
+  end if;
+  if not exists (select 1 from public.notion_syncs s where s.project_id = new.id)
+     and not exists (select 1 from public.tasks t
+                      where t.workspace_id = new.workspace_id and t.project_id = new.id::text
+                        and exists (select 1 from public.notion_links l where l.task_id = t.id)) then
+    return new;
+  end if;
+  select w.project_access into on_ from public.workspaces w where w.id = new.workspace_id for no key update;
+  if coalesce(on_, false) then
+    raise exception 'notion closed project' using hint = public.pa_notion_closed_text('project');
   end if;
   return new;
 end; $$;
@@ -2842,7 +3076,8 @@ begin
                            'pa_trg_trash_capture', 'pa_trg_trash_restore', 'pa_trg_trash_purge', 'pa_trg_audit_events',
                            'pa_trg_goal_links', 'pa_trg_goals_project', 'pa_trg_forms_token', 'pa_trg_notion_syncs',
                            'pa_trg_update_asks', 'pa_trg_bill_rates', 'pa_trg_meetings', 'pa_trg_meeting_items',
-                           'pa_trg_tasks_delete', 'pa_trg_projects_delete', 'pa_trg_approvals_cancel', 'pa_trg_notion_links_gone'] loop
+                           'pa_trg_tasks_delete', 'pa_trg_projects_delete', 'pa_trg_approvals_cancel', 'pa_trg_notion_links_gone',
+                           'pa_trg_notion_links_closed', 'pa_trg_tasks_notion', 'pa_trg_projects_notion'] loop
     execute format('revoke execute on function public.%I() from public, anon, authenticated', f);
   end loop;
   foreach f in array array['public.pa_mirror_contributors(uuid)', 'public.pa_detach_strays(uuid,uuid[])',
@@ -2961,6 +3196,10 @@ language sql immutable set search_path = pg_catalog as $$
     ('forms', 'trg_forms_pa_token', 'before update of public_token', 'pa_trg_forms_token', 'public_token'),
     ('notion_syncs', 'trg_notion_syncs_pa', 'before insert or update of project_id', 'pa_trg_notion_syncs', null),
     ('notion_links', 'trg_notion_links_pa_gone', 'after delete', 'pa_trg_notion_links_gone', null),
+    -- (the containment rule, 2t)
+    ('notion_links', 'trg_notion_links_pa_closed', 'before insert or update of task_id', 'pa_trg_notion_links_closed', null),
+    ('tasks', 'trg_tasks_pa_notion', 'before update of project_id, parent_id, workspace_id', 'pa_trg_tasks_notion', null),
+    ('projects', 'trg_projects_pa_notion', 'before update of visibility, workspace_id', 'pa_trg_projects_notion', null),
     ('update_asks', 'trg_update_asks_pa', 'before insert', 'pa_trg_update_asks', null),
     -- (never on an update of updated_by alone: that's the foreign key emptying it when its account is deleted)
     ('bill_rates', 'trg_bill_rates_pa', 'before insert or update of project_id, workspace_id, hourly_rate', 'pa_trg_bill_rates', null),
@@ -3318,17 +3557,22 @@ end; $b$ $fn$;
   -- see ('invalid page', as for an id that isn't a page): the answer, and the page cache through the
   -- new link, would carry that task's current title (pa_notion_page_hidden). Nor to a database closed to
   -- them (user_notion_database_hidden): the notion function links a database pasted as a page, and its
-  -- answer and cached title would be the database's, which notion_syncs keeps from them. Switch off: 0046's.
+  -- answer and cached title would be the database's, which notion_syncs keeps from them. Nor, the
+  -- containment rule (2t), to a task of a Members only or Private project, before anything else is
+  -- said about the page (trg_notion_links_pa_closed refuses the row itself). Switch off: 0046's.
   execute $fn$
 create or replace function public.notion_link_page(p_task uuid, p_page_id text)
 returns jsonb language plpgsql security definer set search_path = public as $b$
-declare pid text := public.notion_norm_id(p_page_id); ws uuid; l public.notion_links;
+declare pid text := public.notion_norm_id(p_page_id); ws uuid; proj text; l public.notion_links;
 begin
   if auth.uid() is null or not public.can_edit_task(p_task) then raise exception 'task not found'; end if;
-  select t.workspace_id into ws from public.tasks t where t.id = p_task;
+  select t.workspace_id, t.project_id into ws, proj from public.tasks t where t.id = p_task;
   if ws is null then raise exception 'notion links need a team task'; end if;
   if not exists (select 1 from public.workspace_integrations i where i.workspace_id = ws and i.notion_token is not null) then
     raise exception 'notion not connected';
+  end if;
+  if public.pa_notion_shut(ws, proj) then
+    raise exception 'notion closed project' using hint = public.pa_notion_closed_text('link');
   end if;
   if pid is null then raise exception 'invalid page'; end if;
   if public.pa_on(ws) and (public.pa_notion_page_hidden(ws, pid) or public.user_notion_database_hidden(auth.uid(), ws, pid)) then
@@ -3820,8 +4064,13 @@ insert into public.schema_migrations (version) values ('0058') on conflict (vers
 --                 and not exists (select 1 from public.workspace_members m where m.workspace_id = p.workspace_id
 --                                    and m.user_id = p.owner_id and m.status = 'active')
 --                 and not exists (select 1 from public.workspaces w where w.id = p.workspace_id and w.owner_id = p.owner_id)) as owners_still_in,
---   (select count(*) from public.project_members) >= 0                                              as members_table;
+--   (select count(*) from public.project_members) >= 0                                              as members_table,
+--   not exists (select 1 from public.workspaces w where w.project_access
+--                 and exists (select 1 from public.pa_notion_blockers(w.id)))                         as notion_contained;
 --
 -- everyone_still_off is true right after the first run. It turns false once an owner switches a
--- workspace on in Settings › Workspace › Project access: that's expected.
+-- workspace on in Settings › Workspace › Project access: that's expected. notion_contained: no workspace
+-- that's switched on has a Members only or Private project with a Notion sync or Notion-linked tasks
+-- (2t). Before switching a workspace on, its owner's list is
+--   select * from public.pa_notion_blockers('<ws id>');
 -- ============================================================

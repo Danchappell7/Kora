@@ -9,7 +9,9 @@
    Data: lib/notion (links stream over realtime; a chip whose page details
    are missing or over an hour old asks the notion function once).
    Mount (integrator): in TaskDetail after the Files section —
-     <NotionLinkChip taskId={task.id} workspaceId={workspaceOfTask} canEdit={!readOnly} />
+     <NotionLinkChip taskId={task.id} workspaceId={workspaceOfTask} canEdit={!readOnly} closed={notionClosed} />
+   0058: on a Members only or Private project's task while project access is on (`closed`), no page is
+   linked: Notion is for Whole workspace projects then.
    ============================================================ */
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { NotionLink, NotionStatus } from "../data/types";
@@ -27,6 +29,10 @@ export interface NotionLinkChipProps {
   workspaceId: string | null;
   /** may this person change the task (not a guest) */
   canEdit: boolean;
+  /** 0058: its project is Members only or Private and project access is on. Notion is for Whole workspace
+   *  projects then, so no page is linked to it ("Link a page" isn't offered); any link from before still
+   *  shows, and can be removed. */
+  closed?: boolean;
 }
 
 const STALE_MS = 60 * 60_000;
@@ -40,7 +46,7 @@ function PageIcon({ icon }: { icon: string | null }) {
   return <span className="knl-ico" aria-hidden="true">{icon && !/^https:/.test(icon) ? icon : "📄"}</span>;
 }
 
-export function NotionLinkChip({ taskId, workspaceId, canEdit }: NotionLinkChipProps) {
+export function NotionLinkChip({ taskId, workspaceId, canEdit, closed = false }: NotionLinkChipProps) {
   const ids = "knl" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [status, setStatus] = useState<NotionStatus | null>(null);
   const [links, setLinks] = useState<NotionLink[]>([]);
@@ -98,7 +104,7 @@ export function NotionLinkChip({ taskId, workspaceId, canEdit }: NotionLinkChipP
   }, [note]);
 
   if (!workspaceId || !loaded) return null;
-  const canLink = canEdit && !!status?.connected && status.canLink;
+  const canLink = canEdit && !closed && !!status?.connected && status.canLink;
   if (!links.length && !canLink) return null;
 
   const submit = async (e: FormEvent) => {

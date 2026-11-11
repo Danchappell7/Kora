@@ -81,7 +81,7 @@ interface World {
 }
 
 class Rollback extends Error { constructor(public rows: Record<string, unknown>[]) { super("rollback"); } }
-type Outcome = { rows: Record<string, unknown>[] } | { error: string; code?: string };
+type Outcome = { rows: Record<string, unknown>[] } | { error: string; code?: string; hint?: string };
 const errOf = (o: Outcome) => ("error" in o ? o.error : "");
 const okOf = (o: Outcome) => !("error" in o) && o.rows.length > 0;
 
@@ -131,7 +131,7 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
             return { rows };
           } catch (e) {
             await tx.query(`rollback to savepoint pa_try`);
-            return { error: String((e as Error).message), code: (e as { code?: string }).code };
+            return { error: String((e as Error).message), code: (e as { code?: string }).code, hint: (e as { hint?: string }).hint };
           }
         };
         out = await fn(run, async (sql) => { await tx.query(`reset role`); await tx.query(`select set_config('request.jwt.claims', '', true)`); return tx.exec(sql); }, tryRun);
@@ -164,6 +164,12 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     has54: await has("status_update_comments"), has55: await has("bill_rates"), has56: await has("meetings"),
   };
   const w = await buildWorld();
+  // (the world's Members only and Private projects each have a Notion sync and a Notion-linked task, the
+  // state a workspace could be in before 0058's containment rule (2t: the undo window), so the older
+  // closure machinery (pa_notion_page_hidden, user_notion_database_hidden, notion_pages_retired) is
+  // tested on them. The rule is lifted for this session with the SQL editor's setting, and put back
+  // inside the containment tests' own transactions: containedAgain)
+  await pg.query(`select set_config('kanbo.notion_contain', 'off', false)`);
 
   async function buildWorld(): Promise<World> {
     const id = {} as World["id"];
@@ -1955,6 +1961,178 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     }, "the note, with the switch on");
   });
 
+  // ---------------------------------------------------------------- 10b. Notion is for Whole workspace projects (2t)
+  /** 0058's containment rule back on inside a scenario (this session lifts it for the world's older Notion
+   *  state): the world's Members only and Private projects lose their Notion syncs and links first, the state
+   *  a workspace switched on under the rule is in. */
+  const containedAgain = async (run: Run) => {
+    await run(null, `delete from public.notion_syncs s using public.projects p where p.id = s.project_id and p.workspace_id = $1::uuid and p.visibility <> 'workspace'`, [w.ws]);
+    await run(null, `delete from public.notion_links l using public.tasks t where t.id = l.task_id and t.workspace_id = $1::uuid and public.pa_project_closed(t.workspace_id, t.project_id)`, [w.ws]);
+    await run(null, `select set_config('kanbo.notion_contain', '', true)`);
+  };
+  const CLOSED = (what: "move" | "link" | "sync" | "project" | "restore task" | "restore project") => `notion closed project: Members only and Private projects don't connect to Notion yet. ${{
+    move: "Remove this task's Notion page links first, or keep it in a Whole workspace project.",
+    link: "Make this project Whole workspace to link Notion pages to its tasks.",
+    sync: "Choose a Whole workspace project.",
+    project: "Remove this project's Notion sync and page links first.",
+    "restore task": "This task has Notion page links: make its project Whole workspace to restore it.",
+    "restore project": "This project has a Notion sync or Notion-linked tasks: the workspace's owner can turn project access off to restore it.",
+  }[what]}`;
+  const said = (o: Outcome) => ("error" in o ? `${o.error}${o.hint ? `: ${o.hint}` : ""}` : "ok");
+
+  await test("0058, switch on, the containment rule (2t): Notion is for Whole workspace projects. A page linked to a Members only or Private project's task (by a person or the notion function), a link re-pointed there, a linked task moved in (on its own, with its parent, put under a task there, into another workspace's), a sync saved or re-pointed there, and a project with Notion made Members only or Private (Members only made Private too) are each refused with their sentence, whoever asks; with its Notion gone, the project narrows; switched off, each goes through as before", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, Record<string, string>> = {};
+      await containedAgain(run);
+      let n = 0;
+      const page = () => `0c0c0c0c-5858-4000-8000-${String(++n).padStart(12, "0")}`;
+      const mkTask = async (title: string, project: string, parent: string | null = null) => (await run(null,
+        `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid, $5::uuid) returning id::text as id`,
+        [w.id.O, title, project, w.ws, parent]))[0].id as string;
+      const link = (task: string) => run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind) values ($1::uuid, $2::uuid, $3, 'reference')`, [w.ws, task, page()]);
+      const pwSync = w.rows.notion_syncs.PW![0];
+      const pwDb = (await run(null, `select database_id from public.notion_syncs where id = $1::uuid`, [pwSync]))[0].database_id as string;
+      // (another workspace's Private project: Ola's, in Yonder)
+      const y = (await run(null, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Y', $2::uuid, 'private') returning id::text as id`, [w.id.O2, w.ws2]))[0].id as string;
+      const tFree = await mkTask("Zebra linked free", w.proj.PW); await link(tFree);
+      const tPar = await mkTask("Zebra parent", w.proj.PW); const tKid = await mkTask("Zebra linked kid", w.proj.PW, tPar); await link(tKid);
+      for (const on of [true, false]) {
+        await run(null, `update public.workspaces set project_access = $2 where id = any ($1::uuid[])`, [[w.ws, w.ws2], on]);
+        const res: Record<string, string> = {};
+        const one = async (label: string, who: Who | null, sql: string, params: unknown[] = []) => {
+          await run(null, `savepoint pa_case`);
+          res[label] = said(await tryRun(who ? w.id[who] : null, sql, params));
+          await run(null, `rollback to savepoint pa_case`);
+        };
+        const linkPage = `select public.notion_link_page($1::uuid, $2) ->> 'kind' as k`;
+        const move = `update public.tasks set project_id = $2 where id = $1::uuid returning id`;
+        const save = `select public.notion_save_sync($1::uuid, $2::uuid, $3, 'Zebra db', '{"title": "Name"}'::jsonb) ->> 'id' as s`;
+        const narrow = `select public.set_project_visibility($1::uuid, $2) as v`;
+        // a page linked
+        await one("Meg links a page to PP's task", "ME", linkPage, [w.task.PP, page()]);
+        await one("Oona links a page to PM's task", "O", linkPage, [w.task.PM, page()]);
+        await one("Moe links a page to PW's task", "M2", linkPage, [w.task.PW, page()]);
+        await one("the notion function links PQ's task (an import's link)", null,
+          `insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, kind) values ($1::uuid, $2::uuid, $3, $4, 'synced') returning id`, [w.ws, w.task.PQ, page(), pwDb]);
+        await one("a link re-pointed at PP's task", null, `update public.notion_links set task_id = $2::uuid where task_id = $1::uuid returning id`, [tFree, w.task.PP]);
+        // a linked task moved in
+        await one("Oona moves a linked task into PP", "O", move, [tFree, w.proj.PP]);
+        await one("Meg moves a linked task into PM", "ME", move, [tFree, w.proj.PM]);
+        await one("the service (the API, the planner's server) moves it into PQ", null, move, [tFree, w.proj.PQ]);
+        await one("Oona moves a parent whose sub-task is linked into PP", "O", move, [tPar, w.proj.PP]);
+        await one("Oona puts a linked task under PP's task", "O", `update public.tasks set parent_id = $2::uuid where id = $1::uuid returning id`, [tFree, w.task.PP]);
+        await one("a linked task into another workspace's Private project", null,
+          `update public.tasks set workspace_id = $2::uuid, project_id = $3 where id = $1::uuid returning id`, [tFree, w.ws2, y]);
+        // a sync
+        await one("Oona saves a sync into PP", "O", save, [w.ws, w.proj.PP, page()]);
+        await one("Ari points PW's database at PM", "A", save, [w.ws, w.proj.PM, pwDb]);
+        await one("the service points PW's sync at PQ", null, `update public.notion_syncs set project_id = $2::uuid where id = $1::uuid returning id`, [pwSync, w.proj.PQ]);
+        await one("Ari saves a sync into PW", "A", save, [w.ws, w.proj.PW, page()]);
+        // a project with Notion made narrower
+        await one("Oona makes PW Private", "O", narrow, [w.proj.PW, "private"]);
+        await one("Ari makes PW Members only", "A", narrow, [w.proj.PW, "members"]);
+        await one("the service makes PW Members only", null, `update public.projects set visibility = 'members' where id = $1::uuid returning id`, [w.proj.PW]);
+        await run(null, `savepoint pa_case`);
+        await run(null, `select set_config('kanbo.notion_contain', 'off', true)`);
+        await link(w.task.PM);   // (from before the rule)
+        await run(null, `select set_config('kanbo.notion_contain', '', true)`);
+        res["Oona makes PM (a linked task from before) Private"] = said(await tryRun(w.id.O, narrow, [w.proj.PM, "private"]));
+        await run(null, `rollback to savepoint pa_case`);
+        await run(null, `savepoint pa_case`);
+        await run(w.id.O, `select public.notion_delete_sync($1::uuid)`, [pwSync]);
+        await run(null, `delete from public.notion_links l using public.tasks t where t.id = l.task_id and t.project_id = $1`, [w.proj.PW]);
+        res["PW's sync and links gone, Oona makes it Private"] = said(await tryRun(w.id.O, narrow, [w.proj.PW, "private"]));
+        await run(null, `rollback to savepoint pa_case`);
+        out[on ? "on" : "off"] = res;
+      }
+      return out;
+    });
+    const wantOn: Record<string, string> = {
+      "Meg links a page to PP's task": CLOSED("link"), "Oona links a page to PM's task": CLOSED("link"), "Moe links a page to PW's task": "ok",
+      "the notion function links PQ's task (an import's link)": CLOSED("link"), "a link re-pointed at PP's task": CLOSED("link"),
+      "Oona moves a linked task into PP": CLOSED("move"), "Meg moves a linked task into PM": CLOSED("move"),
+      "the service (the API, the planner's server) moves it into PQ": CLOSED("move"), "Oona moves a parent whose sub-task is linked into PP": CLOSED("move"),
+      "Oona puts a linked task under PP's task": CLOSED("move"), "a linked task into another workspace's Private project": CLOSED("move"),
+      "Oona saves a sync into PP": CLOSED("sync"), "Ari points PW's database at PM": CLOSED("sync"), "the service points PW's sync at PQ": CLOSED("sync"),
+      "Ari saves a sync into PW": "ok",
+      "Oona makes PW Private": CLOSED("project"), "Ari makes PW Members only": CLOSED("project"), "the service makes PW Members only": CLOSED("project"),
+      "Oona makes PM (a linked task from before) Private": CLOSED("project"), "PW's sync and links gone, Oona makes it Private": "ok",
+    };
+    const wantOff = Object.fromEntries(Object.keys(wantOn).map((k) => [k, "ok"]));
+    eq(got.on, wantOn, "switch on: each refused, with its sentence");
+    eq(got.off, wantOff, "switch off: each goes through, as before");
+  });
+
+  await test("0058, switch on, the containment rule (2t): the bin never puts Notion back into a Members only or Private project (a linked task into one made Private since; a Private project binned with its sync while the switch was off); switching on is refused, whoever asks, while one still connects to Notion, saying how many and where (Settings › Project access lists them, for the owner alone), and goes through once they're cleared; switched off, each restore goes through as before", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, unknown> = {};
+      await containedAgain(run);
+      let n = 0;
+      const page = () => `0c0c0c0c-5858-4001-8000-${String(++n).padStart(12, "0")}`;
+      const binOf = async (item: string) => (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [item]))[0].id as string;
+      const restore = `select public.restore_from_trash($1::uuid) ->> 'status' as s`;
+      for (const on of [true, false]) {
+        const mode = on ? "on" : "off";
+        await run(null, `savepoint pa_mode`);
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+        // Oona's Whole workspace project with a linked task, the task binned, then the project made Private
+        const p5 = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra five', $2::uuid, 'workspace') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+        const t5 = (await run(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra five task', $2, 'nobody', $3::uuid) returning id::text as id`, [w.id.O, p5, w.ws]))[0].id as string;
+        await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind) values ($1::uuid, $2::uuid, $3, 'reference')`, [w.ws, t5, page()]);
+        await run(w.id.O, `delete from public.tasks where id = $1::uuid`, [t5]);
+        await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [p5]);
+        out[`${mode}: Oona restores the linked task into it`] = said(await tryRun(w.id.O, restore, [await binOf(t5)]));
+        // a Private project of Oona's with a sync, binned while the switch was off
+        await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+        const p6 = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra six', $2::uuid, 'private') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+        await run(null, `insert into public.notion_syncs (workspace_id, project_id, database_id, created_by) values ($1::uuid, $2::uuid, $3, $4::uuid)`, [w.ws, p6, page(), w.id.O]);
+        await run(w.id.O, `delete from public.projects where id = $1::uuid`, [p6]);
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);   // (in the bin, it doesn't stand in the way)
+        out[`${mode}: Oona restores the Private project with its sync`] = said(await tryRun(w.id.O, restore, [await binOf(p6)]));
+        // and one with a linked task (no sync), binned the same way
+        await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+        const p7 = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra seven', $2::uuid, 'members') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+        const t7 = (await run(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra seven task', $2, 'nobody', $3::uuid) returning id::text as id`, [w.id.O, p7, w.ws]))[0].id as string;
+        await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind) values ($1::uuid, $2::uuid, $3, 'reference')`, [w.ws, t7, page()]);
+        await run(w.id.O, `delete from public.projects where id = $1::uuid`, [p7]);
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+        out[`${mode}: Oona restores the Members only project with a linked task`] = said(await tryRun(w.id.O, restore, [await binOf(p7)]));
+        await run(null, `rollback to savepoint pa_mode`);
+      }
+      // PW (a sync, a linked task) made Private while the switch is off; then turning it on
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [w.proj.PW]);
+      const listed = async (who: Who) => ((await run(w.id[who], `select public.project_access_notion_blockers($1::uuid) as b`, [w.ws]))[0].b as Record<string, unknown>[])
+        .map((b) => ({ project_id: b.project_id, name: b.name, visibility: b.visibility, syncs: b.syncs, linked_tasks: b.linked_tasks }));
+      out["Settings lists, for Oona"] = await listed("O");
+      out["for Ari"] = await listed("A");
+      out["Oona turns it on"] = said(await tryRun(w.id.O, `select public.set_project_access($1::uuid, true) ->> 'on' as on`, [w.ws]));
+      out["the SQL editor turns it on"] = said(await tryRun(null, `update public.workspaces set project_access = true where id = $1::uuid returning id`, [w.ws]));
+      // cleared: Oona removes the sync and unlinks the pages (in Settings › Notion, and on the task)
+      await run(w.id.O, `select public.notion_delete_sync($1::uuid)`, [w.rows.notion_syncs.PW![0]]);
+      for (const l of await run(w.id.O, `select l.id::text as id from public.notion_links l join public.tasks t on t.id = l.task_id where t.project_id = $1`, [w.proj.PW])) {
+        await run(w.id.O, `select public.notion_unlink_page($1::uuid)`, [l.id]);
+      }
+      out["Settings lists, cleared"] = await listed("O");
+      out["cleared, Oona turns it on"] = said(await tryRun(w.id.O, `select public.set_project_access($1::uuid, true) ->> 'on' as on`, [w.ws]));
+      return out;
+    });
+    eq(got, {
+      "on: Oona restores the linked task into it": CLOSED("restore task"),
+      "on: Oona restores the Private project with its sync": CLOSED("restore project"),
+      "on: Oona restores the Members only project with a linked task": CLOSED("restore project"),
+      "off: Oona restores the linked task into it": "ok",
+      "off: Oona restores the Private project with its sync": "ok",
+      "off: Oona restores the Members only project with a linked task": "ok",
+      "Settings lists, for Oona": [{ project_id: w.proj.PW, name: "Zebra PW", visibility: "private", syncs: 1, linked_tasks: 1 }],
+      "for Ari": [],
+      "Oona turns it on": "notion in closed projects: 1 Members only or Private project still connects to Notion (1 sync, 1 task with Notion links): “Zebra PW”. Members only and Private projects don't connect to Notion yet: remove its Notion syncs in Settings › Notion and the Notion links on its tasks, or make it Whole workspace, then turn project access on.",
+      "the SQL editor turns it on": "notion in closed projects: 1 Members only or Private project still connects to Notion (1 sync, 1 task with Notion links): “Zebra PW”. Members only and Private projects don't connect to Notion yet: remove its Notion syncs in Settings › Notion and the Notion links on its tasks, or make it Whole workspace, then turn project access on.",
+      "Settings lists, cleared": [],
+      "cleared, Oona turns it on": "ok",
+    }, "the restores, the list and the switch");
+  });
+
   await test("0058: the id of a Members only or Private project that left the workspace is never a new project's, once nothing holds it (deleted for good from a Personal bin); a restore still brings it back", async () => {
     const got = await scenario(async (run, _exec, tryRun) => {
       // Meg's Private PQ, emptied, goes to her Personal list
@@ -3347,7 +3525,15 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     const block = sql.slice(sql.indexOf("-- VERIFY")).split("\n").filter((l) => /^-- {0,3}\S|^--\s{2,}/.test(l)).map((l) => l.replace(/^--\s?/, "")).join("\n");
     const at = block.indexOf("\nselect");
     const select = block.slice(at, block.indexOf(";", at) + 1).replace("not exists (select 1 from public.workspaces where project_access)", "true");
-    const row = (await q<Record<string, boolean>>(select))[0];
+    // (the world's Members only and Private projects connect to Notion, the state before the containment
+    // rule: notion_contained says so. Without their syncs and links, every column is true)
+    const { before, row } = await scenario(async (run) => {
+      const was = (await run(null, select))[0] as Record<string, boolean>;
+      await run(null, `delete from public.notion_syncs s using public.projects p where p.id = s.project_id and p.visibility <> 'workspace'`);
+      await run(null, `delete from public.notion_links l using public.tasks t where t.id = l.task_id and public.pa_project_closed(t.workspace_id, t.project_id)`);
+      return { before: was, row: (await run(null, select))[0] as Record<string, boolean> };
+    });
+    eq(before.notion_contained, false, "notion_contained, while closed projects still connect to Notion");
     eq(Object.entries(row).filter(([, v]) => v !== true).map(([k]) => k), [], "columns not true");
     ok(Object.keys(row).length >= 10, `${Object.keys(row).length} columns`);
   });

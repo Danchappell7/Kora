@@ -105,7 +105,8 @@ describe("restore and purge", () => {
     expect((await restoreFromTrash(uuid(1001))).status).toBe("already_restored");
     for (const [message, why] of [["restore conflict", "conflict"], ["no project to restore into", "no_project"], ["not authorized", "not_allowed"], ["not found", "not_found"],
       // (0058: a task of a Members only or Private project that's gone)
-      ["restore its project first", "project_first"], ["its project was deleted for good", "project_gone"]] as const) {
+      ["restore its project first", "project_first"], ["its project was deleted for good", "project_gone"],
+      ["notion closed project", "notion_closed"]] as const) {
       rpc.mockResolvedValueOnce({ data: null, error: { code: "P0001", message } });
       expect(trashFailure(await restoreFromTrash(uuid(1)).catch((x) => x))).toBe(why);
     }
@@ -147,6 +148,9 @@ describe("restore and purge", () => {
     expect(trashFailureText("no_project")).toMatch(/Make a project first/);
     expect(trashFailureText("project_first")).toMatch(/Restore the project first\./);
     expect(trashFailureText("project_gone")).toMatch(/deleted for good/);
+    // 0058's containment rule: a restore that would bring Notion into a Members only or Private project
+    expect(trashFailureText("notion_closed")).toBe("Members only and Private projects don't connect to Notion yet, and this task has Notion page links. Make its project Whole workspace to restore it.");
+    expect(trashFailureText("notion_closed", "project")).toMatch(/^Members only and Private projects don't connect to Notion yet, and this project has a Notion sync or Notion-linked tasks\. The workspace's owner can turn project access off to restore it\.$/);
     expect(trashFailureText("network")).toMatch(/connection/);
   });
 });

@@ -854,6 +854,9 @@ export interface TaskDetailProps {
   canMoveTo?: (projectId: string) => boolean;
   /** 0058: the quiet line by the composer on a Members only or Private project ("Only people on X can see this.") */
   audienceNote?: string;
+  /** 0058: its project is Members only or Private and project access is on, so Notion pages aren't linked
+   *  to it (Notion is for Whole workspace projects then). Omit: as before. */
+  notionClosed?: boolean;
   /** ≥ 1280px: the panel sits beside the content (no scrim, no focus trap,
    *  aria-modal false) and the page behind stays usable. Esc still closes. */
   docked?: boolean;
@@ -940,7 +943,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, canAttach: canAttachProp, people: canSee, reviewers, canMoveTo, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, canAttach: canAttachProp, people: canSee, reviewers, canMoveTo, audienceNote, notionClosed = false, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -2225,7 +2228,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
 
         {/* ================= Notion: pages linked to this task (team tasks, once Notion is connected; guests read-only) ================= */}
         <Suspense fallback={null}>
-          <NotionLinkChip taskId={task.id} workspaceId={taskWs ?? projects.find((p) => p.id === task.projectId)?.workspaceId ?? null} canEdit={!readOnly} />
+          <NotionLinkChip taskId={task.id} workspaceId={taskWs ?? projects.find((p) => p.id === task.projectId)?.workspaceId ?? null} canEdit={!readOnly}
+            closed={notionClosed} />
         </Suspense>
 
         {/* ================= approval: team tasks only (guests review their own row; they can't ask) ================= */}

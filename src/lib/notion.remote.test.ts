@@ -114,6 +114,12 @@ describe("syncs, import, links", () => {
     expect(s.createdBy).toBe("u2");
     rpc.mockResolvedValue({ data: null, error: { message: "not allowed" } });
     expect((await fail(takeOverNotionSync(s))).reason).toBe("not_allowed");
+    // 0058's containment rule: the database's sentence (its hint), as it is
+    rpc.mockResolvedValue({ data: null, error: { message: "notion closed project", code: "P0001", hint: "Members only and Private projects don't connect to Notion yet. Choose a Whole workspace project." } });
+    const closed = await fail(takeOverNotionSync(s));
+    expect([closed.reason, closed.message]).toEqual(["invalid", "Members only and Private projects don't connect to Notion yet. Choose a Whole workspace project."]);
+    rpc.mockResolvedValue({ data: null, error: { message: "notion closed project" } });
+    expect((await fail(takeOverNotionSync(s))).message).toBe(NOTION_COPY.closed);
   });
   it("a task's links with their cached page details", async () => {
     from.mockImplementation((t: string) => t === "notion_links"
