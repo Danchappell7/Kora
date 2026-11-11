@@ -88,6 +88,15 @@ export function rankFor(ctx: AccessCtx, userId: string, wsId: string | null | un
   const p = projectId ? ctx.projects.find((x) => x.id === projectId && (x.workspaceId ?? null) === wsId) : undefined;
   return rankCore(accessOn(ws), role, p ? visibilityOf(p) : null, !!p && !!p.ownerId && p.ownerId === userId, p ? memberRole(ctx, p.id, userId) : null);
 }
+/** Can't `userId` be given new work in this team project (with the switch on; the caller checks it)?
+ *  Someone who can't see it, and someone who has left the workspace (or never was in it): the server
+ *  never gives either a task (trg_tasks_pa), though someone who has left keeps one they had when it
+ *  moves. Their absence counts only once the workspace's member list has loaded; before that, the server
+ *  decides. Someone suspended is a member here, as the server judges them. */
+export function cantBeGiven(ctx: AccessCtx, wsId: string, userId: string, projectId: string | null | undefined): boolean {
+  if (roleOf(ctx, wsId, userId)) return rankFor(ctx, userId, wsId, projectId) < 1;
+  return ctx.wsMembers.some((m) => m.workspaceId === wsId && m.status === "active");
+}
 /** Your rank on a project (3 for a personal one). */
 export function projectRank(projectId: string | null | undefined, ctx: AccessCtx): Rank {
   const p = projectId ? ctx.projects.find((x) => x.id === projectId) : undefined;

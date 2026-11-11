@@ -440,7 +440,10 @@ function EndpointRow({ rowId, hook, personal, scopeName, offered, expanded, onEx
       const w = await updateWebhook(hook.id, { active: next });
       if (!alive.current) return;
       onChange(w);
-      onMessage({ tone: "ok", text: next ? `Sending to ${host} again.` : `Switched off. Nothing more goes to ${host} until you switch it back on.` });
+      // (0058: switched off because whoever set its address left: switching it back on makes it yours, so it
+      // hears what you can see)
+      const adopted = next && /the person who set its address no longer has access/.test(hook.disabledReason ?? "");
+      onMessage({ tone: "ok", text: next ? `Sending to ${host} again.${adopted ? " Its address is yours now: it gets only what you can see." : ""}` : `Switched off. Nothing more goes to ${host} until you switch it back on.` });
     } catch (e) {
       if (!alive.current) return;
       onChange(hook);

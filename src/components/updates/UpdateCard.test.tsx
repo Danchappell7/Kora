@@ -81,6 +81,14 @@ describe("an update and its conversation", () => {
     expect(screen.getByRole("button", { name: "Reply" })).toBeInTheDocument();
   });
 
+  it("0058: a viewer of its project reads the conversation, but has no React, no reply box and no Reply", () => {
+    card({ me: "m-1", canWrite: false, canReply: false, thread: thread({ reactions: { "👍": ["m-3"] } }) });
+    expect(screen.queryByRole("button", { name: "React" })).toBeNull();
+    expect(screen.getByRole("button", { name: /👍/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Reply" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /Reply to/ })).toBeNull();
+  });
+
   it("reactions are toggled as you, and Seen by never counts the author", async () => {
     resetUpdateConversation({ "su-1": { reactions: { "👍": ["m-1"] } } });
     card({ thread: thread({ reactions: { "👍": ["m-1"] }, seenBy: ["m-1", "m-3", "m-self"] }) });

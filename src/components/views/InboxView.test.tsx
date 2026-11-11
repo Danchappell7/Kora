@@ -410,6 +410,11 @@ describe("InboxView — one-key actions", () => {
     expect(screen.getByText("Replied")).toBeInTheDocument();
   });
 
+  it("0058: no Reply on an item whose task you can only view (a viewer can't comment)", () => {
+    inbox([act_({ id: "a1", kind: "assigned", detail: "Sana Rao" })], { onReply: vi.fn(), canComment: () => false, currentUserId: "m-self" });
+    expect(screen.queryByRole("button", { name: "Reply to “Q3 budget”" })).toBeNull();
+  });
+
   it("replying to an assignment or a comment posts a plain comment (no mention)", async () => {
     const onReply = vi.fn().mockResolvedValue({ id: "c-9" });
     inbox([act_({ id: "a1", kind: "assigned", detail: "Sana Rao" })], { onReply, currentUserId: "m-self" });

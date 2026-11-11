@@ -174,4 +174,27 @@ describe("ApprovalPanel", () => {
     await waitFor(() => expect(within(section).getByText("Rename two events")).toBeInTheDocument());
     expect((await listTaskApprovals("t-10"))[0].status).toBe("changes_requested");
   });
+  // 0058 (r2): a reviewer who lost comment rights (made a viewer, or off a project made private)
+  it("0058: a reviewer who can only view the task now isn't offered Approve, and is told why", async () => {
+    render(panel(task("t-10"), { canDecide: false }));
+    const section = await screen.findByRole("region", { name: /Approval/ });
+    await waitFor(() => expect(within(section).getByText("You can't review this now: you can view this task, but not comment on it.")).toBeInTheDocument());
+    expect(within(section).queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(within(section).queryByRole("button", { name: "Request changes" })).toBeNull();
+  });
+
+  it("0058: its asker sees who can't review it now, and that an everyone-must-approve request can't finish", async () => {
+    render(panel(task("t-1"), { canReview: ["m-1"] }));
+    const section = await screen.findByRole("region", { name: /Approval/ });
+    const rows = within(await within(section).findByRole("list", { name: "Reviewers" })).getAllByRole("listitem");
+    expect(rows[1]).toHaveTextContent(/Sana Rao.*Can't review now/);
+    expect(within(section).getByText(/^Sana can't review this now \(they can only view it, or can't see it\), so it can't be approved\. Cancel it and ask again\.$/)).toBeInTheDocument();
+  });
+
+  it("0058: anyone may approve and someone else still can: no such note", async () => {
+    render(panel(task("t-10"), { canReview: ["m-self"] }));
+    const section = await screen.findByRole("region", { name: /Approval/ });
+    await waitFor(() => expect(within(section).getByRole("button", { name: "Approve" })).toBeInTheDocument());
+    expect(within(section).queryByText(/so it can't be approved/)).toBeNull();
+  });
 });

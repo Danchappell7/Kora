@@ -36,4 +36,10 @@ describe("MemberProjects", () => {
     expect(screen.getByText("Theo also sees every Whole workspace project.")).toBeInTheDocument();
     expect([...screen.getByRole("combobox", { name: "Add Theo to a project" }).querySelectorAll("option")].map((o) => o.textContent)).toEqual(["Add to a project…", "Seed round"]);
   });
+  it("0058: an admin (who may not see every Private project) is told the list is of the projects they can see", () => {
+    const { rerender } = render(<MemberProjects name="Ana Ruiz" guest pending={false} partial rows={[rows[0]]} addable={[]} onSet={vi.fn()} onRemove={vi.fn()} />);
+    expect(screen.getByText("Ana sees only this project of the ones you can see here. Private projects you're not on aren't listed.")).toBeInTheDocument();
+    rerender(<MemberProjects name="jo@acme.co" guest pending partial rows={[]} addable={[]} onSet={vi.fn()} onRemove={vi.fn()} />);
+    expect(screen.getByText("jo@acme.co will see no projects of the ones you can see here until you add them to one. Private projects you're not on aren't listed.")).toBeInTheDocument();
+  });
 });

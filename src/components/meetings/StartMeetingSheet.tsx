@@ -13,7 +13,7 @@
    ============================================================ */
 import { useEffect, useId, useMemo, useState } from "react";
 import { Avatar, Button, Icon, Segmented, Sheet, spectrumColor } from "../primitives";
-import type { WorkspaceEvent } from "../../data/types";
+import type { Project, WorkspaceEvent } from "../../data/types";
 import type { NewProject } from "../../data/store";
 import { KANBO_TODAY, getMember, toLocalISO } from "../../data/data";
 import { readCapacities } from "../../lib/radar";
@@ -32,6 +32,15 @@ const HISTORY_DAYS = 30;
 const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
 /** the project a team meeting suggests for its notes */
 const MEETINGS = "Meetings";
+
+/** (0058, switched on) who reads the notes doc in the chosen project: its real audience, said plainly
+ *  (a leadership meeting's notes in a Whole workspace project are read by every member, guests on it too). */
+function readersOf(p: Pick<Project, "visibility"> | undefined, hostName: string): string {
+  const v = p?.visibility ?? "workspace";
+  return v === "private" ? `Only its people and ${hostName}'s owner can read docs in it.`
+    : v === "members" ? `Its people and ${hostName}'s owners and admins can read docs in it.`
+    : `Everyone at ${hostName} can read docs in it, and so can any guests on it.`;
+}
 
 export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, onClose, onStarted }: {
   scope: MeetingScope;
@@ -233,7 +242,7 @@ export function StartMeetingSheet({ scope, data, loadEvents, onCreateProject, on
           </span>
           <span className="kmtg-hint" id={`${uid}-dochint`}>
             {!docProjectId ? "Only the people this meeting is for can read the recap."
-              : accessOn(workspaces.find((w) => w.id === host)) ? (preset === "team" ? "Notes go in a project the whole team can see." : "Saved there only when you choose, at the end. Notes go in a project everyone at this meeting can see.")
+              : accessOn(workspaces.find((w) => w.id === host)) ? `${preset === "team" ? "" : "Saved there only when you choose, at the end. "}${readersOf(hostProjects.find((p) => p.id === docProjectId), hostName)}`
               : preset === "team" ? `Everyone at ${hostName}${guestsHere ? ", guests too," : ""} can read docs in its projects.`
               : `Saved there only when you choose, at the end. Everyone at ${hostName}${guestsHere ? ", guests too," : ""} can read docs in its projects.`}
           </span>

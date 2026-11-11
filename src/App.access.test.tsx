@@ -10,7 +10,8 @@ import { loadAllChunks } from "./lib/lazyLoad";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
-import { DEMO_RULES } from "./data/data";
+import { DEMO_RULES, TASKS } from "./data/data";
+import { KANBO_TODAY, toLocalISO } from "./data/data";
 
 beforeAll(loadAllChunks, 60_000);
 
@@ -171,6 +172,59 @@ describe("App · project access on (Foundrise)", () => {
     } finally { DEMO_RULES.splice(DEMO_RULES.findIndex((r) => r.id === "rule-review"), 1); }
   }, 60_000);
 
+  // (r2) Idris isn't in Foundrise (he left, say): remove_member leaves his tasks with him, and the server never
+  // gives him a new one (a repeat, a copy) nor lets a rule hand him one; a move keeps him on what he had
+  it("0058: a repeat of a task whose assignee has left the workspace is yours, never refused as theirs", async () => {
+    const base = TASKS.find((x) => x.title === "Ship onboarding redesign to staging")!;
+    TASKS.push({ ...base, id: "t-gone-1", title: "Weekly churn report", assigneeId: "m-4", recurrence: "weekly", status: "todo", dependencies: [],
+      dueDate: toLocalISO(KANBO_TODAY), collaborators: [], subtasks: [] });
+    const create = spy(vi.spyOn(store, "createTask"));
+    try {
+      inWs("ws-foundrise", "/p/p-launch/list");
+      await boot();
+      fireEvent.click(await screen.findByText("Weekly churn report", {}, { timeout: 8000 }));
+      const panel = await screen.findByRole("dialog", { name: /Weekly churn report/ });
+      fireEvent.change(within(panel).getByLabelText("Status"), { target: { value: "done" } });
+      await waitFor(() => expect(create.mock.calls.some((c) => c[0].title === "Weekly churn report")).toBe(true), { timeout: 8000 });
+      const next = create.mock.calls.find((c) => c[0].title === "Weekly churn report")![0];
+      expect(next.assigneeId).toBe("m-self");
+      expect(await screen.findByText("Idris Bell isn't in Foundrise any more, so “Weekly churn report” is yours.")).toBeInTheDocument();
+    } finally { TASKS.splice(TASKS.findIndex((t) => t.id === "t-gone-1"), 1); }
+  }, 60_000);
+
+  it("0058: a rule that assigns to someone who has left the workspace skips that step (the status change still saves)", async () => {
+    DEMO_RULES.push({ id: "rule-gone", projectId: "p-launch", workspaceId: "ws-foundrise", name: "Review goes to Idris",
+      trigger: "status_changed", actions: [{ type: "set_assignee", value: "m-4" }], enabled: true });
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    try {
+      inWs("ws-foundrise", "/p/p-launch/list");
+      await boot();
+      fireEvent.click(await screen.findByText("Ship onboarding redesign to staging", {}, { timeout: 8000 }));
+      const panel = await screen.findByRole("dialog", { name: /Ship onboarding redesign to staging/ });
+      fireEvent.change(within(panel).getByLabelText("Status"), { target: { value: "review" } });
+      await waitFor(() => expect(upd.mock.calls.some((c) => c[1].status === "review")).toBe(true));
+      expect(upd.mock.calls.some((c) => c[1].assigneeId === "m-4")).toBe(false);
+      expect(await screen.findByText("Idris Bell isn't in Foundrise any more, so the rule “Review goes to Idris” didn't assign “Ship onboarding redesign to staging” to them.")).toBeInTheDocument();
+    } finally { DEMO_RULES.splice(DEMO_RULES.findIndex((r) => r.id === "rule-gone"), 1); }
+  }, 60_000);
+
+  it("0058: Delete project › Move its tasks into a Members only project gives you those whose people can't see it, as every move does", async () => {
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    inWs("ws-foundrise", "/p/p-infra");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "Project actions" }, { timeout: 8000 }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Delete project/ }));
+    const sheet = await screen.findByRole("dialog", { name: "Delete project" });
+    fireEvent.change(within(sheet).getByRole("combobox", { name: /Move tasks from Platform Infra to/ }), { target: { value: "p-seed" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: /Move tasks & delete/ }));
+    await waitFor(() => expect(upd.mock.calls.some((c) => c[1].projectId === "p-seed")).toBe(true));
+    const sent = upd.mock.calls.filter((c) => c[1].projectId === "p-seed").map((c) => c[1]);
+    // (Maya and Theo, on Platform Infra's tasks, aren't on Seed round: live, the server refused every such move)
+    expect(sent.every((p) => p.assigneeId === undefined || p.assigneeId === "m-self")).toBe(true);
+    expect(sent.some((p) => p.assigneeId === "m-self")).toBe(true);
+    expect(await screen.findByText(/now assigned to you/)).toBeInTheDocument();
+  }, 60_000);
+
   it("Paste notes → tasks: a task for someone who can't see the project is flagged and comes to you (never sent as theirs)", async () => {
     const create = spy(vi.spyOn(store, "createTask"));
     inWs("ws-foundrise", "/p/p-seed/list");
@@ -329,6 +383,15 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     expect(within(panel).getByText("View only")).toBeInTheDocument();
     expect(within(panel).queryByRole("textbox", { name: "Add a comment" })).toBeNull();
   });
+  it("0058: a task's Project picker offers only projects you can edit (and its own): never Fee review", async () => {
+    inWs("ws-harbour", "/p/p-northwind/list");
+    await boot();
+    fireEvent.click(await screen.findByText("Read the Northwind board pack", {}, { timeout: 8000 }));
+    const panel = await screen.findByRole("dialog", { name: /Read the Northwind board pack/ }, { timeout: 8000 });
+    const opts = [...(within(panel).getByLabelText("Project") as HTMLSelectElement).querySelectorAll("option")].map((o) => o.textContent ?? "");
+    expect(opts.some((o) => /Northwind Review/.test(o))).toBe(true);
+    expect(opts.some((o) => /Fee review/.test(o))).toBe(false);
+  }, 60_000);
   it("a project's member manager (not an admin) sees a pending invite that brings it, and takes it off", async () => {
     // (Daniel is a member of Harbour and an editor of Northwind Review; an admin's invite brings it to Kit)
     await store.bootstrap({ id: "m-self" } as never);

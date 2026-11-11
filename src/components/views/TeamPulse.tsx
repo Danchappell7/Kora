@@ -86,7 +86,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   onOpen: (id: string) => void;
   /** posts the nudge as a comment; reject, or resolve false/null, when it wasn't posted */
   onNudge: (taskId: string, userId: string, text: string) => Promise<unknown>;
-  onPatch: (id: string, patch: Partial<Task>) => void;
+  /** false: refused (work you can only view, 0058): Radar then says nothing was done */
+  onPatch: (id: string, patch: Partial<Task>) => void | boolean;
   onOpenWorkload: () => void;
   onWriteUp?: (facts: unknown) => Promise<AiOutcome<string>>;
   /** the Personal workspace: Pulse is for teams, so it explains itself instead */

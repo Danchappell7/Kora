@@ -178,12 +178,14 @@ function Reply({ c, me, lead, onError }: { c: UpdateComment; me: string; lead: b
   );
 }
 
-export function UpdateCard({ update, me, canWrite, lead, thread, conversation, people = [], onEdit, onDelete, actions, defaultOpen = false }: {
+export function UpdateCard({ update, me, canWrite, canReply = true, lead, thread, conversation, people = [], onEdit, onDelete, actions, defaultOpen = false }: {
   update: StatusUpdate;
   /** the signed-in person */
   me: string;
   /** may write in the update's workspace (not a guest): an author edits only then */
   canWrite: boolean;
+  /** 0058: may reply and react (comment rights on its project); a viewer reads the conversation, no more */
+  canReply?: boolean;
   /** an owner or admin of the update's workspace: may delete any update, remove any reply */
   lead: boolean;
   thread: UpdateThread;
@@ -292,14 +294,14 @@ export function UpdateCard({ update, me, canWrite, lead, thread, conversation, p
               const who = thread.reactions[e] ?? [];
               const on = who.includes(me);
               return (
-                <button key={e} type="button" className="kuc-react" aria-pressed={on} disabled={!me}
+                <button key={e} type="button" className="kuc-react" aria-pressed={on} disabled={!me || !canReply}
                   title={who.map((id) => (id === me ? "You" : getMember(id)?.name ?? "Someone")).join(", ")}
                   aria-label={`${e} ${who.length}${on ? ", including you" : ""}`} onClick={() => react(e)}>
                   <span aria-hidden="true">{e}</span><span aria-hidden="true">{who.length}</span>
                 </button>
               );
             })}
-            {me && (
+            {me && canReply && (
               <IconButton ref={pickRef} icon="plus" size="sm" label="React" aria-haspopup="menu" aria-expanded={pickOpen} onClick={() => setPickOpen((v) => !v)} />
             )}
           </span>
@@ -314,11 +316,13 @@ export function UpdateCard({ update, me, canWrite, lead, thread, conversation, p
           {seen.length > 0 && (
             <span className="kuc-seen" title={`Seen by ${seenByNames(seen)}`} aria-label={`Seen by ${seenByNames(seen)}`}>Seen by {seen.length}</span>
           )}
-          <span className="kuc-replies">
-            <Button variant="ghost" size="sm" icon="message" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-              {replies.length ? plural(replies.length, "reply", "replies") : "Reply"}
-            </Button>
-          </span>
+          {(canReply || replies.length > 0) && (
+            <span className="kuc-replies">
+              <Button variant="ghost" size="sm" icon="message" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+                {replies.length ? plural(replies.length, "reply", "replies") : "Reply"}
+              </Button>
+            </span>
+          )}
         </div>
       )}
       {conversation && open && (
@@ -328,7 +332,7 @@ export function UpdateCard({ update, me, canWrite, lead, thread, conversation, p
               {replies.map((c) => <Reply key={c.id} c={c} me={me} lead={lead} onError={setErr} />)}
             </ol>
           )}
-          {me && (
+          {me && canReply && (
             <div className="kuc-reply">
               <textarea ref={replyRef} className="kpj-field" rows={2} maxLength={COMMENT_MAX} value={draft} aria-label={`Reply to ${by ?? "this update"}`}
                 placeholder={people.length ? "Reply… @mention someone to ask them" : "Reply…"} onChange={(e) => setDraft(e.target.value)}

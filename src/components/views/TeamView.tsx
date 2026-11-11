@@ -311,7 +311,16 @@ function PersonRow({ m, name, isSelf, openN, working, load, onSelect, invite, on
 /* Slide-over profile — role controls + role-gated task list. Hoisted so a
    realtime reload of members/tasks doesn't remount it (which wiped the
    Position draft and stole focus mid-typing). */
-function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, onSetTitle, onTransferOwnership, onRemoveMember, onOpen, onClose, onHandOn, handTo = [], projectsSlot }: {
+/** "Make owner"'s question. With Project access on, an owner made an admin stops seeing the Private projects
+ *  they aren't on, and only the new owner can add them back: it says which. */
+export function transferQuestion(name: string, loses: string[] = []): string {
+  const base = `Make ${name} the owner? You'll become an admin.`;
+  if (!loses.length) return base;
+  const list = loses.length <= 3 ? loses.map((p) => `“${p}”`).join(", ") : `${loses.slice(0, 2).map((p) => `“${p}”`).join(", ")} and ${loses.length - 2} more`;
+  return `${base} You'll stop seeing ${loses.length === 1 ? "the Private project" : `${loses.length} Private projects`} you're not on (${list}), and only ${name} can add you back.`;
+}
+
+function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions, onSetRole, onSetTitle, onTransferOwnership, transferLoses = [], onRemoveMember, onOpen, onClose, onHandOn, handTo = [], projectsSlot }: {
   /** 0058: their projects (owners and admins, project access on) */
   projectsSlot?: ReactNode;
   m: WorkspaceMember;
@@ -324,6 +333,8 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
   onSetRole?: (memberId: string, role: Role) => void;
   onSetTitle?: (memberId: string, title: string) => void;
   onTransferOwnership?: (workspaceId: string, memberId: string) => void;
+  /** 0058: the Private projects you'd stop seeing as an admin (you're not on them) */
+  transferLoses?: string[];
   onRemoveMember: (memberId: string) => void;
   onOpen?: (taskId: string) => void;
   onClose: () => void;
@@ -447,7 +458,7 @@ function MemberProfile({ m, name, isSelf, role, workspace, tasks, inviteOptions,
         {((m.status === "active" && role === "owner" && onTransferOwnership && m.role !== "owner") || canLeaveOrRemove) && (
           <div className="kprof-danger">
             {m.status === "active" && role === "owner" && onTransferOwnership && m.role !== "owner" && (
-              <Button variant="secondary" icon="target" full onClick={() => { if (window.confirm(`Make ${name} the owner? You'll become an admin.`)) { onTransferOwnership(workspace, m.id); onClose(); } }}>Make owner</Button>
+              <Button variant="secondary" icon="target" full onClick={() => { if (window.confirm(transferQuestion(name, transferLoses))) { onTransferOwnership(workspace, m.id); onClose(); } }}>Make owner</Button>
             )}
             {canLeaveOrRemove && removing ? (
               // leaving / removal also takes the person off this workspace's task followers and
@@ -591,7 +602,7 @@ const ROLE_FILTER: Record<RoleFilter, (r: Role) => boolean> = {
 /** One invite's outcome in a multi-invite: ok, refused (with the reason) or not an email. */
 type InviteResult = { email: string; ok: boolean; text: string };
 
-export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened, inviteProjects, memberProjects }: {
+export function TeamView({ tasks, workspace, workspaces = [], members, currentUserId, myRole, onInvite, onResendInvite, onRemoveMember, onSetRole, onSetTitle, onTransferOwnership, transferLoses, onOpen, onNewWorkspace, onOpenWorkspaceSettings, approvedDomains, onDropTasksOnPerson, healthSlot, inviteNow, onInviteOpened, inviteProjects, memberProjects }: {
   tasks: Task[];
   workspace: string | null;
   workspaces?: { id: string | null; name: string; ownerId?: string; logoUrl?: string }[];
@@ -611,6 +622,8 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   onSetRole?: (memberId: string, role: Role) => void;
   onSetTitle?: (memberId: string, title: string) => void;
   onTransferOwnership?: (workspaceId: string, memberId: string) => void;
+  /** 0058, switched on: the Private projects the owner isn't on (an admin doesn't see them): "Make owner" says so */
+  transferLoses?: string[];
   onOpen?: (taskId: string) => void;
   /** Personal workspace: the "create a team" button */
   onNewWorkspace?: () => void;
@@ -987,7 +1000,7 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
       {selected && (
         <MemberProfile key={selected.id} m={selected} name={memberName(selected)} isSelf={selected.userId === currentUserId}
           role={role} workspace={workspace} tasks={tasks} inviteOptions={inviteOptions}
-          onSetRole={onSetRole} onSetTitle={onSetTitle} onTransferOwnership={onTransferOwnership}
+          onSetRole={onSetRole} onSetTitle={onSetTitle} onTransferOwnership={onTransferOwnership} transferLoses={transferLoses}
           onRemoveMember={onRemoveMember} onOpen={onOpen} onClose={() => setSelectedId(null)}
           onHandOn={role && role !== "guest" ? onDropTasksOnPerson : undefined}
           handTo={active.filter((x) => x.userId && x.role !== "guest").map((x) => ({ id: x.userId!, name: memberName(x) }))}

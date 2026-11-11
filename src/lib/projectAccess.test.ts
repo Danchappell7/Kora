@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import MATRIX from "./projectAccessMatrix.json";
 import {
-  accessErrorText, accessOn, accessSchema, audienceOpen, canManagePeople, canSetVisibility, copyPeople, copyRoles, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
+  accessErrorText, accessOn, accessSchema, audienceOpen, canManagePeople, canSetVisibility, cantBeGiven, copyPeople, copyRoles, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
   noteAccessSchema, peopleFor, projectRank, rankCore, rankFor, resetAccessSchema, seesCount, taskRank, turnOnPreview, type AccessCtx,
 } from "./projectAccess";
 import type { Project, ProjectMember, ProjectVisibility, Workspace, WorkspaceMember } from "../data/types";
@@ -94,6 +94,18 @@ describe("projectRank and taskRank", () => {
     noteAccessSchema(true);
     expect(accessOn(ws(true))).toBe(true);
     expect(accessOn(undefined)).toBe(false);
+  });
+});
+
+describe("who can be given new work (cantBeGiven, switch on)", () => {
+  it("someone who can't see the project, and someone who has left (once the member list is in); never someone suspended who can", () => {
+    noteAccessSchema(true);
+    const c = world(true, "o");
+    expect(cantBeGiven(c, W, "m2", "pm")).toBe(true);      // a member off Members only pm
+    expect(cantBeGiven(c, W, "mv", "pm")).toBe(false);     // a viewer sees it
+    expect(cantBeGiven(c, W, "gone", "pw")).toBe(true);    // left the workspace (no row): never a new task
+    expect(cantBeGiven(c, W, "inv", "pw")).toBe(true);     // invited, not joined
+    expect(cantBeGiven({ ...c, wsMembers: [] }, W, "gone", "pw")).toBe(false);   // the list didn't load: the server decides
   });
 });
 

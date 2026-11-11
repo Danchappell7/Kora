@@ -41,6 +41,11 @@ export interface ApprovalPanelProps {
   currentUserId: string;
   /** a guest here: can't request or cancel, can still decide their own review */
   readOnly?: boolean;
+  /** 0058: you can comment on the task, so you may decide your review (a viewer can't: D7) */
+  canDecide?: boolean;
+  /** 0058: who can review it now (comment on it), by user id; omitted: everyone. A reviewer outside it
+   *  (made a viewer since, or off a project made private) can't decide: the card says so */
+  canReview?: string[];
   /** the task's files ("approve this file") */
   attachments?: Attachment[];
   /** bump when realtime reports a change to this task's approvals or reviews */
@@ -55,7 +60,7 @@ const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(n
 const newestFirst = (a: Approval, b: Approval) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id);
 const isText = (t: EventTarget | null) => t instanceof HTMLElement && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable);
 
-export function ApprovalPanel({ task, members, guestIds = [], currentUserId, readOnly = false, attachments = [], refreshKey = 0, onChange }: ApprovalPanelProps) {
+export function ApprovalPanel({ task, members, guestIds = [], currentUserId, readOnly = false, canDecide = true, canReview, attachments = [], refreshKey = 0, onChange }: ApprovalPanelProps) {
   const ids = "kapv" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const workspaceId = task.workspaceId ?? getProject(task.projectId)?.workspaceId ?? null;
   const [list, setList] = useState<Approval[] | null>(null);
@@ -174,7 +179,7 @@ export function ApprovalPanel({ task, members, guestIds = [], currentUserId, rea
       )}
       {current && (
         <ApprovalCard approval={current} headRef={headRef} nameOf={nameOf} guests={guests} attachments={attachments}
-          currentUserId={currentUserId} readOnly={readOnly} onStale={refresh}
+          currentUserId={currentUserId} readOnly={readOnly} canDecide={canDecide} canReview={canReview} onStale={refresh}
           onDecided={(a, d) => {
             applied(a);
             focusAfter.current = "head";
@@ -408,7 +413,20 @@ function ReviewerPicker({ anchorRef, people, chosen, onToggle, onClose }: {
 
 /* ============================================================ one request */
 
-function ApprovalCard({ approval: a, compact, headRef, nameOf, guests, attachments, currentUserId, readOnly, onDecided, onCancelled, onStale }: {
+/** 0058: why an open request can't finish, if it can't: someone it waits on can't review it now (made a
+ *  viewer since, or off a project made private). Everyone must approve: any such reviewer; anyone may: all
+ *  of those still waited on. */
+function blockedNote(a: Approval, blocked: (r: Approval["reviewers"][number]) => boolean): string | null {
+  if (a.status !== "pending") return null;
+  const waiting = a.reviewers.filter((r) => r.decision === null);
+  const cant = waiting.filter(blocked);
+  if (!cant.length) return null;
+  if (a.rule === "any" && (cant.length < waiting.length || a.reviewers.some((r) => r.decision === "approved"))) return null;
+  const names = nameList(cant.map((r) => firstNameOf(r.name || "Someone")));
+  return `${names} can't review this now (they can only view it, or can't see it), so it can't be approved.`;
+}
+
+function ApprovalCard({ approval: a, compact, headRef, nameOf, guests, attachments, currentUserId, readOnly, canDecide = true, canReview, onDecided, onCancelled, onStale }: {
   approval: Approval;
   compact?: boolean;
   headRef?: RefObject<HTMLDivElement>;
@@ -417,6 +435,8 @@ function ApprovalCard({ approval: a, compact, headRef, nameOf, guests, attachmen
   attachments: Attachment[];
   currentUserId: string;
   readOnly: boolean;
+  canDecide?: boolean;
+  canReview?: string[];
   onDecided: (a: Approval, d: ApprovalDecision) => void;
   onCancelled: (a: Approval) => void;
   onStale: () => void;
@@ -441,6 +461,10 @@ function ApprovalCard({ approval: a, compact, headRef, nameOf, guests, attachmen
     } finally { setBusy(false); setConfirming(false); }
   };
   const resolvedWords = a.status === "approved" ? "Approved" : a.status === "changes_requested" ? "Changes requested" : a.status === "cancelled" ? "Cancelled" : null;
+  // (0058) reviewers who can't review it now: still waited on, so the request says why it can't finish
+  const blocked = (r: Approval["reviewers"][number]) => open && r.decision === null && !!canReview && !canReview.includes(r.userId);
+  const stuck = blockedNote(a, blocked);
+  const meWaiting = open && a.reviewers.some((r) => r.userId === currentUserId && r.decision === null);
 
   return (
     <article className="kapv-card" data-compact={compact || undefined} data-status={a.status} aria-labelledby={`${ids}-h`}>
@@ -470,7 +494,8 @@ function ApprovalCard({ approval: a, compact, headRef, nameOf, guests, attachmen
       <ul className="kapv-revs" aria-label="Reviewers">
         {a.reviewers.map((r) => {
           const name = nameOf(r.userId, r.name);
-          const word = r.decision === "approved" ? "Approved" : r.decision === "changes_requested" ? "Changes requested" : open ? "Waiting" : "No decision";
+          const cant = blocked(r);
+          const word = r.decision === "approved" ? "Approved" : r.decision === "changes_requested" ? "Changes requested" : cant ? "Can't review now" : open ? "Waiting" : "No decision";
           return (
             <li key={r.userId} className="kapv-rev">
               <PersonMark id={r.userId} name={name} size={24} />
@@ -478,8 +503,9 @@ function ApprovalCard({ approval: a, compact, headRef, nameOf, guests, attachmen
                 <span>{name}{r.userId === currentUserId ? " (you)" : ""}</span>
                 {guests.has(r.userId) && <span className="kapv-guest">Guest</span>}
               </span>
-              <span className="kapv-dec" data-decision={r.decision ?? (open ? "waiting" : "none")}>
-                {(r.decision || open) && <Icon name={r.decision === "approved" ? "check" : r.decision === "changes_requested" ? "refresh" : "hourglass"} size={14} sw={2} />}
+              <span className="kapv-dec" data-decision={r.decision ?? (cant ? "blocked" : open ? "waiting" : "none")}
+                title={cant ? "They can only view this task now (or can't see it), so they can't approve or ask for changes." : undefined}>
+                {(r.decision || open) && <Icon name={r.decision === "approved" ? "check" : r.decision === "changes_requested" ? "refresh" : cant ? "lock" : "hourglass"} size={14} sw={2} />}
                 {word}
                 {r.decidedAt && <When iso={r.decidedAt} />}
               </span>
@@ -488,8 +514,14 @@ function ApprovalCard({ approval: a, compact, headRef, nameOf, guests, attachmen
           );
         })}
       </ul>
-      {a.canDecide && !compact && (
+      {a.canDecide && canDecide && !compact && (
         <DecideBox approval={a} currentUserId={currentUserId} asker={asker} onDecided={onDecided} onStale={onStale} />
+      )}
+      {!compact && meWaiting && !(a.canDecide && canDecide) && (
+        <p className="kapv-note" role="note">You can't review this now: you can view this task, but not comment on it.</p>
+      )}
+      {!compact && stuck && (
+        <p className="kapv-note" role="note">{stuck}{a.canCancel && !readOnly ? " Cancel it and ask again." : ""}</p>
       )}
       {confirming && (
         <div className="kapv-confirm" role="group" aria-label="Cancel this request?"

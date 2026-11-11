@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, within, waitFor } from "@testing-library/react";
-import { TeamView, WorkspaceSettingsPanel } from "./TeamView";
+import { TeamView, WorkspaceSettingsPanel, transferQuestion } from "./TeamView";
 import type { Task, WorkspaceMember } from "../../data/types";
 import { WORKSPACES, setReferenceData } from "../../data/data";
 import { noteAccessSchema, resetAccessSchema } from "../../lib/projectAccess";
@@ -484,5 +484,13 @@ describe("WorkspaceSettingsPanel", () => {
     unmount();
     const other = render(<WorkspaceSettingsPanel workspace="ws-elsewhere" workspaces={workspaces} myRole="owner" />);
     expect(other.container).toBeEmptyDOMElement();
+  });
+});
+
+describe("Make owner's question (0058)", () => {
+  it("says which Private projects the old owner, made an admin, stops seeing, and who can add them back", () => {
+    expect(transferQuestion("Maya Lin")).toBe("Make Maya Lin the owner? You'll become an admin.");
+    expect(transferQuestion("Maya Lin", ["Payroll"])).toBe("Make Maya Lin the owner? You'll become an admin. You'll stop seeing the Private project you're not on (“Payroll”), and only Maya Lin can add you back.");
+    expect(transferQuestion("Maya Lin", ["A", "B", "C", "D"])).toBe("Make Maya Lin the owner? You'll become an admin. You'll stop seeing 4 Private projects you're not on (“A”, “B” and 2 more), and only Maya Lin can add you back.");
   });
 });

@@ -127,7 +127,7 @@ describe("the start sheet", () => {
     expect(offered).not.toContain("p-seed");
     expect(offered).not.toContain("p-payroll");
     fireEvent.change(notesGo, { target: { value: "p-launch" } });
-    expect(within(dialog).getByText("Notes go in a project the whole team can see.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Everyone at Foundrise can read docs in it, and so can any guests on it.")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Start meeting" }));
     await waitFor(() => expect(props.onStarted).toHaveBeenCalled());
     const m = props.onStarted.mock.calls[0][0];
@@ -153,8 +153,11 @@ describe("the start sheet", () => {
     const offered = within(notesGo).getAllByRole("option").map((o) => (o as HTMLOptionElement).value);
     expect(offered).toContain("p-seed");
     expect(offered).not.toContain("p-payroll");
+    // (0058, r2: it says who really reads the doc there: a Whole workspace project's notes are every member's)
     fireEvent.change(notesGo, { target: { value: "p-launch" } });
-    expect(within(dialog).getByText("Saved there only when you choose, at the end. Notes go in a project everyone at this meeting can see.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Saved there only when you choose, at the end. Everyone at Foundrise can read docs in it, and so can any guests on it.")).toBeInTheDocument();
+    fireEvent.change(notesGo, { target: { value: "p-seed" } });
+    expect(within(dialog).getByText("Saved there only when you choose, at the end. Its people and Foundrise's owners and admins can read docs in it.")).toBeInTheDocument();
     expect(props.onCreateProject).not.toHaveBeenCalled();
   });
   it("a Group meeting is leadership only, and never goes round one business's people", async () => {

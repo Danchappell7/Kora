@@ -327,6 +327,8 @@ export interface UpdatesConversation {
   onDelete?: (u: StatusUpdate) => void;
   /** open this update's replies (arriving from the Inbox) */
   focusUpdateId?: string | null;
+  /** 0058: you can comment on the project (reply, react): a viewer reads the conversation, no more (D7) */
+  canReply?: boolean;
 }
 
 /** A project's non-task tabs: Updates · Requests · Rules · About. */
@@ -416,7 +418,7 @@ function UpdatesPanel({ project, tasks, statusUpdates, readOnly, onPostStatus, a
             <ol className="kpj-history">
               {history.slice(0, shown).map((u, i) => (
                 <li key={u.id} id={`update-${u.id}`}>
-                  <UpdateCard update={u} me={me} canWrite={!readOnly} lead={!!conversation?.lead} thread={threadOf(threads, u.id)}
+                  <UpdateCard update={u} me={me} canWrite={!readOnly} canReply={conversation?.canReply !== false} lead={!!conversation?.lead} thread={threadOf(threads, u.id)}
                     conversation={conversationOn && !!me} people={people} onEdit={conversation?.onEdit} onDelete={conversation?.onDelete}
                     defaultOpen={conversation?.focusUpdateId === u.id}
                     // the latest update can go to the team's Slack channel (the button renders

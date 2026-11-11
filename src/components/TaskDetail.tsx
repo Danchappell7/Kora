@@ -846,6 +846,9 @@ export interface TaskDetailProps {
   /** 0058: who can comment on it (user ids): the only people offered as an approval's reviewers (a viewer
    *  can't review). Omit: `people`. */
   reviewers?: string[];
+  /** 0058: may it move into this project (you can edit there)? The Project picker and "Move to project…"
+   *  offer only those, and its own (design §5.7). Omit: every project given. */
+  canMoveTo?: (projectId: string) => boolean;
   /** 0058: the quiet line by the composer on a Members only or Private project ("Only people on X can see this.") */
   audienceNote?: string;
   /** ≥ 1280px: the panel sits beside the content (no scrim, no focus trap,
@@ -934,7 +937,7 @@ export function TaskDetail(props: TaskDetailProps) {
   );
 }
 
-function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, people: canSee, reviewers, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
+function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, taskId, tasks, tags, activity, members, currentUserId, onClose, onToggle, onPatch, onDelete, onDuplicate, onArchive, onUnarchive, onAddDependency, onRemoveDependency, onToggleSubtask, onAddSubtask, onCreateTag, onDeleteTag, onAddComment, onFocus, onStartFocus, onOpenTask, onOpenProject, projects = [], onToggleFollow, onToggleTaskReaction, onToggleCollaborator, customFields = [], onCreateCustomField, onDeleteCustomField, sections = [], onCreateSection, onConvertComment, readOnly = false, canComment = true, people: canSee, reviewers, canMoveTo, audienceNote, ai, onApprovalsChange, onSaveAsTemplate, goalRow }: TaskDetailProps & {
   task: Task;
   panelRef: RefObject<HTMLDivElement>;
   liveTasksRef: MutableRefObject<Task[]>;
@@ -983,6 +986,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const descEditBtnRef = useRef<HTMLButtonElement>(null);
   const statusMenu = useRef<PropSelectHandle>(null);
   const projectMenu = useRef<PropSelectHandle>(null);
+  // (0058: where it may move: projects you can edit, and its own)
+  const moveTargets = canMoveTo ? projects.filter((p) => p.id === task.projectId || canMoveTo(p.id)) : projects;
   const assigneeBtnRef = useRef<HTMLButtonElement>(null);
   const tagsBtnRef = useRef<HTMLButtonElement>(null);
   const reactsRef = useRef<HTMLDivElement>(null);
@@ -1564,7 +1569,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   /* ---------- header actions ---------- */
   const actions: MenuAction[] = [
     ...(onDuplicate && !readOnly ? [{ id: "duplicate", label: "Duplicate", name: "Duplicate task", icon: "copy" as IconName, title: "Duplicate task", run: () => { onDuplicate(task.id); onClose(); } }] : []),
-    ...(!readOnly && projects.length > 1 ? [{ id: "move", label: "Move to project…", icon: "arrowRight" as IconName, run: () => projectMenu.current?.open() }] : []),
+    ...(!readOnly && moveTargets.length > 1 ? [{ id: "move", label: "Move to project…", icon: "arrowRight" as IconName, run: () => projectMenu.current?.open() }] : []),
     { id: "template", label: onSaveAsTemplate ? "Save as template…" : "Save as template", icon: "briefcase", run: onSaveAsTemplate ? () => onSaveAsTemplate(task.id) : saveAsTemplate },
     ...(!readOnly ? [{ id: "attach", label: "Attach file", icon: "folder" as IconName, run: () => fileRef.current?.click() }] : []),
     ...(onToggleTaskReaction && !readOnly ? [{ id: "react", label: "Add reaction", icon: "message" as IconName, run: () => { setReactsOpen(true); requestAnimationFrame(() => reactsRef.current?.querySelector<HTMLElement>("button")?.focus()); } }] : []),
@@ -1577,8 +1582,8 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
   const statusOptions: PropOption[] = STATUS_ORDER.map((s) => ({ value: s, label: STATUS_META[s].label, icon: <StatusGlyph status={s} size={16} readOnly /> }));
   const priorityOptions: PropOption[] = (Object.keys(PRIORITY_META) as Priority[]).map((p) => ({ value: p, label: PRIORITY_META[p].label, icon: <PriorityGlyph priority={p} /> }));
   const projectOptions: PropOption[] = [
-    ...projects.map((p) => ({ value: p.id, label: p.name, icon: <ProjectTile project={p} size={16} /> })),
-    ...(!projects.some((p) => p.id === task.projectId) ? [{ value: task.projectId, label: proj?.name || "Project", icon: proj ? <ProjectTile project={proj} size={16} /> : undefined }] : []),
+    ...moveTargets.map((p) => ({ value: p.id, label: p.name, icon: <ProjectTile project={p} size={16} /> })),
+    ...(!moveTargets.some((p) => p.id === task.projectId) ? [{ value: task.projectId, label: proj?.name || "Project", icon: proj ? <ProjectTile project={proj} size={16} /> : undefined }] : []),
   ];
   const sectionOptions: PropOption[] = [
     { value: "", label: "No section" },
@@ -2221,6 +2226,7 @@ function TaskPanel({ task, panelRef, liveTasksRef, returnTo, isMobile, docked, t
         {taskWs && (
           <Suspense fallback={null}>
             <ApprovalPanel task={task} members={approvalPeople} guestIds={approvalGuests} currentUserId={currentUserId} readOnly={readOnly}
+              canDecide={canComment} canReview={reviewers}
               attachments={files} refreshKey={approvalTick} onChange={() => { setApprovalHistoryTick((n) => n + 1); onApprovalsChange?.(); }} />
           </Suspense>
         )}

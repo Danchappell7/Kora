@@ -59,7 +59,7 @@ import { MemberProjects, type MemberProjectRow } from "./components/project/Memb
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, copyPeople, copyRoles, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankCore, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, cantBeGiven, copyPeople, copyRoles, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankCore, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -1622,15 +1622,15 @@ export default function App() {
   }, [withRealSections, settleCreate, log, markUnsaved, saveFailed]);
 
   /** 0058: a new task's assignee must be able to see its project, or the server refuses the whole task
-   *  (from the app; with project access on). Someone who can't: the task is yours instead. Answers the task
-   *  to save and who couldn't have it, if anyone. `ctx`: the rights to judge by (a copy's people, say). */
+   *  (from the app; with project access on). Someone who can't (or who has left the workspace: a repeat or a
+   *  copy of their task) gets nothing new: the task is yours instead. Answers the task to save and who
+   *  couldn't have it, if anyone. `ctx`: the rights to judge by (a copy's people, say). */
   const fitNewAssignee = useCallback((raw: Task, ctx?: AccessCtx): { task: Task; blind?: string } => {
     const me = userIdRef.current;
     const asked = raw.assigneeId === "m-self" ? me : raw.assigneeId;
     const wsHere = projectWs(raw.projectId) ?? raw.workspaceId ?? null;
     if (!asked || asked === me || !wsHere || !accessOn(workspacesRef.current.find((w) => w.id === wsHere))) return { task: raw };
-    const c = ctx ?? accessNow();
-    if (!accessRoleOf(c, wsHere, asked) || rankFor(c, asked, wsHere, raw.projectId) >= 1) return { task: raw };
+    if (!cantBeGiven(ctx ?? accessNow(), wsHere, asked, raw.projectId)) return { task: raw };
     return { task: { ...raw, assigneeId: me }, blind: asked };
   }, [accessNow]);
   /** What fitNewAssignee did to several new tasks, said once ("Maya can't see Seed round, so 3 tasks are yours."). */
@@ -1640,9 +1640,16 @@ export default function App() {
     const pids = [...new Set(refit.map((r) => r.task.projectId))];
     const pname = pids.length === 1 ? projectsRef.current.find((p) => p.id === pids[0])?.name || "its project" : "their projects";
     const who = [...new Set(refit.map((r) => r.blind))];
+    // (someone who has left the workspace: a repeat or a copy of their task)
+    const wsOf = projectWs(refit[0].task.projectId) ?? refit[0].task.workspaceId ?? null;
+    if (who.length === 1 && wsOf && !accessRoleOf(accessNow(), wsOf, who[0])) {
+      const wname = workspacesRef.current.find((w) => w.id === wsOf)?.name || "this workspace";
+      toastInfo(`${name(who[0])} isn't in ${wname} any more, so ${refit.length === 1 ? `“${refit[0].task.title}” is` : `${plural(refit.length, "task")} are`} yours.`);
+      return;
+    }
     if (refit.length === 1) { toastInfo(`${name(who[0])} can't see ${pname}, so “${refit[0].task.title}” is yours.`); return; }
     toastInfo(`${who.length === 1 ? `${name(who[0])} can't` : `${who.length} people can't`} see ${pname}, so ${plural(refit.length, "task")} ${refit.length === 1 ? "is" : "are"} yours.`);
-  }, [toastInfo]);
+  }, [toastInfo, accessNow]);
 
   /** Show a new task at once and save it. Resolves to its saved id (null if the save failed). */
   const persistTask = useCallback((raw: Task, opts: CreateOpts = {}): Promise<string | null> => {
@@ -1857,13 +1864,16 @@ export default function App() {
         const ws = next.workspaceId ?? projectWs(next.projectId);
         if (ws && a.value !== userIdRef.current && accessOn(workspacesRef.current.find((w) => w.id === ws))) {
           const ctx = accessNow();
-          if (accessRoleOf(ctx, ws, a.value) && rankFor(ctx, a.value, ws, next.projectId) < 1) {
+          if (cantBeGiven(ctx, ws, a.value, next.projectId)) {
             const now = Date.now();
             if (now - lastRuleToastRef.current > 3000) {
               lastRuleToastRef.current = now;
               const who = getMember(a.value)?.name || wsMembersRef.current.find((m) => m.userId === a.value)?.name || "They";
               const pname = projectsRef.current.find((p) => p.id === next.projectId)?.name || "this project";
-              toastInfo(`${who} can't see ${pname}, so the rule “${r.name}” didn't assign “${next.title}” to them.`);
+              const wname = workspacesRef.current.find((w) => w.id === ws)?.name || "this workspace";
+              toastInfo(accessRoleOf(ctx, ws, a.value)
+                ? `${who} can't see ${pname}, so the rule “${r.name}” didn't assign “${next.title}” to them.`
+                : `${who} isn't in ${wname} any more, so the rule “${r.name}” didn't assign “${next.title}” to them.`);
             }
             continue;
           }
@@ -1955,7 +1965,8 @@ export default function App() {
     const ctx = accessNow(), me = userIdRef.current;
     const toProject = patch.projectId ?? prev.projectId;
     const moved = toProject !== prev.projectId || toWs !== (prev.workspaceId ?? null);
-    // (someone who isn't in the workspace is the workspace check's, above: only members are asked)
+    // (only members are asked: someone who has left the workspace keeps a task that moves (nothing here is
+    // theirs to see, wherever it goes; the server keeps them too), and no picker offers them)
     const blind = (u: string | null | undefined) => !!u && u !== me && !!accessRoleOf(ctx, toWs, u) && rankFor(ctx, u, toWs, toProject) < 1;
     const pname = projectsRef.current.find((p) => p.id === toProject)?.name || "this project";
     const who = (u: string) => getMember(u)?.name || wsMembersRef.current.find((m) => m.userId === u)?.name || "They";
@@ -2734,6 +2745,8 @@ export default function App() {
       setRouteRaw((r) => r.view === "project" && r.projectId === id ? { view: "tasks" } : r);
     };
     if (mode === "reassign" && targetId) {
+      // (0058: a project you can only view takes nothing)
+      if (denyEdit([targetId])) return;
       // tasks live in their project's workspace — carry the target's workspace so
       // moved tasks don't keep a stale one and vanish from view
       const targetWs = projectWs(targetId);
@@ -2741,7 +2754,13 @@ export default function App() {
       const moveThenDelete = async (): Promise<void> => {
         if (!projectsRef.current.some((p) => p.id === id)) return; // gone meanwhile
         const affected = (tasksRef.current || []).filter((t) => t.projectId === id);
-        const patches = new Map(affected.map((t) => [t.id, { projectId: targetId, workspaceId: targetWs, sectionId: undefined } as Partial<Task>]));
+        // as every move: someone on a task who can't see the target drops off it (its assignee: it's yours), 0058
+        const notes = new Set<string>();
+        const patches = new Map(affected.map((t) => {
+          const p: Partial<Task> = { projectId: targetId, workspaceId: targetWs, sectionId: undefined };
+          const note = retarget(t, p); if (note) notes.add(note);
+          return [t.id, Object.assign(p, releasedPlan(t, p))] as [string, Partial<Task>];
+        }));
         // a move that fails is undone on screen; its Retry toast runs the whole thing again
         const moved = await updateTasks(patches, {
           notify: false, op: "reassignOnProjectDelete", retry: () => { void moveThenDelete(); },
@@ -2756,6 +2775,8 @@ export default function App() {
         }
         dropProject();
         toastSuccess(`Deleted “${proj.name}”${affected.length ? ` — ${plural(affected.length, "task")} moved to “${targetName}”` : ""}`);
+        const said = retargetSummary(notes);
+        if (said) toastInfo(said);
       };
       await moveThenDelete();
       return;
@@ -2785,7 +2806,7 @@ export default function App() {
         }
       });
     }, {});
-  }, [denyEdit, canDeleteProject, deferTmp, applyProjects, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError, toastAction, toastInfo, clearWrite, setRoute]);
+  }, [denyEdit, canDeleteProject, deferTmp, applyProjects, retarget, updateTasks, noteDelete, dropPending, serverDelete, toastSuccess, toastError, toastAction, toastInfo, clearWrite, setRoute]);
 
   // ---- sections (ordered groupings within a project) ----
   const sectionWs = (s: Section | undefined) => (s ? s.workspaceId ?? projectWs(s.projectId) : null);
@@ -3466,7 +3487,8 @@ export default function App() {
 
   const transferOwnership = useCallback((workspaceId: string, memberId: string) => {
     store.transferOwnership(workspaceId, memberId)
-      .then(() => { toastSuccess("Ownership transferred"); refreshWorkspaceMembers(); })
+      // (everything again, not just the people: an owner made an admin may see fewer projects now, 0058)
+      .then(() => { toastSuccess("Ownership transferred"); refreshWorkspaceMembers(); requestReloadRef.current?.(); })
       .catch((e) => { reportError(e, { op: "transferOwnership" }); toastError("Couldn't transfer ownership: " + (e?.message || e)); });
   }, [toastError, toastSuccess, refreshWorkspaceMembers]);
 
@@ -4018,8 +4040,21 @@ export default function App() {
   // per render — App re-renders every second while the focus timer runs
   const myTasksEverywhere = useMemo(() => (tasksSeen ?? []).filter((t) => t.assigneeId === currentUserId || (t.collaborators ?? []).includes(currentUserId)), [tasksSeen, currentUserId]);
 
+  // Approvals for you: only those you can still decide. 0058, switched on: you can comment on the task (a
+  // reviewer since made a viewer, or off a project made private, is never offered a decision the server
+  // refuses; the request waits on the others, and its asker sees why). The server says so too (can_decide).
+  const toReview = useMemo(() => {
+    const ctx: AccessCtx = { me: currentUserId, workspaces, projects, wsMembers, members: projectMembers };
+    return myApprovals.toReview.filter((a) => {
+      if (a.canDecide === false) return false;
+      const ws = a.task?.workspaceId ?? a.workspaceId ?? null;
+      if (!ws || !a.task || !accessOn(workspaces.find((w) => w.id === ws))) return true;
+      return rankFor(ctx, currentUserId, ws, a.task.projectId) >= 2;
+    });
+  }, [myApprovals, currentUserId, workspaces, projects, wsMembers, projectMembers]);
+
   /* ---- across businesses (hooks/useBusinessScope): All businesses, the switcher's dots, Projects › Group ---- */
-  const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview: myApprovals.toReview, workspaces, members: wsMembers,
+  const biz = useBusinessScope({ tasks, seen: tasksSeen, projects, activity, toReview, workspaces, members: wsMembers,
     workspace, me: currentUserId, today: dayKey, allChosen: !!onboarding.businesses?.all });
   allBizRef.current = biz.all;
 
@@ -4331,13 +4366,13 @@ export default function App() {
         const r = accessMemberRole(accessCtx, p.id, uid);
         return r ? [{ projectId: p.id, name: p.name, role: r }] : [];
       });
-      return <MemberProjects name={name} guest={guest} pending={false} rows={rows} addable={addableBut(rows)}
+      return <MemberProjects partial={myRole !== "owner"} name={name} guest={guest} pending={false} rows={rows} addable={addableBut(rows)}
         onSet={(pid, role) => setProjectMember(pid, uid, role)} onRemove={(pid) => removeProjectMember(pid, uid)} />;
     }
     if (m.status !== "invited") return null;
     const grants = (inviteGrants ?? []).filter((g) => g.memberId === m.id).map((g) => ({ projectId: g.projectId, role: g.role }));
     const rows = grants.flatMap((g) => { const p = wsProjects.find((x) => x.id === g.projectId); return p ? [{ projectId: p.id, name: p.name, role: g.role }] : []; });
-    return <MemberProjects name={m.email} guest={guest} pending rows={rows} addable={addableBut(rows)}
+    return <MemberProjects partial={myRole !== "owner"} name={m.email} guest={guest} pending rows={rows} addable={addableBut(rows)}
       onSet={(pid, role) => setInviteGrantsFor(m.id, [...grants.filter((g) => g.projectId !== pid), { projectId: pid, role }])}
       onRemove={(pid) => setInviteGrantsFor(m.id, grants.filter((g) => g.projectId !== pid))} />;
   };
@@ -4618,7 +4653,7 @@ export default function App() {
         onCheckin={goalWrites.checkin} onDeleteCheckin={(id, g) => goalWrites.removeCheckin(id, g, goalExtras?.checkins ?? [])} onLink={goalWrites.link} onUnlink={goalWrites.unlink} />;
       // Projects › Group: every business you run, side by side (clicking anything goes there)
       case "group": return <GroupView workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} tasks={biz.liveRows} goalTasks={acrossReportTasks} projects={projects} goals={goals}
-        statusUpdates={statusUpdates} approvals={myApprovals.toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} asks={updateAsks} runMeetings />;
+        statusUpdates={statusUpdates} approvals={toReview} today={biz.todayDate} onOpen={openInBusiness} signals={biz.signals} pace={groupGoalPace} asks={updateAsks} runMeetings />;
       // (Personal's portfolios are yours alone, so they can hold projects from every business you're in: its
       // picker, cards and table read every workspace you can see; opening a project goes to its business)
       case "portfolios": {
@@ -4658,6 +4693,7 @@ export default function App() {
         archived={biz.all ? [...archivedHereRef.current.values()].map((p) => p.item).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : inboxArchived} onUnarchive={unarchiveInbox}
         // a reply to someone mentions them, so they hear about it
         onReply={(taskId, body, mentions) => addComment(taskId, body, (biz.all ? mentionsInWorkspace(mentions, tasksRef.current?.find((t) => t.id === taskId)?.workspaceId, wsMembers) : mentions) ?? [])}
+        canComment={(t) => taskRank(t, accessCtx) >= 2}
         onAcceptToday={(taskId) => guardedPatch(taskId, { planToday: true })}
         onSchedule={(taskId, dueDate) => guardedPatch(taskId, { dueDate })}
         onComplete={(taskId) => { if (tasksRef.current?.find((t) => t.id === taskId)?.status !== "done") toggleTask(taskId); }}
@@ -4665,7 +4701,7 @@ export default function App() {
         // (hidden while you're a guest here: the notice says where to go)
         onOpenIntegration={activeReadOnly ? undefined : () => openSettings("developers")}
         // 0047: "Approvals for you" first (this workspace's), and doc @mentions open their doc
-        approvals={{ toReview: biz.all ? biz.approvals : approvalsInWorkspace(myApprovals.toReview, workspace), projects, members: biz.all ? biz.peopleAsMembers : wsPeople, onDecided: onApprovalsChange }}
+        approvals={{ toReview: biz.all ? biz.approvals : approvalsInWorkspace(toReview, workspace), projects, members: biz.all ? biz.peopleAsMembers : wsPeople, onDecided: onApprovalsChange }}
         onOpenDoc={(a) => { const r = docMentionRoute(a); if (r) setRoute(r); }}
         onOpenUpdate={(a) => {
           const r = updateItemRoute(a);
@@ -4698,7 +4734,10 @@ export default function App() {
       );
       case "pulse": return <TeamPulse tasks={allTasks} members={wsMembers.filter((m) => m.workspaceId === workspace)} currentUserId={currentUserId} workspaceName={activeWsName} workspaceId={workspace} readOnly={activeReadOnly}
         loadEvents={(since) => store.listWorkspaceEventsSince(workspace, since)} onOpen={setDetailId}
-        onNudge={async (taskId, userId, text) => { await addComment(taskId, text, [userId]); }} onPatch={guardedPatch} onOpenWorkload={() => setRoute({ view: "workload" })}
+        // (a nudge that wasn't posted, or a fix to work you can only view, is never said to be done)
+        onNudge={(taskId, userId, text) => addComment(taskId, text, [userId])}
+        onPatch={(id, patch) => { const t = tasksRef.current?.find((x) => x.id === id); if (!t || denyEdit([t])) return false; guardedPatch(id, patch); return true; }}
+        onOpenWorkload={() => setRoute({ view: "workload" })}
         onWriteUp={aiOn ? (facts) => store.aiStandup(facts) : undefined}
         personal={personal} onNewWorkspace={() => setNewWorkspaceOpen(true)} onOpenPeople={() => setRoute({ view: "team" })}
         // 0048: a task dropped on a person is handed to them (Undo); kudos read live (0058: where you can comment)
@@ -4708,7 +4747,10 @@ export default function App() {
         meeting={workspace && !personal && !activeReadOnly ? { workspaceId: workspace, preset: "team", canLead: isAdmin } : null}
         goalsSlot={<TeamGoals goals={goalFlow.goals.filter((g) => (g.workspaceId ?? null) === workspace)} reads={goalFlow.reads} today={KANBO_TODAY} onOpenGoal={openGoal} onOpenGoals={() => setRoute({ view: "goals" })} />} />;
       // (the workspace's logo, name and Close workspace live in Settings › Workspace)
-      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership} onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
+      case "team": return <TeamView tasks={allTasks} workspace={workspace} workspaces={workspaces} members={wsMembers} currentUserId={currentUserId} myRole={myRole} onInvite={inviteMember} onResendInvite={store.configured ? resendInvite : undefined} onRemoveMember={removeMember} onSetRole={setMemberRole} onSetTitle={setMemberTitle} onTransferOwnership={transferOwnership}
+        transferLoses={accessOn(workspaces.find((w) => w.id === workspace)) ? projects.filter((p) => (p.workspaceId ?? null) === workspace && !p.archivedAt && visibilityOf(p) === "private"
+          && p.ownerId !== currentUserId && !accessMemberRole(accessCtx, p.id, currentUserId)).map((p) => p.name) : undefined}
+        onOpen={setDetailId} onNewWorkspace={() => setNewWorkspaceOpen(true)}
         onOpenWorkspaceSettings={canWorkspaceSettings ? () => openSettings("workspace") : undefined}
         onDropTasksOnPerson={activeReadOnly ? undefined : dropOnPerson} healthSlot={rollout.healthSlot ?? undefined}
         inviteNow={inviteNow} onInviteOpened={() => { setInviteNow(false); setInvitePreset(null); }}
@@ -4779,7 +4821,8 @@ export default function App() {
               <Suspense fallback={null}><ProjectPanels tab={tab as "updates" | "requests" | "rules" | "about"} project={openProject!} tasks={scoped} statusUpdates={projUpdates} members={projectPeople(assignees)}
                 canManage={canManageProject(openProject!)} readOnly={projRO} onUpdate={(id, patch) => updateProject(id, patch as Parameters<typeof updateProject>[1])}
                 onPostStatus={projRO ? undefined : postStatusUpdate} aiStatus={aiStatus}
-                conversation={{ me: currentUserId, lead: isAdmin, onEdit: projRO ? undefined : editStatusUpdate, onDelete: deleteStatusUpdate, focusUpdateId: updateFocus }}
+                conversation={{ me: currentUserId, lead: isAdmin, onEdit: projRO ? undefined : editStatusUpdate, onDelete: deleteStatusUpdate, focusUpdateId: updateFocus,
+                  canReply: projectRank(openProject!.id, accessCtx) >= 2 }}
                 rules={{ ...rulesProps(openProject!.id), readOnly: projRO }} forms={{ ...formsProps(openProject!.id), readOnly: projRO }}
                 // 0058: who's on it (once 0058 is in) and, with project access on, who can see it
                 access={accessSchema() && projectMembers !== null && openProject!.workspaceId ? {
@@ -4998,6 +5041,7 @@ export default function App() {
           <Suspense fallback={<PanelSkeleton mobile={isMobile} />}>
           <TaskDetail taskId={detailId} ai={aiOn} onApprovalsChange={onApprovalsChange} tasks={seen} tags={tags} activity={activity} members={wsMembers} currentUserId={currentUserId} onClose={() => setDetailId(null)} onOpenTask={setDetailId} projects={projects} onToggle={toggleTask} onPatch={guardedPatch} onDelete={deleteTask} onDuplicate={duplicateTask} onArchive={archiveTask} onUnarchive={unarchiveTask} onToggleSubtask={toggleSubtask} onAddSubtask={addSubtask} onCreateTag={createTag} onDeleteTag={deleteTag} onAddComment={addComment} onFocus={focusTask} onAddDependency={addDependency} onRemoveDependency={removeDependency} onToggleFollow={toggleFollow} onToggleTaskReaction={toggleTaskReaction} onToggleCollaborator={toggleCollaborator} customFields={customFields.filter((f) => f.projectId === detailTask?.projectId)} onCreateCustomField={createCustomField} onDeleteCustomField={deleteCustomField} sections={sections.filter((s) => s.projectId === detailTask?.projectId)} onCreateSection={createSection} onConvertComment={(body, pid) => { quickAddTask({ title: body.slice(0, 200), projectId: pid }); toastSuccess("Comment added as a task"); }}
             readOnly={detailReadOnly} canComment={detailRank >= 2} people={detailPeople} reviewers={detailReviewers} audienceNote={detailAudience}
+            canMoveTo={(pid) => projectRank(pid, accessCtx) >= 3}
             docked={docked && !isMobile} onStartFocus={focusTask} onOpenProject={(pid) => setRoute({ view: "project", projectId: pid })}
             onSaveAsTemplate={(id) => setSaveTemplateFor(id)}
             goalRow={(t) => <GoalServesRow goals={goalFlow.forTask(t)} reads={goalFlow.reads} today={KANBO_TODAY} onOpen={openGoal} />} />
@@ -5156,7 +5200,9 @@ export default function App() {
         // counted from every task (an archived project's tasks aren't in allTasks), so a
         // project holding only archived tasks never claims to be empty
         const own = tasks.filter((t) => t.projectId === deleteProjectId);
-        return <Suspense fallback={null}><DeleteProjectModal project={proj} taskCount={own.filter((t) => !t.archivedAt).length} archivedCount={own.filter((t) => !!t.archivedAt).length} projects={projects}
+        // (0058: its tasks go only where you can edit: never a project you can only view)
+        return <Suspense fallback={null}><DeleteProjectModal project={proj} taskCount={own.filter((t) => !t.archivedAt).length} archivedCount={own.filter((t) => !!t.archivedAt).length}
+          projects={projects.filter((p) => projectRank(p.id, accessCtx) >= 3)}
           onArchive={proj.archivedAt || !canArchiveProject(proj, { myRole: roleIn(proj.workspaceId) }) ? undefined : () => setProjectArchived(proj.id, true)}
           onConfirm={(mode, target) => { confirmDeleteProject(deleteProjectId, mode, target); }} onClose={() => setDeleteProjectId(null)} /></Suspense>;
       })()}

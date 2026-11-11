@@ -299,6 +299,8 @@ export interface InboxViewProps {
       them (commenters aren't followers, so a plain comment might not). Replies
       to assignments and comments are plain comments. */
   onReply?: (taskId: string, body: string, mentions?: string[]) => Promise<unknown>;
+  /** 0058: may you comment on this task (reply)? A viewer can't (D7): no Reply on its items. Omitted: yes. */
+  canComment?: (task: Task) => boolean;
   /** A: put the task on your Today */
   onAcceptToday?: (taskId: string) => void;
   /** D: set the task's due date */
@@ -348,7 +350,7 @@ export interface InboxViewProps {
 
 export function InboxView({
   activity, tasks, onOpen, onArchive, onClearAll,
-  currentUserId, members, onReply, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
+  currentUserId, members, onReply, canComment, onAcceptToday, onSchedule, onComplete, readOnly, archived, onUnarchive,
   loading, loadError, onRetry, onNewCount, onOpenIntegration, approvals, onOpenDoc, onOpenUpdate, onOpenMeeting,
   snoozes: snoozesProp, onSnooze, onUnsnooze, notifyPrefs, onOpenNotificationSettings,
 }: InboxViewProps) {
@@ -738,7 +740,7 @@ export function InboxView({
   };
 
   const taskOf = (a: Activity) => (a.taskId ? taskById.get(a.taskId) : undefined);
-  const canReply = (a: Activity) => !!onReply && !!taskOf(a);
+  const canReply = (a: Activity) => { const t = taskOf(a); return !!onReply && !!t && (!canComment || canComment(t)); };
   const isOnToday = (t: Task) => !!t.planToday || onToday.has(t.id);
   // (All businesses: an item on a task in a workspace you're a guest in can be replied to, nothing more)
   const guestRow = useGuestRow();

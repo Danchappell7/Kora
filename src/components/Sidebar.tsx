@@ -599,8 +599,9 @@ export function Sidebar({ route, setRoute, workspace, setWorkspace, workspaces, 
   }, [tasks, currentUserId]);
   // delete follows 0041's DELETE policy (owner/admin/project owner); archive and
   // restore are plain updates any writer may make, so members can undo their own archive
-  const canDelete = (p: Project) => canDeleteProject(p, { currentUserId, myRole, workspaceOwnerId: activeWs.ownerId });
-  const canArchive = (p: Project) => canArchiveProject(p, { myRole });
+  // (0058: never on a project you can only view: the server would refuse)
+  const canDelete = (p: Project) => canDeleteProject(p, { currentUserId, myRole, workspaceOwnerId: activeWs.ownerId }) && !viewOnlyProjects?.has(p.id);
+  const canArchive = (p: Project) => canArchiveProject(p, { myRole }) && !viewOnlyProjects?.has(p.id);
 
   // switching workspace never strands you on a project from the old one
   // (its header would read "0 tasks" and quick-add would file into it)

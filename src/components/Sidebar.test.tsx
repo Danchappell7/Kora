@@ -27,6 +27,7 @@ type Opts = {
   route?: Route; workspace?: string | null; myRole?: Role; tasks?: Task[]; saved?: SavedSearch[]; savedCounts?: Record<string, number>;
   onDeleteSavedSearch?: (id: string) => void | Promise<unknown>; projects?: Project[]; workspaces?: Workspace[]; currentUserId?: string;
   guardRoute?: boolean; focus?: FocusTimer; inboxCount?: number; teamBadge?: number; theme?: "light" | "dark"; withShortcuts?: boolean;
+  viewOnly?: string[];
 };
 function renderSidebar(opts: Opts = {}) {
   const props = {
@@ -39,6 +40,7 @@ function renderSidebar(opts: Opts = {}) {
         focus={o.focus ?? focus} tasks={o.tasks ?? []} projects={o.projects ?? projects} inboxCount={o.inboxCount ?? 0} currentUserId={o.currentUserId ?? "u-me"}
         onUpgrade={() => {}} onManageBilling={() => {}} myRole={o.myRole} guardRoute={o.guardRoute}
         savedSearches={o.saved} savedSearchCounts={o.savedCounts} onDeleteSavedSearch={o.onDeleteSavedSearch} teamBadge={o.teamBadge} theme={o.theme}
+        viewOnlyProjects={o.viewOnly ? new Set(o.viewOnly) : undefined}
         {...props} onOpenShortcuts={o.withShortcuts === false ? undefined : props.onOpenShortcuts} />
     </ToastProvider>
   );
@@ -56,6 +58,13 @@ describe("Sidebar project actions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Archive project Q4 Launch" }));
     expect(onArchiveProject).toHaveBeenCalledWith("p-launch");
     expect(screen.getByRole("button", { name: "Pin project Q4 Launch" })).toBeInTheDocument();
+  });
+
+  it("0058: a project you can only view offers no Archive or Delete (the server would refuse)", () => {
+    renderSidebar({ myRole: "admin", viewOnly: ["p-launch"] });
+    expect(screen.queryByRole("button", { name: "Archive project Q4 Launch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete project Q4 Launch" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Archive project My Project" })).toBeInTheDocument();
   });
 
   it("pinning never opens delete, and the pinned project moves to the top", () => {

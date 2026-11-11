@@ -29,7 +29,8 @@ export interface RadarPanelProps {
    *  false/null (e.g. the App's addComment, which returns null when it failed) — when
    *  it wasn't posted: the popover then says so and keeps the text. */
   onNudge: (taskId: string, userId: string, text: string) => Promise<unknown>;
-  onPatch: (id: string, patch: Partial<Task>) => void;
+  /** false: refused (work you can only view, 0058; the App says why): the fix isn't acknowledged */
+  onPatch: (id: string, patch: Partial<Task>) => void | boolean;
   onOpenWorkload: () => void;
   /** the tasks the risks point at: titles for the nudge text and the current due date for a firm date */
   tasks?: Task[];
@@ -169,13 +170,13 @@ export function RadarPanel({ risks, members, readOnly, onOpen, onNudge, onPatch,
                         if (f.kind === "firm_date" && focus) {
                           return (
                             <FirmDateFix key={key} label={f.label} variant={variant} task={focus}
-                              onPick={(date) => { onPatch(focus.id, { dueDate: date }); ack(r, i, `Due ${fmtDate(date)}`, { taskId: focus.id, field: "dueDate", value: date }); }} />
+                              onPick={(date) => { if (onPatch(focus.id, { dueDate: date }) !== false) ack(r, i, `Due ${fmtDate(date)}`, { taskId: focus.id, field: "dueDate", value: date }); }} />
                           );
                         }
                         if (f.kind === "assign" && focus) {
                           return (
                             <AssignFix key={key} label={f.label} variant={variant} task={focus} members={members.filter((m) => !m.guest && (!canSee || canSee(m.id, focus)))}
-                              onPick={(m) => { onPatch(focus.id, { assigneeId: m.id }); ack(r, i, `Assigned to ${firstName(m.name)}`, { taskId: focus.id, field: "assigneeId", value: m.id }); }} />
+                              onPick={(m) => { if (onPatch(focus.id, { assigneeId: m.id }) !== false) ack(r, i, `Assigned to ${firstName(m.name)}`, { taskId: focus.id, field: "assigneeId", value: m.id }); }} />
                           );
                         }
                         return null;

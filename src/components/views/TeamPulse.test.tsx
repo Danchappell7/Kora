@@ -437,4 +437,23 @@ describe("TeamPulse › kudos (0048)", () => {
     pulse({ personal: true });
     expect(screen.queryByRole("button", { name: /^Kudos for/ })).toBeNull();
   });
+  // 0058 (r2): a fix to work you can only view is refused by the App (it says why): Radar never says it was done
+  it("a fix the App refuses (onPatch answers false) is never said to be done", async () => {
+    const { ToastProvider } = await import("../Toast");
+    const tasks = [
+      task({ id: "tokens", title: "Define design tokens v2", status: "todo", assigneeId: "" }),
+      task({ id: "onb", title: "Ship onboarding redesign", status: "blocked", assigneeId: "m-1", dependencies: ["tokens"] }),
+      task({ id: "notes", title: "Release notes", assigneeId: "", dueDate: dayOffset(1) }),
+    ];
+    const onPatch = vi.fn(() => false);
+    render(<ToastProvider><TeamPulse tasks={tasks} members={MEMBERS} currentUserId="m-self" workspaceName="Foundrise" readOnly={false}
+      loadEvents={vi.fn(async (): Promise<WorkspaceEvent[]> => [])} onOpen={vi.fn()} onNudge={vi.fn(async () => {})} onPatch={onPatch} onOpenWorkload={vi.fn()} /></ToastProvider>);
+    await ready();
+    const radar = screen.getByRole("complementary", { name: "Radar" });
+    fireEvent.click(within(radar).getAllByRole("button", { name: "Assign" })[1]);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Theo Vance/ }));
+    expect(onPatch).toHaveBeenCalledWith("notes", { assigneeId: "m-2" });
+    await ready();
+    expect(screen.queryByText("Assigned to Theo")).toBeNull();
+  });
 });

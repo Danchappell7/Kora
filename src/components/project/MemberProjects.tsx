@@ -15,7 +15,7 @@ import "./memberProjects.css";
 
 export interface MemberProjectRow { projectId: string; name: string; role: ProjectRole | "owner" }
 
-export function MemberProjects({ name, guest, pending, rows, addable, onSet, onRemove }: {
+export function MemberProjects({ name, guest, pending, rows, addable, partial = false, onSet, onRemove }: {
   /** whose they are */
   name: string;
   guest: boolean;
@@ -25,6 +25,8 @@ export function MemberProjects({ name, guest, pending, rows, addable, onSet, onR
   rows: MemberProjectRow[];
   /** the projects you could add them to */
   addable: { id: string; name: string }[];
+  /** you may not see all of their projects (an admin: Private ones you're not on): the hint says so */
+  partial?: boolean;
   onSet: (projectId: string, role: ProjectRole) => Promise<boolean>;
   onRemove: (projectId: string) => Promise<boolean>;
 }): JSX.Element {
@@ -37,11 +39,13 @@ export function MemberProjects({ name, guest, pending, rows, addable, onSet, onR
     try { await f(); } finally { setBusy(false); }
   };
   const roles: ProjectRole[] = guest ? ["commenter", "viewer"] : ["editor", "commenter", "viewer"];
-  const hint = pending
-    ? rows.length ? `${first} will see ${rows.length === 1 ? "this project" : "these projects"} once they join.` : `${first} will see no projects here until you add them to one.`
+  const of = partial ? " of the ones you can see" : "";
+  const hint = (pending
+    ? rows.length ? `${first} will see ${rows.length === 1 ? "this project" : "these projects"}${of} once they join.` : `${first} will see no projects${of} here until you add them to one.`
     : guest
-      ? rows.length ? `${first} sees only ${rows.length === 1 ? "this project" : "these projects"} here.` : `${first} sees no projects here yet.`
-      : `${first} also sees every Whole workspace project.`;
+      ? rows.length ? `${first} sees only ${rows.length === 1 ? "this project" : "these projects"}${of} here.` : `${first} sees no projects${of} here yet.`
+      : `${first} also sees every Whole workspace project.`)
+    + (partial && (pending || guest) ? " Private projects you're not on aren't listed." : "");
   return (
     <section className="kmprj" aria-labelledby={`${id}-t`}>
       <h3 id={`${id}-t`} className="kmprj-title">Projects</h3>
