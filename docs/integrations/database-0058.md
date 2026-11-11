@@ -252,6 +252,8 @@ No new secrets and no new schedule.
   address chosen by someone who has left shouldn't keep receiving the
   workspace's events.
 - **Viewers** read and follow; they don't comment, react or give kudos.
+  Commenters (and guests added to comment) also attach files to a task and
+  remove their own, in the app as in the database.
 - **Signed-out requests** read none of a workspace's rows, as before: the rules
   apply to signed-in callers.
 - **Every change** to the switch, a visibility or a project's people touches
@@ -262,7 +264,11 @@ No new secrets and no new schedule.
 Turning a project private, or taking someone off it, doesn't take back what
 they've already had: Inbox items, emails, push notices, Slack posts and
 webhooks already delivered; meeting agendas and recaps already stored; shared
-templates; exports; and a device's offline copy until its next load.
+templates; exports; and a device's offline copy until its next load. (A load
+whose projects read fails keeps, from that copy, only the projects it can
+still vouch for; Search drops what it found in a project once the project has
+gone from the device. A project template saved in a browser stays with the
+person who saved it: it goes when someone else signs in there.)
 
 - **Live channels.** A doc's live edits, carets and who's here go over
   Supabase Realtime, which checks the rules when someone joins a channel and
