@@ -59,7 +59,7 @@ import { MemberProjects, type MemberProjectRow } from "./components/project/Memb
 import { offlineQueue, type DeadLetter } from "./lib/offlineQueue";
 import { DAY_CHANGE_EVENT, subscribeMinute } from "./lib/liveClock";
 import { canArchiveProject } from "./lib/permissions";
-import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, copyPeople, copyRoles, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
+import { accessErrorText, accessOn, accessSchema, canManagePeople as canManageAccess, copyPeople, copyRoles, editableProjects, mayMakePrivate as mayMakePrivateHere, memberRole as accessMemberRole, peopleFor as accessPeople, projectRank, rankCore, rankFor, roleOf as accessRoleOf, taskRank, visibilityOf, type AccessCtx } from "./lib/projectAccess";
 import { ProjectAccessPanel } from "./components/settings/ProjectAccessPanel";
 import { routeOf, pathOf, placeOf, tabsFor, readableTabs, titleOf, gKeyRoute, guestRoute, hiddenFromGuest, type NavCtx, type PlaceTab } from "./lib/nav";
 import { buildExport } from "./lib/exportData";
@@ -1621,20 +1621,35 @@ export default function App() {
     });
   }, [withRealSections, settleCreate, log, markUnsaved, saveFailed]);
 
+  /** 0058: a new task's assignee must be able to see its project, or the server refuses the whole task
+   *  (from the app; with project access on). Someone who can't: the task is yours instead. Answers the task
+   *  to save and who couldn't have it, if anyone. `ctx`: the rights to judge by (a copy's people, say). */
+  const fitNewAssignee = useCallback((raw: Task, ctx?: AccessCtx): { task: Task; blind?: string } => {
+    const me = userIdRef.current;
+    const asked = raw.assigneeId === "m-self" ? me : raw.assigneeId;
+    const wsHere = projectWs(raw.projectId) ?? raw.workspaceId ?? null;
+    if (!asked || asked === me || !wsHere || !accessOn(workspacesRef.current.find((w) => w.id === wsHere))) return { task: raw };
+    const c = ctx ?? accessNow();
+    if (!accessRoleOf(c, wsHere, asked) || rankFor(c, asked, wsHere, raw.projectId) >= 1) return { task: raw };
+    return { task: { ...raw, assigneeId: me }, blind: asked };
+  }, [accessNow]);
+  /** What fitNewAssignee did to several new tasks, said once ("Maya can't see Seed round, so 3 tasks are yours."). */
+  const sayRefitted = useCallback((refit: { task: Task; blind: string }[]) => {
+    if (!refit.length) return;
+    const name = (u: string) => getMember(u)?.name || wsMembersRef.current.find((m) => m.userId === u)?.name || "Someone";
+    const pids = [...new Set(refit.map((r) => r.task.projectId))];
+    const pname = pids.length === 1 ? projectsRef.current.find((p) => p.id === pids[0])?.name || "its project" : "their projects";
+    const who = [...new Set(refit.map((r) => r.blind))];
+    if (refit.length === 1) { toastInfo(`${name(who[0])} can't see ${pname}, so “${refit[0].task.title}” is yours.`); return; }
+    toastInfo(`${who.length === 1 ? `${name(who[0])} can't` : `${who.length} people can't`} see ${pname}, so ${plural(refit.length, "task")} ${refit.length === 1 ? "is" : "are"} yours.`);
+  }, [toastInfo]);
+
   /** Show a new task at once and save it. Resolves to its saved id (null if the save failed). */
   const persistTask = useCallback((raw: Task, opts: CreateOpts = {}): Promise<string | null> => {
     const me = userIdRef.current;
     // (0058: someone who can't see its project can't be given it: the server would refuse the whole task)
-    const asked = raw.assigneeId === "m-self" ? me : raw.assigneeId;
-    const wsHere = projectWs(raw.projectId);
-    if (asked && asked !== me && wsHere && accessOn(workspacesRef.current.find((w) => w.id === wsHere))) {
-      const ctx = accessNow();
-      if (accessRoleOf(ctx, wsHere, asked) && rankFor(ctx, asked, wsHere, raw.projectId) < 1) {
-        const pname = projectsRef.current.find((p) => p.id === raw.projectId)?.name || "this project";
-        toastInfo(`${getMember(asked)?.name || wsMembersRef.current.find((m) => m.userId === asked)?.name || "They"} can't see ${pname}, so “${raw.title}” is yours.`);
-        raw = { ...raw, assigneeId: me };
-      }
-    }
+    const fit = fitNewAssignee(raw);
+    if (fit.blind) { sayRefitted([{ task: raw, blind: fit.blind }]); raw = fit.task; }
     // whoever creates the row is its creator (tasks.user_id), even for a copied
     // recurrence or duplicate, so it's under your Waiting on straight away
     const t: Task = stampCreator({
@@ -1654,7 +1669,7 @@ export default function App() {
     tasksRef.current = [t, ...(tasksRef.current ?? [])];
     pendingTasksRef.current = [{ id: t.id, task: t, until: null }, ...pendingTasksRef.current.filter((p) => p.id !== t.id)];
     return startCreate(t, opts);
-  }, [startCreate, accessNow, toastInfo]);
+  }, [startCreate, fitNewAssignee, sayRefitted]);
 
   const retryUnsaved = useCallback(() => {
     const ids = unsavedRef.current; if (!ids.size) return;
@@ -1828,6 +1843,7 @@ export default function App() {
 
   /* ---- status side effects (one path for checkbox, menu, board and bulk) ---- */
   // automation: apply enabled rules for the task's project (no hot-path mutation, no loops)
+  const lastRuleToastRef = useRef(0);
   const applyRules = useCallback((t: Task, trigger: AutomationRule["trigger"]): Task => {
     const rules = rulesRef.current.filter((r) => r.enabled && r.trigger === trigger && r.projectId === t.projectId);
     if (rules.length === 0) return t;
@@ -1835,7 +1851,25 @@ export default function App() {
     for (const r of rules) for (const a of r.actions) {
       if (!a.value) continue;
       if (a.type === "set_priority") next = { ...next, priority: a.value as Task["priority"] };
-      else if (a.type === "set_assignee") next = { ...next, assigneeId: a.value };
+      else if (a.type === "set_assignee") {
+        // 0058: a rule never hands a task to someone who can't see its project (made before it narrowed, or
+        // before the switch went on): the server would refuse the whole save, every time the rule runs
+        const ws = next.workspaceId ?? projectWs(next.projectId);
+        if (ws && a.value !== userIdRef.current && accessOn(workspacesRef.current.find((w) => w.id === ws))) {
+          const ctx = accessNow();
+          if (accessRoleOf(ctx, ws, a.value) && rankFor(ctx, a.value, ws, next.projectId) < 1) {
+            const now = Date.now();
+            if (now - lastRuleToastRef.current > 3000) {
+              lastRuleToastRef.current = now;
+              const who = getMember(a.value)?.name || wsMembersRef.current.find((m) => m.userId === a.value)?.name || "They";
+              const pname = projectsRef.current.find((p) => p.id === next.projectId)?.name || "this project";
+              toastInfo(`${who} can't see ${pname}, so the rule “${r.name}” didn't assign “${next.title}” to them.`);
+            }
+            continue;
+          }
+        }
+        next = { ...next, assigneeId: a.value };
+      }
       else if (a.type === "set_section") next = { ...next, sectionId: a.value };
       else if (a.type === "add_tag") {
         // older rules stored the tag's name, not its id: resolve it when the rule runs
@@ -1844,7 +1878,7 @@ export default function App() {
       }
     }
     return next;
-  }, []);
+  }, [accessNow, toastInfo]);
   const applyAutomation = useCallback((t: Task): Task => applyRules(t, "task_created"), [applyRules]);
 
   /** Spawn the next occurrence of a recurring task right away (so closing the tab
@@ -2630,11 +2664,18 @@ export default function App() {
         dependencies: (t.dependencies ?? []).map((d) => idMap.get(d)).filter((x): x is string => !!x),
         position: t.position ?? base + i,
       }));
+      // (0058: a task whose assignee can't see the copy is yours: the server would refuse it. The copy's people
+      // aren't loaded yet, so they're judged with what it was made with)
+      const copyCtx: AccessCtx = { ...accessNow(), projects: [...projectsRef.current.filter((p) => p.id !== np.id), np],
+        members: [...(projectMembersRef.current ?? []), ...(people ?? []).map((u) => ({ id: `copy-${u}`, projectId: np.id, workspaceId: wsId ?? "", userId: u, role: roles?.[u] ?? "editor" as const }))] };
+      const refit: { task: Task; blind: string }[] = [];
+      clones.forEach((t, i) => { const fit = fitNewAssignee(t, copyCtx); if (fit.blind) { refit.push({ task: t, blind: fit.blind }); clones[i] = fit.task; } });
       // show the copy straight away; it saves in the background
       setTasks((ts) => (ts ? [...clones, ...ts] : clones));
       pendingTasksRef.current = [...clones.map((t) => ({ id: t.id, task: t, until: null })), ...pendingTasksRef.current];
       setWorkspace(wsId); setRoute({ view: "project", projectId: np.id });
       toastSuccess(`Duplicated “${src.name}”`);
+      sayRefitted(refit);
       // each task is saved on its own, a few at a time, parents first (a sub-task's
       // insert waits for its parent's). A row that fails is flagged with Retry on its
       // own; rows that saved are never sent again.
@@ -2664,7 +2705,7 @@ export default function App() {
       }
     } catch (e) { reportError(e, { op: "duplicateProject" }); toastError("Couldn't duplicate the project: " + ((e as Error)?.message || e)); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [denyGuest, applyProjects, startCreate, noteCreated, toastSuccess, toastError, toastInfo]);
+  }, [denyGuest, applyProjects, startCreate, noteCreated, toastSuccess, toastError, toastInfo, fitNewAssignee, sayRefitted]);
 
   /** Mirrors the server rule (0041): a team project can be deleted by its creator/owner or a workspace owner/admin. */
   const canDeleteProject = useCallback((p: Project): boolean => {
@@ -2819,6 +2860,10 @@ export default function App() {
       moved.add(t.id);
     }
     if (denyEdit(built)) return;
+    // (0058: a row for someone who can't see its project is yours: the server would refuse it, and Retry with it)
+    const refit: { task: Task; blind: string }[] = [];
+    built.forEach((t, i) => { const fit = fitNewAssignee(t); if (fit.blind) { refit.push({ task: t, blind: fit.blind }); built[i] = Object.assign(t, { assigneeId: fit.task.assigneeId }); } });
+    sayRefitted(refit);
     // sections the file names that this project doesn't have yet (tasks wait for their real ids)
     const newSections = new Map<string, string | undefined>();
     built.forEach((t, i) => {
@@ -2867,7 +2912,7 @@ export default function App() {
     noteElsewhere(projs);
     // (0056: a meeting links its actions to the tasks it made)
     return built.map((t) => t.id);
-  }, [applyAutomation, buildNewTask, denyEdit, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
+  }, [applyAutomation, buildNewTask, denyEdit, fitNewAssignee, sayRefitted, startCreate, log, toastSuccess, toastError, noteElsewhere, createSection, applyTags, updateTasks]);
 
   // (saved searches are saved views since 0048: lib/views — the Sidebar's Views, Save view, ?view=)
 
@@ -3196,9 +3241,11 @@ export default function App() {
     setSections((cur) => [...cur.filter((x) => !r.sections.some((y) => y.id === x.id)), ...r.sections]);
     setTasks((ts) => ts && [...r.tasks.filter((t) => !ts.some((x) => x.id === t.id)), ...ts]);
     requestReloadRef.current?.();
+    // (0058: a new project that took on the plan's people: who's on it)
+    if (r.project?.contributorIds?.length && accessSchema()) reloadProjectMembers();
     (message.tone === "success" ? toastSuccess : message.tone === "error" ? toastError : toastInfo)(message.text);
     if (r.project) setRoute({ view: "project", projectId: r.project.id });
-  }, [noteCreated, applyProjects, toastSuccess, toastError, toastInfo, setRoute]);
+  }, [noteCreated, applyProjects, toastSuccess, toastError, toastInfo, setRoute, reloadProjectMembers]);
 
   /* ---- 0047 docs: "Make task" from a doc line, in the doc's project; resolves to the saved id (null: not made) ---- */
   const makeDocTask: DocMakeTask = useCallback(async ({ title, projectId }) => {
@@ -3311,6 +3358,15 @@ export default function App() {
       return true;
     } catch (e) { accessRefused("setProjectMember", e); return false; }
   }, [applyProjects, accessRefused, reloadProjectMembers]);
+  /** 0058: take one project off a pending invite (that project's managers), then read them all again. */
+  const removeInviteGrant = useCallback(async (memberId: string, projectId: string): Promise<boolean> => {
+    try {
+      await store.removeInviteProject(memberId, projectId);
+      setInviteGrants((cur) => (cur ?? []).filter((g) => !(g.memberId === memberId && g.projectId === projectId)));
+      reloadInviteGrants();
+      return true;
+    } catch (e) { accessRefused("removeInviteProject", e); return false; }
+  }, [accessRefused, reloadInviteGrants]);
   /** 0058: replace what a pending invite brings (its owners and admins), then read them all again. */
   const setInviteGrantsFor = useCallback(async (memberId: string, grants: { projectId: string; role: ProjectRole }[]): Promise<boolean> => {
     try {
@@ -3818,10 +3874,11 @@ export default function App() {
   const [invitePreset, setInvitePreset] = useState<string[] | null>(null);
   const [inviteBack, setInviteBack] = useState<string | null>(null);
   useEffect(() => { if (route.view !== "team") setInviteBack(null); }, [route.view]);
-  // (owners and admins of a workspace with project access on read what its pending invites bring)
-  const leadsHere = !!workspace && wsMembers.some((m) => m.userId === currentUserId && m.workspaceId === workspace && m.status === "active" && (m.role === "owner" || m.role === "admin"));
+  // (what a workspace's pending invites bring, where project access is on: its owners and admins read the grants on
+  // projects they can see, each project's managers its own; a guest none)
+  const staffHere = !!workspace && wsMembers.some((m) => m.userId === currentUserId && m.workspaceId === workspace && m.status === "active" && m.role !== "guest");
   const gatedHere = accessOn(workspaces.find((w) => w.id === workspace));
-  useEffect(() => { if (leadsHere && gatedHere) reloadInviteGrants(); }, [leadsHere, gatedHere, workspace, wsMembers.length, reloadInviteGrants]);
+  useEffect(() => { if (staffHere && gatedHere) reloadInviteGrants(); }, [staffHere, gatedHere, workspace, wsMembers.length, reloadInviteGrants]);
 
   /** Inbox › Archived › Move back to Inbox: the items archived here come back. */
   const unarchiveInbox = useCallback((ids: string[]) => {
@@ -4332,8 +4389,15 @@ export default function App() {
     ...(projRO ? [] : [{ id: "rules", label: "Rules", count: projRules.length || undefined, secondary: true, href: projectHref("rules") }]),
     { id: "about", label: "About", secondary: true, href: projectHref("about") },
   ] : [];
+  // (0058: who can be given a task in a project, as every other picker offers: a rule's, Paste notes → tasks)
+  const ruleMembers = (pid: string) => {
+    const p = projects.find((x) => x.id === pid);
+    if (!p?.workspaceId || !accessOn(workspaces.find((w) => w.id === p.workspaceId))) return assignees;
+    const ids = new Set(accessPeople(pid, accessCtx).map((m) => m.userId));
+    return assignees.filter((m) => ids.has(m.id));
+  };
   const rulesProps = (projectId?: string): React.ComponentProps<typeof AutomationsView> => ({
-    rules: projectId ? wsRules.filter((r) => r.projectId === projectId) : wsRules, projects: wsProjects, members: assignees, sections, tags,
+    rules: projectId ? wsRules.filter((r) => r.projectId === projectId) : wsRules, projects: wsProjects, members: assignees, membersFor: ruleMembers, sections, tags,
     onCreate: createRule, onUpdate: updateRule, onDelete: deleteRule, ...(projectId ? { projectId } : {}),
   });
   const formsProps = (projectId?: string): React.ComponentProps<typeof FormsView> => ({
@@ -4652,7 +4716,16 @@ export default function App() {
         inviteProjects={wsGated && isAdmin ? {
           projects: wsProjects.filter((p) => !p.id.startsWith("tmp-") && canManageAccess(p, accessCtx)).map((p) => ({ id: p.id, name: p.name, emoji: p.emoji })),
           preset: invitePreset ?? undefined,
-          onSet: (memberId, ids) => store.setInviteProjects(memberId, ids.map((projectId) => ({ projectId, role: "commenter" as const }))).then(() => { reloadInviteGrants(); }),
+          // (a pending invite refreshed keeps what it brought: these are added, each kept at its role. A grant on a
+          // project you can't see isn't read here, and set_invite_projects keeps it)
+          onSet: async (memberId, ids) => {
+            const had = ((await store.listInviteGrants().catch(() => null)) ?? inviteGrants ?? []).filter((g) => g.memberId === memberId);
+            const grants = [...had.map((g) => ({ projectId: g.projectId, role: g.role })),
+              ...ids.filter((id) => !had.some((g) => g.projectId === id)).map((projectId) => ({ projectId, role: "commenter" as const }))];
+            await store.setInviteProjects(memberId, grants);
+            reloadInviteGrants();
+            return grants.map((g) => g.projectId);
+          },
           back: inviteBack && getProject(inviteBack) ? { label: `Back to ${getProject(inviteBack)!.name}`, go: () => { const pid = inviteBack; setInviteBack(null); setAccessOpenFor(pid); setRoute({ view: "project", projectId: pid, tab: "about" }); } } : undefined,
         } : undefined}
         memberProjects={wsGated && isAdmin ? memberProjectsFor : undefined} />;
@@ -4713,12 +4786,13 @@ export default function App() {
                   ctx: accessCtx, workspaceName: activeWsName, open: accessOpenFor === openProject!.id,
                   onSetVisibility: setProjectVisibility, onSetMember: setProjectMember, onRemoveMember: removeProjectMember,
                   onInviteGuest: isAdmin ? (pid) => { setInvitePreset([pid]); setInviteBack(pid); setInviteNow(true); setRoute({ view: "team" }); } : undefined,
-                  // (pending invites that bring it: their owners and admins see them, and can take them off)
-                  invites: isAdmin && inviteGrants ? inviteGrants.filter((g) => g.projectId === openProject!.id).flatMap((g) => {
+                  // (pending invites that bring it: its managers see them, and can take them off. A member who owns it
+                  // too: one an admin made while it was Members only is still theirs to see once it's Private)
+                  invites: canManageAccess(openProject!, accessCtx) && inviteGrants ? inviteGrants.filter((g) => g.projectId === openProject!.id).flatMap((g) => {
                     const m = wsMembers.find((x) => x.id === g.memberId && x.status === "invited");
                     return m ? [{ memberId: m.id, email: m.email, role: g.role }] : [];
                   }) : undefined,
-                  onRemoveInvite: isAdmin ? (memberId) => setInviteGrantsFor(memberId, (inviteGrants ?? []).filter((g) => g.memberId === memberId && g.projectId !== openProject!.id).map((g) => ({ projectId: g.projectId, role: g.role }))) : undefined,
+                  onRemoveInvite: canManageAccess(openProject!, accessCtx) ? (memberId) => removeInviteGrant(memberId, openProject!.id) : undefined,
                 } : undefined} /></Suspense>
             ),
             notice: <Suspense fallback={null}><ProjectNotice project={openProject!} statusUpdates={projUpdates} risks={activeReadOnly ? [] : risks.filter((r) => r.projectId === openProject!.id)} onOpenUpdates={() => goProjectTab("updates")} onOpenRisks={() => setRoute({ view: "pulse" })} /></Suspense>,
@@ -4954,6 +5028,18 @@ export default function App() {
       {planner && (() => {
         const planProject = planner.mode === "append" ? projects.find((p) => p.id === planner.projectId) ?? null : null;
         const planWs = planProject ? planProject.workspaceId ?? null : workspace;
+        // 0058: with project access on, Kanbo's plan gives work only to people who can see the project: adding to
+        // one, its people; a new one that starts Members only or Private takes on the people it gives work to
+        const planWsRow = workspaces.find((w) => w.id === planWs);
+        const planAccess = planWs && accessOn(planWsRow) ? {
+          canSee: planProject ? (u: string) => rankFor(accessCtx, u, planWs, planProject.id) >= 1 : undefined,
+          addPeople: !planProject && (planWsRow?.projectAccess?.defaultVisibility ?? "workspace") !== "workspace",
+          canAssign: (p: Project, u: string) => {
+            const role = accessRoleOf(accessNow(), p.workspaceId ?? planWs, u);
+            return u === currentUserId || !role || rankCore(true, role, visibilityOf(p), p.ownerId === u,
+              accessMemberRole(accessNow(), p.id, u) ?? ((p.contributorIds ?? []).includes(u) ? "editor" : null)) >= 1;
+          },
+        } : undefined;
         return (
           <ErrorBoundary inline floating name="planner" onHome={() => setPlanner(null)} homeLabel="Close">
             <Suspense fallback={null}>
@@ -4963,7 +5049,7 @@ export default function App() {
                 wsMembers={wsMembers} tasks={allTasks} currentUserId={currentUserId}
                 // demo mode says "demo mode" rather than "Kanbo AI isn't available"
                 aiEnabled={aiOn && store.configured} initialGoal={planner.goal} store={store}
-                onClose={() => setPlanner(null)} onCreated={onPlanCreated} />
+                onClose={() => setPlanner(null)} onCreated={onPlanCreated} access={planAccess} />
             </Suspense>
           </ErrorBoundary>
         );
@@ -5056,7 +5142,7 @@ export default function App() {
         );
       })()}
       <Deferred when={extract.open}><ExtractTasksSheet open={extract.open} onClose={() => setExtract({ open: false })} initialText={extract.text} context={extract.context}
-        projects={wsProjects} members={assignees} defaultProjectId={openProject?.id} currentUserId={currentUserId}
+        projects={wsProjects} members={assignees} membersFor={ruleMembers} defaultProjectId={openProject?.id} currentUserId={currentUserId}
         onExtractAI={aiOn ? (text, context) => store.aiExtract(text, { ...askContext, hint: context }) : undefined}
         onCreate={(rows) => { importTasks(rows, { verb: "Added" }); }} /></Deferred>
       <Deferred when={shutdownOpen}><ShutdownSheet open={shutdownOpen} onClose={() => setShutdownOpen(false)} tasks={myTasks} allTasks={allTasks} currentUserId={currentUserId} userName={currentUser?.name}

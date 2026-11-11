@@ -197,7 +197,8 @@ export function TeamPulse({ tasks, members, currentUserId, workspaceName, worksp
   const slackGated = accessOn(slackWs);
   const slackTasks = useMemo(() => (slackGated ? tasks.filter((t) => {
     const p = getProject(t.projectId);
-    return audienceOpen("team", slackWs, p && (p.workspaceId ?? null) === (t.workspaceId ?? workspaceId) ? p : undefined);
+    // (a project that isn't loaded, binned or out of sight, is closed: lib/projectAccess)
+    return audienceOpen("team", slackWs, p && (p.workspaceId ?? null) === (t.workspaceId ?? workspaceId) ? p : undefined, t.projectId);
   }) : tasks), [slackGated, slackWs, tasks, workspaceId]);
   const leftOut = tasks.length - slackTasks.length;
   const slackFacts = useMemo(() => (leftOut ? buildPulse({ tasks: slackTasks, members: people, events: history?.events, today: todayISO, capacities, since, period }) : facts),

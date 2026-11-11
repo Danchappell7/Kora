@@ -4,12 +4,13 @@
    access, New project's "Who can see this?", view-only pages, the owner's switch with its preview,
    and the guest's view. Everywhere it's off, nothing of it shows. */
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import App from "./App";
 import { loadAllChunks } from "./lib/lazyLoad";
 import { AuthProvider } from "./auth/AuthProvider";
 import { ToastProvider } from "./components/Toast";
 import { store } from "./data/store";
+import { DEMO_RULES } from "./data/data";
 
 beforeAll(loadAllChunks, 60_000);
 
@@ -144,6 +145,124 @@ describe("App · project access on (Foundrise)", () => {
     expect(await screen.findByText("Maya Lin can't see Seed round, so “Ship onboarding redesign to staging” is now assigned to you.")).toBeInTheDocument();
   }, 30_000);
 
+  it("a project's rule never hands a task to someone who can't see the project (a status change still saves), and its Rules offer only its people", async () => {
+    // a rule made while Seed round was still Whole workspace (or before the switch went on)
+    DEMO_RULES.push({ id: "rule-review", projectId: "p-seed", workspaceId: "ws-foundrise", name: "Review goes to Maya",
+      trigger: "status_changed", actions: [{ type: "set_assignee", value: "m-1" }], enabled: true });
+    const upd = spy(vi.spyOn(store, "updateTask"));
+    try {
+      inWs("ws-foundrise", "/p/p-seed/list");
+      await boot();
+      fireEvent.click(await screen.findByText("Draft the investor update", {}, { timeout: 8000 }));
+      const panel = await screen.findByRole("dialog", { name: /Draft the investor update/ });
+      fireEvent.change(within(panel).getByLabelText("Status"), { target: { value: "review" } });
+      await waitFor(() => expect(upd.mock.calls.some((c) => c[1].status === "review")).toBe(true));
+      // (live, pa_trg_tasks refuses a client UPDATE giving it to Maya: 42501, and the status change is undone)
+      expect(upd.mock.calls.some((c) => c[1].assigneeId === "m-1")).toBe(false);
+      expect(await screen.findByText("Maya Lin can't see Seed round, so the rule “Review goes to Maya” didn't assign “Draft the investor update” to them.")).toBeInTheDocument();
+      cleanup();
+      inWs("ws-foundrise", "/p/p-seed/rules");
+      await boot();
+      const who = await screen.findByRole("combobox", { name: "Person assigned by Review goes to Maya" }, { timeout: 8000 });
+      const offered = within(who).getAllByRole("option").map((o) => o.textContent ?? "");
+      expect(offered.filter((o) => /Maya Lin/.test(o))).toEqual(["Maya Lin (can't see Seed round: not assigned)"]);
+      expect(offered.some((o) => /Sana Rao/.test(o))).toBe(true);
+      expect(offered.some((o) => /Ana Ruiz/.test(o))).toBe(false);
+    } finally { DEMO_RULES.splice(DEMO_RULES.findIndex((r) => r.id === "rule-review"), 1); }
+  }, 60_000);
+
+  it("Paste notes → tasks: a task for someone who can't see the project is flagged and comes to you (never sent as theirs)", async () => {
+    const create = spy(vi.spyOn(store, "createTask"));
+    inWs("ws-foundrise", "/p/p-seed/list");
+    await boot();
+    expect(await screen.findByRole("heading", { name: "Seed round" }, { timeout: 8000 })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "More ways to create" })[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Paste notes/ }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Notes" }), { target: { value: "Maya to send the investor deck by Friday" } });
+    fireEvent.click(screen.getByRole("button", { name: /Find tasks/ }));
+    const who = await screen.findByRole("combobox", { name: /^Assignee for/ }, { timeout: 8000 });
+    expect(screen.getByText("Maya Lin can't see Seed round · It'll be yours")).toBeInTheDocument();
+    const offered = within(who).getAllByRole("option").map((o) => o.textContent ?? "");
+    // (Ana isn't on it; Theo may be, added by a test above)
+    expect(offered.some((o) => /Ana Ruiz/.test(o))).toBe(false);
+    expect(offered.filter((o) => /Maya Lin/.test(o))).toEqual(["Maya Lin"]);
+    fireEvent.click(screen.getByRole("button", { name: /^Create 1 task/ }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    const sent = create.mock.calls[0][0];
+    expect([sent.projectId, sent.assigneeId === "m-1"]).toEqual(["p-seed", false]);
+    expect(await screen.findByText(/Maya Lin can't see Seed round, so “Maya to send the investor deck|Maya Lin can't see Seed round, so “Send the investor deck/)).toBeInTheDocument();
+  }, 60_000);
+
+  it("re-inviting a pending guest from a project's People & access adds that project to what the invite brings", async () => {
+    // live invite_member upserts on (workspace_id, email) while it's still invited: the same row, the same id
+    const real = store.inviteMember.bind(store);
+    let first: Awaited<ReturnType<typeof store.inviteMember>> | null = null;
+    spy(vi.spyOn(store, "inviteMember").mockImplementation(async (ws, email, role) => {
+      if (first && first.email === email) return { ...first, role: role ?? first.role };
+      first = await real(ws, email, role);
+      return first;
+    }));
+    const send = async (sheet: HTMLElement) => {
+      fireEvent.change(within(sheet).getByRole("textbox", { name: "Emails" }), { target: { value: "jo@studio.co" } });
+      fireEvent.change(within(sheet).getByRole("combobox", { name: "Invite as role" }), { target: { value: "guest" } });
+      return sheet;
+    };
+    inWs("ws-foundrise", "/team/people");
+    await boot();
+    fireEvent.click((await screen.findAllByRole("button", { name: "Invite people" }, { timeout: 8000 }))[0]);
+    const sheet = await send(await screen.findByRole("dialog", { name: /Invite people/ }));
+    const box = await within(sheet).findByRole("checkbox", { name: /Brand Refresh/ });
+    if (!(box as HTMLInputElement).checked) fireEvent.click(box);
+    fireEvent.click(within(sheet).getByRole("button", { name: /^Send/ }));
+    await within(sheet).findByText(/They'll see/, {}, { timeout: 8000 });
+    cleanup();
+    inWs("ws-foundrise", "/p/p-seed/about");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "Manage" }, { timeout: 8000 }));
+    fireEvent.click(within(await screen.findByRole("region", { name: "People & access" })).getByRole("button", { name: "Invite a guest" }));
+    const again = await send(await screen.findByRole("dialog", { name: /Invite people/ }, { timeout: 8000 }));
+    fireEvent.click(within(again).getByRole("button", { name: /^Send/ }));
+    expect(await within(again).findByText(/They'll see Brand Refresh and Seed round once they join\./, {}, { timeout: 8000 })).toBeInTheDocument();
+    const now = (await store.listInviteGrants())!.filter((g) => g.memberId === first!.id).map((g) => g.projectId).sort();
+    expect(now).toEqual(["p-brand", "p-seed"]);
+  }, 60_000);
+
+  it("Plan it with Kanbo where new projects start as Members only: the people the plan gives work to are on the project it makes", async () => {
+    await store.setProjectAccess("ws-foundrise", { defaultVisibility: "members" });
+    const mkProject = spy(vi.spyOn(store, "createProject"));
+    const batch = spy(vi.spyOn(store, "createTasksBatch"));
+    try {
+      inWs("ws-foundrise", "/projects");
+      await boot();
+      fireEvent.click((await screen.findAllByRole("button", { name: /New project/ }, { timeout: 8000 }))[0]);
+      const np = await screen.findByRole("dialog", { name: "New project" });
+      fireEvent.click(within(np).getByRole("button", { name: /Plan it with Kanbo/ }));
+      const pl = await screen.findByRole("dialog", { name: "Plan a project with Kanbo" }, { timeout: 8000 });
+      fireEvent.click(within(within(pl).getByRole("group", { name: "Examples to start from" })).getAllByRole("button")[0]);
+      fireEvent.click(within(pl).getByRole("button", { name: /Draft the plan/ }));
+      await within(pl).findByText(/Drafted on this device/, {}, { timeout: 8000 });
+      fireEvent.click(within(pl.querySelector(".ksheet-foot") as HTMLElement).getByRole("button", { name: /Create project/ }));
+      await waitFor(() => expect(batch).toHaveBeenCalled(), { timeout: 8000 });
+      const made = await mkProject.mock.results[0].value;
+      const given = [...new Set(batch.mock.calls[0][0].map((t) => t.assigneeId).filter((u): u is string => !!u && u !== "m-self"))];
+      expect(made.visibility).toBe("members");
+      expect(given.length).toBeGreaterThan(0);
+      // (live, a member who isn't on a Members only project has rank 0: pa_trg_tasks would refuse every such task)
+      expect(given.filter((u) => !(made.contributorIds ?? []).includes(u))).toEqual([]);
+    } finally { await store.setProjectAccess("ws-foundrise", { defaultVisibility: "workspace" }); }
+  }, 60_000);
+
+  it("Add tasks with Kanbo on a Members only project plans only for the people who can see it", async () => {
+    inWs("ws-foundrise", "/p/p-seed/list");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "Project actions" }, { timeout: 8000 }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Add tasks with Kanbo/ }));
+    const pl = await screen.findByRole("dialog", { name: "Add tasks with Kanbo" }, { timeout: 8000 });
+    const text = pl.textContent ?? "";
+    expect(text).toMatch(/Sana Rao/);
+    expect(text).not.toMatch(/Maya Lin|Ana Ruiz/);
+  }, 60_000);
+
   it("a guest's profile on Team says which projects they see", async () => {
     inWs("ws-foundrise", "/team/people");
     await boot();
@@ -210,6 +329,21 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     expect(within(panel).getByText("View only")).toBeInTheDocument();
     expect(within(panel).queryByRole("textbox", { name: "Add a comment" })).toBeNull();
   });
+  it("a project's member manager (not an admin) sees a pending invite that brings it, and takes it off", async () => {
+    // (Daniel is a member of Harbour and an editor of Northwind Review; an admin's invite brings it to Kit)
+    await store.bootstrap({ id: "m-self" } as never);
+    const kit = await store.inviteMember("ws-harbour", "kit@harbour.example", "guest");
+    await store.setInviteProjects(kit.id, [{ projectId: "p-northwind", role: "commenter" }]);
+    const rm = spy(vi.spyOn(store, "removeInviteProject"));
+    inWs("ws-harbour", "/p/p-northwind/about");
+    await boot();
+    fireEvent.click(await screen.findByRole("button", { name: "Manage" }, { timeout: 8000 }));
+    const panel = await screen.findByRole("region", { name: "People & access" });
+    fireEvent.click(await within(panel).findByRole("button", { name: "Take kit@harbour.example's invite off Northwind Review" }, { timeout: 8000 }));
+    await waitFor(() => expect(rm).toHaveBeenCalledWith(kit.id, "p-northwind"));
+    await waitFor(() => expect(within(panel).queryByText("kit@harbour.example")).toBeNull());
+    expect((await store.listInviteGrants())!.filter((g) => g.memberId === kit.id)).toEqual([]);
+  }, 60_000);
   it("quick capture on its page files into a project you can change, not this one", async () => {
     const create = spy(vi.spyOn(store, "createTask"));
     inWs("ws-harbour", "/p/p-hb-fees");

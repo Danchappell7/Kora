@@ -1485,7 +1485,11 @@ export interface PlanWarning {
 }
 /** How the planner creates things: the host's own create paths (so its state updates). */
 export interface PlanApplyDeps {
-  createProject(input: { name: string; emoji: string; color: string; workspaceId: string | null; description?: string }): Promise<Project>;
+  /** `memberIds`: the people the plan gives work to (not you): a new project that isn't Whole workspace takes them as its people */
+  createProject(input: { name: string; emoji: string; color: string; workspaceId: string | null; description?: string; memberIds?: string[] }): Promise<Project>;
+  /** 0058: may this person be given a task in that project (they can see it)? Without it, anyone. Someone who
+   *  can't: the task is yours (the server would refuse the whole batch). */
+  canAssign?(project: Project, userId: string): boolean;
   createSection(input: { projectId: string; workspaceId: string | null; name: string; position?: number }): Promise<Section>;
   /** store.createTasksBatch semantics: saved copies (final ids) in order; throws BatchCreateError with .saved on partial failure */
   createTasks(tasks: Task[]): Promise<Task[]>;

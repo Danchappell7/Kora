@@ -49,7 +49,7 @@ export interface PeopleAccessProps {
   onInviteGuest?: (projectId: string) => void;
   /** the project syncs to Notion (people with access there can see its tasks) */
   notionSynced?: boolean;
-  /** pending invites that bring this project (its workspace's owners and admins see them) */
+  /** pending invites that bring this project (its managers see them, and take them off) */
   invites?: { memberId: string; email: string; role: ProjectRole }[];
   /** take this project off a pending invite */
   onRemoveInvite?: (memberId: string) => Promise<boolean>;

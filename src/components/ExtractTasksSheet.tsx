@@ -30,6 +30,10 @@ export interface ExtractTasksSheetProps {
   context?: string;
   projects: Project[];
   members: { id: string; name: string }[];
+  /** 0058: who can be given a task in a project (with project access on, the people who can see it).
+   *  Names in the notes are still matched against `members`; one who can't see the chosen project is
+   *  flagged, and the host gives that task to you. Default: `members`. */
+  membersFor?: (projectId: string) => { id: string; name: string }[];
   defaultProjectId?: string;
   currentUserId: string;
   onExtractAI?: (text: string, context?: string) => Promise<AiOutcome<ExtractedTask[]>>;
@@ -110,7 +114,7 @@ export function toRows(found: ExtractedTask[], members: { id: string; name: stri
 }
 
 export function ExtractTasksSheet({
-  open, onClose, initialText, context, projects, members, defaultProjectId, currentUserId, onExtractAI, onCreate,
+  open, onClose, initialText, context, projects, members, membersFor, defaultProjectId, currentUserId, onExtractAI, onCreate,
 }: ExtractTasksSheetProps): JSX.Element | null {
   const [step, setStep] = useState<"notes" | "review">("notes");
   const [text, setText] = useState("");
@@ -146,6 +150,7 @@ export function ExtractTasksSheet({
   const title = `Notes → tasks${context ? ` · ${context}` : ""}`;
   const chosen = rows.filter((r) => r.include);
   const project = projects.find((p) => p.id === projectId);
+  const people = membersFor && projectId ? membersFor(projectId) : members;
 
   const find = async () => {
     const notes = text;
@@ -269,7 +274,7 @@ export function ExtractTasksSheet({
               </div>
               <ul className="kext-rows" aria-label="Tasks found">
                 {rows.map((r, i) => (
-                  <ReviewRow key={r.key} row={r} index={i} members={members} currentUserId={currentUserId}
+                  <ReviewRow key={r.key} row={r} index={i} members={people} everyone={members} projectName={project?.name} currentUserId={currentUserId}
                     onChange={(p) => patch(r.key, p)} />
                 ))}
               </ul>
@@ -310,15 +315,22 @@ function FoundHeader({ found, members }: { found: Found; members: number }) {
   );
 }
 
-function ReviewRow({ row, index, members, currentUserId, onChange }: {
+function ReviewRow({ row, index, members, everyone = members, projectName, currentUserId, onChange }: {
   row: Row;
   index: number;
+  /** who can be given it (the chosen project's people) */
   members: { id: string; name: string }[];
+  /** the workspace's people (a name in the notes may be someone who can't see the project) */
+  everyone?: { id: string; name: string }[];
+  projectName?: string;
   currentUserId: string;
   onChange: (p: Partial<Row>) => void;
 }) {
   const name = row.title.trim() || `Task ${index + 1}`;
   const flagId = useId();
+  // (0058: someone who can't see the project: the task would be yours instead)
+  const blind = row.assigneeId && row.assigneeId !== currentUserId && !members.some((m) => m.id === row.assigneeId)
+    ? everyone.find((m) => m.id === row.assigneeId) : undefined;
   return (
     <li className="kext-row" data-off={!row.include || undefined} title={row.note}>
       <span className="kext-check">
@@ -331,14 +343,18 @@ function ReviewRow({ row, index, members, currentUserId, onChange }: {
           <span className="kext-field">
             <Icon name="user" size={14} sw={1.75} />
             <select className="kext-select" value={row.assigneeId ?? ""} aria-label={`Assignee for “${name}”`}
-              aria-describedby={row.unknownName && !row.assigneeId ? flagId : undefined}
+              aria-describedby={(row.unknownName && !row.assigneeId) || blind ? flagId : undefined}
               onChange={(e) => onChange({ assigneeId: e.target.value || undefined })}>
               <option value="">Unassigned</option>
+              {blind && <option value={blind.id}>{blind.name}</option>}
               {members.map((m) => <option key={m.id} value={m.id}>{m.id === currentUserId ? `${m.name} (me)` : m.name}</option>)}
             </select>
           </span>
           {row.unknownName && !row.assigneeId && (
             <span className="kext-flag" id={flagId}>{row.unknownName} · Not in this workspace</span>
+          )}
+          {blind && (
+            <span className="kext-flag" id={flagId}>{blind.name} can't see {projectName ?? "this project"} · It'll be yours</span>
           )}
           <DateChip value={row.dueDate} time={row.dueTime} withTime size="sm" label={`Due date for “${name}”`}
             placeholder="Add date" parse={(s) => parseDateText(s)}

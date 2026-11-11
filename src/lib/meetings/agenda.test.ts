@@ -264,6 +264,16 @@ describe("project access (0058, D17): an agenda carries only what everyone it's 
       goals: [goal({ id: "g-pay", name: "Settle pay bands", projectId: "pp", due: "2026-11-01" })] }));
     expect(lead.goals.map((x) => x.id)).toEqual([]);
   });
+  it("work left in a project that isn't loaded (binned or deleted for good: a real project's id) stays off; a loose task stays on", () => {
+    const gone = "5f5f5f5f-1111-4222-8333-444444444444";
+    const stray = [task({ id: "stray", projectId: gone, assigneeId: "max", status: "progress", title: "Acme price: 4.2m" }), task({ id: "loose", projectId: "p-personal", assigneeId: "max", status: "progress" })];
+    const team = agendaFacts(input({ workspaces: [gated[0]], tasks: [...TASKS, ...stray], projects }));
+    expect(ids(team)).not.toContain("stray");
+    expect(ids(team)).toContain("loose");
+    expect(forAudience(input({ preset: "leadership", workspaces: [gated[0]], tasks: [...TASKS, ...stray], projects })).tasks.map((t) => t.id)).not.toContain("stray");
+    // (switched off, as before)
+    expect(ids(agendaFacts(input({ tasks: [...TASKS, ...stray], projects })))).toContain("stray");
+  });
   it("with project access off, nothing is left out", () => {
     const all = input({ tasks: [...TASKS, ...secret], projects });
     expect(forAudience(all)).toBe(all);

@@ -248,11 +248,17 @@ export function seesCount(project: Project, ctx: AccessCtx, visibility: ProjectV
     && rankCore(true, m.role, visibility, project.ownerId === m.userId, memberRole(ctx, project.id, m.userId!)) >= 1).length;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** A meeting's agenda reaches everyone it's for (D17): a team meeting takes only Whole workspace
  *  projects, a leadership one Whole workspace and Members only. Private projects never go on an
- *  agenda. With project access off (or a loose row) everything is open. */
-export function audienceOpen(preset: "team" | "leadership", ws: Pick<Workspace, "projectAccess"> | undefined, project: Pick<Project, "visibility"> | undefined): boolean {
-  if (!accessOn(ws) || !project) return true;
+ *  agenda. With project access off (or a loose row) everything is open. `projectId`: a task's own
+ *  project id, for when `project` isn't loaded: a real project's id that isn't here (deleted, to the
+ *  bin or for good, or out of your sight) is closed, as the server judges it by what it had; only a
+ *  loose one (no real project) is open. */
+export function audienceOpen(preset: "team" | "leadership", ws: Pick<Workspace, "projectAccess"> | undefined, project: Pick<Project, "visibility"> | undefined, projectId?: string | null): boolean {
+  if (!accessOn(ws)) return true;
+  if (!project) return !(projectId && UUID_RE.test(projectId));
   const v = visibilityOf(project);
   return v === "workspace" || (preset === "leadership" && v === "members");
 }

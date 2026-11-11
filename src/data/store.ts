@@ -924,26 +924,43 @@ async function upsertTaskRows(client: SupabaseClient, rows: Record<string, unkno
   }
   throw new Error("createTasksBatch: could not persist after stripping unknown columns");
 }
-/* 0058: the workspaces where project access is on and you aren't the owner. A task UPDATE there that
-   matches no row is the server refusing it (you can view the project, but not change it), so it's
-   said and undone, never shown as saved. Everywhere else an update is sent exactly as before. */
-let accessGatedWs = new Set<string>();
+/* 0058: where a task UPDATE or DELETE that matches no row may be the server refusing it (you can view the
+   project, but not change it): every team workspace you don't own, once 0058 is in. Not only where this tab
+   last saw the switch on: it may have gone on, or your rights narrowed, since (an edit queued offline is
+   replayed on reconnect before the new load says so, and a reopen offline restores a snapshot). Such a
+   write reads its row back, and one that changed nothing while the row is still there to read is refused
+   (42501): said and undone, or parked from the queue, never acked as saved. A task whose workspace isn't
+   known here is read back too. Personal tasks, your own workspaces' and everything before 0058 are sent
+   exactly as before. */
+let accessOwnedWs = new Set<string>();
 /** each loaded (or created) task's workspace, for that test */
 const taskWsById = new Map<string, string | null>();
+function noteAccessGate(uid: string, workspaces: Workspace[], members: WorkspaceMember[], tasks: [string, string | null][]): void {
+  accessOwnedWs = new Set(workspaces.filter((w) => !!w.id && (w.ownerId === uid
+    || members.find((m) => m.workspaceId === w.id && m.userId === uid && m.status === "active")?.role === "owner")).map((w) => w.id!));
+  taskWsById.clear();
+  tasks.forEach(([id, ws]) => taskWsById.set(id, ws));
+}
+function writeGated(id: string): boolean {
+  if (!accessSchema()) return false;
+  if (!taskWsById.has(id)) return true;
+  const ws = taskWsById.get(id);
+  return !!ws && !accessOwnedWs.has(ws);
+}
+/** (a gated write that matched nothing) still there for you to read: refused. One that's gone, or out of sight, is as before. */
+async function refusedIfReadable(client: SupabaseClient, id: string): Promise<void> {
+  const { data: seen } = await client.from("tasks").select("id").eq("id", id).maybeSingle();
+  if (seen) throw Object.assign(new Error("You can view this project, but not change it."), { code: "42501" });
+}
 async function updateTaskRow(client: SupabaseClient, id: string, patch: Partial<Task>): Promise<void> {
   let row = patchToRow(patch);
-  const ws = taskWsById.get(id);
-  const gated = !!ws && accessGatedWs.has(ws);
+  const gated = writeGated(id);
   for (let i = 0; i < 8 && Object.keys(row).length; i++) {
     const { data, error } = gated
       ? await client.from("tasks").update(row).eq("id", id).select("id")
       : await client.from("tasks").update(row).eq("id", id);
     if (!error) {
-      if (gated && !((data as { id: string }[] | null) ?? []).length) {
-        // still there for you to read: refused (one that's gone, or out of sight, is as before)
-        const { data: seen } = await client.from("tasks").select("id").eq("id", id).maybeSingle();
-        if (seen) throw Object.assign(new Error("You can view this project, but not change it."), { code: "42501" });
-      }
+      if (gated && !((data as { id: string }[] | null) ?? []).length) await refusedIfReadable(client, id);
       if ("workspaceId" in patch) taskWsById.set(id, patch.workspaceId ?? null);
       return;
     }
@@ -953,6 +970,12 @@ async function updateTaskRow(client: SupabaseClient, id: string, patch: Partial<
   }
 }
 async function deleteTaskRow(client: SupabaseClient, id: string): Promise<void> {
+  if (writeGated(id)) {
+    const { data, error } = await client.from("tasks").delete().eq("id", id).select("id");
+    if (error) throw error;
+    if (!((data as { id: string }[] | null) ?? []).length) await refusedIfReadable(client, id);
+    return;
+  }
   const { error } = await client.from("tasks").delete().eq("id", id);
   if (error) throw error;
 }
@@ -1725,8 +1748,10 @@ export const store = {
     scopeQueueTo(uid);
     const restore = (snap: Snapshot): Bootstrap => {
       setReferenceData(snap.ref);
-      // (0058: the last load had project access's table, so its locks and roles still apply offline)
+      // (0058: the last load had project access's table, so its locks and roles still apply offline, and an
+      // edit queued now is read back when it's sent)
       if (snap.boot.projectMembers !== undefined) noteAccessSchema(snap.boot.projectMembers !== null);
+      noteAccessGate(uid, snap.boot.workspaces ?? [], snap.boot.members ?? [], (snap.boot.tasks ?? []).map((t) => [t.id, t.workspaceId ?? null]));
       // their plans as last loaded on this device, with any unsaved writes
       restorePlanState(uid);
       mirrorLandedBeforePlans(uid);
@@ -1917,11 +1942,8 @@ export const store = {
       mirrorLandedBeforePlans(uid);
     }
 
-    // 0058: where an update that matches nothing is a refusal (the switch on, and not your workspace)
-    accessGatedWs = new Set(workspaces.filter((w) => !!w.id && w.projectAccess?.on
-      && members.find((m) => m.workspaceId === w.id && m.userId === uid && m.status === "active")?.role !== "owner").map((w) => w.id!));
-    taskWsById.clear();
-    taskRows.forEach((r) => taskWsById.set(r.id, r.workspace_id ?? null));
+    // 0058: where a write that matches nothing may be a refusal (a team workspace that isn't yours)
+    noteAccessGate(uid, workspaces, members, taskRows.map((r) => [r.id, r.workspace_id ?? null]));
 
     const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
     setReferenceData(ref);
@@ -2437,8 +2459,21 @@ export const store = {
     return typeof data === "number" ? data : grants.length;
   },
 
-  /** 0058: the projects pending invites bring (owners and admins read them; anyone else reads none).
-   *  null before 0058. */
+  /** 0058: take one project off a pending invite (that project's managers: remove_invite_project). */
+  async removeInviteProject(memberId: string, projectId: string): Promise<void> {
+    if (!supabase) {
+      const gs = demoInviteGrants.get(memberId);
+      if (!gs?.some((g) => g.projectId === projectId)) throw accessFailure({ message: "not found" });
+      demoInviteGrants.set(memberId, gs.filter((g) => g.projectId !== projectId));
+      return;
+    }
+    offlineGuard();
+    const { error } = await supabase.rpc("remove_invite_project", { p_member: memberId, p_project: projectId });
+    if (error) throw accessFailure(error);
+  },
+
+  /** 0058: the projects pending invites bring (owners and admins read the ones on projects they can see,
+   *  each project's managers its own; anyone else reads none). null before 0058. */
   async listInviteGrants(): Promise<InviteGrant[] | null> {
     if (!supabase) return [...demoInviteGrants].flatMap(([memberId, gs]) => gs.map((g) => ({ memberId, projectId: g.projectId, role: g.role })));
     if (!accessSchema() || accessFnsGone()) return null;

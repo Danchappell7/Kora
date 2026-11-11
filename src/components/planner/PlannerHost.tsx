@@ -5,7 +5,7 @@
    App never pulls lib/projectPlanner into the first download. App
    gets the result and the toast's words in onCreated.
    ============================================================ */
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { MEMBERS } from "../../data/data";
 import type { AppliedProjectPlan, Project, Section, Task, WorkspaceMember } from "../../data/types";
 import { plannerDeps, plannerPeople, plannerResultMessage, type PlannerStore } from "../../lib/projectPlanner";
@@ -28,11 +28,25 @@ export interface PlannerHostProps {
   store: PlannerStore;
   onClose: () => void;
   onCreated: (r: AppliedProjectPlan, message: { tone: "success" | "info" | "error"; text: string }) => void;
+  /** 0058, project access on: `canSee` (adding to a project) keeps the plan to the people who can see it;
+   *  `addPeople` (a new project that starts Members only or Private) makes the people it gives work to its
+   *  people; `canAssign` is the last word on who may be given a task (lib/projectPlanner plannerDeps) */
+  access?: { canSee?: (userId: string) => boolean; addPeople?: boolean; canAssign?: (project: Project, userId: string) => boolean };
 }
 
-export function PlannerHost({ open, mode, workspaceId, workspaceName, project, sections, wsMembers, tasks, currentUserId, aiEnabled, initialGoal, store, onClose, onCreated }: PlannerHostProps) {
-  const people = useMemo(() => plannerPeople(MEMBERS, wsMembers, workspaceId, currentUserId), [wsMembers, workspaceId, currentUserId]);
-  const deps = useMemo(() => plannerDeps(store, currentUserId), [store, currentUserId]);
+export function PlannerHost({ open, mode, workspaceId, workspaceName, project, sections, wsMembers, tasks, currentUserId, aiEnabled, initialGoal, store, onClose, onCreated, access }: PlannerHostProps) {
+  // (the host's functions are new each render: the lists below change only when who can see it does)
+  const canSee = access?.canSee;
+  const hidden = canSee ? wsMembers.filter((m) => m.workspaceId === workspaceId && m.userId && m.userId !== currentUserId && !canSee(m.userId)).map((m) => m.userId!).sort().join(",") : "";
+  const people = useMemo(() => {
+    const all = plannerPeople(MEMBERS, wsMembers, workspaceId, currentUserId);
+    if (!hidden) return all;
+    const out = new Set(hidden.split(","));
+    return { members: all.members.filter((m) => !out.has(m.id)), guestIds: all.guestIds.filter((g) => !out.has(g)) };
+  }, [wsMembers, workspaceId, currentUserId, hidden]);
+  const addPeople = !!access?.addPeople;
+  const canAssignRef = useRef(access?.canAssign); canAssignRef.current = access?.canAssign;
+  const deps = useMemo(() => plannerDeps(store, currentUserId, { addPeople, canAssign: (p, u) => canAssignRef.current?.(p, u) ?? true }), [store, currentUserId, addPeople]);
   return (
     <ProjectPlanner open={open} mode={mode} workspaceId={workspaceId} workspaceName={workspaceName}
       project={project} sections={sections} members={people.members} guestIds={people.guestIds}

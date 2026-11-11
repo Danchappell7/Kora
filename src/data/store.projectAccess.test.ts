@@ -61,7 +61,7 @@ function fakeClient(db0: Db) {
     if (c.table === "tasks") {
       if (c.op === "select" && c.single) return { data: { id: T1 }, error: null };
       if (c.op === "select") return { data: [{ id: T1, title: "Cap table", description: "", status: "todo", priority: "medium", project_id: P1, assignee_id: ME, workspace_id: WS, tags: [], focus_min: 30, comments: 0, ai_score: 0, subtasks: [], task_dependencies: [] }], error: null };
-      if (c.op === "update") return { data: c.returning ? (refuseUpdates ? [] : [{ id: T1 }]) : null, error: null };
+      if (c.op === "update" || c.op === "delete") return { data: c.returning ? (refuseUpdates ? [] : [{ id: T1 }]) : null, error: null };
     }
     return { data: c.op === "select" && !c.single ? [] : null, error: null };
   };
@@ -101,16 +101,18 @@ function fakeClient(db0: Db) {
 async function load(fake: ReturnType<typeof fakeClient>) {
   vi.resetModules();
   vi.doMock("../lib/supabase", () => ({ supabase: fake.client, isSupabaseConfigured: true }));
-  vi.doMock("../lib/monitoring", () => ({ reportError: vi.fn(), initMonitoring() {}, setUserContext() {}, monitoringEnabled: false }));
+  vi.doMock("../lib/monitoring", () => ({ reportError: vi.fn(), reportOnce: vi.fn(), initMonitoring() {}, setUserContext() {}, monitoringEnabled: false }));
   const store = (await import("./store")).store;
   const access = await import("../lib/projectAccess");
   const data = await import("./data");
-  return { store, access, data };
+  const queue = (await import("../lib/offlineQueue")).offlineQueue;
+  return { store, access, data, queue };
 }
+const setOnline = (on: boolean) => Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => on });
 const rpcs = (fake: ReturnType<typeof fakeClient>) => fake.calls.filter((c) => c.op === "rpc" && c.table !== "claim_invites").map((c) => c.table);
 
-beforeEach(() => { localStorage.clear(); });
-afterEach(() => { vi.doUnmock("../lib/supabase"); vi.doUnmock("../lib/monitoring"); });
+beforeEach(() => { localStorage.clear(); setOnline(true); });
+afterEach(() => { setOnline(true); vi.doUnmock("../lib/supabase"); vi.doUnmock("../lib/monitoring"); });
 
 describe("at 0050 (live today): nothing new is read, sent or shown", () => {
   it("bootstrap: no access settings, no members (null, asked once), and the switch reads as off", async () => {
@@ -140,6 +142,8 @@ describe("at 0050 (live today): nothing new is read, sent or shown", () => {
     expect(made.name).toBe("New");
     await store.updateTask(T1, { title: "Renamed" });
     expect(fake.calls.find((c) => c.table === "tasks" && c.op === "update")?.returning).toBeFalsy();
+    await store.deleteTask(T1);
+    expect(fake.calls.find((c) => c.table === "tasks" && c.op === "delete")?.returning).toBeFalsy();
     expect(rpcs(fake).filter((n) => n.includes("project"))).toEqual(["set_project_member"]);   // the one person asked for, refused quietly
   });
 
@@ -176,8 +180,10 @@ describe("at 0058 with the switch off", () => {
     expect(fake.calls.filter((c) => c.op === "rpc" && c.table !== "claim_invites").map((c) => [c.table, (c.payload as Row).p_user])).toEqual([["set_project_member", "new-person"], ["remove_project_member", "old-person"]]);
     await store.createProject({ name: "New", emoji: "", color: "c", workspaceId: WS, visibility: "private" }, ME);
     expect(fake.calls.find((c) => c.table === "projects" && c.op === "insert")?.payload).toMatchObject({ visibility: "private" });
+    // (a team task's update reads its row back once 0058 is in, whatever this tab last saw of the switch: it may
+    // have gone on since. A member's goes through as before; one the server refuses is said, never shown as saved)
     await store.updateTask(T1, { title: "Renamed" });
-    expect(fake.calls.find((c) => c.table === "tasks" && c.op === "update")?.returning).toBeFalsy();
+    expect(fake.calls.find((c) => c.table === "tasks" && c.op === "update")?.returning).toBe(true);
   });
 });
 
@@ -258,11 +264,60 @@ describe("at 0058 with the switch on", () => {
     await expect(store.updateTask(T1, { title: "Refused" })).rejects.toMatchObject({ code: "42501", message: "You can view this project, but not change it." });
   });
 
+  it("a task delete the server refuses (no row back, but you can still read it) throws 42501", async () => {
+    const fake = fakeClient("on");
+    const { store } = await load(fake);
+    await store.bootstrap({ id: ME });
+    fake.refuse(true);
+    await expect(store.deleteTask(T1)).rejects.toMatchObject({ code: "42501" });
+    expect(fake.calls.filter((c) => c.table === "tasks" && c.op === "delete").slice(-1)[0]?.returning).toBe(true);
+  });
+
+  it("reopened offline (the snapshot restored), an edit queued then is read back when it's sent: refused, it's kept, never acked as saved", async () => {
+    // an earlier visit online leaves the snapshot on this device
+    await (await load(fakeClient("on"))).store.bootstrap({ id: ME });
+    // reopened offline: a fresh start restores it
+    const fake = fakeClient("on");
+    setOnline(false);
+    const { store, queue } = await load(fake);
+    expect((await store.bootstrap({ id: ME })).tasks.some((t) => t.id === T1)).toBe(true);
+    await store.updateTask(T1, { title: "Offline edit" });
+    expect(queue.size()).toBe(1);
+    // made a viewer meanwhile: back online, the server changes nothing
+    setOnline(true);
+    fake.refuse(true);
+    const synced = await store.flushQueue();
+    expect(fake.calls.filter((c) => c.table === "tasks" && c.op === "update").slice(-1)[0]?.returning).toBe(true);
+    expect(synced).toBe(0);
+    expect(queue.size() + queue.deadLetters().length).toBe(1);
+  });
+
+  it("a tab that loaded with the switch off reads a queued edit back too (the switch may have gone on while it was offline)", async () => {
+    const fake = fakeClient("off");
+    const { store, queue } = await load(fake);
+    await store.bootstrap({ id: ME });
+    setOnline(false);
+    await store.updateTask(T1, { title: "Offline edit" });
+    setOnline(true);
+    fake.upgrade("on");
+    fake.refuse(true);
+    expect(await store.flushQueue()).toBe(0);
+    expect(queue.size() + queue.deadLetters().length).toBe(1);
+  });
+
   it("what pending invites bring is read for their profiles (a role it doesn't know is left out)", async () => {
     const fake = fakeClient("on");
     const { store } = await load(fake);
     await store.bootstrap({ id: ME });
     expect(await store.listInviteGrants()).toEqual([{ memberId: "wm-jo", projectId: P1, role: "commenter" }]);
+  });
+
+  it("a project's manager takes a project off a pending invite (remove_invite_project)", async () => {
+    const fake = fakeClient("on");
+    const { store } = await load(fake);
+    await store.bootstrap({ id: ME });
+    await store.removeInviteProject("wm-jo", P1);
+    expect(fake.calls.find((c) => c.table === "remove_invite_project")?.payload).toEqual({ p_member: "wm-jo", p_project: P1 });
   });
 
   it("the switch's call maps its answer; a refusal is typed", async () => {

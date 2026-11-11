@@ -1223,8 +1223,11 @@ export async function applyProjectPlan(
     report({ step: "project", done: 0, total: 1 });
     const name = planLine(draft.name, PLAN_PROJECT_NAME_MAX) || "New project";
     const description = planText(opts.goal, 1000);
+    // (the people it gives work to: a project that starts Members only or Private takes them on, 0058)
+    const memberIds = [...new Set(planTasks.map((t) => t.assigneeId).filter((u): u is string => !!u && u !== opts.currentUserId))];
     try {
-      project = await deps.createProject({ name, emoji: draft.emoji, color: spectrumColor(draft.hue), workspaceId: opts.workspaceId, ...(description ? { description } : {}) });
+      project = await deps.createProject({ name, emoji: draft.emoji, color: spectrumColor(draft.hue), workspaceId: opts.workspaceId, ...(description ? { description } : {}),
+        ...(memberIds.length ? { memberIds } : {}) });
     } catch (e) {
       throw new PlanApplyError("project", `Couldn't create “${name}”, so nothing was made. ${errText(e) ? `(${errText(e)})` : ""}`.trim());
     }
@@ -1301,7 +1304,8 @@ export async function applyProjectPlan(
       id, title: planLine(t.title, PLAN_LIMITS.title), description: planText(t.description, PLAN_LIMITS.description),
       status: "todo", priority: t.isMilestone ? "high" : "medium",
       projectId: project.id, workspaceId: ws,
-      assigneeId: t.assigneeId ?? "",
+      // (0058: never someone who can't see the project: the server would refuse the batch, and the plan be undone)
+      assigneeId: t.assigneeId && deps.canAssign && !deps.canAssign(project, t.assigneeId) ? opts.currentUserId : t.assigneeId ?? "",
       ...(g.section && sectionId.get(g.section.key) ? { sectionId: sectionId.get(g.section.key) } : {}),
       dueDate: due,
       ...(!t.isMilestone && start < due ? { startDate: start } : {}),
@@ -1396,7 +1400,7 @@ export async function removePlanLeftovers(left: PlanLeftovers, deps: PlanApplyDe
 
 /** The store-shaped create paths the planner needs (data/store's `store` fits). */
 export interface PlannerStore {
-  createProject(input: { name: string; emoji: string; color: string; workspaceId: string | null }, userId: string): Promise<Project>;
+  createProject(input: { name: string; emoji: string; color: string; workspaceId: string | null; memberIds?: string[] }, userId: string): Promise<Project>;
   updateProject?(id: string, patch: { description?: string }): Promise<void>;
   createSection(input: { projectId: string; workspaceId: string | null; name: string; position?: number }, userId: string): Promise<Section>;
   createTasksBatch(tasks: Task[], userId: string): Promise<Task[]>;
@@ -1407,11 +1411,15 @@ export interface PlannerStore {
 }
 
 /** PlanApplyDeps over the store, as the signed-in person: `plannerDeps(store, userId)`.
- *  A description is a nice-to-have (the project stands without it); task deletes run a few at a time. */
-export function plannerDeps(s: PlannerStore, userId: string): PlanApplyDeps {
+ *  A description is a nice-to-have (the project stands without it); task deletes run a few at a time.
+ *  `access` (0058, project access on): `addPeople` gives a new project the people the plan gives work to (it
+ *  starts Members only or Private, so they'd otherwise not see their tasks); `canAssign` says who may be given one. */
+export function plannerDeps(s: PlannerStore, userId: string, access?: { addPeople?: boolean; canAssign?: (project: Project, userId: string) => boolean }): PlanApplyDeps {
   return {
+    ...(access?.canAssign ? { canAssign: access.canAssign } : {}),
     createProject: async (input) => {
-      const p = await s.createProject({ name: input.name, emoji: input.emoji, color: input.color, workspaceId: input.workspaceId }, userId);
+      const p = await s.createProject({ name: input.name, emoji: input.emoji, color: input.color, workspaceId: input.workspaceId,
+        ...(access?.addPeople && input.memberIds?.length ? { memberIds: input.memberIds } : {}) }, userId);
       if (!input.description || !s.updateProject) return p;
       try { await s.updateProject(p.id, { description: input.description }); return { ...p, description: input.description }; }
       catch { return p; }

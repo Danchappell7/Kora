@@ -68,10 +68,12 @@ function TagPicker({ value, tags, onChange, label, disabled = false }: { value: 
   );
 }
 
-export function AutomationsView({ rules, projects, members, sections, tags, onCreate, onUpdate, onDelete, projectId, readOnly = false, viewOnly }: {
+export function AutomationsView({ rules, projects, members, membersFor, sections, tags, onCreate, onUpdate, onDelete, projectId, readOnly = false, viewOnly }: {
   rules: AutomationRule[];
   projects: Project[];
   members: { id: string; name: string }[];
+  /** 0058: who a rule may assign in a project (with project access on, the people who can see it); default `members` */
+  membersFor?: (projectId: string) => { id: string; name: string }[];
   sections: Section[];
   /** tag registry (id → label/colour); defaults to the live TAGS reference data */
   tags?: Record<string, TagDef>;
@@ -94,8 +96,9 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
   const [trigger, setTrigger] = useState<AutomationRule["trigger"]>("task_created");
   const add = () => { const n = name.trim(); if (n && pid) { onCreate(pid, n, [], trigger); setName(""); setAdding(false); } };
   const firstTag = Object.entries(tagMap).sort((a, b) => a[1].label.localeCompare(b[1].label))[0]?.[0] ?? "";
-  const defaultValue = (type: AutomationActionType): string =>
-    type === "set_priority" ? "medium" : type === "set_assignee" ? (members[0]?.id ?? "") : type === "add_tag" ? firstTag : "";
+  const peopleOf = (pid: string) => (membersFor ? membersFor(pid) : members);
+  const defaultValue = (type: AutomationActionType, pid: string): string =>
+    type === "set_priority" ? "medium" : type === "set_assignee" ? (peopleOf(pid)[0]?.id ?? "") : type === "add_tag" ? firstTag : "";
   const personName = (id: string) => members.find((m) => m.id === id)?.name ?? (getMember(id)?.name ? `${getMember(id)!.name} (former member)` : "(former member)");
   const ordered = useStableOrder(projectId ? rules.filter((r) => r.projectId === projectId) : rules);
   const canAdd = !readOnly && targets.length > 0 && !(projectId && viewOnly?.has(projectId));
@@ -136,6 +139,7 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
                 {ordered.map((rule) => {
                   const proj = getProject(rule.projectId) ?? realProjects.find((p) => p.id === rule.projectId);
                   const projSections = sections.filter((s) => s.projectId === rule.projectId);
+                  const people = peopleOf(rule.projectId);
                   const locked = readOnly || !!viewOnly?.has(rule.projectId);
                   const setActions = (actions: AutomationAction[]) => onUpdate(rule.id, { actions });
                   const setValue = (i: number, value: string) => setActions(rule.actions.map((x, j) => j === i ? { ...x, value } : x));
@@ -182,8 +186,8 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
                               {a.type === "set_assignee" && (
                                 <select className="kpj-field" value={a.value} disabled={locked} onChange={(e) => setValue(i, e.target.value)} aria-label={`Person assigned by ${rule.name}`}>
                                   {!a.value && <option value="" disabled>Choose a person…</option>}
-                                  {a.value && !members.some((m) => m.id === a.value) && <option value={a.value}>{personName(a.value)}</option>}
-                                  {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                  {a.value && !people.some((m) => m.id === a.value) && <option value={a.value}>{personName(a.value)}{members.some((m) => m.id === a.value) ? ` (can't see ${proj?.name ?? "this project"}: not assigned)` : ""}</option>}
+                                  {people.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                                 </select>
                               )}
                               {a.type === "set_section" && (
@@ -205,7 +209,7 @@ export function AutomationsView({ rules, projects, members, sections, tags, onCr
                           <div className="kpj-rule-add">
                             {(Object.keys(ACTION_LABEL) as AutomationActionType[]).map((type) => (
                               <button key={type} type="button" className="kpj-chip" aria-label={`Add action “${ACTION_LABEL[type]}” to ${rule.name}`}
-                                onClick={() => setActions([...rule.actions, { type, value: defaultValue(type) }])}>
+                                onClick={() => setActions([...rule.actions, { type, value: defaultValue(type, rule.projectId) }])}>
                                 <Icon name="plus" size={14} sw={1.75} /> {ACTION_LABEL[type]}
                               </button>
                             ))}

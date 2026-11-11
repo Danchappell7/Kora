@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import MATRIX from "./projectAccessMatrix.json";
 import {
-  accessErrorText, accessOn, accessSchema, canManagePeople, canSetVisibility, copyPeople, copyRoles, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
+  accessErrorText, accessOn, accessSchema, audienceOpen, canManagePeople, canSetVisibility, copyPeople, copyRoles, editableProjects, keepsEdit, mayMakePrivate, narrowingLoss,
   noteAccessSchema, peopleFor, projectRank, rankCore, rankFor, resetAccessSchema, seesCount, taskRank, turnOnPreview, type AccessCtx,
 } from "./projectAccess";
 import type { Project, ProjectMember, ProjectVisibility, Workspace, WorkspaceMember } from "../data/types";
@@ -132,6 +132,17 @@ describe("who manages a project's people and visibility", () => {
 });
 
 describe("people, projects and previews", () => {
+  it("audienceOpen: a task's project that isn't loaded (a real project's id: binned, deleted for good, out of sight) is closed; a loose one is open", () => {
+    noteAccessSchema(true);
+    const onWs = { projectAccess: { on: true, defaultVisibility: "workspace" as const, membersMayMakePrivate: false } };
+    const gone = "5f5f5f5f-1111-4222-8333-444444444444";
+    expect(audienceOpen("team", onWs, undefined, gone)).toBe(false);
+    expect(audienceOpen("leadership", onWs, undefined, gone)).toBe(false);
+    expect(audienceOpen("team", onWs, undefined, "p-personal")).toBe(true);
+    expect(audienceOpen("team", onWs, undefined)).toBe(true);
+    expect(audienceOpen("team", onWs, { visibility: "workspace" }, gone)).toBe(true);
+    expect(audienceOpen("team", { projectAccess: { ...onWs.projectAccess, on: false } }, undefined, gone)).toBe(true);
+  });
   it("peopleFor lists the active people who can see the project", () => {
     noteAccessSchema(true);
     const ids = (p: string, me = "o", min: 1 | 2 | 3 = 1) => peopleFor(p, world(true, me), min).map((m) => m.userId).sort();

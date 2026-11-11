@@ -629,7 +629,10 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   onInviteOpened?: () => void;
   /** 0058: with project access on, a guest's invite chooses the projects they'll see (the projects you can
    *  manage); `preset`: chosen already (About › People & access › Invite a guest). Omit: not asked. */
-  inviteProjects?: { projects: { id: string; name: string; emoji?: string }[]; preset?: string[]; onSet: (memberId: string, projectIds: string[]) => Promise<void>;
+  inviteProjects?: { projects: { id: string; name: string; emoji?: string }[]; preset?: string[];
+    /** adds these projects to what the invite brings (a pending invite refreshed keeps what it had); answers
+     *  every project it brings now, when it knows */
+    onSet: (memberId: string, projectIds: string[]) => Promise<string[] | void>;
     /** invited from a project's People & access: the way back to it, once the invite is out */
     back?: { label: string; go: () => void } };
   /** 0058: a person's projects in their profile (owners and admins, project access on) */
@@ -648,9 +651,10 @@ export function TeamView({ tasks, workspace, workspaces = [], members, currentUs
   const giveProjects = async (memberId: string | undefined): Promise<string> => {
     if (!askProjects || !memberId || !guestProjects.length) return "";
     try {
-      await inviteProjects!.onSet(memberId, guestProjects);
-      // (said, so the invite's projects can be checked: their profile lists them too)
-      const names = guestProjects.map((id) => inviteProjects!.projects.find((p) => p.id === id)?.name).filter((x): x is string => !!x);
+      const all = await inviteProjects!.onSet(memberId, guestProjects);
+      // (said, so the invite's projects can be checked: their profile lists them too; a refreshed invite
+      // brings what it already did as well)
+      const names = (all ?? guestProjects).map((id) => inviteProjects!.projects.find((p) => p.id === id)?.name).filter((x): x is string => !!x);
       return names.length ? ` They'll see ${names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0]} once they join.` : "";
     }
     catch { return " Their projects couldn't be saved: add them in each project's About tab."; }

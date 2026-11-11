@@ -448,7 +448,10 @@ describe("applyProjectPlan", () => {
     const d = draft();
     const progress: string[] = [];
     const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me", goal: "Launch our mobile app" }, deps, (p) => progress.push(`${p.step}:${p.done}/${p.total}`));
-    expect(deps.createProject).toHaveBeenCalledWith({ name: d.name, emoji: "🚀", color: expect.stringContaining("oklch("), workspaceId: "ws", description: "Launch our mobile app" });
+    // (with the people it gives work to: a project that starts Members only or Private takes them on, 0058)
+    const givenTo = [...new Set(d.tasks.map((t) => t.assigneeId).filter((u): u is string => !!u && u !== "me"))];
+    expect(givenTo.length).toBeGreaterThan(0);
+    expect(deps.createProject).toHaveBeenCalledWith({ name: d.name, emoji: "🚀", color: expect.stringContaining("oklch("), workspaceId: "ws", description: "Launch our mobile app", memberIds: givenTo });
     expect(calls.filter((c) => c.startsWith("section:")).length).toBe(d.sections.length);
     expect(calls.filter((c) => c.startsWith("tasks:"))).toEqual([`tasks:${d.tasks.length}`]);
     expect(r.rolledBack).toBe(false);
@@ -476,6 +479,32 @@ describe("applyProjectPlan", () => {
     expect(progress).toContain(`tasks:0/${d.tasks.length}`);
     expect(last(progress)).toBe("done:1/1");
     expect(progress).toContain(`dependencies:${r.dependencies}/${r.dependencies}`);
+  });
+
+  it("0058: someone the host says can't see the project never gets a task (it's yours): the server would refuse the batch", async () => {
+    const d = draft();
+    const blind = d.tasks.map((t) => t.assigneeId).find((u): u is string => !!u && u !== "me")!;
+    const { deps } = makeDeps({ canAssign: vi.fn((p: Project, u: string) => p.id === "p-new" && u !== blind) });
+    const r = await applyProjectPlan(d, { workspaceId: "ws", currentUserId: "me" }, deps);
+    const batch = (deps.createTasks as ReturnType<typeof vi.fn>).mock.calls[0][0] as Task[];
+    expect(batch.some((t) => t.assigneeId === blind)).toBe(false);
+    const count = (list: { assigneeId?: string | null }[], u: string) => list.filter((t) => t.assigneeId === u).length;
+    expect(count(batch, "me")).toBe(count(d.tasks, "me") + count(d.tasks, blind));
+    expect(r.rolledBack).toBe(false);
+  });
+
+  it("plannerDeps (0058): a new project takes on the plan's people only when asked (it starts Members only or Private); canAssign passes through", async () => {
+    const made: unknown[] = [];
+    const store = {
+      createProject: vi.fn(async (i: { name: string; workspaceId: string | null; memberIds?: string[] }) => { made.push(i.memberIds ?? null); return { id: "p1", emoji: "", color: "c", ...i }; }),
+      createSection: vi.fn(), createTasksBatch: vi.fn(), addDependency: vi.fn(), deleteProject: vi.fn(), deleteTask: vi.fn(), deleteSection: vi.fn(),
+    };
+    await plannerDeps(store, "me").createProject({ name: "X", emoji: "", color: "c", workspaceId: "ws", memberIds: ["maya"] });
+    await plannerDeps(store, "me", { addPeople: true }).createProject({ name: "X", emoji: "", color: "c", workspaceId: "ws", memberIds: ["maya"] });
+    expect(made).toEqual([null, ["maya"]]);
+    const canAssign = () => false;
+    expect(plannerDeps(store, "me", { canAssign }).canAssign).toBe(canAssign);
+    expect(plannerDeps(store, "me").canAssign).toBeUndefined();
   });
 
   it("the host may give the tasks new ids: links follow them", async () => {

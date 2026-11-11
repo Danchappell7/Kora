@@ -161,7 +161,7 @@ export function forAudience(input: AgendaInput): AgendaInput {
   const wsOf = (id: string | null | undefined) => (id ? input.workspaces.find((w) => w.id === id) : undefined);
   if (!input.workspaces.some((w) => accessOn(w))) return input;
   const projectOf = (wsId: string | null | undefined, projectId: string) => input.projects.find((p) => p.id === projectId && (p.workspaceId ?? null) === (wsId ?? null));
-  const open = (wsId: string | null | undefined, projectId: string) => audienceOpen(input.preset, wsOf(wsId), projectOf(wsId, projectId));
+  const open = (wsId: string | null | undefined, projectId: string) => audienceOpen(input.preset, wsOf(wsId), projectOf(wsId, projectId), projectId);
   const openTask = (t: Task) => open(t.workspaceId, t.projectId);
   return {
     ...input,

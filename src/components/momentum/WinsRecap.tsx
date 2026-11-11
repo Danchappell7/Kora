@@ -97,7 +97,7 @@ export function WinsRecap({ now, currentUserId, tasks, seen, projects, members, 
   /* what's shared: this workspace's finished tasks and kudos only (never Personal, never another team's) */
   // 0058 (D18): the team channel gets only Whole workspace projects' wins where project access is on
   const wsRow = workspaceId ? WORKSPACES.find((w) => w.id === workspaceId) : undefined;
-  const teamOpen = (t: Task) => !accessOn(wsRow) || audienceOpen("team", wsRow, projects.find((p) => p.id === t.projectId && p.workspaceId === workspaceId));
+  const teamOpen = (t: Task) => !accessOn(wsRow) || audienceOpen("team", wsRow, projects.find((p) => p.id === t.projectId && p.workspaceId === workspaceId), t.projectId);
   const sharedText = () => {
     const ws = workspaceId;
     const scoped = ws
