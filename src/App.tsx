@@ -4395,8 +4395,9 @@ export default function App() {
   const currentUser = getMember(currentUserId);
   const wsKey = workspace ?? "personal";
   const canManageProject = (p: Project) => !activeReadOnly && projectRank(p.id, accessCtx) >= 3 && (isAdmin || p.ownerId === currentUserId || !p.ownerId);
-  // a project's board settings (WIP limits, project covers): its writers — everyone here but guests (the projects policies)
-  const canEditProjectBoard = (p: Project) => !activeReadOnly && !p.id.startsWith("tmp-");
+  // a project's board settings (WIP limits, project covers): its writers — everyone here but guests (the projects
+  // policies), and (0058) only on a project you can edit, as updateProject's denyEdit asks
+  const canEditProjectBoard = (p: Project) => !activeReadOnly && !p.id.startsWith("tmp-") && projectRank(p.id, accessCtx) >= 3;
   // where Plan's quick capture files a task (createFromPlan uses the same rule), so its preview agrees
   // 0058: where project access is on, new work goes only into projects you can edit (as before elsewhere)
   const wsGated = accessOn(workspaces.find((w) => w.id === workspace));

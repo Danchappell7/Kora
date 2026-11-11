@@ -3,6 +3,7 @@ import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { ToastProvider } from "../Toast";
 import { ListView, dropPosition, planDrop, dueDateForBucket } from "./ListView";
+import { BusinessChipsProvider } from "../businesses/Businesses";
 import { KANBO_TODAY, refreshClock, toLocalISO } from "../../data/data";
 import type { Task, Project } from "../../data/types";
 import type { GroupBy } from "../../app-types";
@@ -613,6 +614,30 @@ describe("ListView on phones: swipe and long press", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Undo/ }));
     expect(onPatch).toHaveBeenCalledWith("par", { projectId: "p-a", workspaceId: "w1", sectionId: "s-1" });
     expect(onPatch).toHaveBeenCalledWith("kid", { projectId: "p-a", workspaceId: "w1", sectionId: undefined });
+  });
+
+  it("0058: the sheet never offers a project you can only view, and a task there gets no sheet of changes it could only be refused", () => {
+    const projects = [
+      { id: "p-a", name: "Alpha", color: "#5b5bd6", workspaceId: "w1" },
+      { id: "p-b", name: "Beta", color: "#2a9d8f", workspaceId: "w1" },
+      { id: "p-view", name: "Fee review", color: "#2a9d8f", workspaceId: "w1" },
+    ] as Project[];
+    const t = mk({ id: "a1", title: "Plan the offsite", projectId: "p-a", workspaceId: "w1" });
+    const ro = mk({ id: "v1", title: "Compare fee bands", projectId: "p-view", workspaceId: "w1" });
+    const onPatch = vi.fn();
+    render(<ToastProvider><BusinessChipsProvider on={false} workspaces={[]} viewOnly={new Set(["p-view"])}>
+      <ListView {...base([t, ro], { onPatch, projects })} />
+    </BusinessChipsProvider></ToastProvider>);
+    const sheet = openSheet("Plan the offsite");
+    fireEvent.click(within(sheet).getByRole("button", { name: /^Move to project/ }));
+    const page = within(sheet).getByRole("group", { name: "Move “Plan the offsite” to a project" });
+    expect(within(page).getAllByRole("button").map((b) => b.textContent ?? "").some((x) => /Fee review/.test(x))).toBe(false);
+    expect(within(page).getByRole("button", { name: /Beta/ })).toBeInTheDocument();
+    fireEvent.keyDown(sheet, { key: "Escape" });
+    act(() => { vi.advanceTimersByTime(400); });
+    longPress(within(screen.getByRole("group", { name: "Compare fee bands" })).getByRole("button", { name: "Compare fee bands" }));
+    expect(screen.queryByRole("dialog", { name: "Actions for “Compare fee bands”" })).toBeNull();
+    expect(onPatch).not.toHaveBeenCalled();
   });
 
   it("the sheet deletes through the app (its toast has the Undo); the single-task path wins when given", () => {

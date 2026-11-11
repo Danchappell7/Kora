@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor, cleanup, act } from "@testing-library/react";
 import { BoardView, TimelineView, CalendarView, MatrixView, FilesView } from "./OtherViews";
+import { BusinessChipsProvider } from "../businesses/Businesses";
 import { store } from "../../data/store";
 import { KANBO_TODAY, toLocalISO } from "../../data/data";
 import { addDaysISO } from "./otherViewsLogic";
@@ -361,5 +362,41 @@ describe("FilesView", () => {
     await waitFor(() => expect(screen.getByText("No files yet")).toBeInTheDocument());
     expect(list).toHaveBeenCalledTimes(3);
     expect(list.mock.calls.every(([ids]) => ids.length <= 80)).toBe(true);
+  });
+});
+
+describe("0058: a task in a project you can only view, on a page you can otherwise change", () => {
+  // (App marks those projects through BusinessChipsProvider's viewOnly, on every page)
+  const wrap = (ui: React.ReactElement) => render(<BusinessChipsProvider on={false} workspaces={[]} viewOnly={new Set(["p-brand"])}>{ui}</BusinessChipsProvider>);
+  const mine = mk({ id: "mine", title: "Brief", dueDate: today, projectId: "p-launch" });
+  const theirs = mk({ id: "view", title: "Fee bands", dueDate: today, projectId: "p-brand" });
+
+  it("the calendar opens it but doesn't offer to drag it to another day", () => {
+    wrap(<CalendarView tasks={[mine, theirs]} onOpen={noop} onPatch={vi.fn()} />);
+    const chip = (t: string) => [...document.querySelectorAll<HTMLElement>(".ktv-cal-task")].find((b) => b.textContent?.includes(t))!;
+    expect(chip("Brief").getAttribute("draggable")).toBe("true");
+    expect(chip("Fee bands").getAttribute("draggable")).toBe("false");
+    expect(chip("Fee bands").getAttribute("title")).toBe("Fee bands");
+  });
+
+  it("the timeline shows its bar but doesn't drag or nudge it", () => {
+    const onPatch = vi.fn();
+    wrap(<TimelineView tasks={[mine, theirs]} onOpen={noop} onPatch={onPatch} />);
+    expect(screen.getByRole("button", { name: /^Brief: / })).toHaveAttribute("draggable", "true");
+    expect(screen.queryByRole("button", { name: /^Fee bands: / })).toBeNull();   // (not the draggable bar)
+    const bar = [...document.querySelectorAll<HTMLElement>("button.ktv-tl-bar")].find((b) => b.getAttribute("aria-label") === "Fee bands")!;
+    expect(bar).toBeTruthy();
+    fireEvent.keyDown(bar, { key: "ArrowRight", altKey: true });
+    expect(onPatch).not.toHaveBeenCalled();
+  });
+
+  it("the board doesn't offer to drag or move its card", () => {
+    render(<BusinessChipsProvider on={false} workspaces={[]} viewOnly={new Set(["p-brand"])}>
+      <BoardView tasks={[mine, theirs]} allTasks={[mine, theirs]} onOpen={vi.fn()} onAdd={vi.fn()} onMove={vi.fn()} onPatch={vi.fn()} members={members} />
+    </BusinessChipsProvider>);
+    const card = (id: string) => document.querySelector<HTMLElement>(`[data-card-id="${id}"]`)!;
+    expect(card("view").getAttribute("draggable")).not.toBe("true");
+    expect(within(card("view")).queryByRole("button", { name: /^Move / })).toBeNull();
+    expect(within(card("mine")).queryByRole("button", { name: /^Move / })).not.toBeNull();
   });
 });

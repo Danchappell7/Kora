@@ -730,6 +730,10 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
   const patch = readOnly ? undefined : onPatch;
   // All businesses: a row from a workspace you're a guest in is view-only, as it is there
   const guestRow = useGuestRow();
+  // 0058: where a task may move to: a project you can change (never one you can only view, nor a guest's)
+  const intoable = useCallback((p: Project) => !guestRow({ workspaceId: p.workspaceId ?? null, projectId: p.id }), [guestRow]);
+  const moveTargets = useMemo(() => projects.filter(intoable), [projects, intoable]);
+  const targetsFor = (t: Task) => projects.filter((p) => p.id === t.projectId || intoable(p));
   const quickAddFn = readOnly ? undefined : onQuickAdd;
   const bulkEnabled = !readOnly && !!onBulkPatch;
   const [adding, setAdding] = useState<{ key: string; at: "top" | "end" } | null>(null);
@@ -1147,6 +1151,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
       if (readOnly || !patch) return;
       const t = findTask(id);
       if (!t) return;
+      const rowRO = guestRow(t);   // (a row you can only view: its own buttons are read-only; no menus either)
       const click = (sel: string) => el.querySelector<HTMLElement>(sel)?.click();
       if (action === "status") el.querySelector<HTMLElement>("[data-row-check] button")?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
       else if (action === "priority") click("[data-row-priority] button");
@@ -1156,7 +1161,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
       else if (action === "today") {
         onEdit(t, { planToday: !t.planToday }, "Today");
         setLive(t.planToday ? `Took “${t.title}” off Today` : `Added “${t.title}” to Today`);
-      } else if ((action === "move" && projects.length > 0) || (action === "labels" && allTags && Object.keys(allTags).length > 0)) {
+      } else if (!rowRO && ((action === "move" && moveTargets.length > 0) || (action === "labels" && allTags && Object.keys(allTags).length > 0))) {
         listMenuAnchor.current = el.querySelector<HTMLElement>("[data-row-title]") ?? el;
         setListMenu({ kind: action === "move" ? "move" : "labels", id });
       }
@@ -1332,7 +1337,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
                   showProject={showProject} quietAssignee={!!quietAssigneeFor && t.assigneeId === quietAssigneeFor}
                   cursor={kb.cursor === t.id} active={activeId === t.id} celebrate={!recentlySettled(t.id)}
                   meta={renderMeta?.(t)} action={renderAction?.(t)}
-                  swipe={swipeRows} onSwipeDone={onSwipeDone} onQuickDue={onQuickDue} onPickDue={onPickDue} onDue={onDue} onLongPress={sheetable ? onLongPress : undefined}
+                  swipe={swipeRows} onSwipeDone={onSwipeDone} onQuickDue={onQuickDue} onPickDue={onPickDue} onDue={onDue} onLongPress={sheetable && !guestRow(t) ? onLongPress : undefined}
                   kitOn={kitOn} kitGrip={kitGrip} kitIds={kitIds} />
               ))}</div>
               {!isCollapsed && !expandedGroups.has(g.key) && g.items.length > ROW_CAP && (
@@ -1372,7 +1377,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
       {listMenu && menuTask && (
         <Popover open anchorRef={listMenuAnchor} onClose={() => setListMenu(null)} minWidth={220} maxHeight={320}
           label={listMenu.kind === "move" ? `Move “${menuTask.title}” to a project` : `Labels for “${menuTask.title}”`}>
-          {listMenu.kind === "move" ? projects.map((p) => (
+          {listMenu.kind === "move" ? targetsFor(menuTask).map((p) => (
             <button key={p.id} type="button" role="menuitemradio" aria-checked={menuTask.projectId === p.id} className="ktv-mi"
               onClick={() => { setListMenu(null); if (p.id === menuTask.projectId) return; onEdit(menuTask, { projectId: p.id, workspaceId: workspaceOf(p.id), sectionId: undefined }, "Project"); moveFamily(menuTask.id, p.id); }}>
               <ProjectTile project={p} size={16} /> <span className="truncate">{p.name}</span>{menuTask.projectId === p.id && <CurrentMark />}
@@ -1393,7 +1398,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
       <Sheet open={!!sheetTask} onClose={() => setSheetId(null)} side="bottom" title={lastSheetTask.current?.title}
         label={lastSheetTask.current ? `Actions for “${lastSheetTask.current.title}”` : "Task actions"}>
         {lastSheetTask.current && (
-          <RowActionSheet key={lastSheetTask.current.id} task={lastSheetTask.current} canSelect={bulkEnabled} members={members} projects={projects}
+          <RowActionSheet key={lastSheetTask.current.id} task={lastSheetTask.current} canSelect={bulkEnabled} members={members} projects={targetsFor(lastSheetTask.current)}
             onOpen={(id) => { setSheetId(null); onOpen(id); }}
             onStatus={(t, s) => {
               setSheetId(null);
@@ -1409,7 +1414,7 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
             onToday={(t) => { setSheetId(null); toastEdit(t, { planToday: !t.planToday }, "Today", t.planToday ? `Took “${t.title}” off Today` : `Added “${t.title}” to Today`); }}
             onSelect={(id) => { setSheetId(null); onSelectRow(id, false); }}
             onAssign={members.length ? (t, id) => { setSheetId(null); onAssign(t, id); } : undefined}
-            onMove={projects.length ? (t, pid) => { setSheetId(null); onMoveTask(t, pid); } : undefined}
+            onMove={moveTargets.length ? (t, pid) => { setSheetId(null); onMoveTask(t, pid); } : undefined}
             onDelete={deleteOne ? (t) => { setSheetId(null); deleteOne(t.id); } : undefined} />
         )}
       </Sheet>
@@ -1462,9 +1467,9 @@ export function ListView({ tasks: tasksIn, allTasks: allTasksIn, projects = NO_P
               ))}
             </BulkMenuButton>
           )}
-          {projects.length > 0 && (
+          {moveTargets.length > 0 && (
             <BulkMenuButton label="Project" icon="grid" iconOnly={iconBulk} open={bulkMenu === "project"} onToggle={() => setBulkMenu((m) => m === "project" ? null : "project")}>
-              {projects.map((p) => (
+              {moveTargets.map((p) => (
                 <button key={p.id} type="button" role="menuitem" className="ktv-mi" onClick={() => applyPatch({ projectId: p.id })}>
                   <ProjectTile project={p} size={16} /> <span className="truncate">{p.name}</span>
                 </button>

@@ -592,6 +592,18 @@ describe("App · a project you can only view (Harbour's Fee review)", () => {
     await waitFor(() => expect(upd.mock.calls.some(([, p]) => "aiScore" in p)).toBe(true), { timeout: 8000 });
     expect(upd.mock.calls.filter(([id]) => id === "t-pa-5")).toEqual([]);
   }, 60_000);
+  it("0058: a list's Move (M) offers only projects you can edit, never Fee review", async () => {
+    inWs("ws-harbour", "/p/p-northwind/list");
+    await boot();
+    await screen.findByText("Read the Northwind board pack", {}, { timeout: 8000 });
+    fireEvent.keyDown(window, { key: "j" });
+    await new Promise((r) => setTimeout(r, 50));
+    fireEvent.keyDown(window, { key: "m" });
+    const menu = await screen.findByLabelText(/^Move “.*” to a project/, {}, { timeout: 4000 });
+    const targets = [...menu.querySelectorAll("button")].map((b) => b.textContent ?? "");
+    expect(targets.some((t) => /Northwind Review/.test(t))).toBe(true);
+    expect(targets.some((t) => /Fee review/.test(t))).toBe(false);
+  }, 60_000);
   it("Projects › Requests shows its form, but it can't be filled in, changed or deleted there", async () => {
     inWs("ws-harbour", "/projects/requests");
     await boot();

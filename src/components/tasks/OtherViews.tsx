@@ -10,7 +10,7 @@ import {
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useListKeyboard, type ListKeyAction } from "../../hooks/useListKeyboard";
 import { BulkMenuButton, CustomChips, useFloatBounds } from "./ListView";
-import { WorkspaceChip } from "../businesses/Businesses";
+import { WorkspaceChip, useGuestRow } from "../businesses/Businesses";
 import { parseDateText } from "../../lib/nlp";
 import {
   getProject, getMember, dueState, fmtDue, TAGS,
@@ -545,6 +545,7 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
   const patch = editable ? onPatch : undefined;
   const canDrag = editable && !isMobile;
   const bulkEnabled = editable && !!onBulkPatch;
+  const guestRow = useGuestRow();
   const rootRef = useRef<HTMLDivElement>(null);
   const toast = useOptionalToast();
   // phones, or a column squeezed by the docked task panel: the bulk bar's buttons are icons
@@ -955,6 +956,8 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
 
   const renderCard = (t: Task, index: number, acceptsDrop: boolean) => {
     const prog = cardProgress(t, children.get(t.id) ?? []);
+    // (0058: a card in a project you can only view opens, but doesn't drag, move or rename)
+    const rowEdit = editable && !guestRow(t);
     const coverId = effectiveCoverId(t);
     const coverUrl = coverId ? coverUrls[coverId] : undefined;
     return (
@@ -962,15 +965,15 @@ export function BoardView({ tasks, allTasks, onOpen, onAdd, onMove, onPatch, onB
         progressDone={prog?.done ?? 0} progressTotal={prog?.total ?? 0} progressKind={(children.get(t.id)?.length ?? 0) > 0 ? "subtasks" : "checklist"}
         blocked={isBlocked(t)} coverUrl={coverUrl} coverProject={coversFor(t.projectId) ? getProject(t.projectId) : undefined}
         onOpen={onOpen} onPatch={patchFromCard}
-        isMobile={isMobile} nativeDrag={canDrag} kitDrag={editable} acceptsDrop={acceptsDrop} dragging={dragId === t.id}
+        isMobile={isMobile} nativeDrag={canDrag && rowEdit} kitDrag={rowEdit} acceptsDrop={acceptsDrop} dragging={dragId === t.id}
         dropHint={hover && hover.id === t.id && dragId !== t.id ? hover.half : null}
         onPickup={setDragId} onDragDone={endHover} onHoverCard={onHoverCard} onCardDrop={onCardDrop} dragIds={dragIds}
         selected={selected.has(t.id)} onSelect={bulkEnabled ? toggleSelect : undefined}
         customFields={customFields} members={members}
-        onKeyMove={editable ? onKeyMove : undefined} onMenuDone={onMenuDone} hintId={hintId}
+        onKeyMove={rowEdit ? onKeyMove : undefined} onMenuDone={onMenuDone} hintId={hintId}
         showProject={showProject} cursor={kb.cursor === t.id} active={activeId === t.id}
-        canRename={!!patch && !isMobile} renameNonce={renameReq?.id === t.id ? renameReq.n : 0} moveNonce={moveReq?.id === t.id ? moveReq.n : 0}
-        getMoveColumns={editable ? getMoveColumns : undefined} onMoveToColumn={editable ? onMoveToColumn : undefined}
+        canRename={!!patch && !isMobile && rowEdit} renameNonce={renameReq?.id === t.id ? renameReq.n : 0} moveNonce={moveReq?.id === t.id ? moveReq.n : 0}
+        getMoveColumns={rowEdit ? getMoveColumns : undefined} onMoveToColumn={rowEdit ? onMoveToColumn : undefined}
         onToggleToday={patch ? onToggleToday : undefined} onAnnounce={say} />
     );
   };
@@ -1133,6 +1136,9 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
 }) {
   const isMobile = useMediaQuery("(max-width: 860px)");
   const canEdit = !!onPatch && !readOnly;
+  // (0058: a task in a project you can only view keeps its bar where it is: it opens, but doesn't drag or nudge)
+  const guestRow = useGuestRow();
+  const rowEdit = (t: Task) => canEdit && !guestRow(t);
   const hintId = useId();
   const [zoom, setZoom] = useState<TimelineZoom>(() => { try { return localStorage.getItem("kanbo-timeline-zoom") === "6w" ? "6w" : "2w"; } catch { return "2w"; } });
   useEffect(() => { try { localStorage.setItem("kanbo-timeline-zoom", zoom); } catch { /* ignore */ } }, [zoom]);
@@ -1365,7 +1371,7 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
                     const barStyle = { left: v ? v.vs * colW + inset : 0, width: barW, ["--bar" as string]: STATUS_BAR[t.status], scrollMarginLeft: laneW + 12, scrollMarginRight: 16 } as React.CSSProperties;
                     const barBody = (
                       <>
-                        {canEdit && <span aria-hidden draggable className="ktv-tl-grip" onClick={(e) => e.stopPropagation()} onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/kanbo-tl-start", t.id); e.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => setDropCol(null)} title="Drag to set the start date" />}
+                        {rowEdit(t) && <span aria-hidden draggable className="ktv-tl-grip" onClick={(e) => e.stopPropagation()} onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData("text/kanbo-tl-start", t.id); e.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => setDropCol(null)} title="Drag to set the start date" />}
                         {barW >= 36 && <span className="ktv-tl-label">{t.title}</span>}
                         {barW >= 96 && <Avatar id={t.assigneeId} size={16} />}
                       </>
@@ -1373,7 +1379,7 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
                     return (
                       <div key={t.id} className="ktv-tl-row" style={{ width: trackW, display: "flex", alignItems: "center" }}
                         onDragOver={canEdit ? onTrackDragOver : undefined} onDrop={canEdit ? onTrackDrop : undefined}>
-                        {v && sp && t.dueDate && (canEdit ? (
+                        {v && sp && t.dueDate && (rowEdit(t) ? (
                           <div role="button" tabIndex={0} className="ktv-tl-bar" data-crit={crit || undefined} data-done={done || undefined} data-clip-l={v.clipL || undefined} data-clip-r={v.clipR || undefined}
                             aria-label={`${t.title}: ${sp.impliedStart ? "" : `starts ${dayLabel(t.startDate!)}, `}due ${dayLabel(t.dueDate)}`}
                             aria-describedby={hintId}
@@ -1415,11 +1421,11 @@ export function TimelineView({ tasks, onOpen, onPatch, readOnly = false }: {
                         )}
                         {/* tasks with no due date: a draggable placeholder so they can be scheduled */}
                         {!sp && (
-                          <button type="button" className="ktv-tl-nodate" onClick={() => onOpen(t.id)} draggable={canEdit}
-                            onDragStart={canEdit ? (e) => { e.dataTransfer.setData("text/kanbo-timeline", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
-                            onDragEnd={canEdit ? () => setDropCol(null) : undefined}
-                            aria-label={`${t.title}, no due date${canEdit ? ". Drag onto a day to schedule it" : ""}`}
-                            title={canEdit ? "Drag onto a day to schedule" : "No due date"} style={{ left: 6 }}>
+                          <button type="button" className="ktv-tl-nodate" onClick={() => onOpen(t.id)} draggable={rowEdit(t)}
+                            onDragStart={rowEdit(t) ? (e) => { e.dataTransfer.setData("text/kanbo-timeline", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
+                            onDragEnd={rowEdit(t) ? () => setDropCol(null) : undefined}
+                            aria-label={`${t.title}, no due date${rowEdit(t) ? ". Drag onto a day to schedule it" : ""}`}
+                            title={rowEdit(t) ? "Drag onto a day to schedule" : "No due date"} style={{ left: 6 }}>
                             <Icon name="calendarPlus" size={12} /><span>{t.title}</span>
                           </button>
                         )}
@@ -1563,6 +1569,9 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
   onOpenSettings?: () => void;
 }) {
   const canEdit = !!onPatch && !readOnly;
+  // (0058: a task in a project you can only view opens, but can't be dragged to another day)
+  const guestRow = useGuestRow();
+  const rowEdit = (t: Task) => canEdit && !guestRow(t);
   const [mode, setMode] = useState<"month" | "week">("month");
   // month / week navigation (0 = the current one)
   const [monthOffset, setMonthOffset] = useState(0);
@@ -1757,10 +1766,10 @@ export function CalendarView({ tasks, onOpen, onPatch, connections = [], externa
                   );
                 })}
                 {dayTasks.slice(0, taskCap).map((t) => (
-                  <button key={t.id} type="button" className="ktv-cal-task" data-done={t.status === "done" || undefined} onClick={() => onOpen(t.id)} draggable={canEdit}
-                    onDragStart={canEdit ? (e) => { e.dataTransfer.setData("text/kanbo-cal", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
-                    onDragEnd={canEdit ? () => setDropDay(null) : undefined}
-                    aria-label={taskName(t)} title={canEdit ? `${t.title}: drag to another day to reschedule` : t.title}>
+                  <button key={t.id} type="button" className="ktv-cal-task" data-done={t.status === "done" || undefined} onClick={() => onOpen(t.id)} draggable={rowEdit(t)}
+                    onDragStart={rowEdit(t) ? (e) => { e.dataTransfer.setData("text/kanbo-cal", t.id); e.dataTransfer.effectAllowed = "move"; } : undefined}
+                    onDragEnd={rowEdit(t) ? () => setDropDay(null) : undefined}
+                    aria-label={taskName(t)} title={rowEdit(t) ? `${t.title}: drag to another day to reschedule` : t.title}>
                     <span aria-hidden="true" style={{ display: "inline-flex" }}><StatusGlyph status={t.status} size={14} readOnly /></span>
                     <WorkspaceChip projectId={t.projectId} mark />
                     <span>{t.title}</span>
