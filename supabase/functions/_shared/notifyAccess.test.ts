@@ -4,7 +4,7 @@
 // everyone in the workspace, as today. A failed check sends nothing.
 import { describe, expect, it, vi } from "vitest";
 import { projectAccess } from "./projectAccess.ts";
-import { digestItemProjects, dueTasksTheySee, projectNoticeGate, projectsTheySee, taskNoticeGate } from "./notifyAccess.ts";
+import { digestItemProjects, dueTasksTheySee, projectNoticeGate, projectsTheySee, scopeKey, taskNoticeGate } from "./notifyAccess.ts";
 import { AccessLookupFailed } from "./projectAccess.ts";
 import type { DigestItem } from "./notifyCompose.ts";
 
@@ -95,22 +95,28 @@ describe("a project's notice (an ask, a posted update)", () => {
 
 describe("the digest's task-less items", () => {
   const U1 = "88888888-8888-4888-8888-888888888881", DOC = "99999999-9999-4999-8999-999999999991";
-  const LAUNCH = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const LAUNCH = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", BINNED = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const it_ = (id: string, kind: string, meta: Record<string, unknown> | null, task: string | null = null): DigestItem =>
     ({ id, kind, task_id: task, task_title: "x", detail: "", created_at: "2026-10-09T08:00:00Z", meta });
-  /** supabase-js over two tables: status_updates and project_docs (`broken`: answers this error) */
-  const db = (tables: Record<string, { id: string; project_id: string }[]>, broken: Record<string, { code: string; message: string }> = {}) => ({
+  type R = Record<string, string | null>;
+  /** supabase-js over status_updates, project_docs and trash (`broken`: answers this error) */
+  const db = (tables: Record<string, R[]>, broken: Record<string, { code: string; message: string }> = {}) => ({
     from: vi.fn((t: string) => {
-      let ids: string[] = [];
+      let col = "id", ids: string[] = [];
+      const where: [string, unknown][] = [];
       const q = {
         select: () => q,
-        in: (_c: string, v: string[]) => { ids = v; return q; },
-        then: (ok: (r: unknown) => unknown) => Promise.resolve(broken[t] ? { data: null, error: broken[t] } : { data: (tables[t] ?? []).filter((r) => ids.includes(r.id)), error: null }).then(ok),
+        eq: (c: string, v: unknown) => { where.push([c, v]); return q; },
+        is: (c: string, v: unknown) => { where.push([c, v]); return q; },
+        in: (c: string, v: string[]) => { col = c; ids = v; return q; },
+        then: (ok: (r: unknown) => unknown) => Promise.resolve(broken[t] ? { data: null, error: broken[t] } : {
+          data: (tables[t] ?? []).filter((r) => ids.includes(String(r[col])) && where.every(([c, v]) => (r[c] ?? null) === v)), error: null,
+        }).then(ok),
       };
       return q;
     }),
   });
-  it("the project each names: an update's, a doc's, then meta.project_id; a meeting recap and a task's item aren't asked about", async () => {
+  it("the project each names, with its workspace: an update's, a doc's, then meta.project_id (in the bin: the bin's); a meeting recap and a task's item aren't asked about", async () => {
     const items = [
       it_("a", "update", { status_update_id: U1, project_id: LAUNCH }),   // the update's project wins
       it_("b", "doc_mention", { doc_id: DOC }),
@@ -119,21 +125,34 @@ describe("the digest's task-less items", () => {
       it_("e", "comment", { project_id: PAY }, TASK),
       it_("f", "doc_mention", { doc_id: "99999999-9999-4999-8999-999999999992" }),   // a doc that's gone: no project
       it_("g", "update", null),
+      it_("h", "doc_mention", { doc_id: "99999999-9999-4999-8999-999999999993", project_id: BINNED }),   // its project's in the bin (the doc went with it)
     ];
-    const out = await digestItemProjects(db({ status_updates: [{ id: U1, project_id: PAY }], project_docs: [{ id: DOC, project_id: PAY }] }), items);
-    expect([...out]).toEqual([["a", PAY], ["b", PAY], ["c", LAUNCH]]);
+    const out = await digestItemProjects(db({
+      status_updates: [{ id: U1, project_id: PAY, workspace_id: WS }],
+      project_docs: [{ id: DOC, project_id: PAY, workspace_id: WS }],
+      trash: [{ item_id: BINNED, workspace_id: WS, kind: "project", restored_at: null }, { item_id: LAUNCH, workspace_id: WS, kind: "project", restored_at: "2026-10-01" }],
+    }), items);
+    expect([...out]).toEqual([["a", { project: PAY, workspaceId: WS }], ["b", { project: PAY, workspaceId: WS }],
+      ["c", { project: LAUNCH, workspaceId: null }], ["h", { project: BINNED, workspaceId: WS }]]);
   });
   it("a table that isn't there yet names nothing; any other failed read throws (the digest waits)", async () => {
     const items = [it_("a", "update", { status_update_id: U1 }), it_("b", "doc_mention", { doc_id: DOC })];
     expect([...await digestItemProjects(db({}, { status_updates: { code: "42P01", message: "x" }, project_docs: { code: "PGRST205", message: "x" } }), items)]).toEqual([]);
     await expect(digestItemProjects(db({}, { project_docs: { code: "57014", message: "timeout" } }), items)).rejects.toBeInstanceOf(AccessLookupFailed);
+    await expect(digestItemProjects(db({}, { trash: { code: "57014", message: "timeout" } }), [it_("c", "update_ask", { project_id: LAUNCH })])).rejects.toBeInstanceOf(AccessLookupFailed);
   });
-  it("projectsTheySee: the ones they can still see; null before 0058 or with nothing to ask", async () => {
-    expect([...(await projectsTheySee(with0058().access, VIC, [PAY]))!]).toEqual([PAY]);
-    expect([...(await projectsTheySee(with0058().access, THEO, [PAY]))!]).toEqual([]);
-    expect(await projectsTheySee(before0058().access, THEO, [PAY])).toBeNull();
+  it("projectsTheySee: the ones they can still see, by rank where the workspace is known (a project in the bin); null before 0058 or with nothing to ask", async () => {
+    const live = { project: PAY, workspaceId: null }, inWs = { project: PAY, workspaceId: WS };
+    expect([...(await projectsTheySee(with0058().access, VIC, [live]))!]).toEqual([scopeKey(live)]);
+    expect([...(await projectsTheySee(with0058().access, THEO, [live]))!]).toEqual([]);
+    const { access, rpc } = with0058();
+    expect([...(await projectsTheySee(access, VIC, [inWs, inWs]))!]).toEqual([scopeKey(inWs)]);
+    expect(rpc.mock.calls.map((c) => c[0])).toEqual(["user_project_rank"]);
+    expect([...(await projectsTheySee(with0058().access, THEO, [inWs]))!]).toEqual([]);
+    expect(await projectsTheySee(before0058().access, THEO, [live])).toBeNull();
+    expect(await projectsTheySee(before0058().access, THEO, [inWs])).toBeNull();
     expect(await projectsTheySee(with0058().access, THEO, [])).toBeNull();
-    await expect(projectsTheySee(flaky(), THEO, [PAY])).rejects.toBeInstanceOf(AccessLookupFailed);
+    await expect(projectsTheySee(flaky(), THEO, [live])).rejects.toBeInstanceOf(AccessLookupFailed);
   });
 });
 

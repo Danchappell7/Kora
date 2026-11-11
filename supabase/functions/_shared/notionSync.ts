@@ -177,16 +177,21 @@ async function loadContext(tx: Tx, ws: string): Promise<Ctx> {
 }
 
 /**
- * With Project access (0058), a page's Owner names only people who can see the sync's project: the
- * database refuses anyone else as an assignee (the sync writes as its person, as the app does), which
+ * With Project access switched on (0058), a page's Owner names only people who can see the sync's project:
+ * the database refuses anyone else as an assignee (the sync writes as its person, as the app does), which
  * used to stop the whole batch, run after run. Their pages come in unassigned, and a linked task keeps
- * whom it has. Pushing still names everyone (emailByMember stays whole). On the service connection,
- * outside the person's transaction; before 0058 (or with nobody to check) the context is as it was.
+ * whom it has. Each is judged as the database judges an assignee (pa_assignee_rank): someone suspended or
+ * awaiting approval by the project they'll see once they can act again. Pushing still names everyone
+ * (emailByMember stays whole). On the service connection, outside the person's transaction. Switched off
+ * (or with nobody to check) everyone stays, as before 0058; once 0058 is in, the writes are made in
+ * savepoints all the same (gated), in case the switch goes on mid-run.
  */
 async function onlyWhoSees(service: Tx, ctx: Ctx, ws: string, projectId: string): Promise<Ctx> {
   if (!ctx.memberByEmail.size || !(await accessInstalled(service))) return ctx;
+  if (!(await onlyOwnProject(service, ws))) return { ...ctx, gated: true };
   const blind = new Set((await service.query<{ u: string }>(
-    `select x.u from jsonb_array_elements_text($1::jsonb) as x(u) where public.user_project_rank(x.u::uuid, $2::uuid, $3::text) < 1`,
+    `select x.u from jsonb_array_elements_text($1::jsonb) as x(u)
+      where coalesce(public.pa_assignee_rank(x.u::uuid, $2::uuid, $3::text), 0) < 1`,
     [J([...new Set(ctx.memberByEmail.values())]), ws, projectId])).map((r) => r.u));
   return { ...ctx, gated: true, memberByEmail: new Map([...ctx.memberByEmail].filter(([, id]) => !blind.has(id))) };
 }
@@ -241,20 +246,27 @@ async function onlyOwnProject(service: Tx, ws: string): Promise<boolean> {
 /**
  * Does this Notion database already sync with a project here that the person can't see (0058, Project
  * access on)? Its pages are that project's tasks (a two-way sync writes them there), so previewing or
- * importing it would show them, and keeping it in sync would take the sync over from that project. On the
- * service connection: the person's own read of notion_syncs is filtered by the same rule, so it would miss
- * exactly that sync. Before 0058, or with the switch off, never.
+ * importing it would show them, and keeping it in sync would take the sync over from that project. So does
+ * a database whose sync with such a project was removed, or that was imported into one: its pages stay
+ * linked to that project's tasks (plain links that still name the database), and a two-way sync's edits are
+ * still in them. (A task synced with a project they can see, moved since into one they can't, keeps its
+ * sync's link: the sync leaves it alone, and the database is still the open project's.) On the service
+ * connection: the person's own reads of notion_syncs and notion_links are filtered by the same rule, so
+ * they would miss exactly those. Before 0058, or with the switch off, never.
  */
 export async function syncsOutOfSight(service: Tx, userId: string, ws: string, databaseId: string): Promise<boolean> {
   if (!(await accessInstalled(service))) return false;
   const r = await service.query<{ hidden: boolean }>(
     `select exists (select 1 from public.notion_syncs s
                      where s.workspace_id = $1::uuid and s.database_id = public.notion_norm_id($2)
-                       and public.user_project_rank($3::uuid, $1::uuid, s.project_id::text) < 1) as hidden`,
+                       and public.user_project_rank($3::uuid, $1::uuid, s.project_id::text) < 1)
+         or exists (select 1 from public.notion_links l
+                     where l.workspace_id = $1::uuid and l.sync_id is null and l.notion_database_id = public.notion_norm_id($2)
+                       and not public.user_can_see_task($3::uuid, l.task_id)) as hidden`,
     [ws, databaseId, userId]);
   return r[0]?.hidden === true;
 }
-export const OUT_OF_SIGHT_TEXT = "This Notion database syncs with a project here that you can't see, so it can't be previewed or imported.";
+export const OUT_OF_SIGHT_TEXT = "This Notion database's pages are tasks in a project here that you can't see, so it can't be previewed or imported.";
 
 /** Tag labels → tag ids in the workspace, creating the missing ones (as the person). */
 async function tagIds(tx: Tx, userId: string, ws: string, ctx: Ctx, values: TagValue[]): Promise<string[]> {

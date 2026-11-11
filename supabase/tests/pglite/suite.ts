@@ -19,7 +19,11 @@ import { handleApiRequest } from "../../functions/_shared/api/pipeline.ts";
 import { CREATOR_GONE_ERROR, CREATOR_GONE_REASON, runDispatch } from "../../functions/_shared/api/webhookDispatch.ts";
 import { claimSync, importDatabase, NotionActionError, OUT_OF_SIGHT_TEXT, runSync, syncsOutOfSight } from "../../functions/_shared/notionSync.ts";
 import { accessInstalled, personRankSql, projectAccess } from "../../functions/_shared/projectAccess.ts";
-import { loadCard, loadProjectCard, type SlackDb } from "../../functions/_shared/slackAppData.ts";
+import { createTask, homeTasks, loadCard, loadProjectCard, projectOptions, workspaceContext, type SlackDb } from "../../functions/_shared/slackAppData.ts";
+import { homeView } from "../../functions/_shared/slackAppBlocks.ts";
+import { digestItemProjects, projectsTheySee, scopeKey } from "../../functions/_shared/notifyAccess.ts";
+import { filterDigestItems, type DigestItem } from "../../functions/_shared/notifyCompose.ts";
+import type { Tx } from "../../functions/_shared/api/types.ts";
 import { handleMcpFunction, type McpDeps } from "../../functions/_shared/mcp/handler.ts";
 import { MCP_RESOURCE } from "../../functions/_shared/mcp/metadata.ts";
 import { dateInZone } from "../../functions/_shared/mcp/myDay.ts";
@@ -117,6 +121,25 @@ async function rest(w: World, key: string, method: string, path: string, body?: 
 }
 /** The Slack app's database (its cards are read as the person, through withUser). */
 const slackDb = (w: World): SlackDb => ({ withUser: (scope, fn) => w.deps.db.withUser(scope, fn), service: w.deps.service });
+/** A supabase-js-shaped table read (select, eq, is, in, then awaited) over a SQL connection, for the helpers that
+ *  take one (the digest's): the service role's view of the real tables. */
+const tableDb = (tx: Tx) => ({
+  from(table: string) {
+    let cols = "*";
+    const where: string[] = [], params: unknown[] = [];
+    const q = {
+      select(c: string) { cols = c; return q; },
+      eq(c: string, v: unknown) { params.push(v); where.push(`${c}::text = $${params.length}::text`); return q; },
+      is(c: string, v: null) { if (v === null) where.push(`${c} is null`); return q; },
+      in(c: string, v: readonly string[]) { params.push(JSON.stringify(v)); where.push(`${c}::text in (select jsonb_array_elements_text($${params.length}::jsonb))`); return q; },
+      then(ok: (r: { data: unknown[] | null; error: unknown }) => unknown, bad?: (e: unknown) => unknown) {
+        return tx.query(`select ${cols} from public.${table} where ${where.join(" and ") || "true"}`, params)
+          .then((rows) => ({ data: rows, error: null }), (error) => ({ data: null, error })).then(ok, bad);
+      },
+    };
+    return q;
+  },
+});
 
 async function toolRefused(w: World, bearer: string, name: string, args: Record<string, unknown>, like: RegExp) {
   const r = await tool(w, bearer, name, args);
@@ -4054,7 +4077,175 @@ async function projectAccessApiSuite(w: World) {
     await pg.query(`delete from public.notion_links where sync_id = $1::uuid`, [sync]);
     await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [sync]);
   });
+  /** An update posted on `project`, which then goes to the bin: the digest item a teammate has about it. */
+  const binnedUpdate = async (project: string): Promise<DigestItem> => {
+    const su = (await asPerson<{ id: string }>(pg, w.alice, `insert into public.status_updates (user_id, workspace_id, project_id, summary) values ($1::uuid, $2::uuid, $3, 'On track') returning id::text as id`,
+      [w.alice, w.w1, project]))[0].id;
+    await asPerson(pg, w.alice, `delete from public.projects where id = $1::uuid`, [project]);
+    return { id: `act-${su}`, task_id: null, task_title: "", kind: "update", detail: "", created_at: new Date().toISOString(), meta: { status_update_id: su, project_id: project } };
+  };
+  /* ---- round 1 (functions): sub-task moves, Notion after a sync's removed, the digest, Slack, my_day ---- */
+  const doraKey = (await asPerson<{ r: { key: string } }>(pg, dora, `select public.create_api_key('pa rest dora', null, 'write', null) as r`))[0].r.key;
+  const subRow = (id: string) => one<{ project_id: string; parent_id: string | null; assignee_id: string; followers: string[]; collaborators: string[]; section_id: string | null; plan_today: boolean; scheduled: number | null }>(
+    `select project_id, parent_id::text as parent_id, assignee_id, followers, collaborators, section_id, plan_today, scheduled from public.tasks where id = $1::uuid`, [id]);
+  /** a task of dora's in Launch and a sub-task of it that's bob's, on his plan (09:00 today), with bob and dora on it and a section */
+  const family = async (title: string) => {
+    const sec = (await one<{ id: string }>(`insert into public.sections (user_id, workspace_id, project_id, name, position) values ($1::uuid, $2::uuid, $3, $4, 1) returning id::text as id`, [w.alice, w.w1, w.launch, `${title} section`])).id;
+    const parent = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id) values ($1::uuid, $2, $3, $4::uuid, '') returning id::text as id`,
+      [dora, `${title} (parent)`, w.launch, w.w1])).id;
+    const sub = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, parent_id, assignee_id, followers, collaborators, section_id, plan_today, scheduled)
+        values ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, array[$6, $1::text], array[$6], $7, true, 540) returning id::text as id`, [dora, title, w.launch, w.w1, parent, w.bob, sec])).id;
+    return { parent, sub };
+  };
+  await test("0058 via REST and MCP, switch on: a sub-task moved on its own becomes a task of its own in the new project (the database would keep it with its parent), with the move's people changes", async () => {
+    const viaRest = await family("Solo move by REST");
+    const r = await rest(w, doraKey, "PATCH", `/tasks/${viaRest.sub}`, { projectId: pay });
+    eq([r.status, r.json?.projectId, r.json?.parentId ?? null], [200, pay, null], `the answer says where it is: ${JSON.stringify(r.json)}`);
+    const viaMcp = await family("Solo move by MCP");
+    const m = await toolOk(w, doraT, "update_task", { taskId: viaMcp.sub, projectId: pay });
+    eq([m.task?.projectId, m.task?.parentId ?? null], [pay, null], "update_task's answer");
+    for (const [how, f] of [["REST", viaRest], ["MCP", viaMcp]] as const) {
+      const row = await subRow(f.sub);
+      eq([row.project_id, row.parent_id, row.assignee_id === dora, row.followers, row.collaborators, row.section_id, row.plan_today, row.scheduled],
+         [pay, null, true, [dora], [], null, false, null], `${how}: in Board pay on its own, dora's (bob can't see it), bob off it, no section, no plan of bob's`);
+      eq((await subRow(f.parent)).project_id, w.launch, `${how}: its old parent stays in Launch`);
+    }
+  });
+  await test("0058 via REST, switch on: a task moved with its sub-tasks: one whose assignee can't see the new project comes to you, with no plan of theirs on it", async () => {
+    const f = await family("Moved with its parent");
+    const r = await rest(w, doraKey, "PATCH", `/tasks/${f.parent}`, { projectId: pay });
+    eq(r.status, 200, `moved: ${JSON.stringify(r.json)}`);
+    const row = await subRow(f.sub);
+    eq([row.project_id, row.parent_id === f.parent, row.assignee_id === dora ? "dora" : row.assignee_id === w.alice ? "alice (the project's owner)" : row.assignee_id, row.plan_today, row.scheduled, row.followers, row.collaborators],
+       [pay, true, "dora", false, null, [dora], []], "the sub-task moved with it, came to dora (who moved it), off bob's day");
+  });
+  await test("0058, switch on: a sub-task the database moves with its parent (the app's own write) and hands to the project's owner carries no plan of its old assignee's", async () => {
+    const f = await family("Moved in the app");
+    await asPerson(pg, dora, `update public.tasks set project_id = $2 where id = $1::uuid`, [f.parent, pay]);
+    const row = await subRow(f.sub);
+    eq([row.project_id, row.assignee_id === w.alice, row.plan_today, row.scheduled], [pay, true, false, null], "alice's (Board pay's owner), never in her day at 09:00 from bob's plan");
+  });
+  await test("0058, Notion, switch on: removing a Private project's sync (or importing into one) doesn't open its database to an admin who can't see the project; a sync of an open project is still theirs to preview", async () => {
+    const noa = await admin("noa-notion");
+    const dbId = "0d0d0d0d-0000-4000-8000-000000005810", openDb = "0d0d0d0d-0000-4000-8000-000000005811";
+    const sync = (await one<{ id: string }>(`insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
+        values ($1::uuid, $2::uuid, $3, '{"title": "Name"}'::jsonb, 'two_way', $4::uuid) returning id::text as id`, [w.w1, pay, dbId, w.alice])).id;
+    await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind, created_by)
+                    values ($1::uuid, $2::uuid, '5e5e5e5e-0000-4000-8000-000000005810', public.notion_norm_id($3), $4::uuid, 'synced', $5::uuid)`, [w.w1, salary, dbId, sync, w.alice]);
+    eq(await syncsOutOfSight(w.deps.db.service, noa, w.w1, dbId), true, "while it syncs");
+    // alice removes the sync: Board pay's task keeps its page as a plain link naming the database
+    await asPerson(pg, w.alice, `select public.notion_delete_sync($1::uuid)`, [sync]);
+    eq(await one(`select kind, sync_id, notion_database_id = public.notion_norm_id($2) as same from public.notion_links where task_id = $1::uuid`, [salary, dbId]),
+       { kind: "reference", sync_id: null, same: true }, "the link stays, naming the database");
+    eq([await syncsOutOfSight(w.deps.db.service, noa, w.w1, dbId), await syncsOutOfSight(w.deps.db.service, w.alice, w.w1, dbId), await syncsOutOfSight(w.deps.db.service, dora, w.w1, dbId)],
+       [true, false, false], "removed: still closed to noa, open to alice and dora (who see Board pay)");
+    // a database synced with Launch (open), one of whose tasks dora moved into Board pay: still noa's to preview
+    const openSync = (await one<{ id: string }>(`insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
+        values ($1::uuid, $2::uuid, $3, '{"title": "Name"}'::jsonb, 'two_way', $4::uuid) returning id::text as id`, [w.w1, w.launch, openDb, w.alice])).id;
+    const moved = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id) values ($1::uuid, 'Synced then moved', $2, $3::uuid, '') returning id::text as id`, [dora, pay, w.w1])).id;
+    await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind, created_by)
+                    values ($1::uuid, $2::uuid, '5e5e5e5e-0000-4000-8000-000000005811', public.notion_norm_id($3), $4::uuid, 'synced', $5::uuid)`, [w.w1, moved, openDb, openSync, w.alice]);
+    eq(await syncsOutOfSight(w.deps.db.service, noa, w.w1, openDb), false, "an open project's sync isn't closed by a task moved out of it");
+    await pg.query(`delete from public.notion_links where task_id = any ($1::uuid[])`, [[salary, moved]]);
+    await pg.query(`delete from public.tasks where id = $1::uuid`, [moved]);
+    await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [openSync]);
+  });
+  /** a member of w1 whose account is suspended, with an address of their own */
+  const suspendedMember = async (name: string) => {
+    const u = await makeUser(pg, `pa.${name}@example.org`, name);
+    await pg.query(`update public.profiles set approved = true where id = $1::uuid`, [u]);
+    await pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, $3, $4, 'member', 'active')`,
+      [w.w1, u, `pa.${name}@example.org`, name]);
+    await pg.query(`update public.profiles set suspended = true where id = $1::uuid`, [u]);
+    return u;
+  };
+  const suspendedOwnerRun = async (label: string, dbId: string) => {
+    const sid = await suspendedMember(`sid-${label}`);
+    const rig = await notionRig(`Notion ${label}`, dbId);
+    rig.pages.push(rig.page(1, `Sid's page (${label})`, `pa.sid-${label}@example.org`, "2026-11-10T10:00:00.000Z"));
+    const r = await rig.runOnce();
+    const row = await one<{ a: string }>(`select assignee_id as a from public.tasks where project_id = $1`, [rig.target]);
+    await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [rig.sync]);
+    return { fatal: r.fatal, error: r.error, assignedToSid: row?.a === sid, logs: rig.logs.join("; ") };
+  };
+  await test("0058, Notion, switch on: a page whose Owner is suspended comes in assigned to them, judged as the database judges an assignee (by the project they'll see again)", async () => {
+    const got = await suspendedOwnerRun("susp-on", "0d0d0d0d-0000-4000-8000-000000005812");
+    eq([got.fatal, got.error, got.assignedToSid], [false, null, true], `a Whole workspace project's: ${got.logs}`);
+  });
+  await test("0058, the digest, switch on: an update about a Members only project in the bin counts for those it had, and not for the rest", async () => {
+    const gone = await mk("Zebra binned members", "members");
+    await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'viewer')`, [gone, w.bob]);
+    const item = await binnedUpdate(gone);
+    const scopes = await digestItemProjects(tableDb(w.deps.service), [item]);
+    eq([...scopes.values()], [{ project: gone.toLowerCase(), workspaceId: w.w1 }], "named by the update, in its workspace");
+    const keep = async (u: string) => filterDigestItems([item], new Set(), new Set(), () => true, await projectsTheySee(svc(), u, [...scopes.values()]),
+      (a) => { const s = scopes.get(a.id); return s ? scopeKey(s) : null; }).length;
+    eq([await keep(w.bob), await keep(dora), await keep(w.alice)], [1, 0, 1], "bob (a viewer then) and alice keep it; dora was never on it");
+  });
+  await test("0058, the Slack app, switch on: /kanbo and its form offer only projects you can add tasks to; Home has no Complete on a task you only view; a refusal says why", async () => {
+    const db = slackDb(w);
+    const opts = (await projectOptions(db, w.bob, w.w1, "")).map((o) => o.text);
+    ok(!opts.some((t) => t.includes("Hiring leads")) && !opts.some((t) => t.includes("Board pay")), `bob only views Hiring leads: ${JSON.stringify(opts)}`);
+    ok(opts.some((t) => t.includes("Launch")), "Launch is his to add to");
+    const wsc = await workspaceContext(db, w.bob, w.w1);
+    ok(!wsc.projects.some((p) => p.name === "Hiring leads") && wsc.projects.some((p) => p.name === "Launch"), "nor does #project find it");
+    const today = dateInZone(new Date(), "Europe/London");
+    const viewOnly = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id, due_date) values ($1::uuid, 'Read the leads brief', $2, $3::uuid, $4, $5::date) returning id::text as id`,
+      [w.alice, leads, w.w1, w.bob, today])).id;
+    const his = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id, due_date) values ($1::uuid, 'Launch his part', $2, $3::uuid, $4, $5::date) returning id::text as id`,
+      [w.alice, w.launch, w.w1, w.bob, today])).id;
+    const home = await homeTasks(db, w.bob, w.w1, today);
+    eq([home.tasks.find((t) => t.id === viewOnly)?.readOnly, home.tasks.find((t) => t.id === his)?.readOnly], [true, undefined], "read-only: only the one he views");
+    const blocks = (homeView({ linked: true, tasks: home.tasks, appUrl: APP_URL }) as { blocks: { text?: { text?: string }; accessory?: unknown }[] }).blocks;
+    const blockOf = (title: string) => blocks.find((b) => String(b.text?.text ?? "").includes(title));
+    eq([!!blockOf("Read the leads brief")?.accessory, !!blockOf("Launch his part")?.accessory], [false, true], "no Complete on the one he can't change");
+    let said = "";
+    try { await createTask({ db, appUrl: APP_URL, apiBase: w.deps.apiBase }, w.bob, w.w1, { title: "Planted from Slack", projectId: leads }); } catch (e) { said = (e as Error).message; }
+    eq(said, "You can see this project but can't change it.", "the refusal is the API's own sentence");
+    await pg.query(`delete from public.tasks where id = any ($1::uuid[])`, [[viewOnly, his]]);
+  });
+  await test("0058 via MCP, switch on: my_day lists only the approvals you can still decide (a reviewer made a viewer can't)", async () => {
+    await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'commenter')`, [leads, w.bob]);
+    const t = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id) values ($1::uuid, 'Contract draft', $2, $3::uuid, $1::text) returning id::text as id`, [w.alice, leads, w.w1])).id;
+    await asPerson(pg, w.alice, `select public.request_approval($1::uuid, array[$2::uuid], 'please', 'any')`, [t, w.bob]);
+    const asked = await toolOk(w, bob, "my_day", { timezone: "Europe/London" });
+    eq(asked.counts.approvals, 1, "a commenter: one to decide");
+    await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'viewer')`, [leads, w.bob]);
+    const now = await toolOk(w, bob, "my_day", { timezone: "Europe/London" });
+    eq([now.counts.approvals, (now.items as { kind: string }[]).filter((x) => x.kind === "approval").length], [0, 0], "made a viewer: none (decide_approval would refuse)");
+    await pg.query(`delete from public.tasks where id = $1::uuid`, [t]);
+  });
   await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
+  await test("0058, the digest, switch off: an update about a project in the bin still counts for the workspace's people, as the Inbox shows it (as before 0058)", async () => {
+    const gone = await mk("Zebra binned open", "workspace");
+    const item = await binnedUpdate(gone);
+    eq(await svc().canSeeProject(w.bob, gone), false, "(its projects row is gone)");
+    const scopes = await digestItemProjects(tableDb(w.deps.service), [item]);
+    const seen = await projectsTheySee(svc(), w.bob, [...scopes.values()]);
+    eq(filterDigestItems([item], new Set(), new Set(), () => true, seen, (a) => { const s = scopes.get(a.id); return s ? scopeKey(s) : null; }).length, 1, "bob's digest keeps it");
+  });
+  await test("0058, the Slack app, switch off: every live project is offered and Home has Complete, as before", async () => {
+    const db = slackDb(w);
+    const opts = (await projectOptions(db, w.bob, w.w1, "")).map((o) => o.text);
+    ok(opts.some((t) => t.includes("Hiring leads")) && opts.some((t) => t.includes("Board pay")), `every project: ${JSON.stringify(opts)}`);
+    ok((await workspaceContext(db, w.bob, w.w1)).projects.some((p) => p.name === "Board pay"), "#project finds them all");
+    const today = dateInZone(new Date(), "Europe/London");
+    const t = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id, due_date) values ($1::uuid, 'Off: read the leads brief', $2, $3::uuid, $4, $5::date) returning id::text as id`,
+      [w.alice, leads, w.w1, w.bob, today])).id;
+    eq((await homeTasks(db, w.bob, w.w1, today)).tasks.find((x) => x.id === t)?.readOnly, undefined, "Complete stays");
+    await pg.query(`delete from public.tasks where id = $1::uuid`, [t]);
+  });
+  await test("0058, Notion, switch off: a page whose Owner is suspended comes in assigned to them, as before 0058", async () => {
+    const got = await suspendedOwnerRun("susp-off", "0d0d0d0d-0000-4000-8000-000000005813");
+    eq([got.fatal, got.error, got.assignedToSid], [false, null, true], `as before: ${got.logs}`);
+  });
+  await test("0058 via REST, switch off: a sub-task moved on its own goes under its parent, as before", async () => {
+    const f = await family("Off: solo move");
+    const r = await rest(w, doraKey, "PATCH", `/tasks/${f.sub}`, { projectId: pay });
+    eq([r.status, r.json?.projectId, r.json?.parentId], [200, pay, f.parent], "moved, still a sub-task");
+    const row = await subRow(f.sub);
+    eq([row.project_id, row.parent_id, row.assignee_id === w.bob, row.plan_today], [pay, f.parent, true, true], "its people and plan as they were");
+  });
   await test("0058, webhooks, switch off: the dispatcher judges an endpoint by its viewer too: one whose viewer left is switched off and sent nothing", async () => {
     await pg.query(`update public.webhook_outbox set processed_at = now() where processed_at is null`);
     const cy = await admin("cy");

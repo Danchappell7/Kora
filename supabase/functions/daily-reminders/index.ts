@@ -67,7 +67,7 @@ import { digestEmail, digestThreads, dueEmail, filterDigestItems, type DigestIte
 import { digestUpdates, emptyRhythmReport, ownerPrefs, remindOwner, updateOwners, type RemindDeps } from "../_shared/updateReminders.ts";
 import { deliverNotice, drainQueue, supabaseDrainDeps, supabaseQueueStore, type SendOutcome } from "../_shared/notifyQueue.ts";
 import { AccessLookupFailed, projectAccess } from "../_shared/projectAccess.ts";
-import { digestItemProjects, dueTasksTheySee, projectsTheySee } from "../_shared/notifyAccess.ts";
+import { digestItemProjects, dueTasksTheySee, projectsTheySee, scopeKey, type DigestScope } from "../_shared/notifyAccess.ts";
 
 interface TaskRow {
   id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
@@ -337,8 +337,8 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
   // (a failed check throws: this digest waits for the next run)
   const access = projectAccess(supa);
   const shown = new Set(await access.visibleTaskIds(userId, [...visible]));
-  const itemProjects = access.before0058 ? new Map<string, string>() : await digestItemProjects(supa, items);
-  const projectIds = await projectsTheySee(access, userId, [...new Set(itemProjects.values())]);
+  const itemProjects = access.before0058 ? new Map<string, DigestScope>() : await digestItemProjects(supa, items);
+  const projectIds = await projectsTheySee(access, userId, [...itemProjects.values()]);
   const { data: sn } = await supa.from("notification_snoozes").select("task_id").eq("user_id", userId).gt("until", now.toISOString());
   const snoozed = new Set<string>((sn ?? []).map((s: { task_id: string }) => String(s.task_id)));
   // a kind whose email they switched off stays out (a doc mention counts as a mention; 0056: a meeting's recap, as an update)
@@ -346,7 +346,10 @@ async function digestFor(supa: Supa, env: Env, userId: string, firstName: string
     const k = (kind === "doc_mention" ? "mention" : kind === "meeting" ? "update" : kind) as NotifyKind;
     return NOTIFY_KINDS.includes(k) ? prefs.channel(k, "email") : true;
   };
-  const threads = digestThreads(filterDigestItems(items, shown, snoozed, wants, projectIds, (a) => itemProjects.get(a.id) ?? null));
+  const threads = digestThreads(filterDigestItems(items, shown, snoozed, wants, projectIds, (a) => {
+    const scope = itemProjects.get(a.id);
+    return scope ? scopeKey(scope) : null;
+  }));
 
   // what's due today (their timezone) or overdue
   const today = localParts(now, prefs.timezone).date;

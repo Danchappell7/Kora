@@ -91,7 +91,7 @@ describe("notion function: the edges", () => {
                         { action: "import", projectId: crypto.randomUUID(), keepInSync: true, mapping: { title: "Name" } },
                         { action: "import", projectId: crypto.randomUUID(), keepInSync: false, mapping: { title: "Name" } }]) {
       const r = await read(await handleNotionRequest(post({ ...body, workspaceId: ws, databaseId }, { Authorization: "Bearer jwt" }), d));
-      expect(r, body.action).toMatchObject({ status: 403, body: { reason: "not_allowed", error: "This Notion database syncs with a project here that you can't see, so it can't be previewed or imported." } });
+      expect(r, body.action).toMatchObject({ status: 403, body: { reason: "not_allowed", error: "This Notion database's pages are tasks in a project here that you can't see, so it can't be previewed or imported." } });
     }
     expect(sql.some((x) => /user_project_rank/.test(x) && /notion_syncs/.test(x))).toBe(true);
     // (before 0058: nothing to ask, and Notion is asked as before)

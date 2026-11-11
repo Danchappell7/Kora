@@ -35,7 +35,7 @@ import type { RouteContext } from "./api/router.ts";
 import type { ApiTask } from "./api/serialise.ts";
 import type { ApiPrincipal, Tx, UserDb } from "./api/types.ts";
 import { escapeLike, isUuid, PERSONAL_PROJECT_ID } from "./api/validate.ts";
-import { projectAccess } from "./projectAccess.ts";
+import { accessInstalled, projectAccess } from "./projectAccess.ts";
 import type { HomeTask, Option, TaskCard } from "./slackAppBlocks.ts";
 import type { Member, Project } from "./slackAppParse.ts";
 
@@ -184,14 +184,20 @@ const ASSIGNEE_NAME = `(select ${MEMBER_NAME} from public.workspace_members m le
 
 export interface WorkspaceContext { role: string; projects: Project[]; members: Member[] }
 
-/** The person's role in the team workspace, its live projects and its active members (for #project / @person). */
+/** SQL (as the person, $1 = the workspace): the project `p` is one they can add tasks to. With Project access
+ *  switched on (0058), a Members only or Private project they only view or comment on isn't (the API would
+ *  refuse the task); switched off, or before 0058, every live project is, as before. */
+const editableSql = async (tx: Tx) => (await accessInstalled(tx))
+  ? `and (${ACCESS_ON("$1::uuid")} is distinct from 'true' or public.pa_rank($1::uuid, p.id::text) >= 3)` : "";
+
+/** The person's role in the team workspace, the live projects they can add tasks to and its active members (for #project / @person). */
 export async function workspaceContext(db: SlackDb, userId: string, ws: string): Promise<WorkspaceContext> {
   return asPerson(db, userId, ws, true, async (tx) => {
     const role = String((await tx.query<{ role: string }>(`select public.ws_role($1::uuid) as role`, [ws]))[0]?.role ?? "none");
     if (role === "none") return { role, projects: [], members: [] };
     const projects = await tx.query<Project>(
       `select p.id::text as id, p.name, p.emoji from public.projects p
-        where p.workspace_id = $1::uuid and p.archived_at is null order by p.created_at, p.id limit 500`, [ws]);
+        where p.workspace_id = $1::uuid and p.archived_at is null ${await editableSql(tx)} order by p.created_at, p.id limit 500`, [ws]);
     const members = await tx.query<Member>(
       `select m.user_id::text as id, ${MEMBER_NAME} as name, m.email
          from public.workspace_members m left join public.profiles pr on pr.id = m.user_id
@@ -201,14 +207,14 @@ export async function workspaceContext(db: SlackDb, userId: string, ws: string):
   });
 }
 
-/** Projects for the modal's picker: the Personal list, then the team workspace's live projects matching `q`. */
+/** Projects for the modal's picker: the Personal list, then the team workspace's live projects matching `q` that they can add tasks to. */
 export async function projectOptions(db: SlackDb, userId: string, ws: string | null, q: string): Promise<Option[]> {
   const query = String(q ?? "").trim().slice(0, 80);
   const personal: Option[] = !query || "personal".startsWith(query.toLowerCase()) ? [{ text: "📥 Personal (only you)", value: PERSONAL_PROJECT_ID }] : [];
   if (!ws) return personal;
-  const rows = await asPerson(db, userId, ws, true, (tx) => tx.query<{ id: string; name: string; emoji: string | null }>(
+  const rows = await asPerson(db, userId, ws, true, async (tx) => tx.query<{ id: string; name: string; emoji: string | null }>(
     `select p.id::text as id, p.name, p.emoji from public.projects p
-      where p.workspace_id = $1::uuid and p.archived_at is null and ($2 = '' or p.name ilike '%' || $2 || '%' escape '\\')
+      where p.workspace_id = $1::uuid and p.archived_at is null and ($2 = '' or p.name ilike '%' || $2 || '%' escape '\\') ${await editableSql(tx)}
       order by lower(p.name), p.id limit 99`, [ws, escapeLike(query)]));
   return [...personal, ...rows.map((r) => ({ text: `${r.emoji || "📁"} ${r.name}`, value: r.id }))];
 }
@@ -306,16 +312,21 @@ export async function loadProjectCard(db: SlackDb, userId: string, ws: string, p
   } : null;
 }
 
-/** App Home: what's due today or overdue for the person (assigned to them in the team workspace, or in their Personal list). */
+/** App Home: what's due today or overdue for the person (assigned to them in the team workspace, or in their Personal list).
+ *  A task they can only view or comment on (0058: a Members only or Private project's) is read-only: no Complete. */
 export async function homeTasks(db: SlackDb, userId: string, ws: string | null, today: string): Promise<{ tasks: HomeTask[]; more: number }> {
-  const rs = await asPerson(db, userId, null, true, (tx) => tx.query<CardRow>(
-    `select ${CARD_COLS} from public.tasks t ${PROJECT_JOIN}
+  const rs = await asPerson(db, userId, null, true, async (tx) => tx.query<CardRow & { can_edit?: boolean | null }>(
+    `select ${CARD_COLS}, ${(await accessInstalled(tx)) ? "public.pa_task_rank(t.id) >= 3" : "true"} as can_edit from public.tasks t ${PROJECT_JOIN}
       where t.status <> 'done' and t.archived_at is null and t.due_date is not null and t.due_date <= $3::date
         and ((t.workspace_id is null and t.user_id = $1::uuid)
           or ($2::uuid is not null and t.workspace_id = $2::uuid and t.assignee_id = $1::text))
       order by t.due_date, case t.priority when 'urgent' then 0 when 'high' then 1 when 'medium' then 2 else 3 end, t.created_at, t.id
       limit 21`, [userId, ws, today]));
-  const tasks = rs.slice(0, 20).map((r) => ({ ...toCard(r, userId), overdue: !!r.due_date && r.due_date < today }));
+  const tasks = rs.slice(0, 20).map((r) => ({
+    ...toCard(r, userId), overdue: !!r.due_date && r.due_date < today,
+    // (switched off, as before: whatever the workspace role lets them do)
+    ...(r.can_edit === false && String(r.access_on ?? "") === "true" ? { readOnly: true } : {}),
+  }));
   return { tasks, more: rs.length > 20 ? 1 : 0 };
 }
 
@@ -355,7 +366,8 @@ function translate(e: unknown): never {
     throw new SlackWriteError(first || fail.message, "invalid", fields);
   }
   if (fail.status === 404) throw new SlackWriteError("Kanbo couldn't find that task, or you can't see it any more.", "not_found");
-  if (fail.status === 403) throw new SlackWriteError(fail.message.startsWith("Guests") ? fail.message : "You can't change that in Kanbo.", "forbidden");
+  // (the API's own sentence where it says why: a guest, or a project they can see but not change (0058))
+  if (fail.status === 403) throw new SlackWriteError(/^(Guests|You can see this (task|project) but can't)/.test(fail.message) ? fail.message : "You can't change that in Kanbo.", "forbidden");
   throw new SlackWriteError("Kanbo couldn't do that just now. Try again in a moment.", "failed");
 }
 

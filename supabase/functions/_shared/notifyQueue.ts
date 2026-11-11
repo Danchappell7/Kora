@@ -305,7 +305,9 @@ export async function drainQueue(d: DrainDeps): Promise<DrainReport> {
           const still = new Set(await d.visibleTasks(userId, due.tasks.map((t) => String(t.id))));
           const tasks = due.tasks.filter((t) => still.has(String(t.id)));
           if (!tasks.length) { drop.push(r); continue; }
-          if (tasks.length !== due.tasks.length) r = { ...r, payload: { ...r.payload, due: { ...due, tasks } } };
+          // (and its "…and N more" goes: it counted tasks behind these that this list no longer knows, some
+          // of which may be hidden from them now too)
+          if (tasks.length !== due.tasks.length) r = { ...r, payload: { ...r.payload, due: { ...due, tasks, more: 0 } } };
         }
         if (r.kind === "update" && d.canSeeUpdate) {
           const about = updateAboutOf(r.payload);

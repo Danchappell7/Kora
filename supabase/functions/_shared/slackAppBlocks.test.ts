@@ -228,6 +228,11 @@ describe("unfurls and Home", () => {
     expect(v.type).toBe("home");
     expect(JSON.stringify(v)).toMatch(/Link your Kanbo account/);
   });
+  it("Home: a task you can only view or comment on (0058) has no Complete; the rest do", () => {
+    const v = homeView({ linked: true, tasks: [{ id: ID, title: "Read only", readOnly: true }, { id: ID, title: "Yours" }], appUrl: APP });
+    const rows = (v.blocks as { text?: { text?: string }; accessory?: unknown }[]).filter((b) => /Read only|Yours/.test(String(b.text?.text ?? "")));
+    expect(rows.map((b) => !!b.accessory)).toEqual([false, true]);
+  });
   it("Home: at most 20 tasks, overdue said so", () => {
     const tasks = Array.from({ length: 30 }, (_, i) => ({ id: ID, title: `T${i}`, dueDate: "2026-10-18", overdue: i === 0 }));
     const v = homeView({ linked: true, tasks, appUrl: APP, more: 1 });

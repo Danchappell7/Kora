@@ -20,7 +20,9 @@ describe("invite email: the role", () => {
   });
 
   it("with Project access on, a guest is told they'll see only the projects they're added to", () => {
-    expect(guestNote("guest", "Foundrise", true)).toBe("As a guest you'll see only the projects you're added to, and you can comment on their tasks.");
+    // (never a promise to comment: a guest added as a viewer can't)
+    expect(guestNote("guest", "Foundrise", true)).toBe("As a guest you'll see only the projects you're added to. On each one you can read its tasks, or comment on them too, depending on how you were added.");
+    expect(guestNote("guest", "Foundrise", true)).not.toMatch(/, and you can comment/);
     expect(guestNote("member", "Foundrise", true)).toBeNull();
     expect(guestNote("admin", "Foundrise", true)).toBeNull();
   });

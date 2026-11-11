@@ -827,8 +827,17 @@ export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras
     // with Project access switched on (0058), anyone kept on it must be able to see its project: checked on
     // every move. Switched off, a move inside the workspace leaves its people as they are, as before
     const access = await accessOn(tx);
-    const recheck = moved || (projectChanged && (await switchedOn(tx, ws)));
+    const gatedMove = projectChanged && !moved && (await switchedOn(tx, ws));
+    const recheck = moved || gatedMove;
     const seen = access ? project : undefined;
+    // A sub-task moved inside the workspace on its own, switched on: it becomes a task of its own there, as
+    // in the app (detachSoloMove). The database keeps a sub-task in its parent's project, so it would stay
+    // put while everything below that was done for the move (its people, its plan, its section) landed.
+    // Switched off it moves under its parent, as before
+    if (gatedMove && cur.parent_id) {
+      const par = await tx.query<{ project_id: string }>(`select t.project_id from public.tasks t where t.id = $1::uuid`, [String(cur.parent_id)]);
+      if (par[0]?.project_id !== project) sets.push("parent_id = null");
+    }
     if (v.assigneeId !== undefined) assignee = await resolveAssignee(tx, v.assigneeId, ws, me, seen);
     else if (recheck && cur.assignee_id && !(await canBeOnTask(tx, ws, String(cur.assignee_id), me, seen))) {
       assignee = me; // as the app does: they can't see it there, so it comes to you
@@ -891,6 +900,29 @@ export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras
     if (v.status === "done" && cur.status !== "done") next = await spawnNextOccurrence(ctx, tx, cur);
 
     const kws = keyWorkspace(p);
+    // (sub-tasks: whoever is on one and can't see the new project drops off it, and one its assignee can't
+    // see there comes to you with no plan of theirs on it, as the app's retarget() does)
+    const sp = seen ?? null;
+    const peopleSql = (m: Sql) => `
+          plan_today = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.plan_today else false end,
+          scheduled = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.scheduled else null end,
+          my_section_id = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.my_section_id else null end,
+          assignee_id = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.assignee_id else ${m.p(me)} end,
+          followers = array(select x from unnest(t.followers) x where ${visibleSql(m, "x", ws, me, sp)}),
+          collaborators = array(select x from unnest(t.collaborators) x where ${visibleSql(m, "x", ws, me, sp)})`;
+    if (gatedMove) {
+      // Switched on, the database moves the sub-tasks in its project along with it as the task's own update
+      // lands, and hands one whose assignee can't see the new project to that project's owner: so their
+      // people are settled first, here, judged by where they're going (the sub-tasks in another project
+      // stay where they are, on their own, and aren't touched)
+      const m = new Sql();
+      const root = m.p(id), from = m.p(String(cur.project_id));
+      await tx.query(`with recursive d(id) as (
+          select c.id from public.tasks c where c.parent_id = ${root}::uuid and c.project_id = ${from}
+          union select c.id from public.tasks c join d on c.parent_id = d.id where c.project_id = ${from})
+        update public.tasks t set ${peopleSql(m)}
+        where t.id in (select id from d) and ${inKeyWs("t.workspace_id", m.params.length + 1)}`, [...m.params, kws]);
+    }
     if (sets.length) {
       const done = await tx.query(`update public.tasks t set ${sets.join(", ")}
         where t.id = ${q.p(id)}::uuid and ${inKeyWs("t.workspace_id", q.params.length + 1)} returning t.id`, [...q.params, kws]);
@@ -901,14 +933,7 @@ export async function updateTaskWith(ctx: RouteContext, extras: TaskUpdateExtras
       // workspaces, people who can't see them there are dropped, as the app's retarget() does
       const m = new Sql();
       const root = m.p(id);
-      const sp = seen ?? null;
-      const people = recheck ? `,
-          plan_today = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.plan_today else false end,
-          scheduled = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.scheduled else null end,
-          my_section_id = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.my_section_id else null end,
-          assignee_id = case when ${visibleSql(m, "t.assignee_id", ws, me, sp)} then t.assignee_id else ${m.p(me)} end,
-          followers = array(select x from unnest(t.followers) x where ${visibleSql(m, "x", ws, me, sp)}),
-          collaborators = array(select x from unnest(t.collaborators) x where ${visibleSql(m, "x", ws, me, sp)})` : "";
+      const people = recheck ? `,${peopleSql(m)}` : "";
       await tx.query(`with recursive d(id) as (
           select c.id from public.tasks c where c.parent_id = ${root}::uuid
           union select c.id from public.tasks c join d on c.parent_id = d.id)

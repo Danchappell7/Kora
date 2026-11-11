@@ -588,6 +588,23 @@ describe("a held due list and Project access (0058)", () => {
     expect(mail.html).toContain("Send the deck");
     expect(mail.html).not.toContain("Salary bands");
   });
+  it("its '…and N more' goes once any held task is hidden (it may count hidden ones too); kept when none is", async () => {
+    const withMore = (): Notice => {
+      const n = dueNotice();
+      return { ...n, payload: { ...n.payload, due: { ...(n.payload as { due: Record<string, unknown> }).due, more: 30 } } } as Notice;
+    };
+    const w = world();
+    await w.store.enqueue(withMore(), sec(0));
+    expect(await w.drain({ visibleTasks: async (_u, ids) => ids.filter((id) => id === T2) })).toMatchObject({ sent: 1 });
+    const mail = w.sent[0].msg.email!;
+    expect(mail.subject).toBe("1 task due on Kanbo");
+    expect(mail.html).not.toContain("more.");
+    const w2 = world();
+    await w2.store.enqueue(withMore(), sec(0));
+    expect(await w2.drain({ visibleTasks: async (_u, ids) => ids })).toMatchObject({ sent: 1 });
+    expect(w2.sent[0].msg.email!.subject).toBe("32 tasks due on Kanbo");
+    expect(w2.sent[0].msg.email!.html).toContain("…and 30 more.");
+  });
   it("isn't sent when none are left; before 0058 (or without the check) every task goes", async () => {
     const w = world();
     await w.store.enqueue(dueNotice(), sec(0));

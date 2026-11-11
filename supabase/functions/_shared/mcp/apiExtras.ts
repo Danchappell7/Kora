@@ -104,6 +104,10 @@ export async function getMyDay(ctx: RouteContext): Promise<Response> {
     });
     let approvals: MyDayApproval[] = [];
     if (have?.approvals) {
+      // (0058: only the ones they can still decide, as the Inbox lists them (approval_json's can_decide):
+      // switched on, a reviewer made a viewer of the project, or taken off it, can't, and isn't told to.
+      // Switched off, the rank is the workspace role's, so every reviewer still counts)
+      const decidable = (await accessInstalled(tx)) ? `and public.pa_task_rank(a.task_id) >= 2` : "";
       const asks = await tx.query<Row>(
         `select a.id::text as id, a.task_id::text as task_id, coalesce(nullif(a.title, ''), t.title) as title, a.created_at::text as created_at,
                 t.status, t.priority, t.due_date::text as due_date, t.due_time, t.project_id, t.workspace_id::text as workspace_id,
@@ -114,7 +118,7 @@ export async function getMyDay(ctx: RouteContext): Promise<Response> {
            join public.tasks t on t.id = a.task_id
            left join public.profiles pr on pr.id = a.requested_by
           where r.user_id = $1::uuid and r.decision is null and a.status = 'pending' and t.archived_at is null
-            and ${inKeyWs("a.workspace_id", 2)}
+            and ${inKeyWs("a.workspace_id", 2)} ${decidable}
           order by a.created_at, a.id limit ${MY_DAY_CAPS.approvals}`, [p.userId, kws]);
       totals.approvals = Number(asks[0]?.how_many) || 0;
       approvals = asks.map((a) => ({

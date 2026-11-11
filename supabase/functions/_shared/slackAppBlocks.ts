@@ -431,7 +431,11 @@ export function privateUnfurl(kind: "task" | "project", id: string, appUrl: stri
 
 /* ------------------------------------------------------------ App Home */
 
-export interface HomeTask extends TaskCard { overdue?: boolean }
+export interface HomeTask extends TaskCard {
+  overdue?: boolean;
+  /** they can see it but not change it (0058: a Members only or Private project they view or comment on): no Complete */
+  readOnly?: boolean;
+}
 
 export function homeView(opts: { linked: boolean; tasks?: HomeTask[]; appUrl: string; workspaceName?: string | null; today?: string; more?: number }): Json {
   const blocks: Json[] = [{ type: "header", text: plain("Kanbo", 150) }];
@@ -452,7 +456,7 @@ export function homeView(opts: { linked: boolean; tasks?: HomeTask[]; appUrl: st
       blocks.push({
         type: "section",
         text: mrkdwn(`*${link(url, t.title)}*\n${where}${due ? ` · ${t.overdue ? ":warning: was due " : "due "}${esc(due)}` : ""}`),
-        accessory: button("Complete", ACTIONS.complete, { value: t.id, label: `Mark ${t.title} done` }),
+        ...(t.readOnly ? {} : { accessory: button("Complete", ACTIONS.complete, { value: t.id, label: `Mark ${t.title} done` }) }),
       });
     }
     if ((opts.more ?? 0) > 0) blocks.push(context(`And ${opts.more} more in Kanbo.`));
