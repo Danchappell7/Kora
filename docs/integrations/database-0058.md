@@ -193,7 +193,11 @@ No new secrets and no new schedule.
   account of whoever set an endpoint's address switches it off too, whatever
   the switch says (the endpoint never falls back to its creator's wider
   access). Whoever switches such an endpoint back on takes its address on as
-  theirs: from then on it hears what they can see. When a workspace's owner
+  theirs: from then on it hears what they can see. Admin › Delete user (the
+  platform admin, who usually isn't in the workspace) deletes anyone, as
+  GoTrue's delete does: emptying a bill rate's "set by" or taking a solo
+  owner's bin entries with them is never judged as the platform admin's own
+  write or Delete forever. When a workspace's owner
   deletes their account, its next admin (or, with none, its longest-standing
   member) becomes the owner and so sees every project there, Private ones
   they were kept off included; the deletion sheet says so where Project access
@@ -272,7 +276,9 @@ person who saved it: it goes when someone else signs in there.)
 
 - **Live channels.** A doc's live edits, carets and who's here go over
   Supabase Realtime, which checks the rules when someone joins a channel and
-  when their token refreshes, not on every message. Someone taken off a
+  when their token refreshes, not on every message. (A task's channel takes a
+  "typing" notice only from someone who can comment on it, with the switch on:
+  a viewer's name never shows as typing there.) Someone taken off a
   project, or left out when it's narrowed, can keep receiving that doc's live
   edits for as long as their open session's token lasts (up to an hour, the
   default) if their client doesn't leave the channel. Kanbo itself reloads and
@@ -313,15 +319,28 @@ person who saved it: it goes when someone else signs in there.)
   them as its assignee), and the rest of the run carries on. A database that
   syncs with a project you can't see can't be previewed or imported by you,
   kept in sync or not, and its sync can't be taken over by naming the same
-  database for another project ("already syncs"). Nor can its pages be read
-  in Kanbo through a link of your own: a page that a synced task you can't see
-  mirrors can't be linked to a task of yours ("invalid page"), and a link to it
-  made before (while its project was open, say) is hidden from you, with the
-  page's cached title, so the Notion function won't fetch the page for you
-  either. Removing a sync doesn't open its database up: its pages stay
-  linked to that project's tasks (and keep what a two-way sync wrote into
-  them), so it still can't be previewed or imported by anyone who can't see
-  the project, nor can a database imported once into such a project. (A task
+  database for another project ("already syncs"); where its sync is gone
+  (removed, or its project in the bin or deleted for good), nor can a new
+  sync of it be made for a project of yours ("invalid database"). Nor can its pages be read
+  in Kanbo through a link of your own: a page that a task you can't see is
+  synced with, or was imported from, can't be linked to a task of yours
+  ("invalid page"), and a link to it made before (while its project was open,
+  say) is hidden from you, with the page's cached title, so the Notion
+  function won't fetch the page for you either (a page someone linked to a
+  task by hand names no database, and never closes it; nor does an import
+  elsewhere close a page a live sync links to a task you can see). Removing a
+  sync doesn't open its database or its pages up: its pages stay linked to
+  that project's tasks (and keep what a two-way sync wrote into them), so it
+  still can't be previewed or imported by anyone who can't see the project,
+  nor can a database imported once into such a project. Nor does deleting the
+  project: while it (or one of its imported tasks) is in the bin, the syncs and
+  links its bin entry holds keep the database and its pages closed to anyone
+  who can't see that entry, and once the project is deleted for good, the
+  database and pages its record kept stay closed to anyone who couldn't see it
+  (a task deleted for good on its own takes its page's closure with it, as
+  unlinking it would). Restoring a project whose database syncs with another
+  project by now brings it back without its sync, and says so ("Its Notion
+  sync wasn't restored"). (A task
   moved out of a synced project you can see keeps its sync's link without
   closing the database to you. An imported task that has since gone to
   someone's Personal list or to another workspace doesn't close it either

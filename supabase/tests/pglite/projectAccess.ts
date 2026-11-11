@@ -396,8 +396,9 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
           const rt = await attempt(u, `select public.kanbo_realtime_allowed('kanbo:task:' || $1, 'presence', false) as t,
                                               public.kanbo_realtime_allowed('kanbo:project:' || $2, 'presence', false) as p,
                                               public.kanbo_realtime_allowed('kanbo:doc:' || $3, 'presence', false) as d,
-                                              public.kanbo_realtime_allowed('kanbo:doc:' || $3, 'broadcast', true) as b`, [w.task[p], w.proj[p], w.doc[p]]);
-          for (const k of ["t", "p", "d", "b"]) out[`rt:${who}:${k}:${p}`] = "error" in rt ? "error" : String(rt.rows[0][k]);
+                                              public.kanbo_realtime_allowed('kanbo:doc:' || $3, 'broadcast', true) as b,
+                                              public.kanbo_realtime_allowed('kanbo:task:' || $1, 'broadcast', true) as tb`, [w.task[p], w.proj[p], w.doc[p]]);
+          for (const k of ["t", "p", "d", "b", "tb"]) out[`rt:${who}:${k}:${p}`] = "error" in rt ? "error" : String(rt.rows[0][k]);
         }
       }
       // writes (each rolled back)
@@ -485,6 +486,8 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
         if (opts.realtime) {
           out[`rt:${who}:t:${p}`] = b(r >= 1); out[`rt:${who}:p:${p}`] = b(r >= 1);
           out[`rt:${who}:d:${p}`] = b(r >= 1); out[`rt:${who}:b:${p}`] = b(r >= 3);
+          // (typing on a task: anyone who can see it while the switch is off, as before; commenters while it's on)
+          out[`rt:${who}:tb:${p}`] = b(on ? r >= 2 : r >= 1);
         }
       }
       for (const s of SPOTS) {
@@ -1409,6 +1412,101 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     });
     eq(got, { link: "invalid page", again: "invalid page", M2: "0/0", GC: "0/0", ME: "2/1", O: "2/1", meg: true, plain: true, offLink: true, offM2: "3/1" },
       "Moe and Gail read nothing of PP's page; Meg and Oona do; switched off, as before");
+  });
+
+  await test("0058, switch on: a Private project's Notion page stays closed once its sync is removed, while the project's in the bin and once it's deleted for good (link by id, a link of your own, its cached title; the database too); a live sync's page you can see stays yours; switched off, as before", async () => {
+    const D = "0d0d0d0d-5858-4000-8000-0000000000d1";
+    const helper = await hasFn("public.user_notion_database_hidden(uuid,uuid,text)");
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, unknown> = {};
+      const page = w.rows.notion_page_cache.PP![0];
+      const sync = w.rows.notion_syncs.PP![0];
+      // PP's task syncs two-way with database D (as the sync writes it): its page's cached title is the task's
+      await run(null, `update public.notion_syncs set database_id = $2 where id = $1::uuid`, [sync, D]);
+      await run(null, `update public.notion_links set kind = 'synced', sync_id = $2::uuid, notion_database_id = $3 where id = $1::uuid`, [w.rows.notion_links.PP![0], sync, D]);
+      await run(null, `update public.notion_page_cache set title = 'Zebra renamed while Private' where workspace_id = $1::uuid and notion_page_id = $2`, [w.ws, page]);
+      // a PW task of Moe's, linked to that page while PP was open
+      const mine = (await run(w.id.M2, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra mine', $2, 'nobody', $3::uuid) returning id::text as id`,
+        [w.id.M2, w.proj.PW, w.ws]))[0].id as string;
+      await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind, created_by) values ($1::uuid, $2::uuid, $3, 'reference', $4::uuid)`, [w.ws, mine, page, w.id.M2]);
+      const reads = async (who: Who) => [(await run(w.id[who], `select 1 from public.notion_links where notion_page_id = $1`, [page])).length,
+        (await run(w.id[who], `select title from public.notion_page_cache where notion_page_id = $1`, [page])).length].join("/");
+      const link = async (who: Who) => {
+        await run(null, `savepoint pa_link`);
+        const r = await tryRun(w.id[who], `select public.notion_link_page($1::uuid, $2) ->> 'kind' as l`, [w.task.PW, page]);
+        await run(null, `rollback to savepoint pa_link`);
+        return "error" in r ? r.error : "linked";
+      };
+      const closed = async (who: Who) => helper ? Boolean((await run(null, `select public.user_notion_database_hidden($1::uuid, $2::uuid, $3) as h`, [w.id[who], w.ws, D]))[0].h) : "no helper";
+      // (a new sync of the database for PW, made with notion_save_sync itself, past the notion function's check)
+      const save = async (who: Who) => {
+        await run(null, `savepoint pa_save`);
+        const r = await tryRun(w.id[who], `select public.notion_save_sync($1::uuid, $2::uuid, $3, 'Zebra board', '{"title": "Name"}'::jsonb, 'two_way', true) as s`, [w.ws, w.proj.PW, D]);
+        await run(null, `rollback to savepoint pa_save`);
+        return "error" in r ? r.error : "saved";
+      };
+      const state = async () => ({ M2: await reads("M2"), GC: await reads("GC"), A: await reads("A"), ME: await reads("ME"), linkM2: await link("M2"), linkA: await link("A"), linkME: await link("ME"),
+                                   saveA: await save("A"), saveO: await save("O") });
+      // 1. Oona removes the sync: its link is a plain one now, naming the database
+      await run(w.id.O, `select public.notion_delete_sync($1::uuid)`, [sync]);
+      out.removed = await state();
+      // 2. Oona deletes PP to the bin: its links go with its tasks, its row holds them
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [w.proj.PP]);
+      out.liveLinks = (await run(null, `select count(*)::int as n from public.notion_links l join public.tasks t on t.id = l.task_id where t.project_id = $1`, [w.proj.PP]))[0].n;
+      out.binned = { ...(await state()), closedA: await closed("A"), closedM2: await closed("M2"), closedME: await closed("ME"), closedO: await closed("O") };
+      // 3. …and deletes it for good: its record keeps the database and the page
+      const bin = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [w.proj.PP]))[0].id as string;
+      await run(w.id.O, `select public.purge_trash($1::uuid)`, [bin]);
+      out.retired = helper ? (await run(null, `select notion_databases = array[$2] as d, $3 = any (notion_pages) as p from public.project_ids_retired where id = $1::uuid`, [w.proj.PP, D, page]))[0] : "nothing recorded";
+      out.purged = { ...(await state()), closedA: await closed("A"), closedM2: await closed("M2"), closedME: await closed("ME"), closedO: await closed("O") };
+      // 4. a two-way sync of a project Moe can see links the page now (Oona's import of D into PW): it's that task's
+      await run(null, `update public.notion_syncs set database_id = $2 where id = $1::uuid`, [w.rows.notion_syncs.PW![0], D]);
+      await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind) values ($1::uuid, $2::uuid, $3, $4, $5::uuid, 'synced')`,
+        [w.ws, w.task.PW, page, D, w.rows.notion_syncs.PW![0]]);
+      await run(null, `update public.notion_page_cache c set title = t.title from public.tasks t where t.id = $3::uuid and c.workspace_id = $1::uuid and c.notion_page_id = $2`, [w.ws, page, w.task.PW]);
+      out.pwSync = { M2: await reads("M2"), GC: await reads("GC") };
+      // 5. switched off: as before 0058
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      await run(null, `update public.notion_syncs set database_id = gen_random_uuid()::text where id = $1::uuid`, [w.rows.notion_syncs.PW![0]]);
+      await run(null, `delete from public.notion_links where task_id = $1::uuid and kind = 'synced'`, [w.task.PW]);
+      out.off = { M2: await reads("M2"), linkA: await link("A"), saveA: await save("A") };
+      return out;
+    });
+    eq(got, {
+      removed: { M2: "0/0", GC: "0/0", A: "0/0", ME: "2/1", linkM2: "invalid page", linkA: "invalid page", linkME: "linked", saveA: "invalid database", saveO: "saved" },
+      liveLinks: 0,
+      binned: { M2: "0/0", GC: "0/0", A: "0/0", ME: "1/1", linkM2: "invalid page", linkA: "invalid page", linkME: "linked", saveA: "invalid database", saveO: "saved",
+                closedA: true, closedM2: true, closedME: false, closedO: false },
+      retired: { d: true, p: true },
+      purged: { M2: "0/0", GC: "0/0", A: "0/0", ME: "1/1", linkM2: "invalid page", linkA: "invalid page", linkME: "linked", saveA: "invalid database", saveO: "saved",
+                closedA: true, closedM2: true, closedME: false, closedO: false },
+      pwSync: { M2: "2/1", GC: "2/1" },
+      off: { M2: "1/1", linkA: "linked", saveA: "saved" },
+    }, "Moe, Gail and Ari read nothing of PP's page, nor link it, once its sync is removed, in the bin and gone for good; Meg (on PP) and Oona do");
+  });
+
+  await test("0058, switch on: restoring a project whose Notion database syncs with another project by now says its sync wasn't restored; switched off, as before (no note)", async () => {
+    const D = "0d0d0d0d-5858-4000-8000-0000000000d2";
+    const got = await scenario(async (run) => {
+      const out: Record<string, unknown> = {};
+      for (const on of [true, false]) {
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+        await run(null, `update public.notion_syncs set database_id = $2 where id = $1::uuid`, [w.rows.notion_syncs.PM![0], D]);
+        await run(null, `savepoint pa_note`);
+        await run(w.id.O, `delete from public.projects where id = $1::uuid`, [w.proj.PM]);
+        // the database is free while PM's in the bin: Oona (who can see the bin entry) syncs it with PW
+        await run(null, `update public.notion_syncs set database_id = $2 where id = $1::uuid`, [w.rows.notion_syncs.PW![0], D]);
+        const bin = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [w.proj.PM]))[0].id as string;
+        const r = (await run(w.id.O, `select public.restore_from_trash($1::uuid) as r`, [bin]))[0].r as Record<string, unknown>;
+        out[on ? "on" : "off"] = { status: r.status, note: r.note, syncs: (await run(null, `select count(*)::int as n from public.notion_syncs where project_id = $1::uuid`, [w.proj.PM]))[0].n };
+        await run(null, `rollback to savepoint pa_note`);
+      }
+      return out;
+    });
+    eq(got, {
+      on: { status: "restored", note: "Its Notion sync wasn't restored: that database syncs with another project now.", syncs: 0 },
+      off: { status: "restored", note: null, syncs: 0 },
+    }, "the note, with the switch on");
   });
 
   await test("0058: the id of a Members only or Private project that left the workspace is never a new project's, once nothing holds it (deleted for good from a Personal bin); a restore still brings it back", async () => {
@@ -2361,6 +2459,90 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     }
   });
 
+  await test("0058: Admin › Delete user (the platform admin, a client with no rank here) deletes someone who set a project's bill rate, or a solo owner with a Private task in the bin (whichever foreign key acts first), switch on or off", async () => {
+    // (deleting an account empties bill_rates.updated_by and deletes its creator's bin rows: neither may reach
+    // a 0058 trigger that judges the caller, who here is the platform admin, never a member of the workspace)
+    const rates = await has("bill_rates");
+    const got = await scenario(async (run, exec, tryRun) => {
+      const out: Record<string, string> = {};
+      const P = String((await run(null, `insert into auth.users (email, raw_user_meta_data) values ('platform-admin.pa@example.org', '{"first_name": "Pat"}'::jsonb) returning id::text as id`))[0].id);
+      await run(null, `select set_config('kanbo.trusted', 'on', true)`);
+      await run(null, `update public.profiles set approved = true, is_admin = true where id = $1::uuid`, [P]);
+      await run(null, `select set_config('kanbo.trusted', 'off', true)`);
+      const del = async (u: string) => { const r = await tryRun(P, `select public.admin_delete_user($1::uuid) as r`, [u]); return "error" in r ? `refused (${r.error})` : "deleted"; };
+      // the bin's foreign key (trash.user_id) acting before the workspace's (workspaces.owner_id), as a live
+      // database's trigger names may sort them: re-made, the workspace's acts last
+      const fk = (await run(null, `select conname as c, pg_get_constraintdef(oid) as d from pg_constraint
+                                    where conrelid = 'public.workspaces'::regclass and contype = 'f' and confrelid = 'auth.users'::regclass`)) as { c: string; d: string }[];
+      for (const on of [true, false]) {
+        const sw = on ? "on" : "off";
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+        if (rates) {
+          // Ari (an admin) set PW's and PM's rates; Pat deletes Ari
+          await run(w.id.A, `select public.set_bill_rate($1::uuid, $2::uuid, 120)`, [w.ws, w.proj.PW]);
+          await run(w.id.A, `select public.set_bill_rate($1::uuid, $2::uuid, 90)`, [w.ws, w.proj.PM]);
+          await run(null, `savepoint pa_del`);
+          out[`${sw}: Ari, who set two rates`] = await del(w.id.A);
+          out[`${sw}: their rates`] = (await run(null, `select count(*)::int as n from public.bill_rates where project_id in ($1::uuid, $2::uuid) and updated_by is null`, [w.proj.PW, w.proj.PM]))[0].n === 2 ? "kept, nobody's" : "?";
+          await run(null, `rollback to savepoint pa_del`);
+          // (still judged on a write of the rate itself: Ari can't change Private PP's, which Oona set)
+          await run(w.id.O, `select public.set_bill_rate($1::uuid, $2::uuid, 300)`, [w.ws, w.proj.PP]);
+          // (a definer's write as Ari: clients have no write grant of their own)
+          const raw = await tryRun(null, `with c as (select set_config('request.jwt.claims', $2, true) as x)
+                                          update public.bill_rates set hourly_rate = 1 where project_id = $1::uuid and exists (select 1 from c) returning 1`,
+            [w.proj.PP, JSON.stringify({ sub: w.id.A, role: "authenticated" })]);
+          out[`${sw}: Ari's write of PP's rate`] = "error" in raw ? raw.error : "written";
+          await run(null, `delete from public.bill_rates where project_id in ($1::uuid, $2::uuid, $3::uuid)`, [w.proj.PW, w.proj.PM, w.proj.PP]);
+        }
+      }
+      for (const order of ["as made", "the bin's first"]) {
+        if (order === "the bin's first") for (const f of fk) await exec(`alter table public.workspaces drop constraint ${f.c}; alter table public.workspaces add constraint ${f.c} ${f.d}`);
+        for (const on of [true, false]) {
+          const sw = on ? "on" : "off";
+          const tag = `${sw}${order === "as made" ? "" : "b"}`;
+          // (made by the service role, so no history row of this transaction names Uma: deleting her empties
+          // their actor_id, and Postgres checks such a row's other keys again, which the workspace's own
+          // delete, acting last here, would fail: a test-only state, the history being older than the delete)
+          const U = String((await run(null, `insert into auth.users (email) values ($1) returning id::text as id`, [`solo-u-${tag}.pa@example.org`]))[0].id);
+          const G = String((await run(null, `insert into auth.users (email) values ($1) returning id::text as id`, [`solo-g-${tag}.pa@example.org`]))[0].id);
+          await run(null, `update public.profiles set approved = true where id in ($1::uuid, $2::uuid)`, [U, G]);
+          const ws = String((await run(null, `insert into public.workspaces (name, owner_id) values ('Solo bin', $1::uuid) returning id::text as id`, [U]))[0].id);
+          await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status)
+                           values ($1::uuid, $2::uuid, 'u', 'Uma', 'owner', 'active'), ($1::uuid, $3::uuid, 'g', 'Gus', 'guest', 'active')`, [ws, U, G]);
+          await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [ws]);
+          const p = String((await run(null, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Solo secret', $2::uuid, 'private') returning id::text as id`, [U, ws]))[0].id);
+          const t = String((await run(null, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Solo task', $2, '', $3::uuid) returning id::text as id`, [U, p, ws]))[0].id);
+          await run(null, `delete from public.tasks where id = $1::uuid`, [t]);
+          if (!on) await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [ws]);
+          const bin = (await run(null, `select id::text as id, user_id = $2::uuid as hers, access ->> 'visibility' as v from public.trash where item_id = $1::uuid`, [t, U]))[0] as { id: string; hers: boolean; v: string };
+          out[`${sw}, ${order}: the bin row`] = `${bin.hers ? "Uma's" : "?"}, ${bin.v}`;
+          // (a client's own Delete forever is still judged: Pat isn't in it)
+          const purge = await tryRun(P, `select public.purge_trash($1::uuid) as r`, [bin.id]);
+          out[`${sw}, ${order}: Pat's Delete forever`] = "error" in purge ? purge.error : "purged";
+          out[`${sw}, ${order}: Uma, a solo owner with a binned Private task`] = await del(U);
+        }
+      }
+      await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [w.ws]);
+      return out;
+    });
+    const want: Record<string, string> = {};
+    for (const sw of ["on", "off"]) {
+      if (rates) {
+        want[`${sw}: Ari, who set two rates`] = "deleted";
+        want[`${sw}: their rates`] = "kept, nobody's";
+        want[`${sw}: Ari's write of PP's rate`] = sw === "on" ? "not authorized" : "written";
+      }
+    }
+    for (const order of ["as made", "the bin's first"]) {
+      for (const sw of ["on", "off"]) {
+        want[`${sw}, ${order}: the bin row`] = "Uma's, private";
+        want[`${sw}, ${order}: Pat's Delete forever`] = "not found";
+        want[`${sw}, ${order}: Uma, a solo owner with a binned Private task`] = "deleted";
+      }
+    }
+    eq(got, want, "deleted, as GoTrue's delete is; a write of a rate and a Delete forever still judged");
+  });
+
   await test("0058: a bin row's summary names only its own scope's project and parent (a task of your own naming a Private project or task: whatever the switch says)", async () => {
     const got = await scenario(async (run) => {
       await run(null, `update public.projects set emoji = '🦓', color = '#123456' where id = $1::uuid`, [w.proj.PP]);
@@ -2796,6 +2978,10 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       originals.push(["0054_update_conversation.sql", "status_update_project_ok(p_project text, p_ws uuid)", "public.status_update_project_ok(text,uuid)"]);
     }
     if (await has("update_asks")) originals.push(["0053_update_rhythm.sql", "ask_for_update(p_project uuid)", "public.ask_for_update(uuid)"]);
+    if (await hasFn("public.kanbo_realtime_allowed(text,text,boolean)")) {
+      originals.push([(await has("meetings")) ? "0056_meetings.sql" : "0048_ux_wave.sql",
+                      "kanbo_realtime_allowed(p_topic text, p_extension text, p_write boolean)", "public.kanbo_realtime_allowed(text,text,boolean)"]);
+    }
     for (const [file, sig, reg] of originals) {
       const src = (await one<{ s: string }>(`select prosrc as s from pg_proc where oid = $1::regprocedure`, [reg])).s;
       eq(src, body(file, sig), `${reg} is ${file}'s again`);

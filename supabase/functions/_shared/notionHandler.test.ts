@@ -81,7 +81,7 @@ describe("notion function: the edges", () => {
       if (/notion_status/.test(text)) return [{ s: { connected: true, can_manage: true, can_link: true, workspace_name: null } }] as never[];
       if (/notion_token/.test(text)) return [{ t: "secret_" + "x".repeat(30) }] as never[];
       if (/to_regprocedure/.test(text)) return [{ on: hidden !== null }] as never[];
-      if (/user_project_rank/.test(text)) return [{ hidden }] as never[];
+      if (/user_notion_database_hidden/.test(text)) return [{ hidden }] as never[];
       return [] as never[];
     };
     const tx: Tx = { query: answer(true) };
@@ -93,7 +93,7 @@ describe("notion function: the edges", () => {
       const r = await read(await handleNotionRequest(post({ ...body, workspaceId: ws, databaseId }, { Authorization: "Bearer jwt" }), d));
       expect(r, body.action).toMatchObject({ status: 403, body: { reason: "not_allowed", error: "This Notion database's pages are tasks in a project here that you can't see, so it can't be previewed or imported." } });
     }
-    expect(sql.some((x) => /user_project_rank/.test(x) && /notion_syncs/.test(x))).toBe(true);
+    expect(sql.some((x) => /user_notion_database_hidden/.test(x))).toBe(true);
     // (before 0058: nothing to ask, and Notion is asked as before)
     const tx0: Tx = { query: answer(null) };
     let asked = 0;

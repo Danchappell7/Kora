@@ -255,25 +255,18 @@ async function onlyOwnProject(service: Tx, ws: string): Promise<boolean> {
  * (notion_links_guard fires only on writes to the link), and which project here it left isn't recorded.
  * So the database is judged by its tasks still here; a task that has left counts only when none is (its
  * pages may still hold what a two-way sync wrote from a closed project), and then it's closed to all but
- * the workspace's owners, who see every project. On the service connection: the person's own reads of
- * notion_syncs and notion_links are filtered by the same rule, so they would miss exactly those. Before
- * 0058, or with the switch off (the undo file switches every workspace off), never: the switch is read
- * through to_jsonb, as onlyOwnProject reads it.
+ * the workspace's owners, who see every project. Nor does deleting the project open it: while the project
+ * (or its tasks) are in the bin, the syncs and links its bin entries hold keep it closed to whoever can't
+ * see that entry, and once it's deleted for good, the databases its record kept. The rule is 0058's
+ * user_notion_database_hidden (trg_notion_syncs_pa asks it too, of a new sync made with notion_save_sync
+ * itself), on the service connection: the person's own reads of notion_syncs and notion_links are
+ * filtered by the same rule, so they would miss exactly those. Before 0058, or with the switch off (the
+ * undo file switches every workspace off), never.
  */
 export async function syncsOutOfSight(service: Tx, userId: string, ws: string, databaseId: string): Promise<boolean> {
   if (!(await accessInstalled(service))) return false;
   const r = await service.query<{ hidden: boolean }>(
-    `with linked as (
-       select coalesce(t.workspace_id = l.workspace_id, false) as here, t.project_id
-         from public.notion_links l join public.tasks t on t.id = l.task_id
-        where l.workspace_id = $1::uuid and l.sync_id is null and l.notion_database_id = public.notion_norm_id($2))
-     select coalesce((select (to_jsonb(w) ->> 'project_access')::boolean from public.workspaces w where w.id = $1::uuid), false)
-        and (exists (select 1 from public.notion_syncs s
-                      where s.workspace_id = $1::uuid and s.database_id = public.notion_norm_id($2)
-                        and public.user_project_rank($3::uuid, $1::uuid, s.project_id::text) < 1)
-          or exists (select 1 from linked k where k.here and public.user_project_rank($3::uuid, $1::uuid, k.project_id) < 1)
-          or (exists (select 1 from linked k where not k.here) and not exists (select 1 from linked k where k.here)
-              and public.user_ws_role($3::uuid, $1::uuid) <> 'owner')) as hidden`,
+    `select coalesce(public.user_notion_database_hidden($3::uuid, $1::uuid, public.notion_norm_id($2)), false) as hidden`,
     [ws, databaseId, userId]);
   return r[0]?.hidden === true;
 }

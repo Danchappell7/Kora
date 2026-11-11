@@ -669,6 +669,88 @@ end; $$;
   grant execute on function public.add_meeting_item(uuid, text, text, text, uuid, date, uuid) to authenticated;
 end $meet$;
 
+-- (0056_meetings.sql where 0056 is in, else 0048_ux_wave.sql: the same function, each with a comment of
+-- its own; only where 0048 is in)
+do $live$
+begin
+  if to_regprocedure('public.kanbo_realtime_allowed(text,text,boolean)') is null then return; end if;
+  if to_regclass('public.meetings') is not null then
+    execute $fn$
+create or replace function public.kanbo_realtime_allowed(p_topic text, p_extension text, p_write boolean)
+returns boolean language plpgsql stable security definer set search_path = public as $$
+declare
+  v_kind text;
+  v_id uuid;
+  v_project uuid;
+  v_archived timestamptz;
+begin
+  if auth.uid() is null or p_topic is null or not public.can_act() then return false; end if;
+  if p_topic !~ '^kanbo:(task|doc|project|meeting):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+    return false;
+  end if;
+  if p_write and p_extension is distinct from 'presence' and p_extension is distinct from 'broadcast' then return false; end if;
+  v_kind := split_part(p_topic, ':', 2);
+  v_id := split_part(p_topic, ':', 3)::uuid;
+  if v_kind = 'task' then
+    return public.can_see_task(v_id);
+  elsif v_kind = 'project' then
+    if p_write and p_extension <> 'presence' then return false; end if;
+    return public.can_see_project(v_id);
+  elsif v_kind = 'meeting' then
+    -- (0056: who's in the room; nothing is broadcast on it)
+    if p_write and p_extension <> 'presence' then return false; end if;
+    if to_regprocedure('public.can_see_meeting(uuid)') is null then return false; end if;
+    return public.can_see_meeting(v_id);
+  end if;
+  select d.project_id, d.archived_at into v_project, v_archived from public.project_docs d where d.id = v_id;
+  if v_project is null then return false; end if;
+  if p_write and p_extension = 'broadcast' then
+    return v_archived is null and public.can_edit_project(v_project);
+  end if;
+  return public.can_see_project(v_project);
+end; $$
+  $fn$;
+  else
+    execute $fn$
+create or replace function public.kanbo_realtime_allowed(p_topic text, p_extension text, p_write boolean)
+returns boolean language plpgsql stable security definer set search_path = public as $$
+declare
+  v_kind text;
+  v_id uuid;
+  v_project uuid;
+  v_archived timestamptz;
+begin
+  if auth.uid() is null or p_topic is null or not public.can_act() then return false; end if;
+  if p_topic !~ '^kanbo:(task|doc|project|meeting):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+    return false;
+  end if;
+  if p_write and p_extension is distinct from 'presence' and p_extension is distinct from 'broadcast' then return false; end if;
+  v_kind := split_part(p_topic, ':', 2);
+  v_id := split_part(p_topic, ':', 3)::uuid;
+  if v_kind = 'task' then
+    return public.can_see_task(v_id);
+  elsif v_kind = 'project' then
+    if p_write and p_extension <> 'presence' then return false; end if;
+    return public.can_see_project(v_id);
+  elsif v_kind = 'meeting' then
+    -- (0056's meeting room: who's there; nothing is broadcast on it. No meetings yet: no)
+    if p_write and p_extension <> 'presence' then return false; end if;
+    if to_regprocedure('public.can_see_meeting(uuid)') is null then return false; end if;
+    return public.can_see_meeting(v_id);
+  end if;
+  select d.project_id, d.archived_at into v_project, v_archived from public.project_docs d where d.id = v_id;
+  if v_project is null then return false; end if;
+  if p_write and p_extension = 'broadcast' then
+    return v_archived is null and public.can_edit_project(v_project);
+  end if;
+  return public.can_see_project(v_project);
+end; $$
+  $fn$;
+  end if;
+  revoke all on function public.kanbo_realtime_allowed(text, text, boolean) from public, anon;
+  grant execute on function public.kanbo_realtime_allowed(text, text, boolean) to authenticated;
+end $live$;
+
 -- ---------- 7. it's no longer recorded ----------
 delete from public.schema_migrations where version = '0058';
 

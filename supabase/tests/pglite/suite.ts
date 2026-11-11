@@ -4208,6 +4208,69 @@ async function projectAccessApiSuite(w: World) {
     await closed.done();
     await gone.done();
   });
+  // (r2, db: a Private project's database once the project has gone to the bin, and been deleted for good)
+  const binnedDb = "0d0d0d0d-0000-4000-8000-000000005821", binnedOnceDb = "0d0d0d0d-0000-4000-8000-000000005822";
+  let ivy = "";
+  const binnedSees = async (dbId: string) => {
+    const out: boolean[] = [];
+    for (const u of [ivy, w.bob, w.alice, dora]) out.push(await syncsOutOfSight(w.deps.db.service, u, w.w1, dbId));
+    return out;
+  };
+  await test("0058, Notion, switch on: a Private project's database stays closed to people who can't see it while the project (or its imported task) is in the bin, and once it's deleted for good: no preview or import of it", async () => {
+    ivy = await admin("ivo-notion-bin");
+    // Exec bonus (Private: alice, dora) syncs two-way with one database; Exec perks (Private: alice, dora) imported another once
+    const bonus = await mk("Exec bonus", "private"), perks = await mk("Exec perks", "private");
+    for (const p of [bonus, perks]) await asPerson(pg, w.alice, `select public.set_project_member($1::uuid, $2::uuid, 'editor')`, [p, dora]);
+    const bonusTask = await task("Bonus pool: CFO +60%", bonus), perksTask = await task("Perk: company flat", perks);
+    const sync = (await one<{ id: string }>(`insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
+        values ($1::uuid, $2::uuid, $3, '{"title": "Name"}'::jsonb, 'two_way', $4::uuid) returning id::text as id`, [w.w1, bonus, binnedDb, w.alice])).id;
+    await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind, created_by)
+                    values ($1::uuid, $2::uuid, '5e5e5e5e-0000-4000-8000-000000005821', $3, $4::uuid, 'synced', $5::uuid)`, [w.w1, bonusTask, binnedDb, sync, w.alice]);
+    await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, kind, created_by)
+                    values ($1::uuid, $2::uuid, '5e5e5e5e-0000-4000-8000-000000005822', $3, 'reference', $4::uuid)`, [w.w1, perksTask, binnedOnceDb, w.alice]);
+    eq([await binnedSees(binnedDb), await binnedSees(binnedOnceDb)], [[true, true, false, false], [true, true, false, false]], "live: closed to ivy and bob");
+    // alice deletes Exec bonus (its sync and links go with it; the bin row holds them), and Exec perks' only task
+    await asPerson(pg, w.alice, `delete from public.projects where id = $1::uuid`, [bonus]);
+    await asPerson(pg, w.alice, `delete from public.tasks where id = $1::uuid`, [perksTask]);
+    eq(Number((await one<{ n: number }>(`select count(*)::int as n from public.notion_links where notion_database_id in ($1, $2)`, [binnedDb, binnedOnceDb])).n), 0, "no live link names either");
+    eq([await binnedSees(binnedDb), await binnedSees(binnedOnceDb)], [[true, true, false, false], [true, true, false, false]], "in the bin: still closed to ivy and bob");
+    // ivy previews (the handler's gate) and imports it into Launch, kept in sync or not
+    const pages = [{ object: "page", id: "5e5e5e5e-0000-4000-8000-000000005821", created_time: "2026-11-09T10:00:00.000Z", last_edited_time: "2026-11-10T10:00:00.000Z",
+                     properties: { Name: { type: "title", title: [{ plain_text: "Bonus pool: CFO +60%" }] } } }];
+    const api = {
+      calls: 0,
+      async me() { return { id: "bot" }; },
+      async searchDatabases() { return { results: [], next_cursor: null, has_more: false }; },
+      async database() { return { id: binnedDb, title: [{ plain_text: "Exec bonus" }], properties: { Name: { id: "title", name: "Name", type: "title" } } }; },
+      async query() { this.calls++; return { results: pages, next_cursor: null, has_more: false }; },
+      async page(id: string) { return pages.find((p) => p.id === id)!; },
+      async updatePage() { return {}; },
+      async users() { return { results: [], next_cursor: null, has_more: false }; },
+    };
+    let n = 0;
+    const deps = { db: w.deps.db, notion: () => api, now: () => Date.now(), newId: () => `7a7a7a7a-0000-4000-8000-${String(++n).padStart(12, "0")}`, log: () => undefined };
+    for (const keepInSync of [true, false]) {
+      let got = "";
+      try {
+        await importDatabase(deps as never, api as never, { userId: ivy, workspaceId: w.w1, databaseId: binnedDb, mapping: { title: "Name" }, projectId: w.launch,
+          newProject: null, keepInSync, direction: "two_way" }, Date.now() + 20_000);
+        got = "imported";
+      } catch (e) { got = e instanceof NotionActionError ? `${e.status} ${e.message}` : String(e); }
+      eq(got, `403 ${OUT_OF_SIGHT_TEXT}`, `ivy importing it ${keepInSync ? "kept in sync" : "once"}`);
+    }
+    eq((await pg.query(`select 1 from public.tasks where title = 'Bonus pool: CFO +60%' and project_id = $1`, [w.launch])).rows.length, 0, "nothing of it in Launch");
+    eq(Number((await one<{ n: number }>(`select count(*)::int as n from public.notion_syncs where database_id = $1`, [binnedDb])).n), 0, "nor a sync of ivy's");
+    // alice deletes both bin rows for good
+    for (const item of [bonus, perksTask]) {
+      const bin = (await one<{ id: string }>(`select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [item])).id;
+      await asPerson(pg, w.alice, `select public.purge_trash($1::uuid)`, [bin]);
+    }
+    // (deleted for good, Exec bonus's record keeps its database; a task's bin row deleted for good is gone, and
+    // Exec perks, still here, is judged as any project is: by its live links, and it has none left)
+    eq([await binnedSees(binnedDb), await binnedSees(binnedOnceDb)], [[true, true, false, false], [false, false, false, false]], "deleted for good: Exec bonus's database stays closed");
+    // (the history's purge rows go: later suites count every purge row there is)
+    await pg.query(`delete from public.audit_events where action like '%.purged' and target_id in ($1, $2)`, [bonus, perksTask]);
+  });
   /** a member of w1 whose account is suspended, with an address of their own */
   const suspendedMember = async (name: string) => {
     const u = await makeUser(pg, `pa.${name}@example.org`, name);
@@ -4337,6 +4400,9 @@ async function projectAccessApiSuite(w: World) {
     await moved.done();
     await closed.done();
     await gone.done();
+  });
+  await test("0058, Notion, switch off: a database whose Private project went to the bin and was deleted for good previews and imports for anyone who may, as before 0058", async () => {
+    eq([await binnedSees(binnedDb), await binnedSees(binnedOnceDb)], [[false, false, false, false], [false, false, false, false]], "open to ivy, bob, alice and dora");
   });
   await test("0058 via REST, switch off: a sub-task moved on its own goes under its parent, as before", async () => {
     const f = await family("Off: solo move");

@@ -937,8 +937,10 @@ steps; nothing breaks while you wait.
      who isn't on that project: it's never copied back as a new task). A
      database that syncs with a project you can't see can't be previewed or
      imported by you, nor its sync taken over (nor once that sync is removed,
-     or when it was imported into such a project; a task that has left the
-     workspace counts only once none of the database's tasks is still here).
+     or when it was imported into such a project, nor while that project or
+     its imported tasks are in the bin, nor once the project is deleted for
+     good; a task that has left the workspace counts only once none of the
+     database's tasks is still here).
      With the switch off, a page's Owner is assigned and every database
      previews and imports as today.
    - `ics-feed`: a calendar names a project only where the task really is in
