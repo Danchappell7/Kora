@@ -217,7 +217,9 @@ export function splitPersonal(patch: Partial<Task>): { personal: Partial<Pick<Ta
  *  so nobody's day shows a teammate's plan. Their own plan is their
  *  task_user_state row once 0043 is live (the slot and "on today" only when
  *  made for `day`), else this device's copy. A score of their own replaces the
- *  row's; without one the row's stays (a ranking hint, not a plan). Tasks
+ *  row's; without one the row's score stays (a ranking hint, not a plan). (A
+ *  teammate's reason isn't there to show: Kanbo's reason is never stored on a
+ *  row, and the store loads an older one only for its assignee: rowToTask.) Tasks
  *  assigned to them are their row as it is (the store's load already filled
  *  in their plan where the row had none). Tasks that don't change keep their
  *  identity, and so does the list when none do. */

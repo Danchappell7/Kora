@@ -134,7 +134,10 @@ end $undo$;
 -- ---------- 3. a project made without saying who can see it is Whole workspace ----------
 -- And nobody changes a project's visibility from the app or the API while this is out (the SQL editor
 -- and the service role still may): a Members only or Private project opened up meanwhile would stay open
--- when 0058 runs again, and whoever listed themselves on it would be on it. 0058 takes this out again.
+-- when 0058 runs again, and whoever listed themselves on it would be on it. Nor a team project's id, as
+-- with 0058 in: its work (which names it by a text id) would be left loose, and a project made under the
+-- old id meanwhile would have it, and the say over who sees it, when 0058 runs again. 0058 takes this
+-- out again.
 do $vis$
 begin
   if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'projects' and column_name = 'visibility') then
@@ -143,12 +146,17 @@ begin
 create or replace function public.project_visibility_kept() returns trigger
 language plpgsql security definer set search_path = public as $b$
 begin
-  if coalesce(auth.role(), '') in ('authenticated', 'anon') then new.visibility := old.visibility; end if;
+  if coalesce(auth.role(), '') in ('authenticated', 'anon') then
+    if new.id is distinct from old.id and coalesce(old.workspace_id, new.workspace_id) is not null then
+      raise exception 'not authorized';
+    end if;
+    new.visibility := old.visibility;
+  end if;
   return new;
 end; $b$ $fn$;
     revoke execute on function public.project_visibility_kept() from public, anon, authenticated;
     drop trigger if exists trg_projects_visibility_kept on public.projects;
-    create trigger trg_projects_visibility_kept before update of visibility on public.projects
+    create trigger trg_projects_visibility_kept before update of visibility, id on public.projects
       for each row execute function public.project_visibility_kept();
   end if;
 end $vis$;
@@ -160,6 +168,7 @@ drop function if exists public.set_project_member(uuid, uuid, text);
 drop function if exists public.remove_project_member(uuid, uuid);
 drop function if exists public.set_invite_projects(uuid, jsonb);
 drop function if exists public.remove_invite_project(uuid, uuid);
+drop function if exists public.set_project_owner(uuid, uuid);
 
 -- ---------- 5. every switch off (the settings, members and visibility are kept for next time) ----------
 do $off$

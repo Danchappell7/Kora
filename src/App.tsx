@@ -3571,8 +3571,12 @@ export default function App() {
 
   /** Kanbo's order for your open tasks in this workspace (never teammates' work):
    *  the scores land on your own tasks, and in your overlay on tasks you only
-   *  collaborate on. Resolves to where the order came from. `announce` says so in
-   *  a toast (the palette's "Prioritise"); Today's Plan my day tells it its own way. */
+   *  collaborate on. Each reason is yours alone: it's worked out from all of your
+   *  tasks at once, so it can name one in a project that others reading the task
+   *  can't see, and the store never puts it on the row (it stays in your own
+   *  plan, and on this device for this visit). Resolves to where the order came
+   *  from. `announce` says so in a toast (the palette's "Prioritise"); Today's
+   *  Plan my day tells it its own way. */
   const appearanceRef = useRef(appearance); appearanceRef.current = appearance;
   const rankMyTasks = useCallback(async (announce = false): Promise<"ai" | "heuristic" | "none"> => {
     const cur = tasksRef.current; if (!cur) return "none";

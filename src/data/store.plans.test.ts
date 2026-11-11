@@ -228,6 +228,32 @@ describe("store — plans that follow you (task_user_state)", () => {
     expect(rows).toContainEqual({ task_id: U(4), user_id: "user-a", plan_today: true, plan_day: today, scheduled: null });
   });
 
+  it("Kanbo's reason never goes on a task row: a write carrying one clears the column and keeps the text in the writer's own plan, a new task carries none, and a load brings someone else's row's none (the person's own plan's shows on their own task)", async () => {
+    // Prioritise ranks all your open tasks in one batch, so a reason can name one in a Private project; the
+    // row is read by everyone who can see the task (and by every business, with All businesses on)
+    const SECRET = "Unblocks “Renew Theo's contract” — finish it first.";
+    const fake = makeFake();
+    const { store } = await load(fake);
+    server(fake, {
+      tasks: [taskRow(U(1), { ai_score: 90, ai_reason: "Older reason of mine" }), taskRow(U(2), { assignee_id: "bob", ai_score: 80, ai_reason: SECRET }),
+              taskRow(U(3), { ai_score: 70, ai_reason: "Older row reason" })],
+      plans: [{ task_id: U(3), user_id: "user-a", ai_score: 70, ai_reason: "Your own reason" }],
+    });
+    const b = await store.bootstrap({ id: "user-a" });
+    const byId = new Map(b.tasks.map((t) => [t.id, t]));
+    expect(byId.get(U(2))).toMatchObject({ aiScore: 80, aiReason: undefined });       // bob's: his score, none of his reason
+    expect(byId.get(U(1))?.aiReason).toBe("Older reason of mine");                     // yours
+    expect(byId.get(U(3))?.aiReason).toBe("Your own reason");                          // yours, from your plan
+    await store.updateTask(U(1), { aiScore: 99, aiReason: SECRET });
+    await store.createTask({ ...b.tasks[0], id: "tmp-1", title: "A copy", aiReason: SECRET }, "user-a");
+    await flushTimers(store);
+    const taskWrites = fake.calls.filter((c) => c.table === "tasks" && c.op !== "select");
+    expect(taskWrites.find((c) => c.op === "update")?.payload).toEqual({ ai_score: 99, ai_reason: null });
+    expect(taskWrites.some((c) => c.op === "upsert" && (c.payload as { title?: string }).title === "A copy")).toBe(true);
+    expect(JSON.stringify(taskWrites.map((c) => c.payload))).not.toContain("Renew Theo");
+    expect(planRows(fake)).toContainEqual(expect.objectContaining({ task_id: U(1), user_id: "user-a", ai_score: 99, ai_reason: SECRET }));
+  });
+
   const RLS = { error: { message: "new row violates row-level security policy for table \"tasks\"", code: "42501" } };
   const planRows = (fake: Fake) => upserts(fake).flatMap((c) => c.payload as Record<string, unknown>[]);
 

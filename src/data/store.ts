@@ -89,8 +89,11 @@ export function keepOnScreen(b: Bootstrap, onScreen: Partial<Pick<Bootstrap, "pr
 /** 0058: a projects read that failed is filled from an earlier copy (the device's snapshot, or on a reload
  *  the list on screen). Where project access is on, that copy can hold a project you've since lost (made
  *  Private, or you were taken off it), so only what this load still vouches for is kept: Personal ones,
- *  every project of a workspace you own, your own, Whole workspace ones (not for a guest), and ones this
- *  load's tasks or your own project rows point at. Elsewhere (and before 0058) the copy is kept whole. */
+ *  every project of a workspace you own, your own, ones this load's tasks or your own project rows point
+ *  at, and ones your role there alone lets you see: Whole workspace (not for a guest), and Members only
+ *  for an admin. That last part goes by the copy's own visibility, as nothing else this load says it: one
+ *  narrowed since the copy was saved stays, with the name, emoji and colour you already had, until the
+ *  next good load. Elsewhere (and before 0058) the copy is kept whole. */
 export function vouchedProjects(projects: Project[], b: { uid: string; workspaces: Workspace[]; members: WorkspaceMember[];
   projectMembers?: ProjectMember[] | null; taskProjects: Set<string> }): Project[] {
   const gated = new Set(b.workspaces.filter((w) => w.id && accessOn(w)).map((w) => w.id as string));
@@ -101,6 +104,7 @@ export function vouchedProjects(projects: Project[], b: { uid: string; workspace
     const role = roleOf({ wsMembers: b.members, workspaces: b.workspaces }, wsId, b.uid);
     if (role === "owner" || (!!p.ownerId && p.ownerId === b.uid)) return true;
     if (visibilityOf(p) === "workspace" && !!role && role !== "guest") return true;
+    if (visibilityOf(p) === "members" && role === "admin") return true;
     if (b.taskProjects.has(p.id)) return true;
     return !!b.projectMembers?.some((m) => m.projectId === p.id && m.userId === b.uid);
   });
@@ -235,7 +239,9 @@ interface TaskRow {
   slack_permalink?: string | null;
 }
 
-function rowToTask(r: TaskRow): Task {
+/** A task row as the app holds it, for `uid`. Kanbo's reason for ranking a task (ai_reason) is its
+ *  assignee's: on anyone else's task it isn't loaded (see patchToRow). */
+function rowToTask(r: TaskRow, uid?: string): Task {
   const subs = (r.subtasks ?? []).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   return {
     id: r.id,
@@ -268,7 +274,7 @@ function rowToTask(r: TaskRow): Task {
     focusMin: r.focus_min,
     comments: r.comments,
     aiScore: r.ai_score,
-    aiReason: r.ai_reason ?? undefined,
+    aiReason: (uid === undefined || r.assignee_id === uid ? r.ai_reason : null) ?? undefined,
     energy: r.energy ?? energyOf({ tags: r.tags ?? [] } as Task),
     dur: r.dur ?? r.focus_min,
     scheduled: r.scheduled ?? null,
@@ -498,7 +504,11 @@ function patchToRow(patch: Partial<Task>): Record<string, unknown> {
   if ("recurrence" in patch) row.recurrence = patch.recurrence;
   if ("workspaceId" in patch) row.workspace_id = patch.workspaceId ?? null;
   if ("aiScore" in patch) row.ai_score = patch.aiScore;
-  if ("aiReason" in patch) row.ai_reason = patch.aiReason;
+  // Kanbo's reason for ranking a task is never stored on its row, only cleared there: the row is read by
+  // everyone who can see the task, and a reason worked out from a batch of someone's tasks can name one in
+  // a project those readers can't see (or another business's). The text stays in the writer's own plan
+  // (task_user_state: mirrorOwnPlan, once the write lands).
+  if ("aiReason" in patch) row.ai_reason = null;
   if ("position" in patch) row.position = patch.position;
   if ("dueTime" in patch) row.due_time = patch.dueTime ?? null;
   if ("startDate" in patch) row.start_date = patch.startDate ?? null;
@@ -569,7 +579,7 @@ function taskToInsertRow(t: Task, userId: string): Record<string, unknown> {
     focus_min: t.focusMin,
     comments: t.comments,
     ai_score: t.aiScore,
-    ai_reason: t.aiReason ?? null,
+    // (never a reason: see patchToRow)
     energy: t.energy ?? null,
     dur: t.dur ?? t.focusMin,
     scheduled: t.scheduled ?? null,
@@ -1978,7 +1988,7 @@ export const store = {
     const ref: RefData = { members: [self, ...teammates], projects, workspaces, events: [], tags };
     setReferenceData(ref);
     const boot: Bootstrap = {
-      tasks: planLive ? mergeOwnPlans(taskRows.map(rowToTask), uid, todayISO()) : taskRows.map(rowToTask),
+      tasks: planLive ? mergeOwnPlans(taskRows.map((r) => rowToTask(r, uid)), uid, todayISO()) : taskRows.map((r) => rowToTask(r, uid)),
       projects,
       tags,
       workspaces,
@@ -2549,7 +2559,12 @@ export const store = {
     if ("color" in patch) row.color = patch.color;
     if ("description" in patch) row.description = patch.description ?? null;
     if ("status" in patch) row.status = patch.status ?? null;
-    if ("ownerId" in patch) row.owner_id = patch.ownerId ?? null;
+    // 0058: a team project changes hands through set_project_owner (after the rest of the edit): the column's
+    // own check judges the row as it will be, which the outgoing owner of a Private project can't pass before
+    // they're given their editor row. The column on a Personal project, and where that function isn't there
+    // (before 0058, after its undo file).
+    const handOn = "ownerId" in patch && accessSchema() && !accessFnsGone() && !!PROJECTS.find((x) => x.id === id)?.workspaceId;
+    if ("ownerId" in patch && !handOn) row.owner_id = patch.ownerId ?? null;
     if ("contributorIds" in patch) {
       // 0058: a project's people are project_members, changed one person at a time (contributor_ids follows);
       // after 0058's undo file (its functions gone) the column again
@@ -2561,17 +2576,25 @@ export const store = {
       if (!synced) row.contributor_ids = patch.contributorIds ?? [];
     }
     if ("updateRhythm" in patch) row.update_rhythm = patch.updateRhythm ? rhythmRow(patch.updateRhythm) : null;   // 0053
-    if (Object.keys(row).length === 0) return;
     // Resilient update: projects.description/status arrive in migration 0015. If
     // it isn't applied yet, strip the unknown column and retry so the rest of the
     // edit still saves instead of throwing.
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 4 && Object.keys(row).length > 0; i++) {
       const { error } = await supabase.from("projects").update(row).eq("id", id);
-      if (!error) return;
+      if (!error) break;
       const stripped = withoutMissingColumn(row, error.message);
       if (!stripped) throw error;
-      if (Object.keys(stripped).length === 0) return;
       row = stripped;
+    }
+    if (handOn) {
+      const { error } = await supabase.rpc("set_project_owner", { p_project: id, p_user: patch.ownerId ?? null });
+      if (error) {
+        const f = accessFailure(error);
+        if (!noteAccessFnsGone(f)) throw f;
+        // (the undo file's state: the column, as before 0058)
+        const { error: colErr } = await supabase.from("projects").update({ owner_id: patch.ownerId ?? null }).eq("id", id);
+        if (colErr) throw colErr;
+      }
     }
   },
 

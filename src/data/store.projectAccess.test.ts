@@ -35,6 +35,9 @@ function fakeClient(db0: Db) {
       if (c.table === "remove_project_member") return { data: true, error: null };
       if (c.table === "set_project_access") return { data: { on: true, default: "private", member_private: true, changed_at: "2026-11-10T09:00:00Z" }, error: null };
       if (c.table === "set_project_visibility") return { data: "private", error: null };
+      if (c.table === "set_project_owner") {
+        return (c.payload as Row).p_user === "guest-person" ? { data: null, error: { code: "P0001", message: "invalid owner" } } : { data: (c.payload as Row).p_user, error: null };
+      }
       return { data: null, error: null };
     }
     if (c.table === "project_members") {
@@ -56,6 +59,7 @@ function fakeClient(db0: Db) {
       if (c.op === "select" && c.single) return { data: project, error: null };
       if (c.op === "select") return { data: [project], error: null };
       if (c.op === "update" && c.payload && "contributor_ids" in (c.payload as Row)) project.contributor_ids = (c.payload as Row).contributor_ids;
+      if (c.op === "update" && c.payload && "owner_id" in (c.payload as Row)) project.owner_id = (c.payload as Row).owner_id;
       return { data: null, error: null };
     }
     if (c.table === "tasks") {
@@ -147,6 +151,15 @@ describe("at 0050 (live today): nothing new is read, sent or shown", () => {
     expect(rpcs(fake).filter((n) => n.includes("project"))).toEqual(["set_project_member"]);   // the one person asked for, refused quietly
   });
 
+  it("handing a project on writes its owner column, as today", async () => {
+    const fake = fakeClient("0050");
+    const { store } = await load(fake);
+    await store.bootstrap({ id: ME });
+    await store.updateProject(P1, { ownerId: "maya" });
+    expect(fake.calls.filter((c) => c.table === "projects" && c.op === "update").map((c) => c.payload)).toEqual([{ owner_id: "maya" }]);
+    expect(rpcs(fake)).not.toContain("set_project_owner");
+  });
+
   it("the access calls say it isn't switched on yet", async () => {
     const fake = fakeClient("0050");
     const { store } = await load(fake);
@@ -232,6 +245,16 @@ describe("after 0058's undo file (its functions gone, its tables kept)", () => {
     expect(fake.project.contributor_ids).toEqual([]);
   });
 
+  it("handing a project on finds set_project_owner gone and writes the owner column, as before 0058", async () => {
+    const fake = fakeClient("undone");
+    const { store, access } = await load(fake);
+    await store.bootstrap({ id: ME });
+    await store.updateProject(P1, { ownerId: "maya" });
+    expect(rpcs(fake)).toEqual(["set_project_owner"]);
+    expect(fake.project.owner_id).toBe("maya");
+    expect(access.accessSchema()).toBe(false);
+  });
+
   it("an old-style edit whose first call finds the functions gone saves the whole list in the column", async () => {
     const fake = fakeClient("undone");
     const { store, data } = await load(fake);
@@ -252,6 +275,17 @@ describe("at 0058 with the switch on", () => {
     expect(insert?.payload).toMatchObject({ visibility: "private", owner_id: ME });
     expect(fake.calls.filter((c) => c.op === "rpc" && c.table !== "claim_invites").map((c) => c.payload)).toEqual([{ p_project: made.id, p_user: "maya", p_role: "editor" }]);
     expect(made.contributorIds).toEqual(["maya"]);
+  });
+
+  it("handing a team project on goes through set_project_owner (the column's own check refuses an outgoing owner with no row of their own), after the rest of the edit; a refusal is said", async () => {
+    const fake = fakeClient("on");
+    const { store } = await load(fake);
+    await store.bootstrap({ id: ME });
+    await store.updateProject(P1, { name: "Seed round II", ownerId: "maya" });
+    const writes = fake.calls.filter((c) => (c.table === "projects" && c.op === "update") || c.table === "set_project_owner");
+    expect(writes.map((c) => [c.table, c.payload])).toEqual([["projects", { name: "Seed round II" }], ["set_project_owner", { p_project: P1, p_user: "maya" }]]);
+    expect(fake.project.owner_id).toBe(ME);   // (never the column)
+    await expect(store.updateProject(P1, { ownerId: "guest-person" })).rejects.toThrow("invalid owner");
   });
 
   it("a task update the server refuses (no row back, but you can still read it) throws 42501", async () => {

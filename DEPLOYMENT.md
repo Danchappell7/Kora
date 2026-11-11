@@ -1008,8 +1008,9 @@ steps; nothing breaks while you wait.
    been deleted (or has moved to another business) comes back from the bin
    only with its project, even with the switch off. Admin › Delete user now
    deletes someone who has commented in a business (before, it failed for
-   them; their comments stay, under their name), and reacting to a comment no
-   longer puts your name on it. From now on Team ›
+   them; their comments stay, under their name), reacting to a comment no
+   longer puts your name on it, and nobody can change a business project's id
+   any more (the app never does). From now on Team ›
    People asks before making someone a guest (or an admin a member) and names
    what they'd lose: made a guest, their "Can edit" project roles become "Can
    comment", whatever the switch says, and stay so if they're made a member
@@ -1023,7 +1024,7 @@ steps; nothing breaks while you wait.
    the app) on every computer and phone they use: a tab left open since before
    the website update keeps the old screens, which don't know which projects are
    private (its Slack stand-up and Radar posts are refused until it's
-   reloaded). In each guest's projects, open About › Contributors and tick them (a guest is
+   reloaded, and the reasons its Prioritise saves on tasks are dropped). In each guest's projects, open About › Contributors and tick them (a guest is
    added as a commenter), until the preview names every guest with the projects
    they should keep, and no longer says a guest has open tasks they won't see
    (the preview names them: add the guest to that project, or hand the task

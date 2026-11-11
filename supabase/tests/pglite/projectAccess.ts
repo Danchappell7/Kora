@@ -805,6 +805,119 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq("rows" in after ? after.rows[0] : errOf(after), { old_owner: "editor", new_owner_rows: 0 }, "swapped");
   });
 
+  await test("0058, switch on: a project's owner hands it on with set_project_owner where the column's own check can't pass (a member's Private or Members only project, an admin's Private one) and stays an editor; nobody else gains anything by it; switched off, today's rule", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, unknown> = {};
+      // Meg's Members only project, and Ari's Private one with Moe on it
+      const pmMe = (await run(w.id.ME, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Meg members', $2::uuid, 'members') returning id::text as id`, [w.id.ME, w.ws]))[0].id as string;
+      const ppA = (await run(w.id.A, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Ari private', $2::uuid, 'private') returning id::text as id`, [w.id.A, w.ws]))[0].id as string;
+      await run(w.id.A, `select public.set_project_member($1::uuid, $2::uuid, 'editor')`, [ppA, w.id.M2]);
+      const named: Record<string, string> = { PQ: w.proj.PQ, PM: w.proj.PM, PP: w.proj.PP, PW: w.proj.PW, pmMe, ppA };
+      const hand = async (who: Who, p: string, to: Who) => {
+        await run(null, `savepoint pa_hand`);
+        const r = await tryRun(w.id[who], `select public.set_project_owner($1::uuid, $2::uuid)::text as o`, [named[p], w.id[to]]);
+        let res: unknown;
+        if ("error" in r) res = r.error;
+        else {
+          const after = await run(null, `select p.owner_id::text as o, (select m.role from public.project_members m where m.project_id = p.id and m.user_id = $2::uuid) as was,
+              (select count(*)::int from public.project_members m where m.project_id = p.id and m.user_id = p.owner_id) as rows_of_new
+              from public.projects p where p.id = $1::uuid`, [named[p], w.id[who]]);
+          const editsStill = (await run(w.id[who], `select public.can_edit_project($1::uuid) as e`, [named[p]]))[0].e;
+          res = { owner: after[0].o === w.id[to] ? to : after[0].o, oldOwner: after[0].was, newOwnerRows: after[0].rows_of_new, editsStill, answered: r.rows[0].o === w.id[to] };
+        }
+        await run(null, `rollback to savepoint pa_hand`);
+        return res;
+      };
+      const handed = (to: Who) => ({ owner: to, oldOwner: "editor", newOwnerRows: 0, editsStill: true, answered: true });
+      out.mine = {
+        "Meg's Private to Moe": await hand("ME", "PQ", "M2"),
+        "Meg's Members only to Ari": await hand("ME", "pmMe", "A"),
+        "Meg's Members only to Oona": await hand("ME", "pmMe", "O"),
+        "Ari's Private to Moe": await hand("A", "ppA", "M2"),
+        "Ari's Private to Oona": await hand("A", "ppA", "O"),
+      };
+      out.want = Object.fromEntries(Object.keys(out.mine as object).map((k) => [k, handed(k.endsWith("Moe") ? "M2" : k.endsWith("Ari") ? "A" : "O")]));
+      out.refused = {
+        "Moe, PP he can't see": await hand("M2", "PP", "M2"),
+        "Mac, a commenter on PM": await hand("MC", "PM", "MC"),
+        "Gail, a guest commenter on PW": await hand("GC", "PW", "GC"),
+        "Viv, a member on PW (not its manager)": await hand("MV", "PW", "MV"),
+        "Meg's Private to a guest": await hand("ME", "PQ", "GC"),
+        "Meg's Private to an outsider": await hand("ME", "PQ", "X"),
+      };
+      // switched off: today's rule on a Whole workspace project, the switch-on rule on a Private one
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      out.off = { "Moe takes PW": await hand("M2", "PW", "M2"), "Moe takes PP": await hand("M2", "PP", "M2"), "Meg's Private to Moe": await hand("ME", "PQ", "M2") };
+      return out;
+    });
+    eq(got.mine, got.want, "each owner hands their project on, stays an editor and can still edit it");
+    eq(got.refused, {
+      "Moe, PP he can't see": "not found", "Mac, a commenter on PM": "not authorized", "Gail, a guest commenter on PW": "not authorized",
+      "Viv, a member on PW (not its manager)": "not authorized", "Meg's Private to a guest": "invalid owner", "Meg's Private to an outsider": "invalid owner",
+    }, "nobody who can't hand it on does");
+    eq(got.off, {
+      "Moe takes PW": { owner: "M2", oldOwner: null, newOwnerRows: 0, editsStill: true, answered: true },
+      "Moe takes PP": "not authorized",
+      "Meg's Private to Moe": { owner: "M2", oldOwner: "editor", newOwnerRows: 0, editsStill: true, answered: true },
+    }, "switched off, as the column");
+  });
+
+  await test("0058: a team project's id is never a client's to change, whatever the switch says (its work would be left loose, and a project made under the old id would take it over); a Personal one's still may", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      // a Whole workspace project of Oona's with nobody added, a task of Meg's and an update in it (nothing names it with a foreign key)
+      const fresh = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, 'Zebra open', $2::uuid) returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+      await run(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra Meg''s work', $2, $3, $4::uuid)`, [w.id.O, fresh, w.id.ME, w.ws]);
+      const mine = (await run(w.id.MV, `insert into public.projects (user_id, owner_id, name) values ($1::uuid, $1::uuid, 'Zebra Viv personal') returning id::text as id`, [w.id.MV]))[0].id as string;
+      const rekey = async (who: Who, p: string) => {
+        const r = await tryRun(w.id[who], `update public.projects set id = gen_random_uuid() where id = $1::uuid returning id`, [p]);
+        return "error" in r ? r.error : r.rows.length ? "renumbered" : "no row";
+      };
+      const squat = async () => {
+        const r = await tryRun(w.id.MV, `insert into public.projects (id, user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $2::uuid, $2::uuid, 'Zebra squat', $3::uuid, 'members') returning id`, [fresh, w.id.MV, w.ws]);
+        return "error" in r ? "refused" : "made";
+      };
+      const megReads = async () => (await run(w.id.ME, `select 1 from public.tasks where project_id = $1`, [fresh])).length;
+      const on = { viv: await rekey("MV", fresh), oona: await rekey("O", fresh), squat: await squat(), megReads: await megReads() };
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      const off = { viv: await rekey("MV", fresh), squat: await squat(), megReads: await megReads(), personal: await rekey("MV", mine) };
+      return { on, off };
+    });
+    eq(got, {
+      on: { viv: "not authorized", oona: "not authorized", squat: "refused", megReads: 1 },
+      off: { viv: "not authorized", squat: "refused", megReads: 1, personal: "renumbered" },
+    }, "nobody renumbers a team project, so nobody takes its work over under its old id");
+  });
+
+  await test("0058, switch on: no client stores Kanbo's ranking reason on a team task's row (an older tab's is dropped, clearing one is fine), while the person's own plan row keeps theirs; switched off, a Personal task and the service, as before", async () => {
+    const got = await scenario(async (run) => {
+      const reason = async (id = w.task.PW) => (await run(null, `select ai_reason from public.tasks where id = $1::uuid`, [id]))[0].ai_reason ?? null;
+      const out: Record<string, unknown> = {};
+      await run(null, `update public.tasks set ai_reason = 'Zebra old reason' where id = $1::uuid`, [w.task.PW]);
+      out.service = await reason();
+      await run(w.id.M2, `update public.tasks set title = 'Zebra retitled' where id = $1::uuid`, [w.task.PW]);
+      out.untouched = await reason();
+      await run(w.id.M2, `update public.tasks set ai_score = 99, ai_reason = 'Unblocks Zebra secret' where id = $1::uuid`, [w.task.PW]);
+      out.written = await reason();
+      await run(null, `update public.tasks set ai_reason = 'Zebra old reason' where id = $1::uuid`, [w.task.PW]);
+      await run(w.id.M2, `update public.tasks set ai_reason = null where id = $1::uuid`, [w.task.PW]);
+      out.cleared = await reason();
+      const made = (await run(w.id.M2, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, ai_reason) values ($1::uuid, 'Zebra made', $2, 'nobody', $3::uuid, 'Unblocks Zebra secret') returning id::text as id`, [w.id.M2, w.proj.PW, w.ws]))[0].id as string;
+      out.inserted = await reason(made);
+      await run(w.id.M2, `insert into public.task_user_state (task_id, user_id, ai_score, ai_reason) values ($1::uuid, $2::uuid, 99, 'Unblocks Zebra secret')`, [w.task.PW, w.id.M2]);
+      out.plan = (await run(w.id.M2, `select ai_reason from public.task_user_state where task_id = $1::uuid`, [w.task.PW]))[0]?.ai_reason ?? null;
+      const personal = (await run(w.id.M2, `insert into public.tasks (user_id, title, project_id, assignee_id, ai_reason) values ($1::uuid, 'Zebra own', 'inbox', $1::text, 'Mine') returning id::text as id`, [w.id.M2]))[0].id as string;
+      out.personal = await reason(personal);
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      await run(w.id.M2, `update public.tasks set ai_reason = 'Unblocks Zebra secret' where id = $1::uuid`, [w.task.PW]);
+      out.off = await reason();
+      return out;
+    });
+    eq(got, {
+      service: "Zebra old reason", untouched: "Zebra old reason", written: null, cleared: null, inserted: null,
+      plan: "Unblocks Zebra secret", personal: "Mine", off: "Unblocks Zebra secret",
+    }, "a team task's row never takes a client's reason while the switch is on");
+  });
+
   await test("0058, switch off: a Members only or Private project's people and owner keep the switch-on rule (nobody takes one over while it's off and keeps it when it's on again)", async () => {
     const off: [string, unknown[]][] = [[`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]]];
     const refused = async (who: Who, sql: string, params: unknown[], what: string) => {
@@ -1579,6 +1692,55 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       openPage: "linked",
       off: { M2: "1/1", linkM2: "linked", linkA: "linked", closedA: false, saveA: "saved" },
     }, "Moe, Gail and Ari read nothing of PP's page, nor link it, nor (its sync gone) sync its database; Meg (on PP) and Oona do");
+  });
+
+  await test("0058, switch on: a Notion database imported into a Whole workspace project stays open to its admins and members when one of its tasks has left for someone's Personal list and is then deleted or unlinked while the others are still here; once none is here, all but the owner are refused, as before", async () => {
+    const D = "0d0d0d0d-5858-4000-8000-0000000000d6";
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, unknown> = {};
+      const task = async (title: string) => (await run(w.id.M2, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid) returning id::text as id`,
+        [w.id.M2, title, w.proj.PW, w.ws]))[0].id as string;
+      // Oona's one-off import of D into PW: two tasks, each linked to its page with the database's id
+      const t1 = await task("Zebra imported one"), t2 = await task("Zebra imported two");
+      await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind, created_by)
+                       values ($1::uuid, $2::uuid, '0d0d0d0d-5858-4000-8000-0000000000e1', $4, null, 'reference', $5::uuid), ($1::uuid, $3::uuid, '0d0d0d0d-5858-4000-8000-0000000000e2', $4, null, 'reference', $5::uuid)`,
+        [w.ws, t1, t2, D, w.id.O]);
+      const closed = async (who: Who) => Boolean((await run(null, `select public.user_notion_database_hidden($1::uuid, $2::uuid, $3) as h`, [w.id[who], w.ws, D]))[0].h);
+      const save = async (who: Who) => {
+        await run(null, `savepoint pa_save`);
+        const r = await tryRun(w.id[who], `select public.notion_save_sync($1::uuid, $2::uuid, $3, 'Zebra board', '{"title": "Name"}'::jsonb, 'two_way', true) as s`, [w.ws, w.proj.PW, D]);
+        await run(null, `rollback to savepoint pa_save`);
+        return "error" in r ? r.error : "saved";
+      };
+      const state = async () => ({ A: await closed("A"), ME: await closed("ME"), M2: await closed("M2"), O: await closed("O"), saveA: await save("A") });
+      // Moe moves the first to his Personal list
+      const mine = (await run(w.id.M2, `insert into public.projects (user_id, owner_id, name) values ($1::uuid, $1::uuid, 'Zebra Moe personal') returning id::text as id`, [w.id.M2]))[0].id as string;
+      await run(w.id.M2, `update public.tasks set workspace_id = null, project_id = $2 where id = $1::uuid`, [t1, mine]);
+      out.left = await state();
+      const cases: [string, () => Promise<void>][] = [
+        ["deleted", async () => { await run(w.id.M2, `delete from public.tasks where id = $1::uuid`, [t1]); }],
+        ["unlinked", async () => { await run(w.id.M2, `select public.notion_unlink_page((select id from public.notion_links where task_id = $1::uuid))`, [t1]); }],
+        // (and then the second goes too: none of D's tasks is here any more)
+        ["deleted, then the other deleted for good", async () => {
+          await run(w.id.M2, `delete from public.tasks where id = $1::uuid`, [t1]);
+          await run(w.id.M2, `delete from public.tasks where id = $1::uuid`, [t2]);
+          const b = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [t2]))[0].id as string;
+          await run(w.id.O, `select public.purge_trash($1::uuid)`, [b]);
+        }],
+      ];
+      for (const [label, act] of cases) {
+        await run(null, `savepoint pa_case`);
+        await act();
+        out[label] = await state();
+        await run(null, `rollback to savepoint pa_case`);
+      }
+      return out;
+    });
+    const open = { A: false, ME: false, M2: false, O: false, saveA: "saved" };
+    eq(got, {
+      left: open, deleted: open, unlinked: open,
+      "deleted, then the other deleted for good": { A: true, ME: true, M2: true, O: false, saveA: "invalid database" },
+    }, "D is judged by its tasks still here");
   });
 
   await test("0058, switch on: restoring a project whose Notion database syncs with another project by now says its sync wasn't restored; switched off, as before (no note)", async () => {
@@ -3148,9 +3310,13 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     const back = new Map(Object.entries(w.id).map(([k, v]) => [v as string, k]));
     const pmPeople = (rows: Record<string, unknown>[]) => rows.map((r) => `${back.get(r.u as string) ?? r.u}:${r.role}`).sort();
     const peopleOf = async (run: Run, p: string) => pmPeople(await run(null, `select user_id::text as u, role from public.project_members where project_id = $1::uuid`, [p]));
-    const got = await scenario(async (run, exec) => {
+    const got = await scenario(async (run, exec, tryRun) => {
       const before = await peopleOf(run, w.proj.PM);
       await exec(undo);
+      // (nor, while it's out, can Viv renumber a team project, to make one of her own under its id)
+      const loose = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, 'Zebra undone', $2::uuid) returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+      const renumber = await tryRun(w.id.MV, `update public.projects set id = gen_random_uuid() where id = $1::uuid returning id`, [loose]);
+      const renumbered = "error" in renumber ? renumber.error : "renumbered";
       // the app as before 0058: PM's people are contributor_ids again (Gail off, Gil on); Gil goes on PW too;
       // Gwen leaves the workspace; and Moe, with no rules in the way, lists himself on Private PP
       await run(w.id.O, `update public.projects set contributor_ids = array_append(array_remove(contributor_ids, $2::uuid), $3::uuid) where id = $1::uuid`, [w.proj.PM, w.id.GC, w.id.G2]);
@@ -3174,12 +3340,13 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
         listed: (await run(null, `select $2::uuid = any (contributor_ids) as g2pm from public.projects where id = $1::uuid`, [w.proj.PM, w.id.G2]))[0],
         listedPP: (await run(null, `select $2::uuid = any (contributor_ids) as m2 from public.projects where id = $1::uuid`, [w.proj.PP, w.id.M2]))[0].m2,
         intact: (await run(null, `select public.project_access_intact() as ok`))[0].ok,
-        widened, sqlEditor, ppNow: (await run(null, `select visibility from public.projects where id = $1::uuid`, [w.proj.PP]))[0].visibility,
+        widened, sqlEditor, renumbered, ppNow: (await run(null, `select visibility from public.projects where id = $1::uuid`, [w.proj.PP]))[0].visibility,
         guardLeft: (await run(null, `select count(*)::int as n from pg_trigger where tgname = 'trg_projects_visibility_kept'`))[0].n
           + Number((await run(null, `select to_regprocedure('public.project_visibility_kept()') is not null as x`))[0].x),
       };
     });
     eq([got.widened, got.sqlEditor], ["private", "members"], "while it's out, Moe can't open PP up (the SQL editor still may change one)");
+    eq(got.renumbered, "not authorized", "while it's out, nobody renumbers a team project");
     eq([got.ppNow, got.guardLeft], ["private", 0], "0058 again: PP still Private, and the undo's guard is gone");
     eq(got.stale, 2, "while it's out, nothing keeps project_members in step");
     eq(got.selfAdd, 1, "while it's out, Moe could list himself on PP");

@@ -40,9 +40,10 @@
 --      nobody gains anything.
 --   5. set_project_access() (the workspace's owner only), set_project_visibility(),
 --      set_project_member(), remove_project_member(), set_invite_projects() (a guest
---      invited straight onto projects) and remove_invite_project() (a project's
---      managers take it off a pending invite). Every access change touches
---      workspaces.project_access_changed_at, so every open app reloads.
+--      invited straight onto projects), remove_invite_project() (a project's
+--      managers take it off a pending invite) and set_project_owner() (About ›
+--      Owner: the column's own check refuses some owners). Every access change
+--      touches workspaces.project_access_changed_at, so every open app reloads.
 --   6. Turning the switch off again is the rollback: instant, nothing lost.
 --      In an emergency, the SQL editor may switch it off directly:
 --        update public.workspaces set project_access = false where id = '<ws id>';
@@ -780,7 +781,9 @@ $$;
 --     judged by its row's access (a binned task's link whose sync is still here is that sync's project's,
 --     as a live one is). Once the project is deleted for good, the databases its row recorded (1g); once
 --     such a task is deleted for good on its own, or its link removed, the page it left behind (1i: its
---     pages still hold what a two-way sync wrote), judged as a binned link is.
+--     pages still hold what a two-way sync wrote), judged as a binned link is; one whose task had left
+--     the workspace by then (to someone's Personal list or another workspace) as a link that has left:
+--     only once none of the database's tasks is still here.
 create or replace function public.user_notion_database_hidden(p_user uuid, p_ws uuid, p_db text)
 returns boolean language sql security definer stable set search_path = public as $$
   with linked as (
@@ -807,6 +810,9 @@ returns boolean language sql security definer stable set search_path = public as
     or exists (select 1 from public.notion_pages_retired x
                 where x.workspace_id = p_ws and x.database_id = p_db
                   and not exists (select 1 from public.notion_syncs s where s.id = x.sync_id)
+                  -- (one whose task had left the workspace, which names no project here, as a link whose
+                  -- task has left: only once none of the database's tasks is still here)
+                  and (x.project_id is not null or not exists (select 1 from linked k where k.here))
                   and public.pa_snapshot_rank_for(p_user, p_ws, x.project_id, x.access) < 1));
 $$;
 do $svc$
@@ -1620,12 +1626,35 @@ begin
   return true;
 end; $$;
 
+-- Hand a team project to someone (About › Owner): the same change as an update of projects.owner_id,
+-- with the same rights (edit rights on it, then trg_projects_pa_guard's: its managers where the switch-on
+-- rule applies, and an active non-guest). The column's own check ('project access: edit') judges the row
+-- as it will be, before trg_projects_pa_after gives the outgoing owner their editor row, so the owner of
+-- a Private project (or a member who owns a Members only one) couldn't hand it on that way. As that check
+-- asks, the caller still has edit rights on it afterwards. Answers the owner stored.
+create or replace function public.set_project_owner(p_project uuid, p_user uuid)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare p public.projects;
+begin
+  if auth.uid() is null or not public.can_act() then raise exception 'not authorized'; end if;
+  select * into p from public.projects where id = p_project for update;
+  if p.id is null or p.workspace_id is null or not public.api_scope_ok(p.workspace_id) or not public.can_see_project(p_project) then
+    raise exception 'not found';
+  end if;
+  if not public.can_edit_project(p_project) then raise exception 'not authorized'; end if;
+  if p_user is not distinct from p.owner_id then return p.owner_id; end if;
+  update public.projects set owner_id = p_user where id = p_project;
+  if not public.can_edit_project(p_project) then raise exception 'not authorized'; end if;
+  return p_user;
+end; $$;
+
 do $rpc$
 declare f text;
 begin
   foreach f in array array['public.set_project_access(uuid,boolean,text,boolean)', 'public.set_project_visibility(uuid,text)',
                            'public.set_project_member(uuid,uuid,text)', 'public.remove_project_member(uuid,uuid)',
-                           'public.set_invite_projects(uuid,jsonb)', 'public.remove_invite_project(uuid,uuid)'] loop
+                           'public.set_invite_projects(uuid,jsonb)', 'public.remove_invite_project(uuid,uuid)',
+                           'public.set_project_owner(uuid,uuid)'] loop
     execute format('revoke execute on function %s from public, anon', f);
     execute format('grant execute on function %s to authenticated', f);
   end loop;
@@ -1752,6 +1781,14 @@ begin
   end if;
 
   -- UPDATE
+  -- (a team project's id is never a client's to change, whatever the switch says: nothing moves its
+  -- tasks, updates, sections, fields, rules and forms with it (they name it by a text id), so they'd be
+  -- left loose, and a project made under the old id (a Members only one of the changer's own, say) would
+  -- take them over, with the say over who sees them. The app never renumbers a project; the bin puts one
+  -- back with an insert)
+  if client and new.id is distinct from old.id and coalesce(old.workspace_id, new.workspace_id) is not null then
+    raise exception 'not authorized';
+  end if;
   if new.visibility is distinct from old.visibility and client
      and coalesce(current_setting('kanbo.pa_write', true), '') <> 'on' then
     raise exception 'not authorized';
@@ -2027,6 +2064,7 @@ end; $$;
 -- suspended or awaiting approval by the project they'll see once they can act (pa_assignee_rank), and
 -- someone who has left the workspace keeps a task they already had when it moves (nothing here is
 -- theirs to see, wherever it goes: as before, and as remove_member leaves it), but is never given one.
+-- And no client stores Kanbo's ranking reason (ai_reason) on the row: it's its assignee's own.
 create or replace function public.pa_trg_tasks() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
@@ -2046,6 +2084,14 @@ begin
       end if;
     end if;
     return new;
+  end if;
+  -- (Kanbo's reason for ranking a task is its assignee's own, kept in their plan (0043's task_user_state):
+  -- one on the row is read by everyone who can see the task, and one worked out from a batch that held
+  -- their tasks in other projects can name a Members only or Private one's. So a client stores none on a
+  -- team task here, and an older tab's is dropped; clearing one is fine)
+  if public.pa_is_client() and new.ai_reason is not null
+     and (tg_op = 'INSERT' or new.ai_reason is distinct from old.ai_reason) then
+    new.ai_reason := null;
   end if;
   if new.parent_id is not null
      and (tg_op = 'INSERT' or new.parent_id is distinct from old.parent_id or new.project_id is distinct from old.project_id
@@ -2827,7 +2873,7 @@ language sql immutable set search_path = pg_catalog as $$
     ('project_members', 'trg_project_members_guard', 'before insert or update of project_id, user_id, role, workspace_id', 'pa_trg_project_members_guard', null),
     ('project_members', 'trg_project_members_after', 'after insert or update of project_id, user_id, role, workspace_id or delete', 'pa_trg_project_members_after', null),
     ('workspace_members', 'trg_ws_members_pa', 'after update of role, status, user_id or delete', 'pa_trg_ws_members', null),
-    ('tasks', 'trg_tasks_pa', 'before insert or update of project_id, parent_id, assignee_id, collaborators, followers, workspace_id', 'pa_trg_tasks', null),
+    ('tasks', 'trg_tasks_pa', 'before insert or update of project_id, parent_id, assignee_id, collaborators, followers, workspace_id, ai_reason', 'pa_trg_tasks', null),
     ('tasks', 'trg_tasks_pa_after', 'after update of project_id, parent_id, workspace_id', 'pa_trg_tasks_after', null),
     ('tasks', 'trg_tasks_pa_delete', 'before delete', 'pa_trg_tasks_delete', null),
     ('projects', 'trg_projects_pa_delete', 'before delete', 'pa_trg_projects_delete', null),

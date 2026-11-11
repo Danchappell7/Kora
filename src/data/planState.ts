@@ -299,8 +299,9 @@ export function applyRemotePlan(taskId: string, row: TaskUserState | null): bool
 /** A task as its assignee sees it after a load: the row's plan, and where the
  *  row has none (not on today, no slot, no section), their own plan for today
  *  from task_user_state fills in, so a task handed to them keeps the plan they
- *  had made on it. The row's ranking stays (it is the assignee's). Unchanged
- *  tasks keep their identity. */
+ *  had made on it. The row's score stays (it is the assignee's); Kanbo's reason
+ *  is their plan's, where it has one (a row never stores one: store's
+ *  patchToRow). Unchanged tasks keep their identity. */
 export function fillOwnPlan(t: Task, entry: TaskUserState | undefined, day: string): Task {
   if (!entry) return t;
   const fresh = entry.planDay === day;
@@ -308,6 +309,7 @@ export function fillOwnPlan(t: Task, entry: TaskUserState | undefined, day: stri
   if (fresh && !t.planToday && entry.planToday === true) patch.planToday = true;
   if (fresh && t.scheduled == null && entry.scheduled != null) patch.scheduled = entry.scheduled;
   if (!t.mySectionId && entry.mySectionId) patch.mySectionId = entry.mySectionId;
+  if (typeof entry.aiReason === "string" && entry.aiReason && entry.aiReason !== t.aiReason) patch.aiReason = entry.aiReason;
   return Object.keys(patch).length ? { ...t, ...patch } : t;
 }
 

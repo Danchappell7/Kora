@@ -1019,6 +1019,28 @@ describe("store (supabase) — integration wiring", () => {
     }
   });
 
+  it("0058: a failed projects read keeps, from the device's copy, a Members only project an admin sees by their role alone (no tasks, not on it)", async () => {
+    const W = "ws-1", ME = "user-a";
+    const st = { failing: false };
+    const fake = makeFake(ME);
+    fake.setHandler((c) => {
+      if (c.op !== "select") return undefined;
+      if (c.table === "projects") return st.failing ? { error: { message: "upstream connect error (503)", code: "PGRST000" } }
+        : { data: [{ id: "p-board", name: "Board pack", emoji: "📁", color: "c", workspace_id: W, owner_id: "user-z", contributor_ids: [], visibility: "members" }] };
+      if (c.table === "tasks") return { data: [] };
+      if (c.table === "workspaces") return { data: [{ id: W, name: "Biz", owner_id: "user-z", created_at: "2026-01-01T00:00:00Z", project_access: true, project_access_default: "members", project_access_member_private: false }] };
+      if (c.table === "workspace_members") return { data: [{ id: "wm-1", workspace_id: W, user_id: ME, email: "a@x.io", name: "A", role: "admin", status: "active" }] };
+      if (c.table === "project_members") return { data: [] };
+      return undefined;
+    });
+    const { store: s } = await loadStore(fake);
+    expect((await s.bootstrap({ id: ME })).projects.map((p) => p.id)).toContain("p-board");
+    st.failing = true;
+    const b = await s.bootstrap({ id: ME });
+    expect(b.partial).toEqual({ projects: true });
+    expect(b.projects.map((p) => p.id)).toContain("p-board");
+  });
+
   it("a reload keeps what's on screen for each part it couldn't read, and only those", () => {
     const loaded = {
       projects: [{ id: "p-personal" }, { id: "p-old-name" }], tags: { t1: { label: "Snapshot", color: "red" } },
