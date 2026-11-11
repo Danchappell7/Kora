@@ -67,7 +67,7 @@ import { digestEmail, digestThreads, dueEmail, filterDigestItems, type DigestIte
 import { digestUpdates, emptyRhythmReport, ownerPrefs, remindOwner, updateOwners, type RemindDeps } from "../_shared/updateReminders.ts";
 import { deliverNotice, drainQueue, supabaseDrainDeps, supabaseQueueStore, type SendOutcome } from "../_shared/notifyQueue.ts";
 import { AccessLookupFailed, projectAccess } from "../_shared/projectAccess.ts";
-import { digestItemProjects, projectsTheySee } from "../_shared/notifyAccess.ts";
+import { digestItemProjects, dueTasksTheySee, projectsTheySee } from "../_shared/notifyAccess.ts";
 
 interface TaskRow {
   id: string; title: string | null; due_date: string; status: string; assignee_id: string | null;
@@ -186,10 +186,11 @@ async function dueReminders(supa: Supa, env: Env): Promise<Response> {
     const prefs = resolveNotifyPrefs(prof?.notify_prefs ?? {});
     // on the daily digest, the due list is part of it
     if (prefs.delivery === "digest") { inDigest++; continue; }
-    // Project access (0058): only the tasks they can see. Can't tell: nothing for them this run, never unchecked
+    // Project access (0058): only the tasks they can see. Can't tell (after a few tries: this runs once
+    // a day): nothing for them this run, never unchecked
     let list: TaskRow[];
     try {
-      const mine = new Set(await access.visibleTaskIds(userId, assigned.map((t) => t.id)));
+      const mine = new Set(await dueTasksTheySee(access, userId, assigned.map((t) => t.id)));
       list = assigned.filter((t) => mine.has(t.id));
     } catch (e) {
       if (!(e instanceof AccessLookupFailed)) throw e;

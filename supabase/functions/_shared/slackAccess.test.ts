@@ -95,5 +95,11 @@ describe("slack-post: a stand-up or Radar post from a tab opened before wave 4",
   it("when the switch can't be read, nothing is posted (503)", async () => {
     expect(await standupAudienceCheck(admin(null, { code: "57014", message: "canceling statement due to statement timeout" }), WS, undefined))
       .toMatchObject({ ok: false, status: 503, reason: "unavailable" });
+    // a passing PostgREST outage names the schema cache, and an unrelated error may say "does not exist": neither is "before 0058"
+    expect(await standupAudienceCheck(admin(null, { code: "PGRST002", message: "Could not query the database for the schema cache. Retrying." }), WS, undefined))
+      .toMatchObject({ ok: false, status: 503, reason: "unavailable" });
+    expect(await standupAudienceCheck(admin(null, { code: "42704", message: 'role "x" does not exist' }), WS, undefined))
+      .toMatchObject({ ok: false, status: 503, reason: "unavailable" });
+    expect(await standupAudienceCheck(admin(null, { code: "PGRST204", message: "Could not find the 'project_access' column" }), WS, undefined)).toEqual({ ok: true });
   });
 });

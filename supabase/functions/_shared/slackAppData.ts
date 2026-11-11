@@ -23,6 +23,8 @@
 // card says whether its project is open to the whole workspace (closedProject:
 // the switch is on and the project is Members only or Private). Both come
 // from the row as JSON (to_jsonb), so a database before 0058 just says "open".
+// A task whose project has gone (in the bin, or deleted for good: work its
+// people may still read) asks closed_project_ids, as the stand-up does.
 //
 // Pure (Tx / UserDb are interfaces): the PGlite replay runs these against
 // the real migrations (scratchpad/pgtest-slack), vitest the edges.
@@ -33,6 +35,7 @@ import type { RouteContext } from "./api/router.ts";
 import type { ApiTask } from "./api/serialise.ts";
 import type { ApiPrincipal, Tx, UserDb } from "./api/types.ts";
 import { escapeLike, isUuid, PERSONAL_PROJECT_ID } from "./api/validate.ts";
+import { projectAccess } from "./projectAccess.ts";
 import type { HomeTask, Option, TaskCard } from "./slackAppBlocks.ts";
 import type { Member, Project } from "./slackAppParse.ts";
 
@@ -236,12 +239,14 @@ export interface CardRow {
   assignee_id: string | null; user_id: string; created_at: string | Date; project_name: string | null; project_emoji: string | null; assignee_name: string | null;
   /** 0058: the project's visibility and the workspace's switch, as JSON text (null before 0058) */
   project_visibility?: string | null; access_on?: string | null;
+  /** tasks.project_id as stored */
+  project_id?: string | null;
 }
 /** the workspace's Project access switch (0058) as JSON text: "true" / "false", null before 0058 */
 const ACCESS_ON = (ws: string) => `(select to_jsonb(paw) ->> 'project_access' from public.workspaces paw where paw.id = ${ws})`;
 const CARD_COLS = `t.id::text as id, t.title, t.status, t.priority, t.workspace_id::text as workspace_id, t.due_date::text as due_date, t.due_time,
   t.assignee_id, t.user_id::text as user_id, t.created_at, p.name as project_name, p.emoji as project_emoji, ${ASSIGNEE_NAME} as assignee_name,
-  p.visibility as project_visibility, ${ACCESS_ON("t.workspace_id")} as access_on`;
+  p.visibility as project_visibility, ${ACCESS_ON("t.workspace_id")} as access_on, t.project_id`;
 
 /** Is a project closed to the whole workspace (0058: the switch on, and Members only or Private)? */
 export const isClosedProject = (accessOn: unknown, visibility: unknown) =>
@@ -275,7 +280,15 @@ export async function loadCard(db: SlackDb, userId: string, ws: string | null, t
     `select ${CARD_COLS} from public.tasks t ${PROJECT_JOIN}
       where t.id = $1::uuid and t.archived_at is null
         and (case when $2::uuid is null then t.workspace_id is null else t.workspace_id = $2::uuid end)`, [taskId, ws]));
-  return rs[0] ? toCard(rs[0], userId) : null;
+  const r = rs[0];
+  if (!r) return null;
+  const card = toCard(r, userId);
+  // its project has gone (in the bin, or deleted for good): what it left behind stays closed if it was
+  // Members only or Private (closed_project_ids, as the stand-up counts it). Can't tell: closed.
+  if (!card.closedProject && String(r.access_on ?? "") === "true" && r.project_name == null && r.workspace_id && isUuid(String(r.project_id ?? ""))) {
+    card.closedProject = !(await projectAccess(db.service).projectIsOpen(r.workspace_id, String(r.project_id)).catch(() => false));
+  }
+  return card;
 }
 
 /** A project link's preview data (team workspace only); closedProject: not open to the whole workspace (0058). */

@@ -4,7 +4,7 @@
 // everyone in the workspace, as today. A failed check sends nothing.
 import { describe, expect, it, vi } from "vitest";
 import { projectAccess } from "./projectAccess.ts";
-import { digestItemProjects, projectNoticeGate, projectsTheySee, taskNoticeGate } from "./notifyAccess.ts";
+import { digestItemProjects, dueTasksTheySee, projectNoticeGate, projectsTheySee, taskNoticeGate } from "./notifyAccess.ts";
 import { AccessLookupFailed } from "./projectAccess.ts";
 import type { DigestItem } from "./notifyCompose.ts";
 
@@ -134,5 +134,28 @@ describe("the digest's task-less items", () => {
     expect(await projectsTheySee(before0058().access, THEO, [PAY])).toBeNull();
     expect(await projectsTheySee(with0058().access, THEO, [])).toBeNull();
     await expect(projectsTheySee(flaky(), THEO, [PAY])).rejects.toBeInstanceOf(AccessLookupFailed);
+  });
+});
+
+describe("the morning due list (daily-reminders runs it once a day)", () => {
+  const TASK2 = "88888888-8888-4888-8888-888888888888";
+  it("a lookup that fails is asked again after a pause, so a passing blip doesn't cost them the day's email", async () => {
+    let calls = 0;
+    const rpc = vi.fn(async () => {
+      calls++;
+      if (calls < 3) return { data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } };
+      return { data: [TASK], error: null };
+    });
+    const pauses: number[] = [];
+    expect(await dueTasksTheySee(projectAccess({ rpc }), MAYA, [TASK, TASK2], { sleep: async (ms) => { pauses.push(ms); } })).toEqual([TASK]);
+    expect([calls, pauses.length]).toEqual([3, 2]);
+  });
+  it("every try failing gives up (nothing unchecked goes out); before 0058 it's asked once and every task stays", async () => {
+    const sleep = vi.fn(async () => undefined);
+    await expect(dueTasksTheySee(flaky(), MAYA, [TASK], { sleep })).rejects.toBeInstanceOf(AccessLookupFailed);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    const { access, rpc } = before0058();
+    expect(await dueTasksTheySee(access, MAYA, [TASK, TASK2], { sleep })).toEqual([TASK, TASK2]);
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 });

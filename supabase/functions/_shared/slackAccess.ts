@@ -21,7 +21,7 @@
 //
 // Pure (no Deno globals, no remote imports): vitest runs it (slackAccess.test.ts).
 // ============================================================
-import { AccessLookupFailed, type ProjectAccess } from "./projectAccess.ts";
+import { AccessLookupFailed, isMissingAccessFn, type ProjectAccess } from "./projectAccess.ts";
 
 /** What slack-post says when the project isn't open to the whole workspace. */
 export const PRIVATE_PROJECT_COPY = "This project is private, so it isn't posted to the team channel.";
@@ -68,9 +68,9 @@ export async function standupAudienceCheck(admin: UserTableDb, workspaceId: stri
   if (audience === STANDUP_AUDIENCE) return { ok: true };
   const { data, error } = await admin.from("workspaces").select("project_access").eq("id", workspaceId).maybeSingle();
   if (error) {
-    // before 0058 there's no switch: everything's open, as today
-    const e = error as { code?: string; message?: string };
-    if (e.code === "42703" || e.code === "PGRST204" || /does not exist|schema cache/i.test(e.message ?? "")) return { ok: true };
+    // before 0058 there's no switch: everything's open, as today. Only the codes say so (never the
+    // message: PostgREST's PGRST002 "…schema cache…" is a passing outage, not a missing column)
+    if (isMissingAccessFn(error)) return { ok: true };
     return { ok: false, status: 503, reason: "unavailable", error: "Couldn't check who can see this workspace's projects. Try again." };
   }
   if ((data as { project_access?: unknown } | null)?.project_access === true) return { ok: false, status: 409, reason: "invalid", error: RELOAD_TO_POST_COPY };

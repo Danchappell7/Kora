@@ -111,3 +111,23 @@ export async function projectsTheySee(access: ProjectAccess, userId: string, pro
   }
   return projectIds.length ? seen : null;
 }
+
+/**
+ * The morning due list (daily-reminders): the ids of `ids` they can see. It runs once a day and
+ * nothing re-tries it, so a lookup that fails (a timeout, a dropped connection) is asked again
+ * after a pause, `tries` times in all, before that person's list is given up for the day.
+ * Throws AccessLookupFailed only when every try failed.
+ */
+export async function dueTasksTheySee(access: ProjectAccess, userId: string, ids: readonly string[],
+  o: { tries?: number; pauseMs?: number; sleep?: (ms: number) => Promise<unknown> } = {}): Promise<string[]> {
+  const tries = Math.max(1, o.tries ?? 3);
+  const sleep = o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  for (let i = 1; ; i++) {
+    try {
+      return await access.visibleTaskIds(userId, ids);
+    } catch (e) {
+      if (!(e instanceof AccessLookupFailed) || i >= tries) throw e;
+      await sleep((o.pauseMs ?? 500) * i);
+    }
+  }
+}

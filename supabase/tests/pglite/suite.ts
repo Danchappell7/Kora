@@ -3767,6 +3767,23 @@ async function projectAccessApiSuite(w: World) {
     eq((await loadProjectCard(db, w.alice, w.w1, w.launch))?.closedProject, false, "Launch");
     eq(await loadCard(db, w.bob, w.w1, salary), null, "bob can't see Board pay's task at all");
   });
+  await test("0058, Slack link previews, switch on: a task left in a Private project that's in the bin (or deleted for good) is still a neutral card, as the stand-up counts it", async () => {
+    const db = slackDb(w);
+    const gone = (await asPerson<{ id: string }>(pg, w.alice, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Gone pay', $2::uuid, 'private') returning id::text as id`, [w.alice, w.w1]))[0].id;
+    const open = (await asPerson<{ id: string }>(pg, w.alice, `insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, 'Gone open', $2::uuid) returning id::text as id`, [w.alice, w.w1]))[0].id;
+    await asPerson(pg, w.alice, `delete from public.projects where id = any ($1::uuid[])`, [[gone, open]]);
+    // what its owner writes into each while it's in the bin (an old tab, say): still theirs to read
+    const left = async (p: string, title: string) => (await asPerson<{ id: string }>(pg, w.alice,
+      `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2, $3, $1::text, $4::uuid) returning id::text as id`, [w.alice, title, p, w.w1]))[0].id;
+    const secret = await left(gone, "Gone pay letter");
+    const plain = await left(open, "Gone open note");
+    const card = await loadCard(db, w.alice, w.w1, secret);
+    eq([card?.title, card?.projectName ?? null, card?.closedProject], ["Gone pay letter", null, true], "the Private one's leftover: neutral");
+    eq((await loadCard(db, w.alice, w.w1, plain))?.closedProject, false, "a Whole workspace one's: as before");
+    eq((await svc().closedProjects(w.w1)).has(gone.toLowerCase()), true, "the stand-up's list says the same");
+    await pg.query(`delete from public.tasks where id = any ($1::uuid[])`, [[secret, plain]]);
+    await pg.query(`delete from public.trash where item_id = any ($1::uuid[]) or project_id = any ($2::text[])`, [[gone, open], [gone, open]]);
+  });
   await test("0058, the webhook dispatcher, switch on: a private project's event goes only to endpoints whose viewer can see it; one never made is never claimed", async () => {
     await pg.query(`update public.webhook_outbox set processed_at = now() where processed_at is null`);
     const hook = async (by: string, path: string) => (await one<{ id: string }>(
