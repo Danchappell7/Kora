@@ -6,6 +6,11 @@
    No server (demo mode), offline, or a database without 0048
    ("unavailable", remembered for the session) → the device's answer is
    the whole answer, and `reason` says why, quietly.
+   The server's hits are shown only while what they belong to is
+   still on this device: a comment, doc or project hit in a project
+   that's gone (0058: the reload after you lose access to it), or a
+   comment on a task that's gone, drops out at once, even from an
+   answer given before.
    ============================================================ */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SearchFailure, SearchFilters, SearchHit, SearchHitKind } from "../../data/types";
@@ -92,7 +97,14 @@ export function useUniversalSearch(a: UniversalSearchArgs): UniversalSearchResul
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAsk, key, a.debounceMs]);
 
-  const server = answer?.key === key ? answer.hits : null;
+  // (only what this device still holds: once projects and tasks have loaded, a hit in a project that's no
+  // longer here, or a comment on a task that isn't, is dropped — the answer may predate losing it)
+  const loaded = useMemo(() => ({
+    projects: a.local.projects.length ? new Set(a.local.projects.map((p) => p.id)) : null,
+    tasks: a.local.tasks.length ? new Set(a.local.tasks.map((t) => t.id)) : null,
+  }), [a.local.projects, a.local.tasks]);
+  const asked = answer?.key === key ? answer.hits : null;
+  const server = useMemo(() => asked && asked.filter((h) => stillHere(h, loaded)), [asked, loaded]);
   const failed = failure?.key === key ? failure.reason : null;
   const reason: LocalReason = !a.active ? null
     : !wantServer ? "demo"
@@ -101,6 +113,15 @@ export function useUniversalSearch(a: UniversalSearchArgs): UniversalSearchResul
     : failed;
   const phase: SearchPhase = !a.active ? "idle" : server || reason ? "done" : "searching";
   return { local, server: reason ? null : server, phase, reason };
+}
+
+/** Is a server hit's project (and a comment's task) still on this device? People and goals aren't a project's;
+ *  the hosts match task hits against the tasks they hold themselves. */
+function stillHere(h: SearchHit, loaded: { projects: Set<string> | null; tasks: Set<string> | null }): boolean {
+  if (h.kind === "person" || h.kind === "goal") return true;
+  if (h.projectId && loaded.projects && !loaded.projects.has(h.projectId)) return false;
+  if (h.kind === "comment" && h.taskId && loaded.tasks && !loaded.tasks.has(h.taskId)) return false;
+  return true;
 }
 
 /** Words for why the answer came from the device alone (quiet, one line). */

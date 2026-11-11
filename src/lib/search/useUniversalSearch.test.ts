@@ -39,6 +39,30 @@ describe("useUniversalSearch", () => {
     expect(result.current.server!.map((h) => h.id)).toEqual(["srv"]);
   });
 
+  it("0058: a comment, doc or project hit of a project that's no longer here (lost access, then the reload) is dropped at once", async () => {
+    const base = { rank: 1, workspaceId: "ws-1", updatedAt: null, source: "server" as const, snippet: null };
+    api.searchAll.mockResolvedValue([
+      { ...base, kind: "comment", id: "c-1", title: "Draft SPA for Target Co", taskId: "t-priv", projectId: "p-priv" },
+      { ...base, kind: "doc", id: "d-1", title: "Target Co price memo", taskId: null, projectId: "p-priv" },
+      { ...base, kind: "project", id: "p-priv", title: "Acquisition of Target Co", taskId: null, projectId: "p-priv" },
+      { ...base, kind: "doc", id: "d-2", title: "Price list notes", taskId: null, projectId: "p-open" },
+      { ...base, kind: "doc", id: "d-3", title: "Pricing handbook", taskId: null, projectId: null },
+      { ...base, kind: "person", id: "m-2", title: "Sana Rao", taskId: null, projectId: null },
+    ] as SearchHit[]);
+    const P = (id: string) => ({ id, name: id, emoji: "", color: "#555", workspaceId: "ws-1" }) as never;
+    const before = { ...LOCAL, projects: [P("p-open"), P("p-priv")], tasks: [...TASKS, { ...task("t-priv", "Draft SPA for Target Co"), projectId: "p-priv" }] };
+    const { result, rerender } = renderHook((p: UniversalSearchArgs) => useUniversalSearch(p), { initialProps: args("price", { local: before }) });
+    await flush(100);
+    expect(result.current.server!.map((h) => h.id)).toEqual(["c-1", "d-1", "p-priv", "d-2", "d-3", "m-2"]);
+    // the reload hands the page its projects and tasks without p-priv: nothing of it stays, no new request needed
+    rerender(args("price", { local: { ...LOCAL, projects: [P("p-open")] } }));
+    expect(result.current.server!.map((h) => h.id)).toEqual(["d-2", "d-3", "m-2"]);
+    // (a comment on a task that's gone, its project still here: gone too)
+    rerender(args("price", { local: { ...LOCAL, projects: [P("p-open"), P("p-priv")] } }));
+    expect(result.current.server!.map((h) => h.id)).toEqual(["d-1", "p-priv", "d-2", "d-3", "m-2"]);
+    expect(api.searchAll).toHaveBeenCalledTimes(1);
+  });
+
   it("a newer keystroke cancels the older request, and an answer for older words is never used", async () => {
     let resolveFirst: (v: SearchHit[]) => void = () => {};
     const signals: AbortSignal[] = [];
