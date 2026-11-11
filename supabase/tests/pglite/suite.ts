@@ -4017,6 +4017,44 @@ async function projectAccessApiSuite(w: World) {
     eq([now.title, now.project_id], ["Acme acquisition: LOI at 4.2m", pay], "and the moved task is left as it was");
     await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [rig.sync]);
   });
+  // (the pages a sync has seen before are read on the service connection: a page whose task went has no link
+  // left, so with the switch on its cache row is out of sight of an admin, a member or a guest)
+  await test("0058, Notion, switch on: a sync an admin set up never brings back a task binned or unlinked in Kanbo, nor takes in a Private project's page moved into its database (as with the switch off)", async () => {
+    const ivy = await admin("ivy-known");
+    const rig = await notionRig("Notion known", "0d0d0d0d-0000-4000-8000-000000005805", ivy);
+    rig.pages.push(rig.page(1, "Alpha", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"), rig.page(2, "Beta", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"));
+    const first = await rig.runOnce();
+    eq([first.fatal, first.error, first.stats.created], [false, null, 2], `first run: ${rig.logs.join("; ")}`);
+    // a later edit in Notion moves the cursor on: the runs after it are incremental
+    rig.pages.push(rig.page(3, "Gamma", "pa.dora@example.org", "2026-11-10T12:00:00.000Z"));
+    eq((await rig.runOnce()).stats.created, 1, "Gamma comes in");
+    const taskId = async (title: string) => (await one<{ id: string }>(`select id::text as id from public.tasks where project_id = $1 and title = $2`, [rig.target, title])).id;
+    // 1. bob renames Alpha, the sync pushes the new title (so Notion's edit time moves on), and bob bins it
+    const alpha = await taskId("Alpha");
+    await asPerson(pg, w.bob, `update public.tasks set title = 'Alpha v2' where id = $1::uuid`, [alpha]);
+    const push = await rig.runOnce();
+    eq([push.fatal, push.stats.pushed], [false, 1], `the rename goes out: ${JSON.stringify(push)}`);
+    rig.pages[0] = rig.page(1, "Alpha v2", "pa.dora@example.org", "2026-11-11T09:00:00.000Z");
+    await asPerson(pg, w.bob, `delete from public.tasks where id = $1::uuid`, [alpha]);
+    // 2. ivy unlinks Beta's page, then someone edits it in Notion
+    const beta = await taskId("Beta");
+    const betaLink = (await one<{ id: string }>(`select id::text as id from public.notion_links where task_id = $1::uuid`, [beta])).id;
+    await asPerson(pg, ivy, `select public.notion_unlink_page($1::uuid)`, [betaLink]);
+    rig.pages[1] = rig.page(2, "Beta (edited in Notion)", "pa.dora@example.org", "2026-11-11T09:00:00.000Z");
+    // 3. a Private project's synced task (ivy and bob aren't on it): its page is dragged, in Notion, into this database
+    const priv = await notionRig("Notion known private", "0d0d0d0d-0000-4000-8000-000000005806");
+    await pg.query(`update public.projects set visibility = 'private' where id = $1`, [priv.target]);
+    priv.pages.push(priv.page(1, "Exec salaries: CEO 410k", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"));
+    eq((await priv.runOnce()).stats.created, 1, "the Private project's sync makes its task");
+    rig.pages.push({ ...priv.pages[0], last_edited_time: "2026-11-11T09:00:00.000Z" });
+    priv.pages.length = 0;
+    const after = await rig.runOnce();
+    eq([after.fatal, after.stats.created], [false, 0], `nothing is made: ${JSON.stringify(after.stats)} ${rig.logs.join("; ")}`);
+    const live = (await pg.query<{ title: string }>(`select title from public.tasks where project_id = $1 and archived_at is null order by title`, [rig.target])).rows.map((r) => r.title);
+    eq(live, ["Beta", "Gamma"], "Alpha stays in the bin, Beta isn't copied, the Private page isn't taken in");
+    eq((await asPerson<{ title: string }>(pg, w.bob, `select title from public.tasks where title like 'Exec salaries%'`)).length, 0, "bob reads nothing of the Private task");
+    await pg.query(`delete from public.notion_syncs where id = any ($1::uuid[])`, [[rig.sync, priv.sync]]);
+  });
   await test("0058, Notion, switch on: an admin who can't see a Private project can't take its sync over, nor preview or import its database (kept in sync or not)", async () => {
     const nia = await admin("nia-notion");
     const dbId = "0d0d0d0d-0000-4000-8000-000000005803";
@@ -4310,6 +4348,7 @@ async function projectAccessApiSuite(w: World) {
     ok(opts.some((t) => t.includes("Launch")), "Launch is his to add to");
     const wsc = await workspaceContext(db, w.bob, w.w1);
     ok(!wsc.projects.some((p) => p.name === "Hiring leads") && wsc.projects.some((p) => p.name === "Launch"), "nor does #project find it");
+    eq((wsc.readOnlyProjects ?? []).map((p) => p.name), ["Hiring leads"], "/kanbo #name knows he only sees Hiring leads (not Board pay, which he can't see)");
     const today = dateInZone(new Date(), "Europe/London");
     const viewOnly = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id, due_date) values ($1::uuid, 'Read the leads brief', $2, $3::uuid, $4, $5::date) returning id::text as id`,
       [w.alice, leads, w.w1, w.bob, today])).id;
@@ -4349,7 +4388,9 @@ async function projectAccessApiSuite(w: World) {
     const db = slackDb(w);
     const opts = (await projectOptions(db, w.bob, w.w1, "")).map((o) => o.text);
     ok(opts.some((t) => t.includes("Hiring leads")) && opts.some((t) => t.includes("Board pay")), `every project: ${JSON.stringify(opts)}`);
-    ok((await workspaceContext(db, w.bob, w.w1)).projects.some((p) => p.name === "Board pay"), "#project finds them all");
+    const wscOff = await workspaceContext(db, w.bob, w.w1);
+    ok(wscOff.projects.some((p) => p.name === "Board pay"), "#project finds them all");
+    eq(wscOff.readOnlyProjects, [], "and none is only seen");
     const today = dateInZone(new Date(), "Europe/London");
     const t = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id, due_date) values ($1::uuid, 'Off: read the leads brief', $2, $3::uuid, $4, $5::date) returning id::text as id`,
       [w.alice, leads, w.w1, w.bob, today])).id;

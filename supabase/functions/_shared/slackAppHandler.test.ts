@@ -43,6 +43,8 @@ interface Script {
   /** what loadCard / loadProjectCard read as the person (a task card row, a project card row) */
   card?: Record<string, unknown>;
   projectCard?: Record<string, unknown>;
+  /** workspaceContext as the person (0058 in): their role, the projects they can add to, and those they only see */
+  wsc?: { role: string; projects: { id: string; name: string }[]; readOnly: { id: string; name: string }[] };
 }
 function harness(script: Script = {}, slackDelayMs = 0) {
   const sql: string[] = [];
@@ -69,6 +71,12 @@ function harness(script: Script = {}, slackDelayMs = 0) {
       if (/from public\.slack_user_links/.test(text)) return (isLinked(args[1]) ? [{ user_id: MIA, slack_user_name: "Mia", can_act: script.canAct !== false }] : []) as T[];
       if (/from public\.slack_teams/.test(text)) return (script.ws === undefined ? [] : [{ team_name: "acme", ws: script.ws, ws_name: "Acme" }]) as T[];
       if (script.card && /from public\.tasks t left join lateral/.test(text)) return [script.card] as T[];
+      if (script.wsc) {
+        if (/select public\.ws_role\(/.test(text)) return [{ role: script.wsc.role }] as T[];
+        if (/to_regprocedure\('public\.pa_rank_core/.test(text)) return [{ on: true }] as T[];
+        if (/from public\.projects p[\s\S]*between 1 and 2/.test(text)) return script.wsc.readOnly as T[];
+        if (/from public\.projects p\s+where p\.workspace_id = \$1::uuid and p\.archived_at is null/.test(text)) return script.wsc.projects as T[];
+      }
       if (script.projectCard && /from public\.projects p where p\.id = \$1::uuid and p\.workspace_id/.test(text)) return [script.projectCard] as T[];
       return [] as T[];
     },
@@ -175,6 +183,17 @@ describe("/kanbo", () => {
     const r = await h.run(slash("Buy milk"));
     expect(JSON.stringify(r.body)).toMatch(/can't add or change things/);
     expect(h.asUser).toEqual([]);
+  });
+  it("#name of a project they only view or comment on (0058, the switch on): told so; nothing is added, nor put in their Personal list", async () => {
+    const h = harness({ linked: true, ws: "bbbbbbbb-0000-4000-8000-000000000001", wsc: {
+      role: "member", projects: [{ id: "cccccccc-0000-4000-8000-000000000001", name: "Roadmap" }],
+      readOnly: [{ id: "cccccccc-0000-4000-8000-000000000002", name: "Launch" }] } });
+    const r = await h.run(slash("Draft the brief #launch"));
+    await h.settle();
+    const said = JSON.stringify([r.body, h.responds.map((x) => x.body)]);
+    expect(said).toContain("You can see “Launch” but can't add tasks to it, so nothing was added.");
+    expect(said).not.toMatch(/No project called|Personal list/);
+    expect(h.sql.some((x) => /insert into public\.tasks/.test(x))).toBe(false);
   });
   it("before 0049: says the app isn't set up", async () => {
     const h = harness({ missing: true });

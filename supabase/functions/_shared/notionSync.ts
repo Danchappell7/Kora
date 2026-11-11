@@ -513,6 +513,16 @@ async function pullBatch(run: Run, pages: NPage[]) {
       `select notion_page_id as p from public.notion_links where sync_id = $1::uuid and notion_page_id in (select jsonb_array_elements_text($2::jsonb))`,
       [run.syncId, J(ids)])).map((r) => r.p))
     : new Set<string>();
+  // (pages this workspace has seen before, also on the service connection: a page whose task was deleted,
+  // binned or unlinked has no link left, so with Project access on its cache row is out of sight of any
+  // admin, member or guest the run acts as, and the page would come back as a new task. Only the ones
+  // this sync doesn't link: `known` is asked about no other. It only ever stops a create.)
+  const unlinked = run.syncId && run.knownBefore != null ? ids.filter((id) => !linked.has(id)) : [];
+  const known = unlinked.length
+    ? new Set((await deps.db.service.query<{ p: string }>(
+      `select notion_page_id as p from public.notion_page_cache where workspace_id = $1::uuid and notion_page_id in (select jsonb_array_elements_text($2::jsonb))`,
+      [ws, J(unlinked)])).map((r) => r.p))
+    : new Set<string>();
 
   const linkTouches: LinkTouch[] = [];
   const adopted: (LinkTouch & { task: string })[] = [];
@@ -526,7 +536,6 @@ async function pullBatch(run: Run, pages: NPage[]) {
     let rows: LinkTaskRow[] = [];
     let existing = new Set<string>();
     let plain = new Map<string, LinkTaskRow>();
-    let known = new Set<string>();
     if (run.syncId) {
       // lock the tasks these pages are linked to (by this sync, or by this database's importer) until
       // the batch commits: each is merged with the copy read below, and no edit lands in between
@@ -553,11 +562,6 @@ async function pullBatch(run: Run, pages: NPage[]) {
             and not exists (select 1 from public.notion_links o where o.task_id = l.task_id and o.kind = 'synced' and o.id <> l.id)
           order by l.notion_page_id, l.created_at`, [ws, run.projectId, J(ids), run.databaseId]);
       plain = new Map(free.map((r) => [r.notion_page_id, r]));
-      if (run.knownBefore != null && rows.length < ids.length) {
-        const c = await tx.query<{ p: string }>(
-          `select notion_page_id as p from public.notion_page_cache where workspace_id = $1::uuid and notion_page_id in (select jsonb_array_elements_text($2::jsonb))`, [ws, J(ids)]);
-        known = new Set(c.map((x) => x.p));
-      }
     } else {
       const got = await tx.query<{ p: string }>(
         `select l.notion_page_id as p from public.notion_links l join public.tasks t on t.id = l.task_id

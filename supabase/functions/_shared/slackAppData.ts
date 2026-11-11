@@ -182,28 +182,44 @@ const PROJECT_JOIN = `left join lateral (
 const ASSIGNEE_NAME = `(select ${MEMBER_NAME} from public.workspace_members m left join public.profiles pr on pr.id = m.user_id
     where t.workspace_id is not null and m.workspace_id = t.workspace_id and m.user_id::text = t.assignee_id limit 1)`;
 
-export interface WorkspaceContext { role: string; projects: Project[]; members: Member[] }
+export interface WorkspaceContext {
+  role: string; projects: Project[]; members: Member[];
+  /** live projects they see but can't add tasks to (0058, the switch on: one they view or comment on), so
+   *  /kanbo's #name says so rather than "no project called…" */
+  readOnlyProjects?: Project[];
+}
 
 /** SQL (as the person, $1 = the workspace): the project `p` is one they can add tasks to. With Project access
  *  switched on (0058), a Members only or Private project they only view or comment on isn't (the API would
  *  refuse the task); switched off, or before 0058, every live project is, as before. */
-const editableSql = async (tx: Tx) => (await accessInstalled(tx))
+const editableClause = (access: boolean) => access
   ? `and (${ACCESS_ON("$1::uuid")} is distinct from 'true' or public.pa_rank($1::uuid, p.id::text) >= 3)` : "";
+const editableSql = async (tx: Tx) => editableClause(await accessInstalled(tx));
 
-/** The person's role in the team workspace, the live projects they can add tasks to and its active members (for #project / @person). */
+/** The person's role in the team workspace, the live projects they can add tasks to (and those they only
+ *  see) and its active members (for #project / @person). */
 export async function workspaceContext(db: SlackDb, userId: string, ws: string): Promise<WorkspaceContext> {
   return asPerson(db, userId, ws, true, async (tx) => {
     const role = String((await tx.query<{ role: string }>(`select public.ws_role($1::uuid) as role`, [ws]))[0]?.role ?? "none");
-    if (role === "none") return { role, projects: [], members: [] };
+    if (role === "none") return { role, projects: [], members: [], readOnlyProjects: [] };
+    const access = await accessInstalled(tx);
     const projects = await tx.query<Project>(
       `select p.id::text as id, p.name, p.emoji from public.projects p
-        where p.workspace_id = $1::uuid and p.archived_at is null ${await editableSql(tx)} order by p.created_at, p.id limit 500`, [ws]);
+        where p.workspace_id = $1::uuid and p.archived_at is null ${editableClause(access)} order by p.created_at, p.id limit 500`, [ws]);
+    // (the rest of what they see: the projects policy shows only those)
+    const readOnlyProjects = access
+      ? await tx.query<Project>(
+        `select p.id::text as id, p.name, p.emoji from public.projects p
+          where p.workspace_id = $1::uuid and p.archived_at is null
+            and ${ACCESS_ON("$1::uuid")} = 'true' and public.pa_rank($1::uuid, p.id::text) between 1 and 2
+          order by p.created_at, p.id limit 500`, [ws])
+      : [];
     const members = await tx.query<Member>(
       `select m.user_id::text as id, ${MEMBER_NAME} as name, m.email
          from public.workspace_members m left join public.profiles pr on pr.id = m.user_id
         where m.workspace_id = $1::uuid and m.status = 'active' and m.user_id is not null
         order by m.created_at, m.id limit 1000`, [ws]);
-    return { role, projects, members };
+    return { role, projects, members, readOnlyProjects };
   });
 }
 

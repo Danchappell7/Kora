@@ -1499,6 +1499,62 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     }, "Ari gets what a missing id gets; Oona (and Ari, switched off) as before");
   });
 
+  await test("0058, switch on: the Notion sync a project left behind when it left the workspace (to someone's Personal list or another workspace, a direct write) is judged by what the project had here: the owner removes it or syncs its database elsewhere, an admin who wasn't on it (Private) can't; switched off, as before", async () => {
+    const D = "0d0d0d0d-5858-4000-8000-0000000000d8";
+    const runCase = (on: boolean) => scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, string> = {};
+      const s = (p: Proj) => w.rows.notion_syncs[p]![0];
+      const res = (o: Outcome) => ("error" in o ? o.error : "ok");
+      await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+      await run(null, `update public.notion_syncs set database_id = $2 where id = $1::uuid`, [s("PQ"), D]);
+      // Meg's Private PQ goes to her Personal list; Oona's Whole workspace PW to the other workspace
+      await run(null, `update public.projects set workspace_id = null where id = $1::uuid`, [w.proj.PQ]);
+      await run(null, `update public.projects set workspace_id = $2::uuid where id = $1::uuid`, [w.proj.PW, w.ws2]);
+      const saveInto = (who: Who, p: Proj) => tryRun(w.id[who], `select public.notion_save_sync($1::uuid, $2::uuid, $3, 'Zebra board', '{"title": "Name"}'::jsonb, 'two_way', true) ->> 'project_id' as p`, [w.ws, w.proj[p], D]);
+      out["A delete PQ"] = res(await tryRun(w.id.A, `select public.notion_delete_sync($1::uuid)`, [s("PQ")]));
+      out["A off PQ"] = res(await tryRun(w.id.A, `select public.notion_set_sync_enabled($1::uuid, false)`, [s("PQ")]));
+      out["A save PQ's into PM"] = res(await saveInto("A", "PM"));
+      out["M2 delete PW"] = res(await tryRun(w.id.M2, `select public.notion_delete_sync($1::uuid)`, [s("PW")]));
+      out["A delete PW"] = res(await tryRun(w.id.A, `select public.notion_delete_sync($1::uuid)`, [s("PW")]));
+      out["O off PQ"] = res(await tryRun(w.id.O, `select public.notion_set_sync_enabled($1::uuid, false)`, [s("PQ")]));
+      const saved = await saveInto("O", "PM");
+      out["O save PQ's into PM"] = "rows" in saved ? String(saved.rows[0].p === w.proj.PM) : saved.error;
+      out["O delete it"] = res(await tryRun(w.id.O, `select public.notion_delete_sync($1::uuid)`, [s("PQ")]));
+      out.left = String((await run(null, `select count(*)::int as n from public.notion_syncs where id = any ($1::uuid[])`, [[s("PQ"), s("PW")]]))[0].n);
+      return out;
+    });
+    eq(await runCase(true), {
+      "A delete PQ": "sync not found", "A off PQ": "sync not found", "A save PQ's into PM": "already syncs",
+      "M2 delete PW": "sync not found", "A delete PW": "ok",
+      "O off PQ": "ok", "O save PQ's into PM": "true", "O delete it": "ok", left: "0",
+    }, "switch on: Ari wasn't on PQ (it had left Private), but could change PW; Oona sees every project");
+    eq(await runCase(false), {
+      "A delete PQ": "ok", "A off PQ": "sync not found", "A save PQ's into PM": "ok",
+      "M2 delete PW": "sync not found", "A delete PW": "ok",
+      "O off PQ": "sync not found", "O save PQ's into PM": "true", "O delete it": "sync not found", left: "0",
+    }, "switch off: owners and admins, as before 0058");
+  });
+
+  await test("0058, switch on: a Private project's Notion database id isn't linked as a page to a task of someone not on it (its title would be cached for them); switched off, as before", async () => {
+    const D = "0d0d0d0d-5858-4000-8000-0000000000d9";
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, string> = {};
+      await run(null, `update public.notion_syncs set database_id = $2, database_title = 'Zebra board pack' where id = $1::uuid`, [w.rows.notion_syncs.PP![0], D]);
+      const linkAs = async (who: Who) => {
+        await run(null, `savepoint pa_link`);
+        const r = await tryRun(w.id[who], `select public.notion_link_page($1::uuid, $2) ->> 'kind' as l`, [w.task.PW, D.replace(/-/g, "").toUpperCase()]);
+        await run(null, `rollback to savepoint pa_link`);
+        return "error" in r ? r.error : "linked";
+      };
+      for (const who of ["M2", "A", "ME", "O"] as const) out[who] = await linkAs(who);
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      out["off: M2"] = await linkAs("M2");
+      return out;
+    });
+    eq(got, { M2: "invalid page", A: "invalid page", ME: "linked", O: "linked", "off: M2": "linked" },
+      "Moe and Ari (not on PP) are told what any id that isn't a page gets; Meg (on PP) and Oona link it; switched off, as before");
+  });
+
   await test("0058, switch on: a Notion page that's a synced task's you can't see isn't linked to a task of yours, nor read (link or cached title) through a link of yours made before; switched off, as before", async () => {
     const got = await scenario(async (run, _exec, tryRun) => {
       const page = w.rows.notion_page_cache.PP![0];

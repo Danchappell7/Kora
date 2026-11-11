@@ -950,8 +950,10 @@ steps; nothing breaks while you wait.
      Where it's switched on, a stand-up or Radar post from a Kanbo tab opened
      before the website update (whose text lists every task it saw) is
      refused with "Reload Kanbo to post to Slack." The `/kanbo` command and its
-     form offer only projects the person can add tasks to, and Home has no
-     Complete on a task they can only view or comment on.
+     form offer only projects the person can add tasks to (a `#name` of one
+     they can only view or comment on says so and adds nothing, rather than
+     filing the task in their Personal list), and Home has no Complete on a
+     task they can only view or comment on.
    - `public-form`: a private project's form shows the form's name, never the
      project's.
    - `invite-member`: a guest's invite says they'll see only the projects
@@ -964,7 +966,10 @@ steps; nothing breaks while you wait.
      unassigned (the sync no longer stops on it, nor rolls back its run); and
      where it's switched on, a synced task moved to another project stops
      syncing until it's moved back (also when the sync was set up by an admin
-     who isn't on that project: it's never copied back as a new task). A
+     who isn't on that project: it's never copied back as a new task), and
+     whoever set a sync up, it never brings back a task deleted or unlinked
+     in Kanbo, nor takes in a page it has already seen that's moved, in
+     Notion, into its database from another (as with the switch off). A
      database that syncs with a project you can't see can't be previewed or
      imported by you, nor its sync taken over (nor once that sync is removed,
      or when it was imported into such a project, nor while that project or

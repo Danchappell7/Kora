@@ -59,7 +59,7 @@ import {
   loadProjectCard, memberOptions, projectOptions, rateHit, refreshSlackAdmin, SlackWriteError, taskScope, teamInfo, undoCreate, workspaceContext,
   type SlackDb, type SlackLink, type TeamInfo,
 } from "./slackAppData.ts";
-import { toLocalISO } from "./nlp.ts";
+import { matchProject, toLocalISO } from "./nlp.ts";
 import type { ApiTask } from "./api/serialise.ts";
 
 export interface SlackAppDeps {
@@ -330,7 +330,7 @@ async function createFromText(deps: SlackAppDeps, g: Extract<Gate, { ok: true }>
   const wsName = g.team.workspaceName ?? "your team's Kanbo workspace";
   const { mentions } = decodeSlackText(text);
   const [wsc, prof, people] = await Promise.all([
-    ws ? workspaceContext(deps.db, me, ws) : Promise.resolve({ role: "none", projects: [], members: [] }),
+    ws ? workspaceContext(deps.db, me, ws) : Promise.resolve({ role: "none", projects: [], members: [], readOnlyProjects: [] }),
     slackProfile(deps, slackUserId, 1200),
     Promise.all(mentions.slice(0, 5).map(async (m) => ({ m, p: await slackProfile(deps, m.slackUserId, 1500) }))),
   ]);
@@ -352,6 +352,12 @@ async function createFromText(deps: SlackAppDeps, g: Extract<Gate, { ok: true }>
     names,
   });
   if (!parsed.title) return noticeMessage(COPY.noTitle, { emoji: ":pencil2:" });
+  // a #name that's a project they only view or comment on (0058, the switch on): say so, rather than
+  // "no project called…" and a task in their Personal list
+  if (teamOk && !parsed.projectId && parsed.unknownProjects.length) {
+    const seen = parsed.unknownProjects.map((n) => matchProject(n, wsc.readOnlyProjects ?? [])).find(Boolean);
+    if (seen) return noticeMessage(`You can see “${seen.name}” but can't add tasks to it, so nothing was added.`, { emoji: ":lock:" });
+  }
 
   const notes: string[] = [];
   const projectId = parsed.projectId ?? PERSONAL;

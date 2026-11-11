@@ -258,7 +258,10 @@ No new secrets and no new schedule.
   syncs of projects you can see, and a task's dependencies list only the tasks
   you can see. Switching a Notion sync on or off, or removing it
   (`notion_set_sync_enabled`, `notion_delete_sync`), needs edit rights on its
-  project: anyone else gets "sync not found", as for a sync that isn't there,
+  project (one that has since left the workspace, for someone's Personal list
+  or another workspace: the rights it gave here, so the workspace's owners can
+  still remove the sync it left behind, or sync its database into another
+  project): anyone else gets "sync not found", as for a sync that isn't there,
   whatever sync id they hold (every member could read them while a project was
   open, and a synced task moved out keeps its sync's id), and never the sync's
   details or last error. A new public link for a form you can't see is "form
@@ -338,7 +341,12 @@ person who saved it: it goes when someone else signs in there.)
   to another project stops syncing (nothing of it goes out or comes in, and
   archiving its page doesn't archive it) until it's moved back, whoever set the
   sync up (one set up by an admin who isn't on the project it was moved into
-  never brings it back as a new task). Coming the other way, a page whose
+  never brings it back as a new task). Nor, whoever set it up, does a sync
+  bring back a task deleted, binned or unlinked in Kanbo, or take in a page it
+  has seen before that's moved, in Notion, into its database from another (a
+  Private project's synced database, say), as with the switch off: the pages
+  a sync has seen are read whatever the person it runs as can see, and only
+  ever stop a page coming in. Coming the other way, a page whose
   Owner can't see the project comes in unassigned (the database would refuse
   them as its assignee), and the rest of the run carries on. A database that
   syncs with a project you can't see can't be previewed or imported by you,
@@ -348,8 +356,9 @@ person who saved it: it goes when someone else signs in there.)
   sync of it be made for a project of yours ("invalid database"). Nor can its pages be read
   in Kanbo through a link of your own: a page that a task you can't see is
   synced with, or was imported from, can't be linked to a task of yours
-  ("invalid page"), and a link to it made before (while its project was open,
-  say) is hidden from you, with the page's cached title, so the Notion
+  ("invalid page"; so is the database's own id, which the Notion function
+  would otherwise link as a page, with the database's title), and a link to
+  it made before (while its project was open, say) is hidden from you, with the page's cached title, so the Notion
   function won't fetch the page for you either (a page someone linked to a
   task by hand names no database, and never closes it; nor does an import
   elsewhere close a page a live sync links to a task you can see). The other

@@ -2620,12 +2620,14 @@ end; $$;
 -- One database syncs with one project a workspace (notion_save_sync upserts on it): re-pointing a sync
 -- is also taking it from its project, so that needs edit rights there too. Otherwise an admin who can't
 -- see a Private project would take its sync over, and its pages would come into a project of theirs.
+-- (Those rights as this workspace judges the project, pa_rank: one that has left the workspace by what
+-- it had here (1h), as notion_delete_sync does, so its owners can sync the database elsewhere again.)
 create or replace function public.pa_trg_notion_syncs() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   if public.pa_is_client() and not public.pa_restoring() and new.workspace_id is not null and public.pa_on(new.workspace_id)
      and tg_op = 'UPDATE' and new.project_id is distinct from old.project_id
-     and not public.can_edit_project(old.project_id) then
+     and public.pa_rank(new.workspace_id, old.project_id::text) < 3 then
     raise exception 'already syncs' using hint = 'This Notion database already syncs with a project here that you can''t change.';
   end if;
   if public.pa_is_client() and not public.pa_restoring() and new.workspace_id is not null and public.pa_on(new.workspace_id)
@@ -3201,6 +3203,10 @@ $b$; $fn$;
   -- answer with the whole sync (its last error names tasks), and a sync's id outlives sight of its
   -- project: every member read it while the project was open, and a synced task moved out keeps it on
   -- its link. (Switching it back on would send a Private project's tasks to its Notion database again.)
+  -- The project is judged as this workspace judges it (pa_rank): one that has left the workspace (to
+  -- someone's Personal list or another workspace: a direct write, the app never moves one) by what it
+  -- had here (1h), so the workspace's owners can still remove the sync it left behind (can_edit_project
+  -- asks the project's new home, and that sync would fail every run, never to be removed).
   -- Switch off: 0046's, line for line.
   execute $fn$
 create or replace function public.notion_set_sync_enabled(p_id uuid, p_enabled boolean)
@@ -3211,7 +3217,7 @@ begin
   if s.id is null or auth.uid() is null or public.ws_role(s.workspace_id) not in ('owner', 'admin') then
     raise exception 'sync not found';
   end if;
-  if public.pa_on(s.workspace_id) and not public.can_edit_project(s.project_id) then
+  if public.pa_on(s.workspace_id) and public.pa_rank(s.workspace_id, s.project_id::text) < 3 then
     raise exception 'sync not found';
   end if;
   if coalesce(p_enabled, false) and not exists (select 1 from public.workspace_integrations i
@@ -3233,7 +3239,7 @@ begin
   if s.id is null or auth.uid() is null or public.ws_role(s.workspace_id) not in ('owner', 'admin') then
     raise exception 'sync not found';
   end if;
-  if public.pa_on(s.workspace_id) and not public.can_edit_project(s.project_id) then
+  if public.pa_on(s.workspace_id) and public.pa_rank(s.workspace_id, s.project_id::text) < 3 then
     raise exception 'sync not found';
   end if;
   update public.notion_links set kind = 'reference', sync_id = null where sync_id = p_id;
@@ -3246,7 +3252,9 @@ end; $b$ $fn$;
 
   -- 0046's notion_link_page: with the switch on, never to a page that's a synced task's the caller can't
   -- see ('invalid page', as for an id that isn't a page): the answer, and the page cache through the
-  -- new link, would carry that task's current title (pa_notion_page_hidden). Switch off: 0046's.
+  -- new link, would carry that task's current title (pa_notion_page_hidden). Nor to a database closed to
+  -- them (user_notion_database_hidden): the notion function links a database pasted as a page, and its
+  -- answer and cached title would be the database's, which notion_syncs keeps from them. Switch off: 0046's.
   execute $fn$
 create or replace function public.notion_link_page(p_task uuid, p_page_id text)
 returns jsonb language plpgsql security definer set search_path = public as $b$
@@ -3259,7 +3267,9 @@ begin
     raise exception 'notion not connected';
   end if;
   if pid is null then raise exception 'invalid page'; end if;
-  if public.pa_on(ws) and public.pa_notion_page_hidden(ws, pid) then raise exception 'invalid page'; end if;
+  if public.pa_on(ws) and (public.pa_notion_page_hidden(ws, pid) or public.user_notion_database_hidden(auth.uid(), ws, pid)) then
+    raise exception 'invalid page';
+  end if;
   select * into l from public.notion_links where task_id = p_task and notion_page_id = pid;
   if l.id is null then
     if (select count(*) from public.notion_links x where x.task_id = p_task) >= 20 then raise exception 'too many links'; end if;
