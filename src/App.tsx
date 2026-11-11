@@ -361,8 +361,10 @@ export default function App() {
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const gPrefixRef = useRef(false);
   const [detailId, setDetailId] = useState<string | null>(null);
-  // a task opened anywhere takes the goal panel's place (they share the right-hand side)
-  useEffect(() => { if (detailId) setGoalPanel(null); }, [detailId]);
+  // a task opened anywhere takes the goal panel's place (they share the right-hand side). A layout effect,
+  // so it runs as the task panel lands: a passive one could still be waiting after a task the page opened
+  // itself (?task=, a push), and a goal opened from that panel's Serves chip meanwhile was closed straight away
+  useLayoutEffect(() => { if (detailId) setGoalPanel(null); }, [detailId]);
   const [focusOpen, setFocusOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newTaskStatus, setNewTaskStatus] = useState<Status>("todo");
