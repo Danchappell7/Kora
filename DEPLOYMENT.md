@@ -779,7 +779,7 @@ say "The new code isn't in this folder yet." and stop before asking for your tok
    the per-address limit is weaker until that's looked at.
 6. **Connect an AI app**: Settings › Developers › Connect your AI has the steps for each one.
 
-### Steps 17 and 18 in one go (the short way)
+### Step 17–18 in one go (the short way)
 
 This does all of Step 17 and Step 18 below: ten functions, then database updates
 0051 to 0057 in ONE paste. Read the two steps if you want to know what each part
