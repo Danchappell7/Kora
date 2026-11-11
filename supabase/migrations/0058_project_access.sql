@@ -441,13 +441,15 @@ returns uuid[] language sql security definer stable set search_path = public as 
      where w.project_access and m.user_id = auth.uid() and m.status = 'active') x
    where auth.uid() is not null and public.ws_role(x.id) in ('admin', 'member', 'guest');
 $$;
+-- (a guest by their row, whether or not they can act: one who's suspended or awaiting approval reads
+-- only their projects' people too, never everyone's)
 create or replace function public.pa_guest_ws()
 returns uuid[] language sql security definer stable set search_path = public as $$
   select coalesce(array_agg(x.id), '{}') from (
     select distinct w.id from public.workspaces w
       join public.workspace_members m on m.workspace_id = w.id
      where w.project_access and m.user_id = auth.uid() and m.status = 'active' and m.role = 'guest') x
-   where auth.uid() is not null and public.ws_role(x.id) = 'guest';
+   where auth.uid() is not null;
 $$;
 -- the same for someone else (tasks_visible_to)
 create or replace function public.pa_gated_ws_for(p_user uuid)
@@ -593,6 +595,17 @@ returns integer language sql security definer stable set search_path = public as
     union select nullif(p_query #>> '{search,filters,projectId}', '')) q
    where q.x is not null and q.x <> 'all';
 $$;
+-- Is this Notion page a synced task's that the caller can't see? (One sync a database a workspace, one
+-- link a page a sync: at most one synced link a page.) The sync keeps the page's title equal to its
+-- task's, and the page cache (0046) holds it for every link to the page, so a link of the caller's own
+-- to that page (made before the project narrowed, or by notion_link_page with the page's id) would read
+-- the hidden task's current title, and the notion function would fetch it from Notion on request.
+create or replace function public.pa_notion_page_hidden(p_ws uuid, p_page text)
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.notion_links l
+                  where l.workspace_id = p_ws and l.notion_page_id = p_page and l.kind = 'synced'
+                    and not public.can_see_task(l.task_id));
+$$;
 
 -- 2i. the public helpers (can_see_task, can_edit_task, can_see_project, can_edit_project and
 -- can_see_status_update take their new bodies in section 5) and two new ones
@@ -618,6 +631,7 @@ begin
                            'public.pa_gated_ws()', 'public.pa_guest_ws()', 'public.pa_guest_people()',
                            'public.pa_person_visible(uuid)', 'public.pa_can_manage(uuid)', 'public.pa_may_make_private(uuid)',
                            'public.pa_goal_target_rank(uuid,text,text)', 'public.pa_view_rank(uuid,jsonb)', 'public.pa_task_gated(uuid)',
+                           'public.pa_notion_page_hidden(uuid,text)',
                            'public.can_comment_task(uuid)', 'public.can_comment_project(uuid)'] loop
     execute format('revoke execute on function %s from public, anon', f);
     execute format('grant execute on function %s to authenticated', f);
@@ -680,9 +694,12 @@ returns text[] language sql security definer stable set search_path = public as 
                         and not exists (select 1 from public.projects p where p.id = d.id and p.workspace_id = p_ws)) c), '{}')
               else '{}'::text[] end;
 $$;
+-- (p_project as stored: free text, so an id in capitals names the same project, as every rank check
+-- (kanbo_uuid) reads it; closed_project_ids is lower case)
 create or replace function public.project_is_open(p_ws uuid, p_project text)
 returns boolean language sql security definer stable set search_path = public as $$
-  select p_project is null or not (p_project = any (public.closed_project_ids(p_ws)));
+  select p_project is null
+      or not (coalesce(public.kanbo_uuid(p_project)::text, p_project) = any (public.closed_project_ids(p_ws)));
 $$;
 do $svc$
 declare f text;
@@ -792,7 +809,8 @@ end; $$;
 
 -- 2n. held notices and pending webhooks when access narrows (a project, or a whole workspace when
 -- p_project is null): what's waiting for someone who can't see it any more never goes. Only behind
--- the switch: while it's off everything goes as it did before this file.
+-- the switch: while it's off everything goes as it did before this file. (A task's project_id, and the
+-- one an event names, are free text: compared as uuids, so one written in capitals is the same project.)
 create or replace function public.pa_flush_held(p_ws uuid, p_project uuid)
 returns void language plpgsql security definer set search_path = public as $$
 declare r record; np jsonb;
@@ -802,7 +820,7 @@ begin
     delete from public.notify_queue q
      where q.sent_at is null and q.task_id is not null
        and exists (select 1 from public.tasks t where t.id = q.task_id and t.workspace_id = p_ws
-                    and (p_project is null or t.project_id = p_project::text))
+                    and (p_project is null or public.kanbo_uuid(t.project_id) = p_project))
        and public.pa_task_hidden_for(q.user_id, q.task_id);
     for r in select q.id, q.user_id, q.payload from public.notify_queue q
               where q.sent_at is null and q.task_id is null
@@ -821,7 +839,7 @@ begin
    where d.state = 'pending' and d.event <> 'ping' and w.id = d.webhook_id and o.id = d.outbox_id
      and w.workspace_id = p_ws
      and public.pa_webhook_project(o.event, o.payload) is not null
-     and (p_project is null or public.pa_webhook_project(o.event, o.payload) = p_project::text)
+     and (p_project is null or public.kanbo_uuid(public.pa_webhook_project(o.event, o.payload)) = p_project)
      and public.pa_rank_or_binned(coalesce(w.url_set_by, w.created_by), p_ws, public.pa_webhook_project(o.event, o.payload)) < 1;
 end; $$;
 
@@ -1053,6 +1071,148 @@ begin
   return n;
 end; $$;
 
+-- 2r. a bin entry binned while the switch was off (or before this file) may hold sub-tasks of another
+-- project than its own: 0047 takes a deleted task's (or project's) every descendant, whatever its
+-- project (with the switch on, pa_trg_tasks_delete frees them first: D11). Switched on, people who can't
+-- see such a sub-task would read its counts and history line, restore it into its project, or (owners
+-- and admins) delete it for good. So switching on splits each one off, with its own sub-tasks of the
+-- same project and what hangs off them, into a bin entry of its own, as if it had been freed before the
+-- delete: in its own project, with that project's access (the capture trigger records it), the same
+-- delete time, deleter and expiry, its ids reserved under it, standing on its own (no parent). What's
+-- left is the entry's own project's work, and its counts and history line count only that. Each new
+-- entry gets the history line its delete would have written, so it's read (and later purged) under
+-- its own project. A Personal task, or another workspace's, under one stays where it is. Answers how
+-- many entries it made. (pa_snap_part: a snapshot's rows that belong to these tasks)
+create or replace function public.pa_snap_part(p_snap jsonb, p_ids uuid[])
+returns jsonb language sql immutable set search_path = public as $$
+  with el(k, e, n) as (
+    select k.k, a.e, a.n
+      from unnest(array['tasks', 'checklist', 'dependencies', 'comments', 'attachments', 'task_events', 'task_user_state',
+                        'notion_links', 'notion_link_state', 'approvals', 'approval_reviewers']) k(k)
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(p_snap -> k.k) = 'array' then p_snap -> k.k else '[]'::jsonb end)
+        with ordinality a(e, n)),
+  links as (select public.kanbo_uuid(el.e ->> 'id') as id from el
+             where el.k = 'notion_links' and public.kanbo_uuid(el.e ->> 'task_id') = any (p_ids)),
+  appr as (select public.kanbo_uuid(el.e ->> 'id') as id from el
+            where el.k = 'approvals' and public.kanbo_uuid(el.e ->> 'task_id') = any (p_ids))
+  select jsonb_object_agg(k.k, coalesce((
+           select jsonb_agg(el.e order by el.n) from el
+            where el.k = k.k and case k.k
+              when 'tasks' then public.kanbo_uuid(el.e ->> 'id') = any (p_ids)
+              when 'dependencies' then public.kanbo_uuid(el.e ->> 'task_id') = any (p_ids)
+                                    or public.kanbo_uuid(el.e ->> 'depends_on') = any (p_ids)
+              when 'notion_link_state' then public.kanbo_uuid(el.e ->> 'link_id') in (select links.id from links)
+              when 'approval_reviewers' then public.kanbo_uuid(el.e ->> 'approval_id') in (select appr.id from appr)
+              else public.kanbo_uuid(el.e ->> 'task_id') = any (p_ids) end), '[]'::jsonb))
+    from unnest(array['tasks', 'checklist', 'dependencies', 'comments', 'attachments', 'task_events', 'task_user_state',
+                      'notion_links', 'notion_link_state', 'approvals', 'approval_reviewers']) k(k);
+$$;
+create or replace function public.pa_split_bin(p_ws uuid)
+returns integer language plpgsql security definer set search_path = public as $$
+declare
+  r     record;
+  snap  jsonb;
+  home  text;
+  grp   jsonb;      -- task id → the top of its run of same-project ancestors in the snapshot
+  roots uuid[];     -- the tops that go to entries of their own
+  cut   uuid[];     -- tasks that stand on their own now
+  sr    uuid;
+  ids   uuid[];
+  part  jsonb;
+  root  jsonb;
+  cnt   jsonb;
+  tid   uuid;
+  n     integer := 0;
+begin
+  if p_ws is null then return 0; end if;
+  for r in
+    select x.* from public.trash x
+     where x.workspace_id = p_ws and x.restored_at is null and x.kind in ('task', 'project')
+       and exists (select 1 from jsonb_array_elements(case when jsonb_typeof(x.snapshot -> 'tasks') = 'array'
+                                                           then x.snapshot -> 'tasks' else '[]'::jsonb end) e
+                    where public.kanbo_uuid(e ->> 'workspace_id') = p_ws
+                      and coalesce(public.kanbo_uuid(e ->> 'project_id')::text, e ->> 'project_id')
+                          is distinct from coalesce(public.kanbo_uuid(x.project_id)::text, x.project_id))
+     order by x.deleted_at, x.id
+     for update
+  loop
+    snap := r.snapshot;
+    home := coalesce(public.kanbo_uuid(r.project_id)::text, r.project_id);
+    with recursive t as (
+      select public.kanbo_uuid(e ->> 'id') as id, public.kanbo_uuid(e ->> 'parent_id') as parent,
+             coalesce(public.kanbo_uuid(e ->> 'project_id')::text, e ->> 'project_id') as proj,
+             public.kanbo_uuid(e ->> 'workspace_id') as ws, a.n
+        from jsonb_array_elements(snap -> 'tasks') with ordinality a(e, n)),
+    g(id, root) as (
+      select c.id, c.id from t c
+       where not exists (select 1 from t p where p.id = c.parent and p.proj is not distinct from c.proj and p.ws is not distinct from c.ws)
+      union
+      select c.id, g.root from g
+        join t c on c.parent = g.id
+        join t p on p.id = g.id and p.proj is not distinct from c.proj and p.ws is not distinct from c.ws),
+    s as (select g.root from g join t on t.id = g.root
+           where t.ws = p_ws and t.proj is distinct from home group by g.root)
+    select coalesce((select jsonb_object_agg(g.id::text, g.root::text) from g), '{}'::jsonb),
+           coalesce((select array_agg(s.root order by t.n) from s join t on t.id = s.root), '{}'::uuid[]),
+           coalesce((select array_agg(c.id) from t c
+                       join g gc on gc.id = c.id and gc.root = c.id
+                       join g gp on gp.id = c.parent
+                      where gc.root in (select s.root from s) or gp.root in (select s.root from s)), '{}'::uuid[])
+      into grp, roots, cut;
+    if cardinality(roots) = 0 then continue; end if;
+    snap := jsonb_set(snap, '{tasks}', (
+      select jsonb_agg(case when public.kanbo_uuid(a.e ->> 'id') = any (cut) then a.e || jsonb_build_object('parent_id', null) else a.e end
+                       order by a.n)
+        from jsonb_array_elements(snap -> 'tasks') with ordinality a(e, n)));
+    foreach sr in array roots loop
+      ids := array(select k::uuid from jsonb_each_text(grp) a(k, v) where v = sr::text);
+      part := jsonb_build_object('v', 1) || public.pa_snap_part(snap, ids);
+      select e into root from jsonb_array_elements(snap -> 'tasks') e where public.kanbo_uuid(e ->> 'id') = sr;
+      cnt := public.trash_counts(part);
+      insert into public.trash (kind, item_id, workspace_id, user_id, project_id, title, summary, snapshot,
+                                deleted_by, deleted_by_name, deleted_at, purge_after)
+      values ('task', sr, p_ws,
+              coalesce((select u.id from auth.users u where u.id = public.kanbo_uuid(root ->> 'user_id')), r.user_id),
+              root ->> 'project_id', left(coalesce(root ->> 'title', ''), 500),
+              jsonb_build_object(
+                'project', (select jsonb_build_object('id', p.id, 'name', p.name, 'emoji', p.emoji, 'color', p.color)
+                              from public.projects p where p.id = public.kanbo_uuid(root ->> 'project_id') and p.workspace_id = p_ws),
+                'status', root -> 'status', 'priority', root -> 'priority', 'due_date', root -> 'due_date',
+                'assignee_id', root -> 'assignee_id', 'archived', (root ->> 'archived_at') is not null,
+                'counts', cnt || jsonb_build_object('subtasks', greatest((cnt ->> 'tasks')::integer - 1, 0))),
+              part, r.deleted_by, r.deleted_by_name, r.deleted_at, r.purge_after)
+      returning id into tid;
+      update public.trash_ids set trash_id = tid
+       where trash_id = r.id
+         and id in (select public.kanbo_uuid(e ->> 'id')
+                      from unnest(array['tasks', 'checklist', 'comments', 'attachments']) k(k)
+                      cross join lateral jsonb_array_elements(part -> k.k) e);
+      insert into public.audit_events (workspace_id, actor_id, actor_name, action, target_kind, target_id, target_title, detail, created_at)
+      values (p_ws, r.deleted_by, left(coalesce(r.deleted_by_name, 'Kanbo'), 200), 'task.deleted', 'task', sr::text,
+              left(coalesce(root ->> 'title', ''), 500),
+              jsonb_build_object('trash_id', tid, 'subtasks', greatest((cnt ->> 'tasks')::integer - 1, 0), 'project_id', root ->> 'project_id'),
+              r.deleted_at);
+      n := n + 1;
+    end loop;
+    snap := snap || public.pa_snap_part(snap, array(
+      select public.kanbo_uuid(e ->> 'id') from jsonb_array_elements(snap -> 'tasks') e
+       where not (coalesce(grp ->> (public.kanbo_uuid(e ->> 'id')::text), '') = any (roots::text[]))));
+    cnt := public.trash_counts(snap);
+    update public.trash
+       set snapshot = snap,
+           summary = jsonb_set(summary, '{counts}', case when r.kind = 'task'
+                       then cnt || jsonb_build_object('subtasks', greatest((cnt ->> 'tasks')::integer - 1, 0)) else cnt end)
+     where id = r.id;
+    update public.audit_events e
+       set detail = e.detail || case when r.kind = 'task'
+                                     then jsonb_build_object('subtasks', greatest((cnt ->> 'tasks')::integer - 1, 0))
+                                     else jsonb_build_object('tasks', (cnt ->> 'tasks')::integer) end
+     where e.workspace_id = p_ws and e.action = r.kind || '.deleted' and e.target_id = r.item_id::text
+       and e.detail ->> 'trash_id' = r.id::text;
+  end loop;
+  return n;
+end; $$;
+
 do $internal$
 declare f text;
 begin
@@ -1061,7 +1221,7 @@ begin
                            'public.pa_restore_landing(uuid,jsonb,text,jsonb)', 'public.pa_access_without(jsonb,uuid,uuid)',
                            'public.pa_snapshot_without(jsonb,uuid,uuid)', 'public.pa_forget_member(uuid,uuid)',
                            'public.pa_forget_departed()', 'public.pa_summary_scoped(text,uuid,uuid,text,jsonb,boolean)',
-                           'public.pa_scrub_bin(uuid)'] loop
+                           'public.pa_scrub_bin(uuid)', 'public.pa_snap_part(jsonb,uuid[])', 'public.pa_split_bin(uuid)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
 end $internal$;
@@ -1295,7 +1455,10 @@ begin
     pid := public.kanbo_uuid(g ->> 'project_id');
     r := g ->> 'role';
     if m.role = 'guest' and r = 'editor' then r := 'commenter'; end if;
+    -- (a project you can't see is refused whatever the invite brings on it: accepting the grant it
+    -- already has would say so; it's kept by the loop below, as you didn't ask to change it)
     if not exists (select 1 from public.projects p where p.id = pid and p.workspace_id = m.workspace_id)
+       or not public.can_see_project(pid)
        or (not public.pa_can_manage(pid)
            and not exists (select 1 from public.project_member_invites i where i.member_id = p_member and i.project_id = pid and i.role = r)) then
       raise exception 'not authorized';
@@ -1328,9 +1491,12 @@ returns boolean language plpgsql security definer set search_path = public as $$
 declare i public.project_member_invites;
 begin
   if auth.uid() is null or not public.can_act() then raise exception 'not authorized'; end if;
-  select * into i from public.project_member_invites where member_id = p_member and project_id = p_project;
-  if i.id is null or not public.can_see_project(p_project) then raise exception 'not found'; end if;
+  -- (who may first: what a pending invite brings is its project's managers' to read, so nobody else
+  -- learns from the answer whether it brings this one)
+  if not public.can_see_project(p_project) then raise exception 'not found'; end if;
   if not public.pa_can_manage(p_project) then raise exception 'not authorized'; end if;
+  select * into i from public.project_member_invites where member_id = p_member and project_id = p_project;
+  if i.id is null then raise exception 'not found'; end if;
   delete from public.project_member_invites where id = i.id;
   return true;
 end; $$;
@@ -1380,16 +1546,23 @@ begin
   return new;
 end; $$;
 -- workspaces, after: switching on (set_project_access, or the SQL editor) drops held notices and
--- pending webhooks for people who won't see their work, and the bin's summaries forget a parent's title
--- from another project (a sub-task binned while it was off, or before 0058: 2q); so does the workspace
--- changing owners (the old owner may be an admin now, who doesn't see every project)
+-- pending webhooks for people who won't see their work, splits the bin's entries that took another
+-- project's sub-tasks along (2r), and the bin's summaries forget a parent's title from another project
+-- (a sub-task binned while it was off, or before 0058: 2q); so does the workspace changing owners (the
+-- old owner may be an admin now, who doesn't see every project). An old owner with no member row of
+-- their own has left with the hand-over: they take nothing with them (2p), as if their row had gone.
 create or replace function public.pa_trg_workspaces_after() returns trigger
 language plpgsql security definer set search_path = public as $$
+declare switched_on boolean := new.project_access and not coalesce(old.project_access, false);
 begin
-  if new.project_access and not coalesce(old.project_access, false) then
+  if switched_on then
+    perform public.pa_split_bin(new.id);
     perform public.pa_scrub_bin(new.id);
-    perform public.pa_flush_held(new.id, null);
-  elsif new.owner_id is distinct from old.owner_id then
+  end if;
+  if new.owner_id is distinct from old.owner_id and old.owner_id is not null then
+    perform public.pa_forget_member(new.id, old.owner_id);
+  end if;
+  if switched_on or new.owner_id is distinct from old.owner_id then
     perform public.pa_flush_held(new.id, null);
   end if;
   return null;
@@ -1409,9 +1582,15 @@ declare
   prev text;
 begin
   -- an id deleted for good is never a project's again, whoever asks and whatever the switch says (1g;
-  -- answered like 0047's guard on ids waiting in the bin)
+  -- answered like 0047's guard on ids waiting in the bin). Nor is the id of a Members only or Private
+  -- project that left a workspace (1h), once nothing holds it any more (deleted for good from a Personal
+  -- bin, by hand or by housekeeping; its new workspace closed; its owner's account deleted): a new
+  -- project under it would be the live project there, and take over what still names it (its history,
+  -- its bin entries, what an old tab wrote). The bin putting it back (a restore) is still it; moving it
+  -- back is an update of its workspace, not of its id.
   if (tg_op = 'INSERT' or new.id is distinct from old.id)
-     and exists (select 1 from public.project_ids_retired g where g.id = new.id) then
+     and (exists (select 1 from public.project_ids_retired g where g.id = new.id)
+          or (not restoring and exists (select 1 from public.project_departures d where d.id = new.id))) then
     raise exception 'id in use' using errcode = 'unique_violation';
   end if;
   if tg_op = 'INSERT' then
@@ -1987,6 +2166,22 @@ begin
   raise exception 'approval not found';
 end; $$;
 
+-- approvals (0047), cancelled by someone (cancel_approval): its asker, or someone who can edit the task
+-- (asking for one needs edit rights, deciding one comment rights and being asked). 0047 lets any owner or
+-- admin cancel; on a Private project an admin has only their project role, and a viewer or commenter
+-- doesn't call off someone else's request: 'approval not found', cancel_approval's own answer for a
+-- request that isn't theirs. (A task leaving its workspace cancels its request from a trigger: not this.)
+create or replace function public.pa_trg_approvals_cancel() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.pa_is_client() and pg_trigger_depth() <= 1 and new.status = 'cancelled' and old.status is distinct from 'cancelled'
+     and old.workspace_id is not null and public.pa_on(old.workspace_id)
+     and old.requested_by is distinct from auth.uid() and public.pa_task_rank(old.task_id) < 3 then
+    raise exception 'approval not found';
+  end if;
+  return new;
+end; $$;
+
 -- kudos (0048): its recipient can see the task; from the app, its giver can comment on it (a viewer
 -- can't react, nor leave a note: give_kudos and update_kudos ask only can_see_task). A changed note or
 -- emoji goes into the recipient's Inbox item (update_kudos rewrites it in place, past the Inbox gate), so
@@ -2163,13 +2358,18 @@ begin
   return new;
 end; $$;
 
--- forms: a new public link is for people who can edit the form's project (rotate_form_public_token)
+-- forms: a new public link is for people who can edit the form's project (rotate_form_public_token).
+-- Someone who can't see the form is told what a missing one's id gets ('form not found'), so an id read
+-- before its project narrowed doesn't say the form is still there.
 create or replace function public.pa_trg_forms_token() returns trigger
 language plpgsql security definer set search_path = public as $$
+declare r integer;
 begin
   if public.pa_is_client() and new.public_token is distinct from old.public_token and new.workspace_id is not null
-     and public.pa_on(new.workspace_id) and public.pa_rank(new.workspace_id, new.project_id) < 3 then
-    raise exception 'not authorized';
+     and public.pa_on(new.workspace_id) then
+    r := public.pa_rank(new.workspace_id, new.project_id);
+    if r < 1 then raise exception 'form not found'; end if;
+    if r < 3 then raise exception 'not authorized'; end if;
   end if;
   return new;
 end; $$;
@@ -2325,7 +2525,7 @@ begin
                            'pa_trg_trash_capture', 'pa_trg_trash_restore', 'pa_trg_trash_purge', 'pa_trg_audit_events',
                            'pa_trg_goal_links', 'pa_trg_goals_project', 'pa_trg_forms_token', 'pa_trg_notion_syncs',
                            'pa_trg_update_asks', 'pa_trg_bill_rates', 'pa_trg_meetings', 'pa_trg_meeting_items',
-                           'pa_trg_tasks_delete', 'pa_trg_projects_delete'] loop
+                           'pa_trg_tasks_delete', 'pa_trg_projects_delete', 'pa_trg_approvals_cancel'] loop
     execute format('revoke execute on function public.%I() from public, anon, authenticated', f);
   end loop;
   foreach f in array array['public.pa_mirror_contributors(uuid)', 'public.pa_detach_strays(uuid,uuid[])',
@@ -2380,7 +2580,9 @@ language sql immutable set search_path = pg_catalog as $$
   union all select 'saved_views', 'project access: read', 'select', false,
                    'not shared or user_id = auth.uid() or ' || g.p || 'public.pa_view_rank(workspace_id, query) >= 1', null from g
   union all select 'notion_syncs', 'project access: read', 'select', false, g.p || 'public.can_see_project(project_id)', null from g
-  union all select 'notion_links', 'project access: read', 'select', false, g.p || 'public.can_see_task(task_id)', null from g
+  -- (a link to a page that's a synced task's you can't see: its page title is that task's, kept so by the sync)
+  union all select 'notion_links', 'project access: read', 'select', false,
+                   g.p || '(public.can_see_task(task_id) and not public.pa_notion_page_hidden(workspace_id, notion_page_id))', null from g
   union all select 'notion_page_cache', 'project access: read', 'select', false,
                    g.p || 'exists (select 1 from public.notion_links l where l.workspace_id = notion_page_cache.workspace_id '
                    || 'and l.notion_page_id = notion_page_cache.notion_page_id)', null from g
@@ -2424,6 +2626,7 @@ language sql immutable set search_path = pg_catalog as $$
     ('webhook_deliveries', 'trg_webhook_deliveries_pa_gate', 'before insert or update of state', 'pa_trg_webhook_deliveries_gate', null),
     ('webhooks', 'trg_webhooks_pa_url', 'before update of url, url_set_by, active', 'pa_trg_webhooks_url', null),
     ('approval_reviewers', 'trg_approval_reviewers_pa', 'before insert or update of decision', 'pa_trg_approval_reviewers', null),
+    ('approvals', 'trg_approvals_pa_cancel', 'before update of status', 'pa_trg_approvals_cancel', null),
     ('kudos', 'trg_kudos_pa', 'before insert or update of emoji, note', 'pa_trg_kudos', null),
     ('trash', 'trg_trash_pa_capture', 'before insert', 'pa_trg_trash_capture', null),
     ('trash', 'trg_trash_pa_restore', 'before update of restored_at', 'pa_trg_trash_restore', null),
@@ -2445,7 +2648,7 @@ do $svc$ begin
   grant execute on function public.pa_trigger_defs() to service_role;
 exception when undefined_object then null; end $svc$;
 
--- 5c. (Re)makes everything: every policy above, the thirteen bodies this file changes (each equal to
+-- 5c. (Re)makes everything: every policy above, the twenty bodies this file changes (each equal to
 -- its old one while the switch is off), and every trigger. Run below, and by 0025, 0041,
 -- 0042, 0043, 0046, 0047, 0048, 0052, 0053, 0054, 0055 and 0056 when one of them is run again (they
 -- drop policies or put an old body back). Safe in any state from 0047 on, and twice in a row.
@@ -2618,6 +2821,7 @@ begin
   return v_react;
 end;
 $b$ $fn$;
+  revoke execute on function public.toggle_comment_reaction(uuid, text) from public, anon;
   grant execute on function public.toggle_comment_reaction(uuid, text) to authenticated;
   n := n + 1;
 
@@ -2729,6 +2933,83 @@ returns jsonb language sql security definer stable set search_path = public as $
 $b$; $fn$;
   revoke execute on function public.notion_status(uuid) from public, anon;
   grant execute on function public.notion_status(uuid) to authenticated;
+  n := n + 1;
+
+  -- 0046's notion_set_sync_enabled and notion_delete_sync: with the switch on, the sync of a project the
+  -- caller can't edit is 'sync not found', what an id that isn't there gets, before anything else. They
+  -- answer with the whole sync (its last error names tasks), and a sync's id outlives sight of its
+  -- project: every member read it while the project was open, and a synced task moved out keeps it on
+  -- its link. (Switching it back on would send a Private project's tasks to its Notion database again.)
+  -- Switch off: 0046's, line for line.
+  execute $fn$
+create or replace function public.notion_set_sync_enabled(p_id uuid, p_enabled boolean)
+returns jsonb language plpgsql security definer set search_path = public as $b$
+declare s public.notion_syncs;
+begin
+  select * into s from public.notion_syncs where id = p_id for update;
+  if s.id is null or auth.uid() is null or public.ws_role(s.workspace_id) not in ('owner', 'admin') then
+    raise exception 'sync not found';
+  end if;
+  if public.pa_on(s.workspace_id) and not public.can_edit_project(s.project_id) then
+    raise exception 'sync not found';
+  end if;
+  if coalesce(p_enabled, false) and not exists (select 1 from public.workspace_integrations i
+                                                 where i.workspace_id = s.workspace_id and i.notion_token is not null) then
+    raise exception 'notion not connected';
+  end if;
+  update public.notion_syncs set enabled = coalesce(p_enabled, false), updated_at = now() where id = p_id returning * into s;
+  return public.notion_sync_json(s);
+end; $b$ $fn$;
+  revoke execute on function public.notion_set_sync_enabled(uuid, boolean) from public, anon;
+  grant execute on function public.notion_set_sync_enabled(uuid, boolean) to authenticated;
+  n := n + 1;
+  execute $fn$
+create or replace function public.notion_delete_sync(p_id uuid)
+returns boolean language plpgsql security definer set search_path = public as $b$
+declare s public.notion_syncs;
+begin
+  select * into s from public.notion_syncs where id = p_id for update;
+  if s.id is null or auth.uid() is null or public.ws_role(s.workspace_id) not in ('owner', 'admin') then
+    raise exception 'sync not found';
+  end if;
+  if public.pa_on(s.workspace_id) and not public.can_edit_project(s.project_id) then
+    raise exception 'sync not found';
+  end if;
+  update public.notion_links set kind = 'reference', sync_id = null where sync_id = p_id;
+  delete from public.notion_syncs where id = p_id;
+  return true;
+end; $b$ $fn$;
+  revoke execute on function public.notion_delete_sync(uuid) from public, anon;
+  grant execute on function public.notion_delete_sync(uuid) to authenticated;
+  n := n + 1;
+
+  -- 0046's notion_link_page: with the switch on, never to a page that's a synced task's the caller can't
+  -- see ('invalid page', as for an id that isn't a page): the answer, and the page cache through the
+  -- new link, would carry that task's current title (pa_notion_page_hidden). Switch off: 0046's.
+  execute $fn$
+create or replace function public.notion_link_page(p_task uuid, p_page_id text)
+returns jsonb language plpgsql security definer set search_path = public as $b$
+declare pid text := public.notion_norm_id(p_page_id); ws uuid; l public.notion_links;
+begin
+  if auth.uid() is null or not public.can_edit_task(p_task) then raise exception 'task not found'; end if;
+  select t.workspace_id into ws from public.tasks t where t.id = p_task;
+  if ws is null then raise exception 'notion links need a team task'; end if;
+  if not exists (select 1 from public.workspace_integrations i where i.workspace_id = ws and i.notion_token is not null) then
+    raise exception 'notion not connected';
+  end if;
+  if pid is null then raise exception 'invalid page'; end if;
+  if public.pa_on(ws) and public.pa_notion_page_hidden(ws, pid) then raise exception 'invalid page'; end if;
+  select * into l from public.notion_links where task_id = p_task and notion_page_id = pid;
+  if l.id is null then
+    if (select count(*) from public.notion_links x where x.task_id = p_task) >= 20 then raise exception 'too many links'; end if;
+    insert into public.notion_links (workspace_id, task_id, notion_page_id, kind, created_by)
+    values (ws, p_task, pid, 'reference', auth.uid())
+    returning * into l;
+  end if;
+  return public.notion_link_json(l);
+end; $b$ $fn$;
+  revoke execute on function public.notion_link_page(uuid, text) from public, anon;
+  grant execute on function public.notion_link_page(uuid, text) to authenticated;
   n := n + 1;
 
   -- 0055's set_bill_rate (only where 0055 is in): with the switch on, a project the caller can't see is
@@ -2852,7 +3133,8 @@ end; $b$; $fn$;
 
   -- 0047's approval_json: with the switch on, can_decide also needs comment rights on the task (D7: a
   -- reviewer who's only a viewer now, or can't see it, isn't offered a decision trg_approval_reviewers_pa
-  -- would refuse). Switch off: 0047's, line for line.
+  -- would refuse), and an owner or admin who isn't its asker is offered can_cancel only with edit rights
+  -- on it (trg_approvals_pa_cancel). Switch off: 0047's, line for line.
   execute $fn$
 create or replace function public.approval_json(a public.approvals)
 returns jsonb language sql security definer stable set search_path = public as $b$
@@ -2872,7 +3154,9 @@ returns jsonb language sql security definer stable set search_path = public as $
                   and exists (select 1 from public.approval_reviewers r where r.approval_id = a.id and r.user_id = auth.uid())
                   and (not public.pa_on(a.workspace_id) or public.pa_task_rank(a.task_id) >= 2),
     'can_cancel', a.status = 'pending' and auth.uid() is not null and public.can_act()
-                  and (a.requested_by = auth.uid() or public.ws_role(a.workspace_id) in ('owner', 'admin')));
+                  and (a.requested_by = auth.uid()
+                       or (public.ws_role(a.workspace_id) in ('owner', 'admin')
+                           and (not public.pa_on(a.workspace_id) or public.pa_task_rank(a.task_id) >= 3))));
 $b$ $fn$;
   revoke execute on function public.approval_json(public.approvals) from public, anon, authenticated;
   n := n + 1;
@@ -2908,7 +3192,9 @@ end; $b$ $fn$;
 
   -- 0047's restore_from_trash: with the switch on, edit rights on the item's project first (what isn't
   -- yours to restore is 'not found', restored or not), and a task whose project has gone comes back
-  -- somewhere with the audience it had (pa_restore_landing). Switch off: 0047's, line for line.
+  -- somewhere with the audience it had (pa_restore_landing). Already restored, it says where the task is
+  -- now only to someone who can see it there (moved since into a project they can't see: no project).
+  -- Switch off: 0047's, line for line.
   execute $fn$
 create or replace function public.restore_from_trash(p_id uuid)
 returns jsonb language plpgsql security definer set search_path = public as $b$
@@ -2935,7 +3221,9 @@ begin
   if r.restored_at is not null then
     return jsonb_build_object('id', r.id, 'kind', r.kind, 'item_id', r.item_id, 'status', 'already_restored',
                               'project_id', case when r.kind = 'project' then r.item_id::text
-                                                 else (select t.project_id from public.tasks t where t.id = r.item_id) end,
+                                                 else (select t.project_id from public.tasks t where t.id = r.item_id
+                                                          and (r.workspace_id is null or not public.pa_on(r.workspace_id)
+                                                               or (t.workspace_id = r.workspace_id and public.can_see_task(t.id)))) end,
                               'note', null, 'counts', r.summary -> 'counts');
   end if;
   heir := case when r.workspace_id is null then r.user_id
@@ -3015,7 +3303,8 @@ returns boolean language sql stable set search_path = pg_catalog, public as $$
                                    then array['public.can_see_status_update(uuid)', 'public.status_update_project_ok(text,uuid)'] else '{}'::text[] end
                            || case when to_regclass('public.update_asks') is not null
                                    then array['public.ask_for_update(uuid)'] else '{}'::text[] end
-                           || array['public.notion_status(uuid)']
+                           || array['public.notion_status(uuid)', 'public.notion_set_sync_enabled(uuid,boolean)',
+                                    'public.notion_delete_sync(uuid)', 'public.notion_link_page(uuid,text)']
                            || case when to_regclass('public.bill_rates') is not null
                                    then array['public.set_bill_rate(uuid,uuid,numeric)'] else '{}'::text[] end
                            || case when to_regclass('public.meetings') is not null

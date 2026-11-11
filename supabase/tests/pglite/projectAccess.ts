@@ -662,8 +662,9 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       // a meeting's own audience, owners and admins of a workspace, or the caller's own rows and files
       "can_see_meeting", "delete_meeting", "delete_meeting_item", "hand_meeting", "join_meeting", "move_meeting", "present_meeting",
       "delete_workspace", "remove_member", "workspace_activity", "my_task_file_attached", "take_back_kudos",
-      // Notion's settings: owners and admins; a sync's id is only readable by people who can see its project
-      "notion_delete_sync", "notion_disconnect", "notion_set_sync_enabled", "notion_status",
+      // Notion's settings: owners and admins, the whole workspace's (0058 redefines notion_status,
+      // notion_set_sync_enabled and notion_delete_sync to follow the rank: they're past this filter)
+      "notion_disconnect", "notion_status",
       // trigger functions (never callable directly); their Inbox rows pass the activity gate
       "log_task_event", "notify_comment", "notify_mentioned",
       // a form's link: trg_forms_pa_token; a yes/no about a project id in your own workspace
@@ -1343,6 +1344,271 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     }
     const sorted = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
     eq(sorted(got), sorted(want), "the answers (notion_status: \"n of m\" is its count of the m syncs they read)");
+  });
+
+  // ---------------------------------------------------------------- 11b. harden r4 (db): ids that outlive sight of a project
+  await test("0058, switch on: a Notion sync of a project you can't edit is 'sync not found' to notion_set_sync_enabled and notion_delete_sync (its row, last error and all, never comes back, and it isn't switched or deleted); switched off, as before", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, string> = {};
+      const s = (p: Proj) => w.rows.notion_syncs[p]![0];
+      await run(null, `update public.notion_syncs set last_error = 'Kanbo couldn''t update “Zebra secret PP”.', database_title = 'Zebra board pack', enabled = false where id = $1::uuid`, [s("PP")]);
+      const call = async (who: Who, sql: string, id: string) => {
+        const r = await tryRun(w.id[who], sql, [id]);
+        return "rows" in r ? (JSON.stringify(r.rows[0]).includes("Zebra secret PP") ? "the row, its last error too" : "ok") : r.error;
+      };
+      const on = `select public.notion_set_sync_enabled($1::uuid, true) as r`;
+      const off = `select public.notion_set_sync_enabled($1::uuid, false) as r`;
+      const del = `select public.notion_delete_sync($1::uuid) as r`;
+      // Ari (an admin, not on Private PP) has its id: read while PP was open, or off a synced task moved out of it
+      const task = (await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra synced', $2, 'nobody', $3::uuid) returning id::text as id`,
+        [w.id.ME, w.proj.PP, w.ws]))[0].id as string;
+      await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind, sync_id) values ($1::uuid, $2::uuid, gen_random_uuid()::text, 'synced', $3::uuid)`, [w.ws, task, s("PP")]);
+      await run(w.id.ME, `update public.tasks set project_id = $2 where id = $1::uuid`, [task, w.proj.PW]);
+      out.read = String((await run(w.id.A, `select sync_id::text as s from public.notion_links where task_id = $1::uuid`, [task]))[0]?.s === s("PP"));
+      for (const [k, sql] of [["on", on], ["off", off], ["delete", del]] as const) out[`A ${k} PP`] = await call("A", sql, s("PP"));
+      out["A on ghost"] = await call("A", on, "00000000-0000-4000-8000-00000000dead");
+      out["ME on PP"] = await call("ME", on, s("PP"));
+      out["A on PM"] = await call("A", off, s("PM"));
+      out.kept = JSON.stringify((await run(null, `select enabled from public.notion_syncs where id = $1::uuid`, [s("PP")]))[0] ?? null);
+      out["O on PP"] = await call("O", on, s("PP"));
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      out["off: A off PP"] = await call("A", off, s("PP"));
+      out["off: A delete PP"] = await call("A", del, s("PP"));
+      return out;
+    });
+    eq(got, {
+      read: "true", "A on PP": "sync not found", "A off PP": "sync not found", "A delete PP": "sync not found", "A on ghost": "sync not found",
+      "ME on PP": "sync not found", "A on PM": "ok", kept: JSON.stringify({ enabled: false }), "O on PP": "the row, its last error too",
+      "off: A off PP": "the row, its last error too", "off: A delete PP": "ok",
+    }, "Ari gets what a missing id gets; Oona (and Ari, switched off) as before");
+  });
+
+  await test("0058, switch on: a Notion page that's a synced task's you can't see isn't linked to a task of yours, nor read (link or cached title) through a link of yours made before; switched off, as before", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const page = w.rows.notion_page_cache.PP![0];
+      await run(null, `update public.notion_links set kind = 'synced', sync_id = $2::uuid where id = $1::uuid`, [w.rows.notion_links.PP![0], w.rows.notion_syncs.PP![0]]);
+      await run(null, `update public.notion_page_cache set title = 'Zebra offer withdrawn' where workspace_id = $1::uuid and notion_page_id = $2`, [w.ws, page]);
+      const reads = async (who: Who) => [(await run(w.id[who], `select 1 from public.notion_links where notion_page_id = $1`, [page])).length,
+        (await run(w.id[who], `select title from public.notion_page_cache where notion_page_id = $1`, [page])).length].join("/");
+      // Moe (not on PP) links its page, by id, to the PW task he can edit
+      const link = errOf(await tryRun(w.id.M2, `select public.notion_link_page($1::uuid, $2) as l`, [w.task.PW, page]));
+      // …and a link of his own to it, made while PP was open
+      const mine = (await run(w.id.M2, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra mine', $2, 'nobody', $3::uuid) returning id::text as id`,
+        [w.id.M2, w.proj.PW, w.ws]))[0].id as string;
+      await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind, created_by) values ($1::uuid, $2::uuid, $3, 'reference', $4::uuid)`, [w.ws, mine, page, w.id.M2]);
+      const again = errOf(await tryRun(w.id.M2, `select public.notion_link_page($1::uuid, $2) as l`, [mine, page]));
+      const out: Record<string, unknown> = { link, again, M2: await reads("M2"), GC: await reads("GC"), ME: await reads("ME"), O: await reads("O") };
+      // Meg, who can see PP's task, links it to a PW task
+      out.meg = okOf(await tryRun(w.id.ME, `select public.notion_link_page($1::uuid, $2) as l`, [w.task.PW, page]));
+      // another page (a plain link on PP's task) is Moe's to link
+      out.plain = okOf(await tryRun(w.id.M2, `select public.notion_link_page($1::uuid, $2) as l`, [w.task.PW, w.rows.notion_page_cache.PM![0]]));
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      out.offLink = okOf(await tryRun(w.id.M2, `select public.notion_link_page($1::uuid, $2) as l`, [mine, page]));
+      out.offM2 = await reads("M2");
+      return out;
+    });
+    eq(got, { link: "invalid page", again: "invalid page", M2: "0/0", GC: "0/0", ME: "2/1", O: "2/1", meg: true, plain: true, offLink: true, offM2: "3/1" },
+      "Moe and Gail read nothing of PP's page; Meg and Oona do; switched off, as before");
+  });
+
+  await test("0058: the id of a Members only or Private project that left the workspace is never a new project's, once nothing holds it (deleted for good from a Personal bin); a restore still brings it back", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      // Meg's Private PQ, emptied, goes to her Personal list
+      await run(null, `update public.tasks set project_id = $2 where workspace_id = $3::uuid and project_id = $1`, [w.proj.PQ, w.proj.PW, w.ws]);
+      for (const tb of ["status_updates", "sections", "custom_field_defs", "automation_rules", "forms"]) {
+        await run(null, `delete from public.${tb} where workspace_id = $1::uuid and project_id = $2`, [w.ws, w.proj.PQ]);
+      }
+      await run(null, `delete from public.project_docs where project_id = $1::uuid`, [w.proj.PQ]);
+      await run(null, `delete from public.notion_syncs where project_id = $1::uuid`, [w.proj.PQ]);
+      const left = okOf(await tryRun(w.id.ME, `update public.projects set workspace_id = null, user_id = $2::uuid where id = $1::uuid returning id`, [w.proj.PQ, w.id.ME]));
+      // deleted there, back from the bin, deleted again; then its Personal bin row is cleared (by hand, or housekeeping after 30 days)
+      await run(w.id.ME, `delete from public.projects where id = $1::uuid`, [w.proj.PQ]);
+      const bin = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [w.proj.PQ]))[0].id as string;
+      const restored = okOf(await tryRun(w.id.ME, `select public.restore_from_trash($1::uuid) as r`, [bin]));
+      await run(w.id.ME, `delete from public.projects where id = $1::uuid`, [w.proj.PQ]);
+      await run(null, `delete from public.trash where item_id = $1::uuid`, [w.proj.PQ]);
+      const squat = async (who: Who | null, ws: string | null) => errOf(await tryRun(who ? w.id[who] : null,
+        `insert into public.projects (id, user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $2::uuid, $2::uuid, 'Zebra squat', $3::uuid, 'workspace') returning id`,
+        [w.proj.PQ, w.id[who ?? "O"], ws]));
+      return { left, restored, A: await squat("A", w.ws), M2: await squat("M2", w.ws), service: await squat(null, w.ws), personal: await squat("ME", null) };
+    });
+    eq(got, { left: true, restored: true, A: "id in use", M2: "id in use", service: "id in use", personal: "id in use" },
+      "nobody takes the id over (an admin, a member, the service role, its own owner in Personal); the bin's restore still could");
+  });
+
+  await test("0058: project_is_open reads a project id in capitals as that project (a form or task filed under it never names a closed one); narrowing drops what waits on a task filed so", async () => {
+    eq(await one(`select public.project_is_open($1::uuid, upper($2)) as pp, public.project_is_open($1::uuid, $2) as pp_lower,
+                         public.project_is_open($1::uuid, upper($3)) as pw, public.project_is_open($1::uuid, 'p-personal') as loose`, [w.ws, w.proj.PP, w.proj.PW]),
+      { pp: false, pp_lower: false, pw: true, loose: true }, "project_is_open");
+    if (!(await has("notify_queue"))) return;
+    const left = await scenario(async (run) => {
+      const t = (await run(null, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra caps', upper($2), 'nobody', $3::uuid) returning id::text as id`,
+        [w.id.O, w.proj.PW, w.ws]))[0].id as string;
+      await run(null, `insert into public.notify_queue (user_id, channel, kind, event_key, bundle_key, task_id, payload) values ($1::uuid, 'email', 'comment', 'pa:caps', 'pa:caps', $2::uuid, '{}'::jsonb)`, [w.id.M2, t]);
+      await run(w.id.O, `select public.set_project_visibility($1::uuid, 'private')`, [w.proj.PW]);
+      return (await run(null, `select count(*)::int as n from public.notify_queue where event_key = 'pa:caps'`))[0].n;
+    });
+    eq(left, 0, "Moe's held notice on a PW task filed under PW's id in capitals goes when PW turns Private");
+  });
+
+  await test("0058: switching on splits a bin entry that took another project's sub-tasks along (binned while it was off, or before 0058): each part is its own project's to read, restore and delete for good, and the entry's counts and history line count only its own", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      const mk = async (by: Who, title: string, project: string, parent: string | null = null) => (await run(w.id[by],
+        `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid, $5::uuid) returning id::text as id`,
+        [w.id[by], title, project, w.ws, parent]))[0].id as string;
+      // off: Meg's PW task, a sub-task of it moved on its own into Private PP (a comment on it, a PP step and a PW item under it)
+      const parent = await mk("ME", "Zebra open parent", w.proj.PW);
+      const stray = await mk("ME", "Zebra private plan", w.proj.PW, parent);
+      await run(w.id.ME, `insert into public.comments (task_id, user_id, body) values ($1::uuid, $2::uuid, 'zebra secret note')`, [stray, w.id.ME]);
+      await run(w.id.ME, `update public.tasks set project_id = $2 where id = $1::uuid`, [stray, w.proj.PP]);
+      const deep = await mk("ME", "Zebra private step", w.proj.PP, stray);
+      const back = await mk("ME", "Zebra open item", w.proj.PW, stray);
+      // Viv (a member, not on PP) deletes the parent: 0047 takes the whole tree
+      await run(w.id.MV, `delete from public.tasks where id = $1::uuid`, [parent]);
+      // and Oona deletes a Whole workspace project whose task has a PP sub-task
+      const pw2 = (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra PW2', $2::uuid, 'workspace') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+      const r2 = await mk("O", "Zebra PW2 root", pw2);
+      const s2 = await mk("O", "Zebra PW2 private", pw2, r2);
+      await run(w.id.O, `update public.tasks set project_id = $2 where id = $1::uuid`, [s2, w.proj.PP]);
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [pw2]);
+      // (tasks, comments, sub-tasks: what a bin row's summary counts, as each person reads it; null: no row)
+      const counts = async (who: Who, item: string) => (await run(w.id[who], `select summary -> 'counts' as c from public.trash where item_id = $1::uuid and restored_at is null`, [item]))
+        .map((r) => r.c as Record<string, number>).map((c) => [c.tasks, c.comments, c.subtasks])[0] ?? null;
+      const before = await counts("M2", parent);
+      await run(w.id.O, `select public.set_project_access($1::uuid, true)`, [w.ws]);
+      const binOf = async (item: string) => ((await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [item]))[0]?.id as string) ?? null;
+      const out: Record<string, unknown> = { before };
+      out.parentCounts = await counts("M2", parent);
+      out.projectTasks = (await counts("O", pw2))?.[0];
+      out.strayRows = { M2: await counts("M2", stray), A: await counts("A", stray), ME: await counts("ME", stray) };
+      out.s2Rows = { M2: await counts("M2", s2), ME: await counts("ME", s2) };
+      out.snapshotHasPP = (await run(null, `select snapshot::text like '%Zebra private%' as x from public.trash where item_id = $1::uuid and restored_at is null`, [parent]))[0].x;
+      out.reserved = errOf(await tryRun(null, `insert into public.tasks (id, user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2::uuid, 'x', $3, 'nobody', $4::uuid) returning id`, [stray, w.id.O, w.proj.PP, w.ws]));
+      const history = async (who: Who, target: string) => (await run(w.id[who], `select detail ->> 'subtasks' as s from public.audit_events where action = 'task.deleted' and target_id = $1`, [target])).map((r) => r.s);
+      out.history = { parentA: await history("A", parent), strayA: await history("A", stray), strayO: await history("O", stray) };
+      // only PP's people restore its part (and only owners and admins who can edit it delete it for good)
+      out.m2Restore = errOf(await tryRun(w.id.M2, `select public.restore_from_trash($1::uuid) as r`, [await binOf(stray)]));
+      out.aPurge = errOf(await tryRun(w.id.A, `select public.purge_trash($1::uuid) as r`, [await binOf(stray)]));
+      out.m2RestoreParent = okOf(await tryRun(w.id.M2, `select public.restore_from_trash($1::uuid) as r`, [await binOf(parent)]));
+      const at = async (id: string) => {
+        const r = (await run(null, `select parent_id::text as parent, project_id as project from public.tasks where id = $1::uuid`, [id]))[0];
+        return r ? [r.parent === null ? "alone" : r.parent === stray ? "under the PP one" : String(r.parent), r.project === w.proj.PW ? "PW" : r.project === w.proj.PP ? "PP" : String(r.project)] : "binned";
+      };
+      out.afterParent = { parent: await at(parent), back: await at(back), stray: await at(stray), deep: await at(deep) };
+      out.meRestore = okOf(await tryRun(w.id.ME, `select public.restore_from_trash($1::uuid) as r`, [await binOf(stray)]));
+      out.afterStray = { stray: await at(stray), deep: await at(deep),
+                         note: (await run(null, `select count(*)::int as n from public.comments where task_id = $1::uuid and body = 'zebra secret note'`, [stray]))[0].n };
+      return out;
+    });
+    eq(got.before, [4, 1, 3], "switched off, as before 0058: the whole tree (tasks, comments, sub-tasks)");
+    eq(got.parentCounts, [2, 0, 1], "switched on: the PW entry counts its own (the parent and the PW item)");
+    eq(got.projectTasks, 1, "the deleted project's entry counts its own task only");
+    eq(got.strayRows, { M2: null, A: null, ME: [2, 1, 1] }, "the PP part is an entry of its own, PP's people's only");
+    eq(got.s2Rows, { M2: null, ME: [1, 0, 0] }, "so is the deleted project's PP sub-task");
+    eq(got.snapshotHasPP, false, "the PW entry holds nothing of PP's");
+    eq(got.reserved, "id in use", "its ids stay reserved");
+    eq(got.history, { parentA: ["1"], strayA: [], strayO: ["1"] }, "the history: Ari reads the PW delete with its own sub-task only; the PP part's line is PP's");
+    eq([got.m2Restore, got.aPurge], ["not found", "not found"], "Moe can't restore the PP part, nor Ari delete it for good");
+    eq(got.m2RestoreParent, true, "Moe restores the PW entry");
+    eq(got.afterParent, { parent: ["alone", "PW"], back: ["alone", "PW"], stray: "binned", deep: "binned" }, "…which brings back only PW's, each on its own");
+    eq(got.meRestore, true, "Meg restores the PP part");
+    eq(got.afterStray, { stray: ["alone", "PP"], deep: ["under the PP one", "PP"], note: 1 }, "…in PP, on its own, with its step and its comment");
+  });
+
+  await test("0058, switch on: an admin who can only view or comment on a Private project's task can't call off someone else's approval request there, nor is offered to; its asker, and an admin who edits it, can; switched off, as before", async () => {
+    const appr = w.rows.approvals.PP![0];   // Oona's request on PP's task, Meg reviewing
+    const asO: [string, unknown[]] = [`select set_config('request.jwt.claims', $1, true)`, [claims(w.id.O)]];
+    const role = (r: string): [string, unknown[]] => [`select public.set_project_member($1::uuid, $2::uuid, $3)`, [w.proj.PP, w.id.A, r]];
+    const offer = async (setup: [string, unknown[]][]) => {
+      const r = await attempt(w.id.A, `select (x ->> 'can_cancel')::boolean as c from jsonb_array_elements(public.task_approvals($1::uuid)) x where x ->> 'id' = $2`, [w.task.PP, appr], setup);
+      return "rows" in r ? r.rows[0]?.c : errOf(r);
+    };
+    const cancel = async (who: Who, setup: [string, unknown[]][]) => {
+      const r = await attempt(w.id[who], `select public.cancel_approval($1::uuid) ->> 'status' as s`, [appr], setup);
+      return "rows" in r ? r.rows[0]?.s : errOf(r);
+    };
+    const off: [string, unknown[]] = [`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]];
+    const got = {
+      viewer: [await offer([asO, role("viewer")]), await cancel("A", [asO, role("viewer")])],
+      commenter: [await offer([asO, role("commenter")]), await cancel("A", [asO, role("commenter")])],
+      editor: [await offer([asO, role("editor")]), await cancel("A", [asO, role("editor")])],
+      asker: await cancel("O", []),
+      reviewer: await cancel("ME", []),
+      offViewer: [await offer([off, asO, role("viewer")]), await cancel("A", [off, asO, role("viewer")])],
+    };
+    eq(got, { viewer: [false, "approval not found"], commenter: [false, "approval not found"], editor: [true, "cancelled"], asker: "cancelled",
+              reviewer: "approval not found", offViewer: [true, "cancelled"] }, "[offered, cancel_approval's answer]");
+  });
+
+  await test("0058, switch on: rotate_form_public_token says 'form not found' about a form you can't see (as for one that isn't there), 'not authorized' about one you can only view", async () => {
+    const rot = async (who: Who, form: string, setup: [string, unknown[]][] = []) => {
+      const r = await attempt(w.id[who], `select public.rotate_form_public_token($1::uuid) as t`, [form], setup);
+      return "rows" in r ? "rotated" : errOf(r);
+    };
+    eq({ A_PP: await rot("A", w.rows.forms.PP![0]), M2_PM: await rot("M2", w.rows.forms.PM![0]), ghost: await rot("A", "00000000-0000-4000-8000-00000000dead"),
+         MV_PM: await rot("MV", w.rows.forms.PM![0]), A_PM: await rot("A", w.rows.forms.PM![0]),
+         off: await rot("A", w.rows.forms.PP![0], [[`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]]]) },
+       { A_PP: "form not found", M2_PM: "form not found", ghost: "form not found", MV_PM: "not authorized", A_PM: "rotated", off: "rotated" }, "the answers");
+  });
+
+  await test("0058, switch on: a pending invite's grants on a project you can't see (or don't manage) can't be probed: set_invite_projects refuses one whatever the invite brings, remove_invite_project answers the same whether it brings it or not", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      await run(w.id.O, `select public.set_invite_projects($1::uuid, $2::jsonb)`, [w.invite, JSON.stringify([{ project_id: w.proj.PP, role: "viewer" }, { project_id: w.proj.PW, role: "viewer" }])]);
+      const ian = (await run(null, `insert into public.workspace_members (workspace_id, email, name, role, status) values ($1::uuid, 'ian.pa@example.org', 'Ian', 'guest', 'invited') returning id::text as id`, [w.ws]))[0].id as string;
+      const set = async (member: string, grants: unknown[]) => { const r = await tryRun(w.id.A, `select public.set_invite_projects($1::uuid, $2::jsonb) as n`, [member, JSON.stringify(grants)]); return "rows" in r ? `n=${r.rows[0].n}` : r.error; };
+      const rm = async (who: Who, member: string, p: string) => errOf(await tryRun(w.id[who], `select public.remove_invite_project($1::uuid, $2::uuid) as r`, [member, p]));
+      return {
+        ivyViewer: await set(w.invite, [{ project_id: w.proj.PP, role: "viewer" }]),
+        ivyCommenter: await set(w.invite, [{ project_id: w.proj.PP, role: "commenter" }]),
+        ianViewer: await set(ian, [{ project_id: w.proj.PP, role: "viewer" }]),
+        stored: (await run(null, `select count(*)::int as n from public.project_member_invites where member_id = $1::uuid`, [w.invite]))[0].n,
+        rmIvy: await rm("M2", w.invite, w.proj.PW), rmIan: await rm("M2", ian, w.proj.PW), rmGuest: await rm("GC", ian, w.proj.PW),
+        rmHidden: await rm("M2", w.invite, w.proj.PP), rmMine: await rm("O", ian, w.proj.PW),
+      };
+    });
+    eq(got, { ivyViewer: "not authorized", ivyCommenter: "not authorized", ianViewer: "not authorized", stored: 2,
+              rmIvy: "not authorized", rmIan: "not authorized", rmGuest: "not authorized", rmHidden: "not found", rmMine: "not found" }, "the answers");
+  });
+
+  await test("0058: a workspace owner with no member row of their own who hands the business over takes nothing with them: the projects they own go to the new owner", async () => {
+    const got = await scenario(async (run) => {
+      await run(null, `delete from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [w.ws, w.id.O]);
+      const still = (await run(null, `select owner_id::text as o from public.projects where id = $1::uuid`, [w.proj.PP]))[0].o;
+      const row = (await run(null, `select id::text as id from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid`, [w.ws, w.id.A]))[0].id;
+      await run(w.id.O, `select public.transfer_ownership($1::uuid, $2::uuid)`, [w.ws, row]);
+      const owners = (await run(null, `select owner_id::text as o from public.projects where id = any ($1::uuid[]) order by name`, [[w.proj.PW, w.proj.PM, w.proj.PP]])).map((r) => r.o === w.id.A ? "A" : r.o === w.id.O ? "O" : String(r.o));
+      return { still: still === w.id.O, owners, reads: (await run(w.id.O, `select id from public.projects where id = $1::uuid`, [w.proj.PP])).length };
+    });
+    eq(got, { still: true, owners: ["A", "A", "A"], reads: 0 }, "row-less, Oona kept owning while she was the owner; handed over, Ari owns them and Oona reads none");
+  });
+
+  await test("0058, switch on: a guest who's suspended or awaiting approval reads only their projects' people, as an active guest does", async () => {
+    const r = await attempt(w.id.GC, `select id::text as u from public.profiles where id = any ($1::uuid[])`, [Object.values(w.id)],
+      [[`update public.profiles set suspended = true where id = $1::uuid`, [w.id.GC]]]);
+    eq("rows" in r ? people(r.rows.map((x) => String(x.u))) : errOf(r), visibleProfiles("GC", true), "Gail, suspended");
+    const r2 = await attempt(w.id.GC, `select id::text as u from public.profiles where id = any ($1::uuid[])`, [Object.values(w.id)],
+      [[`update public.profiles set approved = false where id = $1::uuid`, [w.id.GC]]]);
+    eq("rows" in r2 ? people(r2.rows.map((x) => String(x.u))) : errOf(r2), visibleProfiles("GC", true), "Gail, awaiting approval");
+  });
+
+  await test("0058, switch on: a restored bin row says where its task is now only to someone who can see it there", async () => {
+    const got = await scenario(async (run) => {
+      const t = (await run(w.id.ME, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Zebra back', $2, 'nobody', $3::uuid) returning id::text as id`, [w.id.ME, w.proj.PW, w.ws]))[0].id as string;
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [t]);
+      const bin = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid`, [t]))[0].id as string;
+      await run(w.id.ME, `select public.restore_from_trash($1::uuid)`, [bin]);
+      await run(w.id.ME, `update public.tasks set project_id = $2 where id = $1::uuid`, [t, w.proj.PP]);
+      const where = async (who: Who) => (await run(w.id[who], `select public.restore_from_trash($1::uuid) as r`, [bin]))[0].r as Record<string, unknown>;
+      const m2 = await where("M2"), me = await where("ME");
+      return { m2: [m2.status, m2.project_id], me: [me.status, me.project_id === w.proj.PP] };
+    });
+    eq(got, { m2: ["already_restored", null], me: ["already_restored", true] }, "Moe isn't told it's in PP; Meg is");
+  });
+
+  await test("0058: toggle_comment_reaction isn't callable signed out (anon)", async () => {
+    eq((await one(`select has_function_privilege('anon', 'public.toggle_comment_reaction(uuid,text)', 'execute') as a,
+                          has_function_privilege('authenticated', 'public.toggle_comment_reaction(uuid,text)', 'execute') as b`)), { a: false, b: true }, "grants");
   });
 
   // ---------------------------------------------------------------- 12. switch off again: the rollback
@@ -2457,6 +2723,9 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       ["0047_bin_history_approvals_docs.sql", "restore_from_trash(p_id uuid)", "public.restore_from_trash(uuid)"],
       ["0047_bin_history_approvals_docs.sql", "approval_json(a public.approvals)", "public.approval_json(public.approvals)"],
       ["0046_api_webhooks_notion.sql", "list_webhook_deliveries(p_id uuid, p_limit integer default 25)", "public.list_webhook_deliveries(uuid,integer)"],
+      ["0046_api_webhooks_notion.sql", "notion_set_sync_enabled(p_id uuid, p_enabled boolean)", "public.notion_set_sync_enabled(uuid,boolean)"],
+      ["0046_api_webhooks_notion.sql", "notion_delete_sync(p_id uuid)", "public.notion_delete_sync(uuid)"],
+      ["0046_api_webhooks_notion.sql", "notion_link_page(p_task uuid, p_page_id text)", "public.notion_link_page(uuid,text)"],
     ];
     if (await has("status_update_comments")) {
       originals.push(["0054_update_conversation.sql", "can_see_status_update(p_update uuid)", "public.can_see_status_update(uuid)"]);

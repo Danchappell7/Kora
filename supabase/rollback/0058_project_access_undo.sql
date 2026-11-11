@@ -109,6 +109,7 @@ begin
     ('webhook_deliveries', 'trg_webhook_deliveries_pa_gate'),
     ('webhooks', 'trg_webhooks_pa_url'),
     ('approval_reviewers', 'trg_approval_reviewers_pa'),
+    ('approvals', 'trg_approvals_pa_cancel'),
     ('kudos', 'trg_kudos_pa'),
     ('trash', 'trg_trash_pa_capture'),
     ('trash', 'trg_trash_pa_restore'),
@@ -498,6 +499,65 @@ returns jsonb language sql security definer stable set search_path = public as $
 $$;
 revoke execute on function public.notion_status(uuid) from public, anon;
 grant execute on function public.notion_status(uuid) to authenticated;
+
+-- (0046_api_webhooks_notion.sql)
+create or replace function public.notion_set_sync_enabled(p_id uuid, p_enabled boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare s public.notion_syncs;
+begin
+  select * into s from public.notion_syncs where id = p_id for update;
+  if s.id is null or auth.uid() is null or public.ws_role(s.workspace_id) not in ('owner', 'admin') then
+    raise exception 'sync not found';
+  end if;
+  if coalesce(p_enabled, false) and not exists (select 1 from public.workspace_integrations i
+                                                 where i.workspace_id = s.workspace_id and i.notion_token is not null) then
+    raise exception 'notion not connected';
+  end if;
+  update public.notion_syncs set enabled = coalesce(p_enabled, false), updated_at = now() where id = p_id returning * into s;
+  return public.notion_sync_json(s);
+end; $$;
+revoke execute on function public.notion_set_sync_enabled(uuid, boolean) from public, anon;
+grant execute on function public.notion_set_sync_enabled(uuid, boolean) to authenticated;
+
+-- (0046_api_webhooks_notion.sql)
+create or replace function public.notion_delete_sync(p_id uuid)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare s public.notion_syncs;
+begin
+  select * into s from public.notion_syncs where id = p_id for update;
+  if s.id is null or auth.uid() is null or public.ws_role(s.workspace_id) not in ('owner', 'admin') then
+    raise exception 'sync not found';
+  end if;
+  update public.notion_links set kind = 'reference', sync_id = null where sync_id = p_id;
+  delete from public.notion_syncs where id = p_id;
+  return true;
+end; $$;
+revoke execute on function public.notion_delete_sync(uuid) from public, anon;
+grant execute on function public.notion_delete_sync(uuid) to authenticated;
+
+-- (0046_api_webhooks_notion.sql)
+create or replace function public.notion_link_page(p_task uuid, p_page_id text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare pid text := public.notion_norm_id(p_page_id); ws uuid; l public.notion_links;
+begin
+  if auth.uid() is null or not public.can_edit_task(p_task) then raise exception 'task not found'; end if;
+  select t.workspace_id into ws from public.tasks t where t.id = p_task;
+  if ws is null then raise exception 'notion links need a team task'; end if;
+  if not exists (select 1 from public.workspace_integrations i where i.workspace_id = ws and i.notion_token is not null) then
+    raise exception 'notion not connected';
+  end if;
+  if pid is null then raise exception 'invalid page'; end if;
+  select * into l from public.notion_links where task_id = p_task and notion_page_id = pid;
+  if l.id is null then
+    if (select count(*) from public.notion_links x where x.task_id = p_task) >= 20 then raise exception 'too many links'; end if;
+    insert into public.notion_links (workspace_id, task_id, notion_page_id, kind, created_by)
+    values (ws, p_task, pid, 'reference', auth.uid())
+    returning * into l;
+  end if;
+  return public.notion_link_json(l);
+end; $$;
+revoke execute on function public.notion_link_page(uuid, text) from public, anon;
+grant execute on function public.notion_link_page(uuid, text) to authenticated;
 
 -- (0055_shared_availability.sql, only where 0055 is in)
 do $rate$
