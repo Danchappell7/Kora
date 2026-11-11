@@ -98,7 +98,10 @@ the same rules as the app, enforced by the database:
   view). An assignee must be able to see the task's project
   (`422 validation_failed`, "That person can't see this project."). Guests
   see only the projects they're on, and only those projects' people in
-  `/members`.
+  `/members`. A sub-task moved to another project on its own (`PATCH` with
+  `projectId`) becomes a task of its own there (`parentId: null` in the
+  answer), as in the app; a task moved with its sub-tasks hands you any whose
+  assignee can't see the new project, with no plan of theirs on it.
 
 ## Endpoints
 

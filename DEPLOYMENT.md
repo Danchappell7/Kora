@@ -912,26 +912,33 @@ steps; nothing breaks while you wait.
    functions don't know about it, so they'd still post, unfurl and email
    Members only and Private work.
    - `notify`, `daily-reminders`: emails, push notices and the digest name only
-     work the person can see.
+     work the person can see (an update about a project in the bin counts as
+     the Inbox shows it: with the switch off, as today).
    - `slack-post`, `slack-standup`, `slack-app`: only Whole workspace projects
      are posted, stood up or unfurled with their titles (a private one is a
      count, "+3 tasks in private projects", or "A private Kanbo project").
      Where it's switched on, a stand-up or Radar post from a Kanbo tab opened
      before the website update (whose text lists every task it saw) is
-     refused with "Reload Kanbo to post to Slack."
+     refused with "Reload Kanbo to post to Slack." The `/kanbo` command and its
+     form offer only projects the person can add tasks to, and Home has no
+     Complete on a task they can only view or comment on.
    - `public-form`: a private project's form shows the form's name, never the
      project's.
    - `invite-member`: a guest's invite says they'll see only the projects
-     they're added to.
+     they're added to (to read, or to comment too, as each one says).
    - `api`, `mcp`: no writes into a project you can only view, and no
-     assigning someone who can't see it.
+     assigning someone who can't see it. A sub-task moved to another project
+     on its own becomes a task of its own there (as in the app); `my_day`
+     lists only the approvals you can still decide.
    - `notion`: a Notion page whose Owner can't see the project comes in
      unassigned (the sync no longer stops on it, nor rolls back its run); and
      where it's switched on, a synced task moved to another project stops
      syncing until it's moved back (also when the sync was set up by an admin
      who isn't on that project: it's never copied back as a new task). A
      database that syncs with a project you can't see can't be previewed or
-     imported by you, nor its sync taken over.
+     imported by you, nor its sync taken over (nor once that sync is removed,
+     or when it was imported into such a project). With the switch off, a
+     page's Owner is assigned as today.
    - `ics-feed`: a calendar names a project only where the task really is in
      it.
    - `webhook-dispatch`: an endpoint follows whoever last set its address

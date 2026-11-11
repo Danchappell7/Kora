@@ -193,7 +193,11 @@ No new secrets and no new schedule.
   account of whoever set an endpoint's address switches it off too, whatever
   the switch says (the endpoint never falls back to its creator's wider
   access). Whoever switches such an endpoint back on takes its address on as
-  theirs: from then on it hears what they can see.
+  theirs: from then on it hears what they can see. When a workspace's owner
+  deletes their account, its next admin (or, with none, its longest-standing
+  member) becomes the owner and so sees every project there, Private ones
+  they were kept off included; the deletion sheet says so where Project access
+  is on, and suggests making someone else the owner first.
 - **Assignees.** With the switch on, nobody is given a task in a project they
   can't see. Someone suspended or awaiting approval is judged by the projects
   they'll see once they can act again. Someone who has left the workspace keeps
@@ -204,8 +208,13 @@ No new secrets and no new schedule.
   keeps their place when someone else follows the task, edits its
   collaborators or moves it.
 - **Sub-tasks** live in their parent's project. Moved to another project on
-  its own (the task panel, a drop, a bulk move), a sub-task becomes a task of
-  its own there; the database would otherwise keep it with its parent.
+  its own (the task panel, a drop, a bulk move, the API's or MCP's
+  `update_task`), a sub-task becomes a task of its own there; the database
+  would otherwise keep it with its parent. When a task moves, a sub-task whose
+  assignee can't see the new project comes to whoever moved it (from the app,
+  the API and MCP), and the database hands any it moves itself to the
+  project's owner; either way without the old assignee's plan on it (on
+  today, its slot, their My-tasks section).
 - **Approvals.** A reviewer who can only view the task now (or can't see it)
   isn't offered a decision (`can_decide`), and the request's asker sees who
   can't review it and, when it can't finish, that it should be cancelled and
@@ -303,7 +312,12 @@ templates; exports; and a device's offline copy until its next load.
   mirrors can't be linked to a task of yours ("invalid page"), and a link to it
   made before (while its project was open, say) is hidden from you, with the
   page's cached title, so the Notion function won't fetch the page for you
-  either.
+  either. Removing a sync doesn't open its database up: its pages stay
+  linked to that project's tasks (and keep what a two-way sync wrote into
+  them), so it still can't be previewed or imported by anyone who can't see
+  the project, nor can a database imported once into such a project. (A task
+  moved out of a synced project you can see keeps its sync's link without
+  closing the database to you.)
 - **Names a guest can read.** A task's history row keeps the name its author had
   when it was written (0038 falls back to their email when they had no name),
   so a guest reading a task in their project can see the name of a teammate
