@@ -937,8 +937,9 @@ steps; nothing breaks while you wait.
      who isn't on that project: it's never copied back as a new task). A
      database that syncs with a project you can't see can't be previewed or
      imported by you, nor its sync taken over (nor once that sync is removed,
-     or when it was imported into such a project). With the switch off, a
-     page's Owner is assigned as today.
+     or when it was imported into such a project; a task that has left the
+     workspace doesn't count). With the switch off, a page's Owner is assigned
+     and every database previews and imports as today.
    - `ics-feed`: a calendar names a project only where the task really is in
      it.
    - `webhook-dispatch`: an endpoint follows whoever last set its address

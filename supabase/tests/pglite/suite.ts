@@ -4150,6 +4150,57 @@ async function projectAccessApiSuite(w: World) {
     await pg.query(`delete from public.tasks where id = $1::uuid`, [moved]);
     await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [openSync]);
   });
+  /** A Notion database imported once (no Keep in sync) by `by` into `project`: each task is a plain link
+   *  naming the database. Then one goes to `by`'s Personal list, one (if asked) to a project in a second
+   *  workspace of alice's, and the rest stay. The links keep w1 (notion_links_guard fires only on the link). */
+  let pageNo = 0;
+  const importedThenMoved = async (label: string, dbId: string, by: string, project: string, elsewhere = true) => {
+    const tasks: string[] = [];
+    for (const title of ["went to a Personal list", "went to another workspace", "stayed"]) {
+      if (title === "went to another workspace" && !elsewhere) continue;
+      const t = (await one<{ id: string }>(`insert into public.tasks (user_id, title, project_id, workspace_id, assignee_id) values ($1::uuid, $2, $3, $4::uuid, '') returning id::text as id`,
+        [by, `${label}: ${title}`, project, w.w1])).id;
+      await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, kind, created_by)
+                      values ($1::uuid, $2::uuid, $3, public.notion_norm_id($4), 'reference', $5::uuid)`,
+        [w.w1, t, `5e5e5e5e-0000-4000-8000-0000000059${String(++pageNo).padStart(2, "0")}`, dbId, by]);
+      tasks.push(t);
+    }
+    await asPerson(pg, by, `update public.tasks set project_id = 'p-personal', workspace_id = null where id = $1::uuid`, [tasks[0]]);
+    let side: string | null = null;
+    if (elsewhere) {
+      side = (await one<{ id: string }>(`insert into public.workspaces (name, owner_id) values ($1, $2::uuid) returning id::text as id`, [`Side ${label}`, w.alice])).id;
+      await pg.query(`insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'alice@example.org', 'alice', 'owner', 'active') on conflict do nothing`, [side, w.alice]);
+      const sideProject = (await one<{ id: string }>(`insert into public.projects (user_id, owner_id, name, workspace_id) values ($1::uuid, $1::uuid, $2, $3::uuid) returning id::text as id`,
+        [w.alice, `Side ${label}`, side])).id;
+      await asPerson(pg, w.alice, `update public.tasks set project_id = $2, workspace_id = $3::uuid where id = $1::uuid`, [tasks[1], sideProject, side]);
+    }
+    const stale = await one<{ n: number }>(`select count(*)::int as n from public.notion_links l join public.tasks t on t.id = l.task_id
+                                             where l.task_id = any ($1::uuid[]) and l.workspace_id = $2::uuid and t.workspace_id is distinct from l.workspace_id`, [tasks, w.w1]);
+    eq(stale.n, elsewhere ? 2 : 1, `${label}: the moved tasks' links still name w1`);
+    return {
+      tasks,
+      done: async () => {
+        await pg.query(`delete from public.tasks where id = any ($1::uuid[])`, [tasks]);
+        if (side) await pg.query(`delete from public.workspaces where id = $1::uuid`, [side]);
+      },
+    };
+  };
+  await test("0058, Notion, switch on: a task imported once that has gone to someone's Personal list or to another workspace doesn't close its database to anyone here; one still in a Private project does", async () => {
+    const ola = await admin("ola-notion");
+    const openDb = "0d0d0d0d-0000-4000-8000-000000005814", payDb = "0d0d0d0d-0000-4000-8000-000000005815";
+    // ola imported a database into Launch (open); alice imported another into Board pay (Private: alice, dora)
+    const open = await importedThenMoved("Imported to Launch", openDb, ola, w.launch);
+    const closed = await importedThenMoved("Imported to Board pay", payDb, w.alice, pay, false);
+    const sees = async (dbId: string) => {
+      const out: boolean[] = [];
+      for (const u of [ola, w.alice, w.bob, dora]) out.push(await syncsOutOfSight(w.deps.db.service, u, w.w1, dbId));
+      return out;
+    };
+    eq(await sees(openDb), [false, false, false, false], "Launch's database: open to ola, alice, bob and dora");
+    eq(await sees(payDb), [true, false, true, false], "Board pay's: still closed to ola and bob (not on it), not to alice or dora");
+    await open.done();
+    await closed.done();
+  });
   /** a member of w1 whose account is suspended, with an address of their own */
   const suspendedMember = async (name: string) => {
     const u = await makeUser(pg, `pa.${name}@example.org`, name);
@@ -4238,6 +4289,44 @@ async function projectAccessApiSuite(w: World) {
   await test("0058, Notion, switch off: a page whose Owner is suspended comes in assigned to them, as before 0058", async () => {
     const got = await suspendedOwnerRun("susp-off", "0d0d0d0d-0000-4000-8000-000000005813");
     eq([got.fatal, got.error, got.assignedToSid], [false, null, true], `as before: ${got.logs}`);
+  });
+  await test("0058, Notion, switch off: a database imported once, whose tasks have since gone to someone's Personal list or another workspace (or sit in a Private project), still previews and imports for the workspace's owners and admins, as before 0058", async () => {
+    const pia = await admin("pia-notion");
+    const dbId = "0d0d0d0d-0000-4000-8000-000000005816", payDb = "0d0d0d0d-0000-4000-8000-000000005817";
+    const moved = await importedThenMoved("Off: imported to Launch", dbId, pia, w.launch);
+    const closed = await importedThenMoved("Off: imported to Board pay", payDb, w.alice, pay, false);
+    for (const [name, id] of [["Launch's", dbId], ["Board pay's", payDb]] as const) {
+      const out: boolean[] = [];
+      for (const u of [pia, w.alice, w.bob, dora]) out.push(await syncsOutOfSight(w.deps.db.service, u, w.w1, id));
+      eq(out, [false, false, false, false], `${name} database: open to pia, alice, bob and dora`);
+    }
+    // the workspace's owner imports it again (a new page): not refused
+    await pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('o', 40))
+                    on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.w1]);
+    const pages = [{ object: "page", id: "5e5e5e5e-0000-4000-8000-0000000059ff", created_time: "2026-11-09T10:00:00.000Z", last_edited_time: "2026-11-10T10:00:00.000Z",
+                     properties: { Name: { type: "title", title: [{ plain_text: "Off: a new page" }] } } }];
+    const api = {
+      calls: 0,
+      async me() { return { id: "bot" }; },
+      async searchDatabases() { return { results: [], next_cursor: null, has_more: false }; },
+      async database() { return { id: dbId, title: [{ plain_text: "Imported" }], properties: { Name: { id: "title", name: "Name", type: "title" } } }; },
+      async query() { return { results: pages, next_cursor: null, has_more: false }; },
+      async page(id: string) { return pages.find((p) => p.id === id)!; },
+      async updatePage() { return {}; },
+      async users() { return { results: [], next_cursor: null, has_more: false }; },
+    };
+    let n = 0;
+    const deps = { db: w.deps.db, notion: () => api, now: () => Date.now(), newId: () => `6f6f6f6f-0000-4000-8000-${String(++n).padStart(12, "0")}`, log: () => undefined };
+    let got = "";
+    try {
+      const r = await importDatabase(deps as never, api as never, { userId: w.alice, workspaceId: w.w1, databaseId: dbId, mapping: { title: "Name" }, projectId: w.launch,
+        newProject: null, keepInSync: false, direction: "two_way" }, Date.now() + 20_000);
+      got = `created ${r.created}`;
+    } catch (e) { got = e instanceof NotionActionError ? `${e.status} ${e.message}` : String(e); }
+    eq(got, "created 1", "alice's import");
+    await pg.query(`delete from public.tasks where project_id = $1 and title = 'Off: a new page'`, [w.launch]);
+    await moved.done();
+    await closed.done();
   });
   await test("0058 via REST, switch off: a sub-task moved on its own goes under its parent, as before", async () => {
     const f = await family("Off: solo move");
