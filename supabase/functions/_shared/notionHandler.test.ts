@@ -71,6 +71,37 @@ describe("notion function: the edges", () => {
     expect(r).toMatchObject({ status: 403, body: { reason: "not_allowed" } });
     expect(sql.filter((s) => !/user_can_act/.test(s))).toEqual([]);
   });
+  it("Project access: a database that syncs with a project the caller can't see is never shown or imported (Notion isn't asked)", async () => {
+    const ws = crypto.randomUUID();
+    const sql: string[] = [];
+    const answer = (hidden: boolean | null) => async (text: string) => {
+      sql.push(text);
+      if (/user_can_act/.test(text)) return [{ ok: true }] as never[];
+      if (/api_rate_hit/.test(text)) return [{ allowed: true, retry_after: 0 }] as never[];
+      if (/notion_status/.test(text)) return [{ s: { connected: true, can_manage: true, can_link: true, workspace_name: null } }] as never[];
+      if (/notion_token/.test(text)) return [{ t: "secret_" + "x".repeat(30) }] as never[];
+      if (/to_regprocedure/.test(text)) return [{ on: hidden !== null }] as never[];
+      if (/user_project_rank/.test(text)) return [{ hidden }] as never[];
+      return [] as never[];
+    };
+    const tx: Tx = { query: answer(true) };
+    const d = deps({ authUser: async () => "aaaaaaaa-0000-4000-8000-000000000001", db: { service: tx, withUser: async (_s, fn) => fn(tx) } });
+    const databaseId = "0123456789abcdef0123456789abcdef";
+    for (const body of [{ action: "schema" }, { action: "preview" },
+                        { action: "import", projectId: crypto.randomUUID(), keepInSync: true, mapping: { title: "Name" } },
+                        { action: "import", projectId: crypto.randomUUID(), keepInSync: false, mapping: { title: "Name" } }]) {
+      const r = await read(await handleNotionRequest(post({ ...body, workspaceId: ws, databaseId }, { Authorization: "Bearer jwt" }), d));
+      expect(r, body.action).toMatchObject({ status: 403, body: { reason: "not_allowed", error: "This Notion database syncs with a project here that you can't see, so it can't be previewed or imported." } });
+    }
+    expect(sql.some((x) => /user_project_rank/.test(x) && /notion_syncs/.test(x))).toBe(true);
+    // (before 0058: nothing to ask, and Notion is asked as before)
+    const tx0: Tx = { query: answer(null) };
+    let asked = 0;
+    const d0 = deps({ authUser: async () => "aaaaaaaa-0000-4000-8000-000000000001", db: { service: tx0, withUser: async (_s, fn) => fn(tx0) },
+      notion: () => ({ query: async () => { asked++; return { results: [], has_more: false, next_cursor: null }; } }) as never });
+    const r0 = await read(await handleNotionRequest(post({ action: "preview", workspaceId: ws, databaseId }, { Authorization: "Bearer jwt" }), d0));
+    expect([r0.status, asked]).toEqual([200, 1]);
+  });
   it("constant-time comparison", () => {
     expect(safeEq("abc", "abc")).toBe(true);
     expect(safeEq("abc", "abd")).toBe(false);

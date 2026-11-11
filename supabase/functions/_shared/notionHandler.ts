@@ -34,7 +34,7 @@ import { parseNotionId, NOTION_TOKEN_RE } from "./notion.ts";
 import { isNotionError, type NotionApiError } from "./notionApi.ts";
 import { oneLine, pageMeta, previewRow, schemaOf, summariseDatabase, type NDatabase, type NPage, type PageMeta } from "./notionMap.ts";
 import {
-  claimSync, dueSyncs, importDatabase, NotionActionError, readToken, runSync, SYNC_TEXT, type SyncDeps,
+  claimSync, dueSyncs, importDatabase, NotionActionError, OUT_OF_SIGHT_TEXT, readToken, runSync, SYNC_TEXT, syncsOutOfSight, type SyncDeps,
 } from "./notionSync.ts";
 
 export interface HandlerDeps extends SyncDeps {
@@ -92,6 +92,7 @@ function dbFailure(e: unknown, deps: HandlerDeps, where: string): Response {
   if (/not allowed|not authorized/i.test(msg)) return refuse(403, "not_allowed", TEXT.manageOnly);
   if (/invalid token/i.test(msg)) return refuse(400, "invalid_token", "That doesn't look like a Notion integration secret. It starts with ntn_ or secret_.");
   if (/invalid project/i.test(msg)) return refuse(400, "invalid", "That project isn't in this workspace.");
+  if (/already syncs/i.test(msg)) return refuse(409, "invalid", "This database already syncs with a project here. Use Sync now on it, or remove that sync first.");
   if (/invalid (mapping|database|direction)/i.test(msg)) return refuse(400, "invalid", "That database or mapping can't be saved. Check the fields and try again.");
   if (/team task/i.test(msg)) return refuse(400, "invalid", "Notion pages can only be linked to team tasks.");
   if (/too many links/i.test(msg)) return refuse(400, "invalid", "A task can have up to 20 Notion pages.");
@@ -290,6 +291,11 @@ async function manageAction(deps: HandlerDeps, userId: string, action: string, b
 
   const databaseId = parseNotionId(str(b.databaseId, 2000));
   if (!databaseId) return refuse(400, "invalid", "Choose a Notion database.");
+  // (Project access: a database that syncs with a project the caller can't see holds that project's
+  // tasks; its fields, pages and an import of it are that project's people's)
+  try {
+    if (await syncsOutOfSight(deps.db.service, userId, ws, databaseId)) return refuse(403, "not_allowed", OUT_OF_SIGHT_TEXT);
+  } catch (e) { return dbFailure(e, deps, "access"); }
 
   if (action === "schema") {
     try {

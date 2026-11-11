@@ -17,7 +17,7 @@
 import { sqlVerifier } from "../../functions/_shared/api/auth.ts";
 import { handleApiRequest } from "../../functions/_shared/api/pipeline.ts";
 import { CREATOR_GONE_ERROR, CREATOR_GONE_REASON, runDispatch } from "../../functions/_shared/api/webhookDispatch.ts";
-import { claimSync, runSync } from "../../functions/_shared/notionSync.ts";
+import { claimSync, importDatabase, NotionActionError, OUT_OF_SIGHT_TEXT, runSync, syncsOutOfSight } from "../../functions/_shared/notionSync.ts";
 import { accessInstalled, personRankSql, projectAccess } from "../../functions/_shared/projectAccess.ts";
 import { loadCard, loadProjectCard, type SlackDb } from "../../functions/_shared/slackAppData.ts";
 import { handleMcpFunction, type McpDeps } from "../../functions/_shared/mcp/handler.ts";
@@ -3896,13 +3896,13 @@ async function projectAccessApiSuite(w: World) {
     await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [sync]);
   });
   /** A two-way sync (as alice) on a new Whole workspace project, with a fake Notion whose pages the test edits. */
-  const notionRig = async (name: string, dbId: string) => {
+  const notionRig = async (name: string, dbId: string, by: string = w.alice) => {
     const target = await mk(name, "workspace");
     await pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('n', 40))
                     on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.w1]);
     const sync = (await one<{ id: string }>(`insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
         values ($1::uuid, $2::uuid, $3, $4::jsonb, 'two_way', $5::uuid) returning id::text as id`,
-      [w.w1, target, dbId, JSON.stringify({ title: "Name", assignee: { property: "Owner" } }), w.alice])).id;
+      [w.w1, target, dbId, JSON.stringify({ title: "Name", assignee: { property: "Owner" } }), by])).id;
     const pages: Record<string, unknown>[] = [];
     const page = (n: number, title: string, email: string, edited: string) => ({
       object: "page", id: `3c3c3c3c-0000-4000-8000-${dbId.slice(-4)}0000000${n}`, created_time: "2026-11-09T10:00:00.000Z", last_edited_time: edited,
@@ -3974,6 +3974,85 @@ async function projectAccessApiSuite(w: World) {
       "Beta's rename comes in (its assignee kept), Gamma comes in unassigned, bob is never given either");
     ok(String(second.error).includes("can't see this project in Kanbo"), `and the run says why: ${second.error}`);
     await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [rig.sync]);
+  });
+  await test("0058, Notion, switch on: a sync an admin set up leaves a task moved into a Private project they're not on alone (no copy of it comes back, run after run)", async () => {
+    const ivy = await admin("ivy-notion");
+    const rig = await notionRig("Notion pipeline", "0d0d0d0d-0000-4000-8000-000000005804", ivy);
+    rig.pages.push(rig.page(1, "Acme talks", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"));
+    const first = await rig.runOnce();
+    eq([first.fatal, first.error, first.stats.created], [false, null, 1], `first run: ${rig.logs.join("; ")}`);
+    const t1 = (await one<{ id: string }>(`select id::text as id from public.tasks where project_id = $1 and title = 'Acme talks'`, [rig.target])).id;
+    // dora (an editor of both) moves it into Board pay, which ivy (an admin) isn't on
+    await asPerson(pg, dora, `update public.tasks set project_id = $2, title = 'Acme acquisition: LOI at 4.2m' where id = $1::uuid`, [t1, pay]);
+    for (const [run, edited] of [[2, "2026-11-11T10:00:00.000Z"], [3, "2026-11-11T11:00:00.000Z"], [4, "2026-11-11T11:00:00.000Z"]] as const) {
+      rig.pages[0] = rig.page(1, "Acme talks (edited in Notion)", "pa.dora@example.org", edited);
+      const r = await rig.runOnce();
+      eq([r.fatal, r.stats.created], [false, 0], `run ${run}: nothing is made (${rig.logs.join("; ")})`);
+    }
+    eq((await pg.query(`select title from public.tasks where project_id = $1`, [rig.target])).rows, [], "no copy in the Whole workspace project");
+    const now = await one<{ title: string; project_id: string }>(`select title, project_id from public.tasks where id = $1::uuid`, [t1]);
+    eq([now.title, now.project_id], ["Acme acquisition: LOI at 4.2m", pay], "and the moved task is left as it was");
+    await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [rig.sync]);
+  });
+  await test("0058, Notion, switch on: an admin who can't see a Private project can't take its sync over, nor preview or import its database (kept in sync or not)", async () => {
+    const nia = await admin("nia-notion");
+    const dbId = "0d0d0d0d-0000-4000-8000-000000005803";
+    const target = await mk("Notion inbox", "workspace");
+    await pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('n', 40))
+                    on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.w1]);
+    // alice syncs Board pay (Private: alice, dora) with the database; its task is a page there
+    const sync = (await one<{ id: string }>(`insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by, stats, last_cursor)
+        values ($1::uuid, $2::uuid, $3, '{"title": "Name"}'::jsonb, 'two_way', $4::uuid, '{"created": 14, "pushed": 9}'::jsonb, '2026-11-10T09:00:00.000Z') returning id::text as id`,
+      [w.w1, pay, dbId, w.alice])).id;
+    const pageId = "5e5e5e5e-0000-4000-8000-000000005803";
+    await pg.query(`insert into public.notion_links (workspace_id, task_id, notion_page_id, notion_database_id, sync_id, kind, created_by)
+                    values ($1::uuid, $2::uuid, $3, public.notion_norm_id($4), $5::uuid, 'synced', $6::uuid)`, [w.w1, salary, pageId, dbId, sync, w.alice]);
+    const pages = [{ object: "page", id: pageId, created_time: "2026-11-09T10:00:00.000Z", last_edited_time: "2026-11-10T10:00:00.000Z",
+                     properties: { Name: { type: "title", title: [{ plain_text: "Salary bands review: CEO +40%" }] } } }];
+    const api = {
+      async me() { return { id: "bot" }; },
+      async searchDatabases() { return { results: [], next_cursor: null, has_more: false }; },
+      async database() { return { id: dbId, title: [{ plain_text: "Board pay" }], properties: { Name: { id: "title", name: "Name", type: "title" } } }; },
+      async query() { return { results: pages, next_cursor: null, has_more: false }; },
+      async page(id: string) { return pages.find((p) => p.id === id)!; },
+      async updatePage() { return {}; },
+      async users() { return { results: [], next_cursor: null, has_more: false }; },
+    };
+    let n = 0;
+    const deps = { db: w.deps.db, notion: () => api, now: () => Date.now(), newId: () => `6f6f6f6f-0000-4000-8000-${String(++n).padStart(12, "0")}`, log: () => undefined };
+    eq([await syncsOutOfSight(w.deps.db.service, nia, w.w1, dbId), await syncsOutOfSight(w.deps.db.service, w.alice, w.w1, dbId),
+        await syncsOutOfSight(w.deps.db.service, dora, w.w1, dbId), await syncsOutOfSight(w.deps.db.service, nia, w.w1, "0d0d0d0d-0000-4000-8000-0000000058ff")],
+       [true, false, false, false], "only nia is out of sight of it");
+    // the database itself: a save naming the same database for a project of nia's own is refused
+    let saved = "";
+    try {
+      await asPerson(pg, nia, `select public.notion_save_sync($1::uuid, $2::uuid, $3, 'My board', '{"title": "Name"}'::jsonb, 'two_way', true)`, [w.w1, target, dbId]);
+      saved = "saved";
+    } catch (e) { saved = String((e as Error).message); }
+    eq(saved, "already syncs", "notion_save_sync can't take it over (nor answers with its row)");
+    // the import, kept in sync or not
+    for (const keepInSync of [true, false]) {
+      let got = "";
+      try {
+        await importDatabase(deps as never, api as never, { userId: nia, workspaceId: w.w1, databaseId: dbId, mapping: { title: "Name" }, projectId: target,
+          newProject: null, keepInSync, direction: "two_way" }, Date.now() + 20_000);
+        got = "imported";
+      } catch (e) { got = e instanceof NotionActionError ? `${e.status} ${e.message}` : String(e); }
+      eq(got, `403 ${OUT_OF_SIGHT_TEXT}`, `nia importing it ${keepInSync ? "kept in sync" : "once"}`);
+    }
+    eq((await pg.query(`select title from public.tasks where project_id = $1`, [target])).rows, [], "nothing of Board pay comes into nia's project");
+    eq(await one(`select project_id::text as p, created_by::text as by, stats ->> 'created' as c from public.notion_syncs where id = $1::uuid`, [sync]),
+       { p: pay, by: w.alice, c: "14" }, "the sync is still Board pay's, alice's");
+    // alice, who sees it, is told it already syncs (the check no longer misses it)
+    let alices = "";
+    try {
+      await importDatabase(deps as never, api as never, { userId: w.alice, workspaceId: w.w1, databaseId: dbId, mapping: { title: "Name" }, projectId: target,
+        newProject: null, keepInSync: true, direction: "two_way" }, Date.now() + 20_000);
+      alices = "imported";
+    } catch (e) { alices = e instanceof NotionActionError ? `${e.status}` : String(e); }
+    eq(alices, "409", "alice: it already syncs");
+    await pg.query(`delete from public.notion_links where sync_id = $1::uuid`, [sync]);
+    await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [sync]);
   });
   await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
   await test("0058, webhooks, switch off: the dispatcher judges an endpoint by its viewer too: one whose viewer left is switched off and sent nothing", async () => {

@@ -238,6 +238,24 @@ async function onlyOwnProject(service: Tx, ws: string): Promise<boolean> {
   return r[0]?.on === true;
 }
 
+/**
+ * Does this Notion database already sync with a project here that the person can't see (0058, Project
+ * access on)? Its pages are that project's tasks (a two-way sync writes them there), so previewing or
+ * importing it would show them, and keeping it in sync would take the sync over from that project. On the
+ * service connection: the person's own read of notion_syncs is filtered by the same rule, so it would miss
+ * exactly that sync. Before 0058, or with the switch off, never.
+ */
+export async function syncsOutOfSight(service: Tx, userId: string, ws: string, databaseId: string): Promise<boolean> {
+  if (!(await accessInstalled(service))) return false;
+  const r = await service.query<{ hidden: boolean }>(
+    `select exists (select 1 from public.notion_syncs s
+                     where s.workspace_id = $1::uuid and s.database_id = public.notion_norm_id($2)
+                       and public.user_project_rank($3::uuid, $1::uuid, s.project_id::text) < 1) as hidden`,
+    [ws, databaseId, userId]);
+  return r[0]?.hidden === true;
+}
+export const OUT_OF_SIGHT_TEXT = "This Notion database syncs with a project here that you can't see, so it can't be previewed or imported.";
+
 /** Tag labels → tag ids in the workspace, creating the missing ones (as the person). */
 async function tagIds(tx: Tx, userId: string, ws: string, ctx: Ctx, values: TagValue[]): Promise<string[]> {
   const missing = new Map<string, TagValue>();
@@ -468,6 +486,15 @@ async function pullBatch(run: Run, pages: NPage[]) {
   if (!live.length) return;
   const ids = live.map((p) => p.id);
   const bases = run.createOnly ? new Map<string, Baseline>() : await loadBaselines(deps.db.service, ws, { pages: ids });
+  // (every page this sync already links, on the service connection: with Project access on, the person
+  // the run acts as reads only the links of tasks they can see, and a task moved into a project they
+  // can't see would otherwise come back as a new one, run after run. It's left alone, as onlyOwnProject
+  // leaves one moved out of the sync's project.)
+  const linked = run.syncId
+    ? new Set((await deps.db.service.query<{ p: string }>(
+      `select notion_page_id as p from public.notion_links where sync_id = $1::uuid and notion_page_id in (select jsonb_array_elements_text($2::jsonb))`,
+      [run.syncId, J(ids)])).map((r) => r.p))
+    : new Set<string>();
 
   const linkTouches: LinkTouch[] = [];
   const adopted: (LinkTouch & { task: string })[] = [];
@@ -529,6 +556,8 @@ async function pullBatch(run: Run, pages: NPage[]) {
       const row = byPage.get(page.id);
       if (!row) {
         if (existing.has(page.id)) { run.stats.skipped++; continue; }
+        // (linked by this sync to a task the run's person can't see: out of the sync's reach, left alone)
+        if (linked.has(page.id)) { run.stats.skipped++; continue; }
         const own = plain.get(page.id);
         if (own?.t_id && own.t_ws === ws) {
           // one task, one synced page: a second page on the same task waits (its plain link stays)
@@ -1032,12 +1061,16 @@ async function importLeased(deps: SyncDeps, api: NotionApi, input: ImportInput,
   deadline: number): Promise<ImportOutcome> {
   const { scope, schema, mapping, databaseId } = c;
   const ws = scope.workspaceId;
+  // (a database that syncs with a project the caller can't see: its pages are that project's tasks)
+  if (await syncsOutOfSight(deps.db.service, scope.userId, ws, databaseId)) throw new NotionActionError(403, "not_allowed", OUT_OF_SIGHT_TEXT);
+  // one sync a database: asked on the service connection, as the person's own read leaves out the syncs
+  // of projects they can't see (0058), and notion_save_sync would then take that sync over
+  if (input.keepInSync) {
+    const s = await deps.db.service.query<{ id: string }>(`select id::text as id from public.notion_syncs where workspace_id = $1::uuid and database_id = public.notion_norm_id($2)`, [ws, databaseId]);
+    if (s.length) throw new NotionActionError(409, "invalid", "This database already syncs with a project here. Use Sync now on it, or remove that sync first.");
+  }
   // the project (and the sync), as the caller
   const { projectId, syncId } = await deps.db.withUser(scope, async (tx) => {
-    if (input.keepInSync) {
-      const s = await tx.query<{ id: string }>(`select id::text as id from public.notion_syncs where workspace_id = $1::uuid and database_id = public.notion_norm_id($2)`, [ws, databaseId]);
-      if (s.length) throw new NotionActionError(409, "invalid", "This database already syncs with a project here. Use Sync now on it, or remove that sync first.");
-    }
     let pid = input.projectId;
     if (input.newProject) {
       const made = await tx.query<{ id: string }>(
