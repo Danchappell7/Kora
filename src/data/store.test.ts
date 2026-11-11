@@ -980,6 +980,45 @@ describe("store (supabase) — integration wiring", () => {
     expect(snap.boot.partial).toBeUndefined();
   });
 
+  it("0058: a failed projects read never brings back, from the device's copy, a project you've lost where project access is on", async () => {
+    const W = "ws-1", ME = "user-a";
+    const ws = (on: boolean) => ({ id: W, name: "Biz", owner_id: "user-z", created_at: "2026-01-01T00:00:00Z", project_access: on, project_access_default: "members", project_access_member_private: true });
+    const proj = (id: string, name: string, visibility: string) => ({ id, name, emoji: "🔒", color: "c", workspace_id: W, owner_id: "user-z", contributor_ids: [], visibility });
+    const task = (id: string, project_id: string) => ({ ...taskRow(id), project_id, workspace_id: W });
+    for (const on of [true, false]) {
+      localStorage.clear();
+      const st = { lost: false, failing: false };
+      const fake = makeFake(ME);
+      fake.setHandler((c) => {
+        if (c.op !== "select") return undefined;
+        if (c.table === "projects") return st.failing ? { error: { message: "upstream connect error (503)", code: "PGRST000" } }
+          : { data: [proj("p-web", "Website", "workspace"), proj("p-empty", "Brand book", "members"), ...(st.lost ? [] : [proj("p-priv", "Acquisition of Target Co", "private")])] };
+        if (c.table === "tasks") return { data: [task("t-web", "p-web"), ...(st.lost ? [] : [task("t-priv", "p-priv")])] };
+        if (c.table === "workspaces") return { data: [ws(on)] };
+        if (c.table === "workspace_members") return { data: [{ id: "wm-1", workspace_id: W, user_id: ME, email: "a@x.io", name: "A", role: "member", status: "active" }] };
+        if (c.table === "project_members") return { data: [{ id: "pm-2", project_id: "p-empty", workspace_id: W, user_id: ME, role: "viewer", created_at: "2026-11-01T00:00:00Z" },
+          ...(st.lost ? [] : [{ id: "pm-1", project_id: "p-priv", workspace_id: W, user_id: ME, role: "editor", created_at: "2026-11-01T00:00:00Z" }])] };
+        return undefined;
+      });
+      const { store: s } = await loadStore(fake);
+      expect((await s.bootstrap({ id: ME })).projects.map((p) => p.id)).toContain("p-priv");
+      // taken off the Private project; this load's projects read fails (a passing 503)
+      st.lost = true; st.failing = true;
+      const b = await s.bootstrap({ id: ME });
+      expect(b.partial).toEqual({ projects: true });
+      const snap = JSON.parse(localStorage.getItem("kanbo-offline-snapshot")!);
+      const ids = b.projects.map((p) => p.id);
+      // (Whole workspace, one you're on with no tasks, and Personal stay either way)
+      expect(ids).toEqual(expect.arrayContaining(["p-personal", "p-web", "p-empty"]));
+      expect(ids.includes("p-priv")).toBe(!on);
+      expect(snap.boot.projects.map((p: { id: string }) => p.id).includes("p-priv")).toBe(!on);
+      // a reload keeps the list on screen for that part, vouched the same way
+      const { keepOnScreen: keep } = await import("./store");   // (the store module this load used)
+      const kept = keep(b, { projects: [...b.projects, { id: "p-priv", name: "Acquisition of Target Co", workspaceId: W, visibility: "private" } as never] });
+      expect(kept.projects.map((p) => p.id).includes("p-priv")).toBe(!on);
+    }
+  });
+
   it("a reload keeps what's on screen for each part it couldn't read, and only those", () => {
     const loaded = {
       projects: [{ id: "p-personal" }, { id: "p-old-name" }], tags: { t1: { label: "Snapshot", color: "red" } },

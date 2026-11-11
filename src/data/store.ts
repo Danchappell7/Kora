@@ -13,7 +13,7 @@ import { parseActivityMeta } from "../lib/activityMeta";
 import { parseBoardSettings, parseOnboardingState } from "../lib/profileState";
 import { noteRhythmSchema, parseRhythm, rhythmOn, rhythmRow, type UpdateRhythm } from "../lib/updateRhythm";
 import { noteRolloutSchema, parseRollout, rolloutRow } from "../lib/rolloutPlan";
-import { accessSchema, canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, noteAccessSchema, projectRank, roleOf, taskRank, type AccessCtx } from "../lib/projectAccess";
+import { accessOn, accessSchema, canManagePeople, canSetVisibility, keepsEdit, mayMakePrivate, noteAccessSchema, projectRank, roleOf, taskRank, visibilityOf, type AccessCtx } from "../lib/projectAccess";
 import { DEMO_APPROVAL_ACTIVITY, demoApprovalEvents } from "../lib/approvals";
 import { demoMeetingActivity } from "../lib/meetings/demo";
 import { demoNotifyActivity } from "../lib/notifyDemo";
@@ -75,11 +75,36 @@ export function keepOnScreen(b: Bootstrap, onScreen: Partial<Pick<Bootstrap, "pr
   if (!p) return b;
   const out = { ...b };
   if (p.profile && onScreen.profile !== undefined) out.profile = onScreen.profile;
-  if (p.projects && onScreen.projects) out.projects = onScreen.projects;
+  // (0058: the on-screen list may hold a project this reload was for — one you've just lost)
+  if (p.projects && onScreen.projects) {
+    out.projects = vouchedProjects(onScreen.projects, { uid: b.currentUserId, workspaces: b.workspaces, members: b.members,
+      projectMembers: b.projectMembers, taskProjects: new Set(b.tasks.map((t) => t.projectId)) });
+  }
   if (p.tags && onScreen.tags) out.tags = onScreen.tags;
   if (p.workspaces && onScreen.workspaces) out.workspaces = onScreen.workspaces;
   if (p.members && onScreen.members) out.members = onScreen.members;
   return out;
+}
+
+/** 0058: a projects read that failed is filled from an earlier copy (the device's snapshot, or on a reload
+ *  the list on screen). Where project access is on, that copy can hold a project you've since lost (made
+ *  Private, or you were taken off it), so only what this load still vouches for is kept: Personal ones,
+ *  every project of a workspace you own, your own, Whole workspace ones (not for a guest), and ones this
+ *  load's tasks or your own project rows point at. Elsewhere (and before 0058) the copy is kept whole. */
+export function vouchedProjects(projects: Project[], b: { uid: string; workspaces: Workspace[]; members: WorkspaceMember[];
+  projectMembers?: ProjectMember[] | null; taskProjects: Set<string> }): Project[] {
+  const gated = new Set(b.workspaces.filter((w) => w.id && accessOn(w)).map((w) => w.id as string));
+  if (!gated.size) return projects;
+  const kept = projects.filter((p) => {
+    const wsId = p.workspaceId ?? null;
+    if (!wsId || !gated.has(wsId)) return true;
+    const role = roleOf({ wsMembers: b.members, workspaces: b.workspaces }, wsId, b.uid);
+    if (role === "owner" || (!!p.ownerId && p.ownerId === b.uid)) return true;
+    if (visibilityOf(p) === "workspace" && !!role && role !== "guest") return true;
+    if (b.taskProjects.has(p.id)) return true;
+    return !!b.projectMembers?.some((m) => m.projectId === p.id && m.userId === b.uid);
+  });
+  return kept.length === projects.length ? projects : kept;
 }
 
 export interface AuthedUser {
@@ -1824,7 +1849,7 @@ export const store = {
     }
 
     const { data: projData, error: projErr } = await supabase.from("projects").select("*");
-    const projects = (projErr && failed("projects", projErr)?.projects)
+    let projects = (projErr && failed("projects", projErr)?.projects)
       || [PERSONAL_PROJECT, ...((projData as ProjectRow[] | null) ?? []).map(rowToProject)];
 
     // real accounts start with NO built-in tags — every tag this user can see
@@ -1932,6 +1957,11 @@ export const store = {
     } catch { /* table not present yet */ }
     // 0058: who's on which project (null before 0058; undefined when it couldn't be read this time)
     const projectMembers = await loadProjectMembers(supabase);
+    // (projects from the last good copy: only those this load still vouches for, so a project you've lost
+    // since doesn't come back from it, on screen or in the copy saved below)
+    if (partial.projects) {
+      projects = vouchedProjects(projects, { uid, workspaces, members, projectMembers, taskProjects: new Set(taskRows.map((r) => r.project_id)) });
+    }
 
     // this person's own plans (0043): the table missing means plans stay on the
     // device; a read that failed this time keeps the device's last copy
