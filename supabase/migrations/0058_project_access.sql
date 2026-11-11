@@ -39,8 +39,9 @@
 --      people who can't see the work). Restrictive policies only narrow:
 --      nobody gains anything.
 --   5. set_project_access() (the workspace's owner only), set_project_visibility(),
---      set_project_member(), remove_project_member() and set_invite_projects()
---      (a guest invited straight onto projects). Every access change touches
+--      set_project_member(), remove_project_member(), set_invite_projects() (a guest
+--      invited straight onto projects) and remove_invite_project() (a project's
+--      managers take it off a pending invite). Every access change touches
 --      workspaces.project_access_changed_at, so every open app reloads.
 --   6. Turning the switch off again is the rollback: instant, nothing lost.
 --      In an emergency, the SQL editor may switch it off directly:
@@ -780,12 +781,14 @@ begin
      and public.pa_rank_or_binned(coalesce(w.url_set_by, w.created_by), p_ws, public.pa_webhook_project(o.event, o.payload)) < 1;
 end; $$;
 
--- 2o. where tasks back from the bin go when their project has gone (switch on; restore_from_trash):
--- somewhere with the audience they had. 0047 takes the workspace's first project of any kind, so a
+-- 2o. where tasks back from the bin go when their project has gone (restore_from_trash): somewhere
+-- with the audience they had. 0047 takes the workspace's first project of any kind, so a
 -- task could vanish into a Private project (and its note name it), or a Private project's work land
 -- where everyone reads it. From a Whole workspace project: the workspace's first Whole workspace
--- project. From a Members only or Private one: nowhere but that project ('restore its project
--- first', or, deleted for good, 'its project was deleted for good'). Someone on the task who can't
+-- project (switched off, 0047's own way). From a Members only or Private one, whatever the switch
+-- says: nowhere but that project ('restore its project first', or, deleted for good, 'its project
+-- was deleted for good'; otherwise, restored in the off window, it would be open to everyone once the
+-- switch is back on). Someone on the task who can't
 -- see where it lands drops off it (an assignee: its owner takes it, as D10's server writes).
 -- Answers {snapshot, note} with the snapshot's tasks moved, or null (nothing moves: 0047's own way).
 create or replace function public.pa_restore_landing(p_ws uuid, p_snap jsonb, p_project text, p_access jsonb)
@@ -800,12 +803,15 @@ declare
   land_owner uuid;
   who uuid;
   k text;
+  on_ boolean := p_ws is not null and public.pa_on(p_ws);
 begin
-  if p_ws is null or not public.pa_on(p_ws) then return null; end if;
+  if p_ws is null then return null; end if;
   for x in select e from jsonb_array_elements(src) e loop
     pid := x ->> 'project_id';
     if public.kanbo_uuid(pid) is not null and public.kanbo_uuid(x ->> 'workspace_id') = p_ws
        and not exists (select 1 from public.projects p where p.id = public.kanbo_uuid(pid)) then
+      -- (switched off too, the rollback window: 0047 would put it in the workspace's first project, where
+      -- everyone reads it once the switch is back on)
       if public.pa_gone_visibility(p_ws, pid, case when pid = p_project then p_access end) <> 'workspace' then
         if exists (select 1 from public.trash b where b.item_id = public.kanbo_uuid(pid) and b.workspace_id = p_ws
                                                   and b.kind = 'project' and b.restored_at is null) then
@@ -813,6 +819,7 @@ begin
         end if;
         raise exception 'its project was deleted for good' using hint = 'It was in a Members only or Private project, so it can''t come back on its own.';
       end if;
+      if not on_ then continue; end if;          -- (switched off: a Whole workspace project's work goes 0047's way)
       if land_id is null then
         select p.id, p.name, coalesce(p.owner_id, w.owner_id) into land_id, land_name, land_owner
           from public.projects p join public.workspaces w on w.id = p.workspace_id
@@ -931,6 +938,60 @@ begin
   return n;
 end; $$;
 
+-- 2q. what a bin row's summary may name (0047's trash_capture_task looks its project and its parent
+-- up by id alone): its project only when that's a project of the row's own workspace (Personal: one
+-- of its owner's own), its parent only when that's a task of the same workspace (Personal: its owner's
+-- own) and, with the switch on, of the same project. Otherwise a task of your own whose project_id or
+-- parent_id names someone else's work (a Private project's id read off a goal, a task's id off a
+-- dependency) would put that project's name, or that task's current title, in your bin. p_strict: a
+-- parent that's no longer a live task (nor binned from the same project) goes too (switching on).
+create or replace function public.pa_summary_scoped(p_kind text, p_ws uuid, p_user uuid, p_project text, p_summary jsonb, p_strict boolean)
+returns jsonb language plpgsql security definer stable set search_path = public as $$
+declare
+  s jsonb := p_summary;
+  par record;
+begin
+  if p_kind is distinct from 'task' or jsonb_typeof(s) is distinct from 'object' then return s; end if;
+  if jsonb_typeof(s -> 'project') = 'object' and exists (
+       select 1 from public.projects p
+        where p.id = public.kanbo_uuid(s #>> '{project,id}')
+          and case when p_ws is null then p.workspace_id is not null or p.user_id is distinct from p_user
+                   else p.workspace_id is distinct from p_ws end) then
+    s := s - 'project';
+  end if;
+  if jsonb_typeof(s -> 'parent') = 'object' then
+    select t.workspace_id, t.user_id, t.project_id into par from public.tasks t where t.id = public.kanbo_uuid(s #>> '{parent,id}');
+    if found then
+      if (case when p_ws is null then par.workspace_id is not null or par.user_id is distinct from p_user
+               else par.workspace_id is distinct from p_ws or (public.pa_on(p_ws) and par.project_id is distinct from p_project) end) then
+        s := s - 'parent';
+      end if;
+    elsif coalesce(p_strict, false) and not exists (
+        select 1 from public.trash b
+         where b.item_id = public.kanbo_uuid(s #>> '{parent,id}') and b.kind = 'task'
+           and b.workspace_id is not distinct from p_ws and b.project_id is not distinct from p_project) then
+      s := s - 'parent';
+    end if;
+  end if;
+  return s;
+end; $$;
+-- (bin rows already written: every run of this file (p_ws null), and switching a workspace on (strict:
+-- a sub-task binned while it was off keeps its parent's title only if it's the same project's). Answers
+-- how many changed.)
+create or replace function public.pa_scrub_bin(p_ws uuid)
+returns integer language plpgsql security definer set search_path = public as $$
+declare n integer;
+begin
+  update public.trash x set summary = s.v
+    from (select y.id, public.pa_summary_scoped(y.kind, y.workspace_id, y.user_id, y.project_id, y.summary, p_ws is not null) as v
+            from public.trash y
+           where y.kind = 'task' and y.restored_at is null and (p_ws is null or y.workspace_id = p_ws)
+             and (jsonb_typeof(y.summary -> 'parent') = 'object' or jsonb_typeof(y.summary -> 'project') = 'object')) s
+   where x.id = s.id and x.summary is distinct from s.v;
+  get diagnostics n = row_count;
+  return n;
+end; $$;
+
 do $internal$
 declare f text;
 begin
@@ -938,7 +999,8 @@ begin
                            'public.pa_notice_payload(uuid,jsonb)', 'public.pa_flush_held(uuid,uuid)', 'public.pa_webhooks_viewer_gone(uuid,uuid)',
                            'public.pa_restore_landing(uuid,jsonb,text,jsonb)', 'public.pa_access_without(jsonb,uuid,uuid)',
                            'public.pa_snapshot_without(jsonb,uuid,uuid)', 'public.pa_forget_member(uuid,uuid)',
-                           'public.pa_forget_departed()'] loop
+                           'public.pa_forget_departed()', 'public.pa_summary_scoped(text,uuid,uuid,text,jsonb,boolean)',
+                           'public.pa_scrub_bin(uuid)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
 end $internal$;
@@ -1133,8 +1195,11 @@ begin
   return true;
 end; $$;
 
--- The projects an invite brings (owners and admins, on a pending invite): replaces its grants,
--- [{"project_id": uuid, "role": text}], 50 at most. They become project_members when it's claimed.
+-- The projects an invite brings (owners and admins, on a pending invite): [{"project_id": uuid, "role":
+-- text}], 50 at most. They become project_members when it's claimed. It sets the grants on the projects
+-- the caller manages, and only those: a grant on one they can't see stays as it is (it's that project's
+-- managers', who may have made it Private since: an admin's edit of the whole list never drops it), and
+-- one they can see but not manage may only be sent back as it is. Answers how many the invite brings.
 create or replace function public.set_invite_projects(p_member uuid, p_grants jsonb)
 returns integer language plpgsql security definer set search_path = public as $$
 declare
@@ -1142,6 +1207,8 @@ declare
   g jsonb;
   pid uuid;
   r text;
+  want jsonb := '{}'::jsonb;     -- project id → role
+  x record;
   n integer := 0;
 begin
   if auth.uid() is null or not public.can_act() then raise exception 'not authorized'; end if;
@@ -1158,22 +1225,45 @@ begin
       raise exception 'invalid grants';
     end if;
     pid := public.kanbo_uuid(g ->> 'project_id');
-    if not exists (select 1 from public.projects p where p.id = pid and p.workspace_id = m.workspace_id)
-       or not public.pa_can_manage(pid) then
-      raise exception 'not authorized';
-    end if;
-  end loop;
-  delete from public.project_member_invites where member_id = p_member;
-  for g in select e from jsonb_array_elements(p_grants) e loop
-    pid := public.kanbo_uuid(g ->> 'project_id');
     r := g ->> 'role';
     if m.role = 'guest' and r = 'editor' then r := 'commenter'; end if;
+    if not exists (select 1 from public.projects p where p.id = pid and p.workspace_id = m.workspace_id)
+       or (not public.pa_can_manage(pid)
+           and not exists (select 1 from public.project_member_invites i where i.member_id = p_member and i.project_id = pid and i.role = r)) then
+      raise exception 'not authorized';
+    end if;
+    want := want || jsonb_build_object(pid::text, r);
+  end loop;
+  -- (what it brings now and isn't asked for: gone from the projects you manage; on one you can see but
+  -- not manage, refused; on one you can't see, kept)
+  for x in select i.id, i.project_id from public.project_member_invites i where i.member_id = p_member loop
+    if want ? x.project_id::text then continue; end if;
+    if public.pa_can_manage(x.project_id) then delete from public.project_member_invites where id = x.id;
+    elsif public.can_see_project(x.project_id) then raise exception 'not authorized';
+    end if;
+  end loop;
+  for x in select k as pid, v as role from jsonb_each_text(want) a(k, v) loop
     insert into public.project_member_invites (member_id, project_id, workspace_id, role, added_by)
-    values (p_member, pid, m.workspace_id, r, auth.uid())
-    on conflict (member_id, project_id) do update set role = excluded.role;
+    values (p_member, x.pid::uuid, m.workspace_id, x.role, auth.uid())
+    on conflict (member_id, project_id) do update set role = excluded.role
+     where public.project_member_invites.role is distinct from excluded.role;
   end loop;
   select count(*) into n from public.project_member_invites where member_id = p_member;
   return n;
+end; $$;
+
+-- Take one project off a pending invite: that project's managers (a member who owns a Private project
+-- sees, and can take off, a grant an admin made while it was Members only). Answers true.
+create or replace function public.remove_invite_project(p_member uuid, p_project uuid)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare i public.project_member_invites;
+begin
+  if auth.uid() is null or not public.can_act() then raise exception 'not authorized'; end if;
+  select * into i from public.project_member_invites where member_id = p_member and project_id = p_project;
+  if i.id is null or not public.can_see_project(p_project) then raise exception 'not found'; end if;
+  if not public.pa_can_manage(p_project) then raise exception 'not authorized'; end if;
+  delete from public.project_member_invites where id = i.id;
+  return true;
 end; $$;
 
 do $rpc$
@@ -1181,7 +1271,7 @@ declare f text;
 begin
   foreach f in array array['public.set_project_access(uuid,boolean,text,boolean)', 'public.set_project_visibility(uuid,text)',
                            'public.set_project_member(uuid,uuid,text)', 'public.remove_project_member(uuid,uuid)',
-                           'public.set_invite_projects(uuid,jsonb)'] loop
+                           'public.set_invite_projects(uuid,jsonb)', 'public.remove_invite_project(uuid,uuid)'] loop
     execute format('revoke execute on function %s from public, anon', f);
     execute format('grant execute on function %s to authenticated', f);
   end loop;
@@ -1221,11 +1311,16 @@ begin
   return new;
 end; $$;
 -- workspaces, after: switching on (set_project_access, or the SQL editor) drops held notices and
--- pending webhooks for people who won't see their work
+-- pending webhooks for people who won't see their work, and the bin's summaries forget a parent's title
+-- from another project (a sub-task binned while it was off, or before 0058: 2q); so does the workspace
+-- changing owners (the old owner may be an admin now, who doesn't see every project)
 create or replace function public.pa_trg_workspaces_after() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   if new.project_access and not coalesce(old.project_access, false) then
+    perform public.pa_scrub_bin(new.id);
+    perform public.pa_flush_held(new.id, null);
+  elsif new.owner_id is distinct from old.owner_id then
     perform public.pa_flush_held(new.id, null);
   end if;
   return null;
@@ -1299,6 +1394,14 @@ begin
      and (public.pa_on(old.workspace_id) or old.visibility <> 'workspace')
      and not public.pa_can_manage(old.id) then
     raise exception 'not authorized';
+  end if;
+  -- (and only once its work has gone: nothing moves a project's tasks or updates with it, and what it
+  -- left behind would be loose work every member of its old workspace reads and edits)
+  if direct and new.workspace_id is distinct from old.workspace_id and old.workspace_id is not null
+     and (public.pa_on(old.workspace_id) or old.visibility <> 'workspace')
+     and (exists (select 1 from public.tasks t where t.workspace_id = old.workspace_id and t.project_id = old.id::text)
+          or exists (select 1 from public.status_updates s where s.workspace_id = old.workspace_id and s.project_id = old.id::text)) then
+    raise exception 'move its tasks first' using hint = 'A project leaves its workspace only once its tasks and updates have gone.';
   end if;
   if new.workspace_id is null then new.visibility := 'workspace'; end if;     -- moved to Personal: nothing to gate
   -- (judged where it was, else where it's going: an owner change on the way out or in counts too)
@@ -1504,6 +1607,11 @@ begin
   if new.status = 'active' and new.user_id is not null and new.role = 'guest' and old.role is distinct from 'guest' then
     update public.project_members set role = 'commenter'
      where workspace_id = new.workspace_id and user_id = new.user_id and role = 'editor';
+  end if;
+  -- (any role change of someone in it: an owner handing over (transfer_ownership, 0057's handover) or an
+  -- admin made a member sees fewer projects, and what's waiting for their endpoints follows; so does
+  -- becoming a guest, which loses Whole workspace projects too)
+  if old.status = 'active' and new.status = 'active' and new.user_id is not null and new.role is distinct from old.role then
     perform public.pa_flush_held(new.workspace_id, null);
   end if;
   if old.status = 'invited' and new.status = 'active' and new.user_id is not null then
@@ -1774,15 +1882,14 @@ begin
   return new;
 end; $$;
 
--- trash, before insert: the project's access when it went in (and no parent's title from another project)
+-- trash, before insert: the project's access when it went in, and a summary that names only what's in
+-- the row's own scope (2q: no project or parent of someone else's, whatever the switch says; with it
+-- on, no parent's title from another project)
 create or replace function public.pa_trg_trash_capture() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   new.access := public.pa_access_snapshot(new.workspace_id, new.project_id);
-  if new.workspace_id is not null and public.pa_on(new.workspace_id) and jsonb_typeof(new.summary -> 'parent') = 'object'
-     and (select t.project_id from public.tasks t where t.id = public.kanbo_uuid(new.summary #>> '{parent,id}')) is distinct from new.project_id then
-    new.summary := new.summary - 'parent';
-  end if;
+  new.summary := public.pa_summary_scoped(new.kind, new.workspace_id, new.user_id, new.project_id, new.summary, false);
   return new;
 end; $$;
 
@@ -1915,12 +2022,15 @@ begin
 end; $$;
 
 -- goals.project_id: a goal reads its progress only from a project you can see
+-- (judged in the goal's own workspace: this sorts before 0052's trg_goals_v2_guard, which puts an
+-- UPDATE's workspace_id back, so a statement that also sets it to null is judged by the old one)
 create or replace function public.pa_trg_goals_project() returns trigger
 language plpgsql security definer set search_path = public as $$
+declare ws uuid := coalesce(case when tg_op = 'UPDATE' then old.workspace_id end, new.workspace_id);
 begin
-  if public.pa_is_client() and new.workspace_id is not null and new.project_id is not null
+  if public.pa_is_client() and ws is not null and new.project_id is not null
      and (tg_op = 'INSERT' or new.project_id is distinct from old.project_id)
-     and public.pa_on(new.workspace_id) and public.pa_rank(new.workspace_id, new.project_id) < 1 then
+     and public.pa_on(ws) and public.pa_rank(ws, new.project_id) < 1 then
     raise exception 'a goal can only read its progress from a project in its own workspace';
   end if;
   return new;
@@ -1980,10 +2090,14 @@ returns boolean language sql stable set search_path = public as $$
      and (not public.pa_on(p_ws) or p_visibility is null or p_visibility = 'workspace'
           or (p_preset = 'leadership' and p_visibility = 'members'));
 $$;
+-- (a task whose project has gone, to the bin or for good, keeps the visibility it had, as pa_rank_for
+-- and closed_project_ids do: work written into a Private project after its delete never counts as loose)
 create or replace function public.pa_task_audience_open(p_preset text, p_wss uuid[], p_task text)
 returns boolean language sql security definer stable set search_path = public as $$
   select coalesce((
-    select public.pa_audience_open(p_preset, p_wss, t.workspace_id, p.visibility)
+    select public.pa_audience_open(p_preset, p_wss, t.workspace_id,
+             case when p.id is not null then p.visibility
+                  when public.kanbo_uuid(t.project_id) is not null then public.pa_gone_visibility(t.workspace_id, t.project_id, null) end)
       from public.tasks t
       left join public.projects p on p.id = public.kanbo_uuid(t.project_id) and p.workspace_id = t.workspace_id
      where t.id = public.kanbo_uuid(p_task)), false);
@@ -2142,7 +2256,9 @@ language sql immutable set search_path = pg_catalog as $$
   -- G: this file's own tables
   union all select 'project_members', 'project members: read', 'select', true, 'user_id = auth.uid() or public.can_see_project(project_id)', null
   union all select 'project_members', 'api key scope', 'all', false, 'public.api_scope_ok(workspace_id)', 'public.api_scope_ok(workspace_id)'
-  union all select 'project_member_invites', 'project invites: leads read', 'select', true, 'public.ws_role(workspace_id) in (''owner'', ''admin'')', null
+  -- (a pending invite's grants: the workspace's owners and admins, on the projects they can see, and each project's managers)
+  union all select 'project_member_invites', 'project invites: leads read', 'select', true,
+                   '(public.ws_role(workspace_id) in (''owner'', ''admin'') and public.can_see_project(project_id)) or public.pa_can_manage(project_id)', null
   union all select 'project_member_invites', 'api key scope', 'all', false, 'public.api_scope_ok(workspace_id)', 'public.api_scope_ok(workspace_id)';
 $$;
 
@@ -2152,7 +2268,7 @@ returns table (tbl text, name text, timing text, fn text, needs_column text)
 language sql immutable set search_path = pg_catalog as $$
   values
     ('workspaces', 'trg_workspaces_pa_guard', 'before insert or update', 'pa_trg_workspaces_guard', null::text),
-    ('workspaces', 'trg_workspaces_pa_after', 'after update of project_access', 'pa_trg_workspaces_after', null),
+    ('workspaces', 'trg_workspaces_pa_after', 'after update of project_access, owner_id', 'pa_trg_workspaces_after', null),
     ('projects', 'trg_projects_pa_guard', 'before insert or update', 'pa_trg_projects_guard', null),
     ('projects', 'trg_projects_pa_after', 'after insert or update of visibility, owner_id, workspace_id', 'pa_trg_projects_after', null),
     ('project_members', 'trg_project_members_guard', 'before insert or update', 'pa_trg_project_members_guard', null),
@@ -2513,6 +2629,13 @@ do $departed$
 begin
   perform public.pa_forget_departed();
 end $departed$;
+
+-- 5f. the bin's summaries already written (before this file, or while its undo file had the trigger
+-- out): none names a project or a parent of someone else's (2q). Every run; nothing changes twice.
+do $bin$
+begin
+  perform public.pa_scrub_bin(null);
+end $bin$;
 
 -- ---------- 6. the history's projects (the first run only) ----------
 -- Rows written before this file: the project they're about (their access wasn't recorded).

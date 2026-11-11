@@ -825,8 +825,13 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
 
   await test("0058: a project moved to Personal or another workspace and back can't hand anyone its ownership or drop its people (only its managers move one, switch on, and in the off window unless it's Whole workspace)", async () => {
     type Via = "Personal" | "ws2";
-    const roundTrip = (who: Who, p: Proj, via: Via, on: boolean) => scenario(async (run, _exec, tryRun) => {
+    const roundTrip = (who: Who, p: Proj, via: Via, on: boolean, empty = false) => scenario(async (run, _exec, tryRun) => {
       if (!on) await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      // (its work moved elsewhere first: a project leaves its workspace only without tasks or updates)
+      if (empty) {
+        await run(null, `update public.tasks set project_id = $2 where workspace_id = $1::uuid and project_id = $3`, [w.ws, w.proj.PW, w.proj[p]]);
+        await run(null, `delete from public.status_updates where workspace_id = $1::uuid and project_id = $2`, [w.ws, w.proj[p]]);
+      }
       if (via === "ws2") {
         await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, $3, $4, 'member', 'active')`,
           [w.ws2, w.id[who], `${who.toLowerCase()}.pa@example.org`, NAME[who]]);
@@ -848,9 +853,16 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       ok(!r.moved && (r.err === "" || /not authorized/.test(r.err)), `${who} moving ${p} to ${via}, switch ${on ? "on" : "off"}: ${r.err || (r.moved ? "moved" : "nothing")}`);
       eq([r.owner, r.home, r.kept], [OWNER[p], true, true], `${who}, ${p} via ${via} (switch ${on ? "on" : "off"}): its owner, workspace and people stay`);
     }
-    // allowed: its managers (switch on), and anyone on a Whole workspace project in the off window (today's rule)
-    for (const [who, p, via, on] of [["O", "PP", "Personal", true], ["ME", "PQ", "ws2", true], ["A", "PM", "Personal", true], ["M2", "PW", "Personal", false]] as const) {
+    // its managers too while its tasks or updates are still there (switch on, or a closed project in the off window):
+    // what it left behind would be loose work every member of the workspace reads and edits
+    for (const [who, p, via, on] of [["O", "PP", "Personal", true], ["ME", "PQ", "ws2", true], ["O", "PM", "ws2", false]] as const) {
       const r = await roundTrip(who, p, via, on);
+      ok(!r.moved && /move its tasks first/.test(r.err), `${who} moving ${p} with its tasks to ${via}, switch ${on ? "on" : "off"}: ${r.err || (r.moved ? "moved" : "nothing")}`);
+      eq([r.owner, r.home, r.kept], [OWNER[p], true, true], `${who}, ${p} with its tasks via ${via}: its owner, workspace and people stay`);
+    }
+    // allowed: its managers once its work has gone (switch on), and anyone on a Whole workspace project in the off window (today's rule)
+    for (const [who, p, via, on, empty] of [["O", "PP", "Personal", true, true], ["ME", "PQ", "ws2", true, true], ["A", "PM", "Personal", true, true], ["M2", "PW", "Personal", false, false]] as const) {
+      const r = await roundTrip(who, p, via, on, empty);
       ok(r.moved, `${who} moving ${p} to ${via}, switch ${on ? "on" : "off"}: ${r.err || "refused"}`);
     }
   });
@@ -1623,6 +1635,183 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq(got.offPending, ["Zebra hooked PP off"], "with the switch off, Moe's endpoint gets PP's");
     eq(got.onPending, [], "switched on in the SQL editor, it's never sent");
   });
+
+  // ---------------------------------------------------------------- 14b. narrowing roles, the bin's summaries, invites (hardening r1)
+  await test("0058, switch on: what's queued for a webhook follows its viewer's role too (an admin made a member, an owner who hands over: never sent)", async () => {
+    const got = await scenario(async (run) => {
+      const secret = "whsec_" + "c".repeat(43);
+      const mkHook = async (by: Who) => (await run(null, `insert into public.webhooks (workspace_id, created_by, url, events, secret) values ($1::uuid, $2::uuid, 'https://hooks.example.com/' || gen_random_uuid(), array['task.created'], $3) returning id::text as id`,
+        [w.ws, w.id[by], secret]))[0].id as string;
+      await run(null, `update public.webhook_deliveries set state = 'failed' where state = 'pending'`);
+      await run(null, `update public.webhook_outbox set processed_at = now() where processed_at is null`);
+      const hA = await mkHook("A"), hO = await mkHook("O");
+      const queue = async (title: string, project: string) => {
+        await run(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2, $3, 'nobody', $4::uuid)`, [w.id.O, title, project, w.ws]);
+        await run(null, `select public.webhook_claim_outbox(500)`);
+      };
+      const pending = async (hook: string) => (await run(null, `select o.payload #>> '{task,title}' as t from public.webhook_deliveries d join public.webhook_outbox o on o.id = d.outbox_id
+                                                                where d.webhook_id = $1::uuid and d.state = 'pending' order by 1`, [hook])).map((r) => r.t as string);
+      await queue("Zebra hook PM", w.proj.PM);
+      await queue("Zebra hook PQ", w.proj.PQ);
+      await queue("Zebra hook PW", w.proj.PW);
+      const before = { A: await pending(hA), O: await pending(hO) };
+      // Oona makes Ari a member (not on PM): what waits for Ari's endpoint from PM never goes
+      await run(w.id.O, `select public.set_member_role((select id from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid), 'member')`, [w.ws, w.id.A]);
+      const afterDemote = await pending(hA);
+      // Oona hands the workspace to Moe and is an admin now (not on Meg's Private PQ): PQ's never goes to Oona's endpoint
+      await run(w.id.O, `select public.transfer_ownership($1::uuid, (select id from public.workspace_members where workspace_id = $1::uuid and user_id = $2::uuid))`, [w.ws, w.id.M2]);
+      const afterHandover = await pending(hO);
+      await run(null, `update public.webhook_deliveries set next_attempt_at = now() - interval '1 minute' where state = 'pending'`);
+      const claimed = (await run(null, `select webhook_id::text as h, payload #>> '{task,title}' as t from public.webhook_claim_deliveries(50, 90) where webhook_id in ($1::uuid, $2::uuid)`, [hA, hO]))
+        .map((r) => `${r.h === hA ? "A" : "O"}:${r.t}`).sort();
+      return { before, afterDemote, afterHandover, claimed };
+    });
+    eq(got.before, { A: ["Zebra hook PM", "Zebra hook PW"], O: ["Zebra hook PM", "Zebra hook PQ", "Zebra hook PW"] }, "queued for each as they could see then (Ari never had PQ's)");
+    eq(got.afterDemote, ["Zebra hook PW"], "Ari made a member: PM's goes");
+    eq(got.afterHandover, ["Zebra hook PM", "Zebra hook PW"], "Oona hands over and is an admin: Meg's Private PQ goes");
+    eq(got.claimed, ["A:Zebra hook PW", "O:Zebra hook PM", "O:Zebra hook PW"], "and only those go out");
+  });
+
+  await test("0058: a bin row's summary names only its own scope's project and parent (a task of your own naming a Private project or task: whatever the switch says)", async () => {
+    const got = await scenario(async (run) => {
+      await run(null, `update public.projects set emoji = '🦓', color = '#123456' where id = $1::uuid`, [w.proj.PP]);
+      const out: Record<string, unknown> = {};
+      for (const who of ["M2", "GC", "X"] as const) {
+        const u = w.id[who];
+        // a Personal task "in" PP, under PP's task (ids read off a goal and a dependency), then binned
+        const mine = (await run(u, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, 'probe', $2, 'nobody', null, $3::uuid) returning id::text as id`,
+          [u, w.proj.PP, w.task.PP]))[0].id as string;
+        await run(u, `delete from public.tasks where id = $1::uuid`, [mine]);
+        const s = (await run(u, `select summary from public.trash where item_id = $1::uuid`, [mine]))[0]?.summary as Record<string, unknown> | undefined;
+        out[who] = s ? Object.keys(s).filter((k) => k === "project" || k === "parent").sort() : "no bin row";
+      }
+      // Xan, in Yonder (the switch off there): a team task naming Paddock's PP and its task
+      const yt = (await run(w.id.X, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, 'probe', $2, 'nobody', $3::uuid, $4::uuid) returning id::text as id`,
+        [w.id.X, w.proj.PP, w.ws2, w.task.PP]))[0].id as string;
+      await run(w.id.X, `delete from public.tasks where id = $1::uuid`, [yt]);
+      const ys = (await run(w.id.O2, `select summary from public.trash where item_id = $1::uuid`, [yt]))[0]?.summary as Record<string, unknown>;
+      out.yonder = Object.keys(ys).filter((k) => k === "project" || k === "parent").sort();
+      // a sub-task of its own project keeps both; a Personal one under your own Personal task keeps its parent
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [w.sub.PM]);
+      const pm = (await run(w.id.ME, `select summary from public.trash where item_id = $1::uuid`, [w.sub.PM]))[0].summary as { project?: { name: string }; parent?: { title: string } };
+      out.own = [pm.project?.name, pm.parent?.title];
+      const par = (await run(w.id.X, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'my parent', 'p-personal', 'nobody', null) returning id::text as id`, [w.id.X]))[0].id as string;
+      const kid = (await run(w.id.X, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, 'kid', 'p-personal', 'nobody', null, $2::uuid) returning id::text as id`, [w.id.X, par]))[0].id as string;
+      await run(w.id.X, `delete from public.tasks where id = $1::uuid`, [kid]);
+      out.personal = ((await run(w.id.X, `select summary #>> '{parent,title}' as t from public.trash where item_id = $1::uuid`, [kid]))[0] as { t: string }).t;
+      return out;
+    });
+    eq(got.M2, [], "Moe (a member, not on PP) reads neither PP's name nor its task's title");
+    eq(got.GC, [], "nor Gail (a guest)");
+    eq(got.X, [], "nor Xan (an outsider)");
+    eq(got.yonder, [], "a team task in another workspace naming them: neither");
+    eq(got.own, ["Zebra PM", "Zebra plan PM"], "a sub-task in its own project keeps both");
+    eq(got.personal, "my parent", "a Personal sub-task keeps its own parent");
+  });
+
+  await test("0058: switching on, the bin forgets a parent's title from another project (a sub-task moved on its own and binned while it was off, or before 0058)", async () => {
+    const got = await scenario(async (run) => {
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      // off: a PW task under PP's task (as an old move would leave it), and PW's own sub-task; both binned
+      const stray = (await run(w.id.M2, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id, parent_id) values ($1::uuid, 'stray', $2, 'nobody', $3::uuid, $4::uuid) returning id::text as id`,
+        [w.id.M2, w.proj.PW, w.ws, w.task.PP]))[0].id as string;
+      await run(w.id.M2, `delete from public.tasks where id = $1::uuid`, [stray]);
+      await run(w.id.M2, `delete from public.tasks where id = $1::uuid`, [w.sub.PW]);
+      const parentOf = async (who: Who, id: string) => {
+        const r = (await run(w.id[who], `select summary #>> '{parent,title}' as t from public.trash where item_id = $1::uuid`, [id]))[0] as { t: string | null } | undefined;
+        return r ? r.t ?? "none" : "no bin row";
+      };
+      const off = await parentOf("M2", stray);
+      await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [w.ws]);
+      const pwTitle = ((await run(null, `select title from public.tasks where id = $1::uuid`, [w.task.PW]))[0] as { title: string }).title;
+      return { off, M2: await parentOf("M2", stray), GC: await parentOf("GC", stray), own: await parentOf("GC", w.sub.PW), pwTitle };
+    });
+    eq(got.off, "Zebra plan PP", "switched off, as before 0058");
+    eq([got.M2, got.GC], ["none", "none"], "switched on, Moe and Gail still read the row, but no title from PP");
+    eq(got.own, got.pwTitle, "a sub-task of the same project keeps its parent");
+  });
+
+  await test("0058, switch on: a pending invite's grant is its project's managers' to see and take off (made Private since: the admin who made it no longer reads it, and an edit of the whole list keeps it)", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      // Meg's PQ is Members only for now: Ari (an admin) invites Ivy onto it (members may make projects private here)
+      await run(null, `update public.workspaces set project_access_member_private = true where id = $1::uuid`, [w.ws]);
+      await run(w.id.ME, `select public.set_project_visibility($1::uuid, 'members')`, [w.proj.PQ]);
+      await run(w.id.A, `select public.set_invite_projects($1::uuid, $2::jsonb)`, [w.invite, JSON.stringify([{ project_id: w.proj.PQ, role: "commenter" }, { project_id: w.proj.PW, role: "viewer" }])]);
+      const reads = async (who: Who) => (await run(w.id[who], `select project_id::text as p from public.project_member_invites where member_id = $1::uuid order by 1`, [w.invite]))
+        .map((r) => Object.entries(w.proj).find(([, v]) => v === r.p)?.[0] ?? "?").sort();
+      const before = { ME: await reads("ME"), A: await reads("A"), M2: await reads("M2") };
+      // Meg makes it Private: Ari can't see it any more
+      await run(w.id.ME, `select public.set_project_visibility($1::uuid, 'private')`, [w.proj.PQ]);
+      const after = { ME: await reads("ME"), A: await reads("A") };
+      // Ari's edit of the whole list (what Ari can read) keeps PQ's, and can't add one
+      const edit = await tryRun(w.id.A, `select public.set_invite_projects($1::uuid, $2::jsonb) as n`, [w.invite, JSON.stringify([{ project_id: w.proj.PW, role: "commenter" }])]);
+      const add = await tryRun(w.id.A, `select public.set_invite_projects($1::uuid, $2::jsonb) as n`, [w.invite, JSON.stringify([{ project_id: w.proj.PW, role: "commenter" }, { project_id: w.proj.PQ, role: "viewer" }])]);
+      const stored = (await run(null, `select count(*)::int as n from public.project_member_invites where member_id = $1::uuid`, [w.invite]))[0].n;
+      // only its managers take it off
+      const byM2 = await tryRun(w.id.M2, `select public.remove_invite_project($1::uuid, $2::uuid) as r`, [w.invite, w.proj.PQ]);
+      const byA = await tryRun(w.id.A, `select public.remove_invite_project($1::uuid, $2::uuid) as r`, [w.invite, w.proj.PQ]);
+      const byME = await tryRun(w.id.ME, `select public.remove_invite_project($1::uuid, $2::uuid) as r`, [w.invite, w.proj.PQ]);
+      return { before, after, edit: "rows" in edit ? edit.rows[0]?.n : errOf(edit), add: errOf(add), stored, byM2: errOf(byM2), byA: errOf(byA), byME: okOf(byME), left: await reads("O") };
+    });
+    eq(got.before, { ME: ["PQ"], A: ["PQ", "PW"], M2: [] }, "Meg (PQ's owner) reads PQ's grant; Ari both; Moe none");
+    eq(got.after, { ME: ["PQ"], A: ["PW"] }, "made Private: Meg still sees it, Ari doesn't");
+    eq(got.edit, 2, "Ari's edit of what Ari reads keeps PQ's");
+    ok(/not authorized/.test(String(got.add)), `nor can Ari give a project Ari can't manage: ${got.add || "allowed"}`);
+    eq(got.stored, 2, "both still there");
+    ok(/not found/.test(String(got.byM2)) && /not found/.test(String(got.byA)), `Moe and Ari can't take it off: ${got.byM2} / ${got.byA}`);
+    ok(got.byME, "Meg takes it off");
+    eq(got.left, ["PW"], "only PW's is left");
+  });
+
+  await test("0058, switch on: work written into a Private project after its delete never counts as open to a team meeting (server)", async () => {
+    const got = await scenario(async (run) => {
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [w.proj.PP]);
+      // an old tab (the owner's offline queue, or the off window) writes into PP's id meanwhile
+      const stray = (await run(w.id.O, `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, 'Acme price: 4.2m', $2, $3, $4::uuid) returning id::text as id`,
+        [w.id.O, w.proj.PP, w.id.ME, w.ws]))[0].id as string;
+      const open = (await run(null, `select public.pa_task_audience_open('team', array[$1::uuid], $2) as t, public.pa_task_audience_open('leadership', array[$1::uuid], $2) as l,
+                                            public.pa_task_audience_open('team', array[$1::uuid], $3) as loose`, [w.ws, stray, w.task.L2]))[0];
+      let agenda: unknown = null;
+      if (tables.has56) {
+        const a = [{ key: "p", kind: "person", title: "Meg", personId: w.id.ME, done: [], today: [{ taskId: stray, title: "Acme price: 4.2m", status: "todo" }], blocked: [], holding: [], more: { done: 0, today: 0, blocked: 0 } }];
+        agenda = (await run(w.id.ME, `select agenda from public.start_meeting($1::uuid, 'team', 'Team', null, $2::jsonb, null, null, null)`, [w.ws, JSON.stringify(a)]))[0].agenda;
+      }
+      return { open, agenda };
+    });
+    eq(got.open, { t: false, l: false, loose: true }, "closed for both presets (a loose id stays open)");
+    if (tables.has56) eq((got.agenda as { today: unknown[] }[])[0].today, [], "and a team agenda drops it");
+  });
+
+  await test("0058: switched off (the rollback window), a task from a Members only or Private project that's gone doesn't land in the workspace's first project", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      await run(w.id.ME, `delete from public.tasks where id = $1::uuid`, [w.sub.PP]);
+      const bin = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [w.sub.PP]))[0].id as string;
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [w.proj.PP]);
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      const r = await tryRun(w.id.M2, `select public.restore_from_trash($1::uuid) as r`, [bin]);
+      // a Whole workspace project's task still goes 0047's way while it's off
+      await run(w.id.M2, `delete from public.tasks where id = $1::uuid`, [w.sub.PW]);
+      const bw = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [w.sub.PW]))[0].id as string;
+      await run(w.id.O, `delete from public.projects where id = $1::uuid`, [w.proj.PW]);
+      const rw = await tryRun(w.id.M2, `select public.restore_from_trash($1::uuid) as r`, [bw]);
+      return { r: errOf(r) || "restored", rw: errOf(rw) || "restored" };
+    });
+    ok(/restore its project first/.test(got.r), `a Private project's task: ${got.r}`);
+    eq(got.rw, "restored", "a Whole workspace project's task");
+  });
+
+  if (await hasFn("public.goals_v2_guard()")) {
+    await test("0058, switch on: a goal can't be pointed at a project you can't see by nulling its workspace in the same statement", async () => {
+      const got = await scenario(async (run, _exec, tryRun) => {
+        const g = (await run(null, `insert into public.goals (user_id, owner_id, workspace_id, name) values ($1::uuid, $1::uuid, $2::uuid, 'Grow') returning id::text as id`, [w.id.M2, w.ws]))[0].id as string;
+        const plain = await tryRun(w.id.M2, `update public.goals set project_id = $2::uuid where id = $1::uuid returning id`, [g, w.proj.PP]);
+        const nulled = await tryRun(w.id.M2, `update public.goals set project_id = $2::uuid, workspace_id = null where id = $1::uuid returning workspace_id::text as ws, project_id::text as p`, [g, w.proj.PP]);
+        return { plain: errOf(plain), nulled: errOf(nulled) || JSON.stringify("rows" in nulled ? nulled.rows[0] : null) };
+      });
+      ok(/progress from a project in its own workspace/.test(got.plain), `plain: ${got.plain}`);
+      ok(/progress from a project in its own workspace/.test(got.nulled), `with workspace_id = null: ${got.nulled}`);
+    });
+  }
 
   // ---------------------------------------------------------------- 15. leaving, demotion, invites
   await test("0058: removing someone from the workspace deletes their project rows (contributor_ids follows); demoting to guest caps editor at commenter", async () => {

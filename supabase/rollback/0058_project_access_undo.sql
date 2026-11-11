@@ -136,6 +136,7 @@ drop function if exists public.set_project_visibility(uuid, text);
 drop function if exists public.set_project_member(uuid, uuid, text);
 drop function if exists public.remove_project_member(uuid, uuid);
 drop function if exists public.set_invite_projects(uuid, jsonb);
+drop function if exists public.remove_invite_project(uuid, uuid);
 
 -- ---------- 5. every switch off (the settings, members and visibility are kept for next time) ----------
 do $off$
