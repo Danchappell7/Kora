@@ -196,24 +196,47 @@ const isAssigneeRefused = (e: unknown) =>
   (e as { code?: string } | null)?.code === "42501" && /assignee can't see this project/.test(String((e as Error)?.message ?? e));
 
 /**
- * `write` in a savepoint. Refused for its assignee alone (someone who lost sight of the project since the
- * run read who can see it), it's undone and `instead` (the same write with nobody new assigned) runs, so
- * one page never stops the batch. Only where 0058 is in and the write names someone.
+ * `write` in a savepoint (on the savepoint's own Tx). Refused for its assignee alone (someone who lost
+ * sight of the project since the run read who can see it), it's undone and `instead` (the same write with
+ * nobody new assigned) runs, so one page never stops the batch. Only where 0058 is in and the write names
+ * someone. Through the driver's own savepoints where it has them (db.ts: postgres.js would otherwise throw
+ * the caught refusal again when the transaction ends, and roll the whole batch back); else plain SQL ones.
  */
-async function assigneeSafe<T>(tx: Tx, write: () => Promise<T>, instead: () => Promise<T>): Promise<{ value: T; dropped: boolean }> {
+async function assigneeSafe<T>(tx: Tx, write: (t: Tx) => Promise<T>, instead: (t: Tx) => Promise<T>): Promise<{ value: T; dropped: boolean }> {
+  if (tx.savepoint) {
+    try {
+      return { value: await tx.savepoint(write), dropped: false };
+    } catch (e) {
+      if (!isAssigneeRefused(e)) throw e;
+      return { value: await instead(tx), dropped: true };
+    }
+  }
   await tx.query("savepoint notion_assignee");
   try {
-    const value = await write();
+    const value = await write(tx);
     await tx.query("release savepoint notion_assignee");
     return { value, dropped: false };
   } catch (e) {
     await tx.query("rollback to savepoint notion_assignee");
     await tx.query("release savepoint notion_assignee");
     if (!isAssigneeRefused(e)) throw e;
-    return { value: await instead(), dropped: true };
+    return { value: await instead(tx), dropped: true };
   }
 }
 const assigneeNote = (title: string) => `“${oneLine(title, 60)}”: its Notion Owner can't see this project in Kanbo, so it wasn't assigned to them.`;
+
+/**
+ * With Project access on in the workspace (0058), a sync covers only the tasks still in its own project. A
+ * linked task moved to another project (perhaps Members only or Private, where the sync's Notion database
+ * isn't its audience) is left alone: nothing of it goes out, nothing comes in, Notion doesn't archive it;
+ * moved back, it syncs again. Switched off, or before 0058, as before (it follows its link wherever it goes).
+ * On the service connection; read through to_jsonb, so it answers false before 0058.
+ */
+async function onlyOwnProject(service: Tx, ws: string): Promise<boolean> {
+  const r = await service.query<{ on: boolean }>(
+    `select coalesce((to_jsonb(w) ->> 'project_access')::boolean, false) as "on" from public.workspaces w where w.id = $1::uuid`, [ws]);
+  return r[0]?.on === true;
+}
 
 /** Tag labels → tag ids in the workspace, creating the missing ones (as the person). */
 async function tagIds(tx: Tx, userId: string, ws: string, ctx: Ctx, values: TagValue[]): Promise<string[]> {
@@ -245,8 +268,10 @@ type PatchOutcome = { ok: true; at: string } | { ok: false; why: "changed" | "re
 async function applyPatch(tx: Tx, userId: string, ws: string, ctx: Ctx, task: SyncTask, readAt: string, p: PullPatch,
                           onNote: (s: string) => void = () => {}): Promise<PatchOutcome> {
   if (ctx.gated && p.assignee_id) {
-    const { value, dropped } = await assigneeSafe(tx, () => applyPatch(tx, userId, ws, { ...ctx, gated: false }, task, readAt, p),
-      () => applyPatch(tx, userId, ws, { ...ctx, gated: false }, task, readAt, { ...p, assignee_id: undefined }));
+    // (its new tags first, outside the savepoint: undone with a refused write, the context would still name them)
+    if (p.tags !== undefined) await tagIds(tx, userId, ws, ctx, p.tags);
+    const { value, dropped } = await assigneeSafe(tx, (t) => applyPatch(t, userId, ws, { ...ctx, gated: false }, task, readAt, p),
+      (t) => applyPatch(t, userId, ws, { ...ctx, gated: false }, task, readAt, { ...p, assignee_id: undefined }));
     if (dropped) onNote(assigneeNote(p.title ?? task.title));
     return value;
   }
@@ -288,8 +313,13 @@ async function lockTask(tx: Tx, taskId: string, ws: string): Promise<Pick<LinkTa
   return r[0] ?? null;
 }
 
-/** Archive a task and its sub-tasks (the app's rule), as the person. */
-async function archiveTask(tx: Tx, taskId: string, ws: string): Promise<string | null> {
+/** Archive a task and its sub-tasks (the app's rule), as the person. `onlyIn`: only while the task is in
+ *  that project (onlyOwnProject). */
+async function archiveTask(tx: Tx, taskId: string, ws: string, onlyIn: string | null = null): Promise<string | null> {
+  if (onlyIn != null) {
+    const here = await tx.query(`select 1 from public.tasks where id = $1::uuid and workspace_id = $2::uuid and project_id = $3`, [taskId, ws, onlyIn]);
+    if (!here.length) return null;
+  }
   const r = await tx.query<{ u: string }>(
     `with recursive d(id) as (select $1::uuid union select c.id from public.tasks c join d on c.parent_id = d.id)
      update public.tasks t set archived_at = now() where t.id in (select id from d) and t.archived_at is null and t.workspace_id = $2::uuid
@@ -377,6 +407,8 @@ interface Run {
   direction: Direction;
   /** import without a sync: pages already in the project are skipped, never updated */
   createOnly: boolean;
+  /** Project access is on in the workspace (0058): only tasks still in the sync's project sync (onlyOwnProject) */
+  ownProject: boolean;
   ctx: Ctx;
   stats: SyncStats;
   notes: string[];
@@ -520,6 +552,8 @@ async function pullBatch(run: Run, pages: NPage[]) {
       }
       if (run.createOnly) { run.stats.skipped++; continue; }
       if (!row.t_id || row.archived || row.t_ws !== ws) { run.stats.skipped++; continue; }
+      // (moved out of the sync's project with Project access on: left alone, onlyOwnProject)
+      if (run.ownProject && row.t_project !== run.projectId) { run.stats.skipped++; continue; }
       const notionNewer = row.notion_ms == null || ms(page.last_edited_time) > Number(row.notion_ms);
       if (!row.k_changed && !notionNewer) continue;   // nobody touched either side since the last sync (our own write coming back)
       const base = bases.get(row.link_id) ?? null;
@@ -548,7 +582,7 @@ async function pullBatch(run: Run, pages: NPage[]) {
           due_date: r.due_date, start_date: r.start_date, tags: await tagIds(tx, scope.userId, ws, run.ctx, r.tagValues),
         });
       }
-      const insert = (list: typeof rowsIn) => tx.query<{ id: string; u: string }>(
+      const insert = (list: typeof rowsIn, t: Tx = tx) => t.query<{ id: string; u: string }>(
         `insert into public.tasks (id, user_id, title, description, status, priority, project_id, assignee_id, workspace_id,
                                    due_date, start_date, completed_at, tags, plan_today, position)
          select x.id, $1::uuid, x.title, x.description, x.status, 'medium', $2, x.assignee_id, $3::uuid,
@@ -559,10 +593,10 @@ async function pullBatch(run: Run, pages: NPage[]) {
          returning id::text as id, updated_at::text as u`, [scope.userId, run.projectId, ws, J(list)]);
       // (someone named who lost sight of the project during the run: each row on its own, theirs unassigned)
       const made = !run.ctx.gated || !rowsIn.some((r) => r.assignee_id) ? await insert(rowsIn)
-        : (await assigneeSafe(tx, () => insert(rowsIn), async () => {
+        : (await assigneeSafe(tx, (t) => insert(rowsIn, t), async (t) => {
           const out: { id: string; u: string }[] = [];
           for (const r of rowsIn) {
-            const one = r.assignee_id ? await assigneeSafe(tx, () => insert([r]), () => insert([{ ...r, assignee_id: "" }])) : { value: await insert([r]), dropped: false };
+            const one = r.assignee_id ? await assigneeSafe(t, (u) => insert([r], u), (u) => insert([{ ...r, assignee_id: "" }], u)) : { value: await insert([r], t), dropped: false };
             if (one.dropped) { r.assignee_id = ""; note(run, assigneeNote(r.title)); }
             out.push(...one.value);
           }
@@ -686,7 +720,8 @@ async function pushChanged(run: Run, limit: number) {
     `select ${LINK_COLS}, ${TASK_COLS} from public.notion_links l join public.tasks t on t.id = l.task_id
       where l.sync_id = $1::uuid and t.workspace_id = $2::uuid and t.archived_at is null
         and t.updated_at > coalesce(l.last_synced_at, '-infinity'::timestamptz)
-      order by t.updated_at asc, t.id limit $3`, [run.syncId, ws, limit]));
+        and ($4::boolean is not true or t.project_id = $5)
+      order by t.updated_at asc, t.id limit $3`, [run.syncId, ws, limit, run.ownProject, run.projectId]));
   if (!rows.length) return;
   // after this run's pull wrote them
   const bases = await loadBaselines(deps.db.service, ws, { links: rows.map((r) => r.link_id) });
@@ -724,7 +759,7 @@ async function pushChanged(run: Run, limit: number) {
       continue;
     }
     if (page.archived || page.in_trash) {
-      await deps.db.withUser(scope, (tx) => archiveTask(tx, task.id, ws));
+      await deps.db.withUser(scope, (tx) => archiveTask(tx, task.id, ws, run.ownProject ? run.projectId : null));
       await touchLinks(deps.db.service, [{ id: row.link_id, s: null, e: page.last_edited_time }]);
       await cachePages(deps.db.service, ws, [page]);
       run.stats.updated++;
@@ -737,7 +772,7 @@ async function pushChanged(run: Run, limit: number) {
     // merge from that copy, in the transaction that writes what comes in (no Notion request inside it).
     const settled = await deps.db.withUser(scope, async (tx) => {
       const now = await lockTask(tx, read.t_id!, ws);
-      if (!now) return { kind: "gone" as const };
+      if (!now || (run.ownProject && now.t_project !== run.projectId)) return { kind: "gone" as const };
       const cur: LinkTaskRow = { ...read, ...now };
       const t = asTask(cur);
       const plan = planSync(t, f, run.mapping, run.ctx, base, { notionLater: ms(p.last_edited_time) * 1000 > Number(cur.updated_us), twoWay: true });
@@ -798,7 +833,7 @@ async function pushChanged(run: Run, limit: number) {
           else if (isNotionError(e) && (e.kind === "rate_limited" || e.kind === "invalid_token")) { retry = true; stopRun = e; }
           else {
             if (isNotionError(e) && e.kind === "archived") {
-              await deps.db.withUser(scope, (tx) => archiveTask(tx, task.id, ws));
+              await deps.db.withUser(scope, (tx) => archiveTask(tx, task.id, ws, run.ownProject ? run.projectId : null));
               run.stats.updated++;
             } else {
               note(run, `“${oneLine(task.title, 60)}” couldn't be updated in Notion: ${syncErrorText(e, "page").replace(/\.$/, "")}.`);
@@ -826,7 +861,8 @@ async function sweepArchived(run: Run, limit: number) {
     `select l.id::text as link_id, l.notion_page_id, l.task_id::text as task_id
        from public.notion_links l left join public.notion_page_cache c on c.workspace_id = l.workspace_id and c.notion_page_id = l.notion_page_id
       where l.sync_id = $1::uuid
-      order by c.fetched_at asc nulls first, l.id limit $2`, [run.syncId, limit + run.seen.size]));
+        and ($3::boolean is not true or exists (select 1 from public.tasks t where t.id = l.task_id and t.project_id = $4))
+      order by c.fetched_at asc nulls first, l.id limit $2`, [run.syncId, limit + run.seen.size, run.ownProject, run.projectId]));
   let n = 0;
   for (const r of rows) {
     if (n >= limit || !canAsk(run, 4000)) break;
@@ -842,7 +878,7 @@ async function sweepArchived(run: Run, limit: number) {
     }
     await cachePages(deps.db.service, ws, [page]);
     if (page.archived || page.in_trash) {
-      const u = await deps.db.withUser(scope, (tx) => archiveTask(tx, r.task_id, ws));
+      const u = await deps.db.withUser(scope, (tx) => archiveTask(tx, r.task_id, ws, run.ownProject ? run.projectId : null));
       if (u) run.stats.updated++;
     }
   }
@@ -923,7 +959,8 @@ async function runLeased(deps: SyncDeps, sync: SyncRow, opts: { deadline: number
     }).then((c) => onlyWhoSees(deps.db.service, c, ws, sync.project_id));
     run = {
       deps, api: deps.notion(token, opts.deadline), scope, projectId: sync.project_id, databaseId: sync.database_id, syncId: sync.id,
-      mapping, direction: sync.direction === "from_notion" ? "from_notion" : "two_way", createOnly: false, ctx,
+      mapping, direction: sync.direction === "from_notion" ? "from_notion" : "two_way", createOnly: false,
+      ownProject: await onlyOwnProject(deps.db.service, ws), ctx,
       stats, notes: [], seen: new Map(), maxEdited: null, knownBefore: null, deadline: opts.deadline, maxRequests: opts.maxRequests ?? 90,
     };
     const start = parseCursor(sync.last_cursor);
@@ -1028,7 +1065,8 @@ async function importLeased(deps: SyncDeps, api: NotionApi, input: ImportInput,
   const ctx = await onlyWhoSees(deps.db.service, await deps.db.withUser({ ...scope, readOnly: true }, (tx) => loadContext(tx, ws)), ws, projectId);
   const stats: SyncStats = { created: 0, updated: 0, pushed: 0, skipped: 0 };
   const run: Run = {
-    deps, api, scope, projectId, databaseId, syncId, mapping, direction: input.direction, createOnly: !syncId, ctx, stats,
+    deps, api, scope, projectId, databaseId, syncId, mapping, direction: input.direction, createOnly: !syncId,
+    ownProject: await onlyOwnProject(deps.db.service, ws), ctx, stats,
     notes: [], seen: new Map(), maxEdited: null, knownBefore: null, deadline, maxRequests: 200,
   };
   let done = false, cursor: SyncCursor = { since: null, next: null };

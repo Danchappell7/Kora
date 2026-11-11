@@ -22,6 +22,13 @@ export interface ApiPrincipal {
 /** One SQL statement runner (a transaction, or the privileged connection). */
 export interface Tx {
   query<T = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<T[]>;
+  /**
+   * Inside a transaction (db.ts withUser): `fn` in a savepoint, on its own Tx. A failure in it is undone
+   * to the savepoint and thrown to the caller, who may catch it and carry on: the transaction itself
+   * stays good. (postgres.js keeps the first failed query of a transaction and throws it again at its
+   * end even when the caller caught it, so a raw "savepoint" query can't do this.) Absent elsewhere.
+   */
+  savepoint?<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
 }
 
 /** How a request's transaction is opened (db.ts withUser). */

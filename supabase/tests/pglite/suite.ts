@@ -3895,6 +3895,86 @@ async function projectAccessApiSuite(w: World) {
     eq((await one<{ c: string | null }>(`select last_cursor as c from public.notion_syncs where id = $1::uuid`, [sync])).c !== null, true, "the cursor moves on");
     await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [sync]);
   });
+  /** A two-way sync (as alice) on a new Whole workspace project, with a fake Notion whose pages the test edits. */
+  const notionRig = async (name: string, dbId: string) => {
+    const target = await mk(name, "workspace");
+    await pg.query(`insert into public.workspace_integrations (workspace_id, notion_token) values ($1::uuid, 'secret_' || repeat('n', 40))
+                    on conflict (workspace_id) do update set notion_token = excluded.notion_token`, [w.w1]);
+    const sync = (await one<{ id: string }>(`insert into public.notion_syncs (workspace_id, project_id, database_id, mapping, direction, created_by)
+        values ($1::uuid, $2::uuid, $3, $4::jsonb, 'two_way', $5::uuid) returning id::text as id`,
+      [w.w1, target, dbId, JSON.stringify({ title: "Name", assignee: { property: "Owner" } }), w.alice])).id;
+    const pages: Record<string, unknown>[] = [];
+    const page = (n: number, title: string, email: string, edited: string) => ({
+      object: "page", id: `3c3c3c3c-0000-4000-8000-${dbId.slice(-4)}0000000${n}`, created_time: "2026-11-09T10:00:00.000Z", last_edited_time: edited,
+      properties: { Name: { type: "title", title: [{ plain_text: title }] }, Owner: { type: "people", people: [{ id: `nu-${n}`, person: { email } }] } },
+    });
+    const pushed: { id: string; props: unknown }[] = [];
+    let onQuery: () => Promise<void> = async () => {};
+    const api = {
+      calls: 0,
+      async me() { return { id: "bot" }; },
+      async searchDatabases() { return { results: [], next_cursor: null, has_more: false }; },
+      async database() { return {}; },
+      async query() { this.calls++; await onQuery(); return { results: pages, next_cursor: null, has_more: false }; },
+      async page(id: string) { this.calls++; return pages.find((p) => p.id === id)!; },
+      async updatePage(id: string, props: unknown) { this.calls++; pushed.push({ id, props }); return { ...pages.find((p) => p.id === id), last_edited_time: new Date().toISOString() }; },
+      async users() { return { results: [], next_cursor: null, has_more: false }; },
+    };
+    let n = 0;
+    const logs: string[] = [];
+    const deps = { db: w.deps.db, notion: () => api, now: () => Date.now(), newId: () => `4d4d4d4d-0000-4000-8000-${dbId.slice(-4)}${String(++n).padStart(8, "0")}`,
+      log: (_l: string, m: string) => { logs.push(m); } };
+    const runOnce = async () => {
+      await pg.query(`update public.notion_syncs set last_run_at = null where id = $1::uuid`, [sync]);
+      const row = await claimSync(w.deps.db.service, sync, 60);
+      return runSync(deps as never, row!, { deadline: Date.now() + 20_000 });
+    };
+    return { target, sync, pages, page, pushed, logs, runOnce, setOnQuery: (f: () => Promise<void>) => { onQuery = f; } };
+  };
+  await test("0058, Notion, switch on: a synced task moved into a Private project stops syncing (nothing of it goes out, nothing comes in, Notion doesn't archive it); moved back, it syncs again", async () => {
+    const rig = await notionRig("Notion roadmap", "0d0d0d0d-0000-4000-8000-000000005801");
+    rig.pages.push(rig.page(1, "Acme talks", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"), rig.page(2, "Book the venue", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"));
+    const first = await rig.runOnce();
+    eq([first.fatal, first.error], [false, null], `first run: ${rig.logs.join("; ")}`);
+    const t1 = (await one<{ id: string }>(`select id::text as id from public.tasks where project_id = $1 and title = 'Acme talks'`, [rig.target])).id;
+    // dora (an editor of both) moves it into Board pay (Private: bob can't see it) and renames it
+    await asPerson(pg, dora, `update public.tasks set project_id = $2, title = 'Acme acquisition: LOI at 4.2m' where id = $1::uuid`, [t1, pay]);
+    // someone with the Notion database edits its page there, and archives… nothing yet
+    rig.pages[0] = rig.page(1, "Edited in Notion by anyone with the database", "pa.dora@example.org", "2026-11-11T10:00:00.000Z");
+    const second = await rig.runOnce();
+    eq(second.fatal, false, `second run: ${rig.logs.join("; ")}`);
+    const json = JSON.stringify(rig.pushed);
+    eq(json.includes("Acme acquisition"), false, "the Private task's new title never goes to the Whole workspace project's Notion database");
+    const now = await one<{ title: string; project_id: string; archived: boolean }>(`select title, project_id, archived_at is not null as archived from public.tasks where id = $1::uuid`, [t1]);
+    eq([now.title, now.project_id, now.archived], ["Acme acquisition: LOI at 4.2m", pay, false], "nor does Notion's edit come into it");
+    rig.pages[0] = { ...rig.page(1, "Edited in Notion by anyone with the database", "pa.dora@example.org", "2026-11-11T11:00:00.000Z"), archived: true };
+    await rig.runOnce();
+    eq((await one<{ a: boolean }>(`select archived_at is not null as a from public.tasks where id = $1::uuid`, [t1])).a, false, "nor does archiving its page archive it");
+    // moved back: it syncs again (its title goes out)
+    rig.pages[0] = rig.page(1, "Edited in Notion by anyone with the database", "pa.dora@example.org", "2026-11-11T10:00:00.000Z");
+    await asPerson(pg, dora, `update public.tasks set project_id = $2, title = 'Acme talks, public' where id = $1::uuid`, [t1, rig.target]);
+    await rig.runOnce();
+    ok(JSON.stringify(rig.pushed).includes("Acme talks, public"), `moved back, it syncs again: ${JSON.stringify(rig.pushed).slice(0, 300)}`);
+    await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [rig.sync]);
+  });
+  await test("0058, Notion, switch on: an assignee refused mid-run (the project closed to them) drops that page's assignee alone; the run is never rolled back (postgres.js savepoints)", async () => {
+    const rig = await notionRig("Notion offsite", "0d0d0d0d-0000-4000-8000-000000005802");
+    rig.pages.push(rig.page(1, "Alpha", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"), rig.page(2, "Beta", "pa.dora@example.org", "2026-11-10T10:00:00.000Z"));
+    const first = await rig.runOnce();
+    eq([first.fatal, first.error], [false, null], `first run: ${rig.logs.join("; ")}`);
+    // in Notion, Beta's Owner becomes bob and Gamma is added for bob; while the run reads them, the project
+    // is made Private (bob isn't on it): onlyWhoSees asked before, so the database is the one to refuse him
+    rig.pages[1] = rig.page(2, "Beta, renamed", "bob@example.org", "2026-11-11T10:00:00.000Z");
+    rig.pages.push(rig.page(3, "Gamma", "bob@example.org", "2026-11-11T10:00:00.000Z"));
+    rig.setOnQuery(async () => { await pg.query(`update public.projects set visibility = 'private' where id = $1::uuid`, [rig.target]); });
+    const second = await rig.runOnce();
+    eq(second.fatal, false, `second run isn't rolled back: ${JSON.stringify(second)}; ${rig.logs.join("; ")}`);
+    const rows = (await pg.query<{ title: string; a: string }>(`select title, assignee_id as a from public.tasks where project_id = $1 order by title`, [rig.target])).rows;
+    eq(rows.map((r) => [r.title, r.a === dora ? "dora" : r.a === w.bob ? "bob" : r.a]), [["Alpha", "dora"], ["Beta, renamed", "dora"], ["Gamma", ""]],
+      "Beta's rename comes in (its assignee kept), Gamma comes in unassigned, bob is never given either");
+    ok(String(second.error).includes("can't see this project in Kanbo"), `and the run says why: ${second.error}`);
+    await pg.query(`delete from public.notion_syncs where id = $1::uuid`, [rig.sync]);
+  });
   await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
   await test("0058, webhooks, switch off: the dispatcher judges an endpoint by its viewer too: one whose viewer left is switched off and sent nothing", async () => {
     await pg.query(`update public.webhook_outbox set processed_at = now() where processed_at is null`);

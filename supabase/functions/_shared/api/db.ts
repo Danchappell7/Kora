@@ -51,14 +51,19 @@ export function connect(url: string | undefined = Deno.env.get("SUPABASE_DB_URL"
   return shared;
 }
 
-/** postgres.js transaction / sql → the Tx interface (parameterised text queries). */
+/** postgres.js transaction / sql → the Tx interface (parameterised text queries; inside a transaction,
+ *  savepoints through postgres.js's own, which keep a caught failure from failing the transaction). */
 export function txOf(sql: Sql): Tx {
-  return {
+  const tx: Tx = {
     async query<T = Record<string, unknown>>(text: string, params: readonly unknown[] = []): Promise<T[]> {
       const rows = await sql.unsafe(text, params as unknown[]);
       return Array.from(rows) as T[];
     },
   };
+  if (typeof sql?.savepoint === "function") {
+    tx.savepoint = <T>(fn: (t: Tx) => Promise<T>): Promise<T> => sql.savepoint((sp: Sql) => fn(txOf(sp)));
+  }
+  return tx;
 }
 
 /** Opens a request's transaction as the user (tested in the PGlite harness). */
