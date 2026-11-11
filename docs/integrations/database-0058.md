@@ -148,8 +148,9 @@ No new secrets and no new schedule.
   Personal, or another workspace) follows the same rule, switch on or off: a
   move there and back can't hand anyone a project or drop its people. Nor does
   a project leave a workspace whose switch is on (or leave at all, if it's
-  Members only or Private) with its tasks or updates still in it: nothing moves
-  them with it, and what it left would be loose work everyone there reads.
+  Members only or Private) with its tasks, updates, sections, custom fields,
+  rules or forms still in it: nothing moves them with it, and what it left
+  would be loose work everyone there reads.
   Restoring a task whose Members only or Private project has gone works the
   same with the switch off as on (only with its project).
 - **The history** of something deleted for good (by hand or by the bin's
@@ -166,7 +167,26 @@ No new secrets and no new schedule.
   address they set is switched off ("the person who set its address no longer
   has access"). The same goes for any other role change: an admin made a
   member, or an owner who hands the business over and becomes an admin, no
-  longer gets queued deliveries of work they can't see any more.
+  longer gets queued deliveries of work they can't see any more. Deleting the
+  account of whoever set an endpoint's address switches it off too, whatever
+  the switch says (the endpoint never falls back to its creator's wider
+  access). Whoever switches such an endpoint back on takes its address on as
+  theirs: from then on it hears what they can see.
+- **Assignees.** With the switch on, nobody is given a task in a project they
+  can't see. Someone suspended or awaiting approval is judged by the projects
+  they'll see once they can act again. Someone who has left the workspace keeps
+  a task they already had when it moves (as before: nothing there is theirs to
+  see), but is never given a new one: a repeat or a copy of their task, or a
+  rule naming them, gives it to whoever made the change instead (the app says
+  so).
+- **Approvals.** A reviewer who can only view the task now (or can't see it)
+  isn't offered a decision (`can_decide`), and the request's asker sees who
+  can't review it and, when it can't finish, that it should be cancelled and
+  asked again.
+- **Update replies.** An @mention in a reply to a project update asks for a
+  reply, so it reaches only people who can reply (never a viewer), as Asks do.
+- **Asking for an update** about a project you can't see is "not
+  authorized", before anything is said about it.
 - **Webhooks while the switch is off.** The dispatcher judges an endpoint by
   whoever last set its address (else whoever added it), switch on or off: an
   endpoint an admin re-pointed to their own address stops when that admin
@@ -191,20 +211,20 @@ templates; exports; and a device's offline copy until its next load.
   into its Notion database after the project is made Members only or Private
   (it runs as the person who set it up, who can still see it). Anyone who can
   read that Notion database sees them. Stop the sync first if the database is
-  shared more widely than the project. Coming the other way, a page whose
-  Owner can't see the project comes in unassigned (the database would refuse
-  them as its assignee).
+  shared more widely than the project. With the switch on, a synced task moved
+  to another project stops syncing (nothing of it goes out or comes in, and
+  archiving its page doesn't archive it) until it's moved back. Coming the
+  other way, a page whose Owner can't see the project comes in unassigned (the
+  database would refuse them as its assignee), and the rest of the run carries
+  on.
 - **Names a guest can read.** A task's history row keeps the name its author had
   when it was written (0038 falls back to their email when they had no name),
   so a guest reading a task in their project can see the name of a teammate
   who isn't one of their project's people. The same holds for an update
-  reply's author (`status_update_comments.author_name`), approvals' reviewer
+  reply's author (`status_update_comments.author_name`) and the poster named on
+  an update's notice in their Inbox (`activity.detail`), approvals' reviewer
   and requester names, live presence, and the name of whoever connected Notion
   (`notion_status`). Names only: never their work.
-- **Asking for an update.** `ask_for_update` (0053) answers "archived" or
-  "already asked recently" before 0058's check refuses it, so an admin who has
-  a Private project's id (from a goal or a portfolio) can tell whether it's
-  archived or was asked about lately. Nothing of its content.
 - **The full undo.** While the undo file has the rules out, the Owner picker
   is open to any writer again. A Members only or Private project taken over
   then (or kept by someone removed and invited back meanwhile) stays theirs
@@ -217,7 +237,7 @@ templates; exports; and a device's offline copy until its next load.
 |---|---|---|
 | One workspace (normal) | Its owner switches Project access off in Settings › Workspace. In an emergency, in the SQL editor: `update public.workspaces set project_access = false where id = '<workspace id>';` | Instant: the next query uses today's rule, and open apps reload. People, visibility and settings are kept for next time. |
 | Every workspace | `update public.workspaces set project_access = false where project_access;` | The same, everywhere. |
-| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). While it's out, the app keeps a project's people in its contributors list again (as before 0058). Running 0058 again afterwards puts every rule back and brings project people back to that list: anyone taken off meanwhile, or who left the workspace, loses their place, and anyone added to a Whole workspace project gets one, so nobody who was taken off comes back. Anyone added to a Members only or Private project meanwhile is added again in People & access (with the rules out, anyone could have listed themselves). Owners changed meanwhile aren't put back: check the owners of Members only and Private projects. A commented-out last block drops the data too: only if you're sure. |
+| Full undo (only if 0058 itself is broken) | Run `supabase/rollback/0058_project_access_undo.sql`, then its VERIFY block. | Removes 0058's rules and functions, switches every workspace off and puts the older helpers back word for word, **keeping the data** (who's on which project, visibility, settings). While it's out, the app keeps a project's people in its contributors list again (as before 0058). Running 0058 again afterwards puts every rule back and brings project people back to that list: anyone taken off meanwhile, or who left the workspace, loses their place, and anyone added to a Whole workspace project gets one, so nobody who was taken off comes back. Anyone added to a Members only or Private project meanwhile is added again in People & access (with the rules out, anyone could have listed themselves). Visibility can't be changed from the app or the API while it's out (the SQL editor still can), so no project is opened up meanwhile. Owners changed meanwhile aren't put back: check the owners of Members only and Private projects. A commented-out last block drops the data too: only if you're sure. |
 
 ## Tests
 

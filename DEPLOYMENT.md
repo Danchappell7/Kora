@@ -926,11 +926,15 @@ steps; nothing breaks while you wait.
    - `api`, `mcp`: no writes into a project you can only view, and no
      assigning someone who can't see it.
    - `notion`: a Notion page whose Owner can't see the project comes in
-     unassigned (the sync no longer stops on it).
+     unassigned (the sync no longer stops on it, nor rolls back its run); and
+     where it's switched on, a synced task moved to another project stops
+     syncing until it's moved back.
    - `ics-feed`: a calendar names a project only where the task really is in
      it.
    - `webhook-dispatch`: an endpoint follows whoever last set its address
-     (switch on or off); if they leave or become a guest it's switched off.
+     (switch on or off); if they leave, become a guest or delete their account
+     it's switched off, and whoever switches it back on takes the address on
+     as theirs.
    - `daily-reminders` also asks again, twice, before giving up on someone's
      due list when a lookup fails (it runs once a day).
 
@@ -982,7 +986,9 @@ steps; nothing breaks while you wait.
    it as a guest would (or ask one): they see only their projects. Each
    person's profile on Team › People lists the projects they're on. If a
    project you make private syncs to Notion, its tasks keep going to that Notion
-   database: stop its sync first if that database is shared more widely. From now on,
+   database: stop its sync first if that database is shared more widely (a
+   synced task moved into a Members only or Private project stops syncing by
+   itself). From now on,
    inviting a guest (Team › People › Invite people, role Guest) asks "Projects
    they can see" (inviting the same person again adds to their projects), and
    a project's People & access lists the pending invites that bring it, for
@@ -999,7 +1005,8 @@ steps; nothing breaks while you wait.
    `pbcopy < ~/Downloads/kora-app/supabase/rollback/0058_project_access_undo.sql`
    (paste, **Run**), then its VERIFY query, every column `true`:
    `sed -n '/^-- select$/,/;$/p' ~/Downloads/kora-app/supabase/rollback/0058_project_access_undo.sql | sed 's/^-- \{0,1\}//' | pbcopy`.
-   It keeps the data. Running 0058 again after it puts
+   It keeps the data, and while it's out nobody can change a project's
+   visibility from the app or the API. Running 0058 again after it puts
    everything back; anyone added to a Members only or Private project while it
    was out is added again in About › People & access, and an owner changed
    while it was out isn't put back (check the Owner in About of each Members
