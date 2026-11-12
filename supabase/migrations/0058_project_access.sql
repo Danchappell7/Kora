@@ -1392,9 +1392,11 @@ end; $$;
 -- re-pointed (notion_save_sync, the bin putting one back), a link added (notion_link_page, the notion
 -- function's imports and syncs, the bin putting one back), a linked task moved in (on its own, as a
 -- parent's sub-task, by the app, the API, MCP, the planner, a template or pack), a project with any of
--- those made Members only or Private, or the switch turned on while one has them (each refused with a
--- sentence for the app: trg_notion_links_pa_closed, trg_tasks_pa_notion, trg_notion_syncs_pa,
--- trg_projects_pa_notion, trg_workspaces_pa_guard). The page and database closure above (2j:
+-- those made Members only or Private (or made new as one under an id linked tasks already name, or
+-- moved in as one; a task's project id counts in any spelling), or the switch turned on while one has
+-- them (each refused with a sentence for the app: trg_notion_links_pa_closed, trg_tasks_pa_notion,
+-- trg_notion_syncs_pa, trg_projects_pa_notion, trg_workspaces_pa_guard; a client's new project under
+-- an id that work here names: trg_projects_pa_guard's 'id in use'). The page and database closure above (2j:
 -- pa_notion_page_hidden, user_notion_database_hidden, notion_pages_retired) stays, for what's older
 -- than this rule (the undo window, a workspace switched on before it). Switch off: nothing changes.
 -- (kanbo.notion_contain = 'off' lifts it for the SQL editor, as kanbo.restoring does the bin's checks:
@@ -1423,7 +1425,11 @@ $$;
 -- Notion's may come into it? It takes the locks that keep the answer true until the caller's transaction
 -- ends: the project's row (FOR SHARE: making it narrower waits, or this waits for that and reads what it
 -- made), and, for a closed one, the workspace's (FOR SHARE: the switch going on waits, or this waits).
--- The caller holds the task's row already (a move), or takes it first (a new link).
+-- An id no live project here has (loose, in the bin, gone) while the switch is on: the workspace's row
+-- first, then the project's again, so a project made or moved in under it now (pa_trg_projects_notion
+-- holds that row while it looks for linked tasks) waits for this and finds what it added, or this
+-- waits for that and judges the project it made. The caller holds the task's row already (a move), or
+-- takes it first (a new link).
 create or replace function public.pa_notion_shut(p_ws uuid, p_project text)
 returns boolean language plpgsql security definer set search_path = public as $$
 declare v text; on_ boolean;
@@ -1431,6 +1437,11 @@ begin
   if p_ws is null or not public.pa_notion_contain() then return false; end if;
   select p.visibility into v from public.projects p
    where p.id = public.kanbo_uuid(p_project) and p.workspace_id = p_ws for share;
+  if not found and public.kanbo_uuid(p_project) is not null and public.pa_on(p_ws) then
+    perform 1 from public.workspaces w where w.id = p_ws for share;
+    select p.visibility into v from public.projects p
+     where p.id = public.kanbo_uuid(p_project) and p.workspace_id = p_ws for share;
+  end if;
   if found then
     if v = 'workspace' then return false; end if;
   elsif not public.pa_project_closed(p_ws, p_project) then
@@ -1452,16 +1463,17 @@ returns text language sql immutable set search_path = pg_catalog as $$
 $$;
 -- The Members only and Private projects here that still connect to Notion: their syncs, and their tasks
 -- with a Notion link (one deleted, in the bin or gone from the workspace counts by the access it had:
--- no name). Switching on is refused while there are any (pa_trg_workspaces_guard).
+-- no name). Switching on is refused while there are any (pa_trg_workspaces_guard). (A task's project id
+-- in any spelling is that project's, as every rank reads it: one row a project.)
 create or replace function public.pa_notion_blockers(p_ws uuid)
 returns table (project_id text, name text, visibility text, syncs integer, linked_tasks integer)
 language sql security definer stable set search_path = public as $$
   with linked as (
-    select t.project_id as pid, count(*)::int as n
+    select lower(t.project_id) as pid, count(*)::int as n
       from public.tasks t
      where t.workspace_id = p_ws and t.project_id is not null
        and exists (select 1 from public.notion_links l where l.task_id = t.id)
-     group by t.project_id),
+     group by lower(t.project_id)),
   synced as (
     select s.project_id::text as pid, count(*)::int as n
       from public.notion_syncs s join public.projects p on p.id = s.project_id and p.workspace_id = p_ws
@@ -1913,6 +1925,22 @@ begin
   return null;
 end; $$;
 
+-- (internal) Does work in this workspace name this project id, in any spelling (every rank reads it so):
+-- a task, an update, a section, a custom field, a rule, a form, or a bin entry that isn't the project's own?
+create or replace function public.pa_id_named(p_ws uuid, p_id uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select p_ws is not null and p_id is not null and (
+       exists (select 1 from public.tasks t where t.workspace_id = p_ws and lower(t.project_id) = p_id::text)
+    or exists (select 1 from public.status_updates s where s.workspace_id = p_ws and lower(s.project_id) = p_id::text)
+    or exists (select 1 from public.sections x where x.workspace_id = p_ws and lower(x.project_id) = p_id::text)
+    or exists (select 1 from public.custom_field_defs x where x.workspace_id = p_ws and lower(x.project_id) = p_id::text)
+    or exists (select 1 from public.automation_rules x where x.workspace_id = p_ws and lower(x.project_id) = p_id::text)
+    or exists (select 1 from public.forms x where x.workspace_id = p_ws and lower(x.project_id) = p_id::text)
+    or exists (select 1 from public.trash x where x.workspace_id = p_ws and lower(x.project_id) = p_id::text
+                                              and x.kind <> 'project' and x.restored_at is null));
+$$;
+revoke execute on function public.pa_id_named(uuid, uuid) from public, anon, authenticated;
+
 -- projects, before: a new project's visibility; visibility only through set_project_visibility();
 -- an owner change by a manager to a non-guest, and a move to another workspace or Personal by a
 -- manager (switch on, or a project that isn't Whole workspace); contributor_ids mirrors project_members
@@ -1936,6 +1964,17 @@ begin
   if (tg_op = 'INSERT' or new.id is distinct from old.id)
      and (exists (select 1 from public.project_ids_retired g where g.id = new.id)
           or (not restoring and exists (select 1 from public.project_departures d where d.id = new.id))) then
+    raise exception 'id in use' using errcode = 'unique_violation';
+  end if;
+  -- (nor, while the switch is on, a client's new team project under an id that work here already names:
+  -- tasks, updates, sections, fields, rules, forms or bin entries left under it (moved there by hand, or
+  -- left by a project that went). The new project would take that work over, and the say over who sees
+  -- it, past the checks a move into it meets: a member's own Members only project would take others'
+  -- tasks along with their assignees and Notion links (the containment rule, 2t). The app, the API and
+  -- the notion function never choose a new project's id; the bin putting one back (a restore) is still
+  -- it. Switched off, as before: nobody's access turns on an id then)
+  if tg_op = 'INSERT' and client and not restoring and new.workspace_id is not null
+     and public.pa_on(new.workspace_id) and public.pa_id_named(new.workspace_id, new.id) then
     raise exception 'id in use' using errcode = 'unique_violation';
   end if;
   if tg_op = 'INSERT' then
@@ -2009,17 +2048,10 @@ begin
   -- (and only once its work has gone: nothing moves a project's tasks, updates, sections, fields, rules
   -- or forms with it, nor what of it waits in the bin, and what it left behind would be loose work every
   -- member of its old workspace reads and edits. Anything that names it there later keeps the access it
-  -- had there: pa_trg_projects_after records it, 1h)
+  -- had there: pa_trg_projects_after records it, 1h. Its id in any spelling counts, as the ranks read it)
   if direct and new.workspace_id is distinct from old.workspace_id and old.workspace_id is not null
      and (public.pa_on(old.workspace_id) or old.visibility <> 'workspace')
-     and (exists (select 1 from public.tasks t where t.workspace_id = old.workspace_id and t.project_id = old.id::text)
-          or exists (select 1 from public.status_updates s where s.workspace_id = old.workspace_id and s.project_id = old.id::text)
-          or exists (select 1 from public.sections x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
-          or exists (select 1 from public.custom_field_defs x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
-          or exists (select 1 from public.automation_rules x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
-          or exists (select 1 from public.forms x where x.workspace_id = old.workspace_id and x.project_id = old.id::text)
-          or exists (select 1 from public.trash x where x.workspace_id = old.workspace_id and x.project_id = old.id::text
-                                                    and x.kind <> 'project' and x.restored_at is null)) then
+     and public.pa_id_named(old.workspace_id, old.id) then
     raise exception 'move its tasks first' using hint = 'A project leaves its workspace only once its tasks, updates, sections, fields, rules and forms have gone, from the bin too.';
   end if;
   if new.workspace_id is null then new.visibility := 'workspace'; end if;     -- moved to Personal: nothing to gate
@@ -2919,26 +2951,29 @@ end; $$;
 
 -- projects (the containment rule, 2t): one with a Notion sync, or a task with a Notion link, is never made
 -- Members only or Private while the switch is on (Members only to Private included), nor taken, as one,
--- into a workspace whose switch is on. The workspace's row is held (FOR NO KEY UPDATE: this goes on to
--- touch it) so the switch going on waits for this, or this for it. A new project has neither yet: what
--- comes into it is the other triggers' to judge.
+-- into a workspace whose switch is on, nor made as one there (whoever writes it: a new project under an
+-- id that tasks here already name takes them in; the bin putting one back). Its tasks are found by their
+-- project id in any spelling, as every rank reads it. The workspace's row is held (FOR NO KEY UPDATE:
+-- this goes on to touch it) before looking, so the switch going on waits for this, or this for it; and
+-- a page linked meanwhile to a task under an id no live project here has (or a linked task moved to
+-- one) holds that row too (pa_notion_shut), so it waits for this and judges the project this made, or
+-- this waits for it and finds its link. (Made narrower in place, the project's own row does that.)
 create or replace function public.pa_trg_projects_notion() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare on_ boolean;
 begin
   if new.workspace_id is null or new.visibility = 'workspace' or not public.pa_notion_contain()
-     or (new.visibility is not distinct from old.visibility and new.workspace_id is not distinct from old.workspace_id) then
-    return new;
-  end if;
-  if not exists (select 1 from public.notion_syncs s where s.project_id = new.id)
-     and not exists (select 1 from public.tasks t
-                      where t.workspace_id = new.workspace_id and t.project_id = new.id::text
-                        and exists (select 1 from public.notion_links l where l.task_id = t.id)) then
+     or (tg_op = 'UPDATE' and new.visibility is not distinct from old.visibility and new.workspace_id is not distinct from old.workspace_id) then
     return new;
   end if;
   select w.project_access into on_ from public.workspaces w where w.id = new.workspace_id for no key update;
-  if coalesce(on_, false) then
-    raise exception 'notion closed project' using hint = public.pa_notion_closed_text('project');
+  if not coalesce(on_, false) then return new; end if;
+  if exists (select 1 from public.notion_syncs s where s.project_id = new.id)
+     or exists (select 1 from public.tasks t
+                 where t.workspace_id = new.workspace_id and lower(t.project_id) = new.id::text
+                   and exists (select 1 from public.notion_links l where l.task_id = t.id)) then
+    raise exception 'notion closed project' using hint = public.pa_notion_closed_text(
+      case when tg_op = 'INSERT' and public.pa_restoring() then 'restore project' else 'project' end);
   end if;
   return new;
 end; $$;
@@ -3199,7 +3234,7 @@ language sql immutable set search_path = pg_catalog as $$
     -- (the containment rule, 2t)
     ('notion_links', 'trg_notion_links_pa_closed', 'before insert or update of task_id', 'pa_trg_notion_links_closed', null),
     ('tasks', 'trg_tasks_pa_notion', 'before update of project_id, parent_id, workspace_id', 'pa_trg_tasks_notion', null),
-    ('projects', 'trg_projects_pa_notion', 'before update of visibility, workspace_id', 'pa_trg_projects_notion', null),
+    ('projects', 'trg_projects_pa_notion', 'before insert or update of visibility, workspace_id', 'pa_trg_projects_notion', null),
     ('update_asks', 'trg_update_asks_pa', 'before insert', 'pa_trg_update_asks', null),
     -- (never on an update of updated_by alone: that's the foreign key emptying it when its account is deleted)
     ('bill_rates', 'trg_bill_rates_pa', 'before insert or update of project_id, workspace_id, hourly_rate', 'pa_trg_bill_rates', null),

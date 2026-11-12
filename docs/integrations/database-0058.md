@@ -184,7 +184,13 @@ No new secrets and no new schedule.
   or off (before 0058 any writer could): its tasks, updates, sections, fields,
   rules and forms name it by that id, so they'd be left loose, and a Members
   only project of the changer's own made under the old id would take them
-  over, and the say over who sees them. The app never changes one. Nor does
+  over, and the say over who sees them. The app never changes one. For the
+  same reason, while the switch is on, a new team project from the app, the
+  API or MCP can't be made under an id that work in the workspace already
+  names (a task, update, section, field, rule, form or bin entry left under
+  it, in any spelling): "id in use". The app, the API and the notion function
+  never choose a new project's id, and the bin putting a project back is still
+  that project; with the switch off it goes through, as before. Nor does
   a project leave a workspace whose switch is on (or leave at all, if it's
   Members only or Private) with its tasks, updates, sections, custom fields,
   rules or forms still in it, nor with its tasks still in the bin: nothing
@@ -302,9 +308,14 @@ No new secrets and no new schedule.
   API, MCP, the planner or the bin), restoring from the bin a task with links
   into one or such a project with its sync or linked tasks, making a project
   that has a sync or linked tasks Members only or Private (Members only to
-  Private too), and turning the switch on while a Members only or Private
-  project still has them. Each refusal is "notion closed project" (switching
-  on: "notion in closed projects") with the sentence as its hint, which the
+  Private too), making a new Members only or Private project under an id
+  that linked tasks already name (the app, the API and MCP get "id in use"
+  first, above), moving a Members only or Private project in from another
+  workspace while linked tasks here name it, and turning the switch on while
+  a Members only or Private project still has them. A task's project id
+  counts in any spelling (capitals too), as every rank reads it. Each
+  refusal is "notion closed project" (switching on: "notion in closed
+  projects") with the sentence as its hint, which the
   app, the API and MCP show as it is: "Members only and Private projects
   don't connect to Notion yet. …", then what to do; switching on says how
   many, which, and where to remove them. The app says it first: Settings ›
@@ -356,6 +367,17 @@ person who saved it: it goes when someone else signs in there.)
   task's id already in use, `pa_rank` / `pa_task_gated` called directly).
   None of them reads its title, content, people or counts. Anyone outside the
   workspace could do the same before 0058.
+- **Work under an id no project has.** A task, update, section, field, rule
+  or form whose project id names no project here (moved there through the
+  database's API by hand, or left by a Whole workspace project that went) is
+  loose: everyone in the workspace reads and edits it, as before 0058. With
+  the switch on, nobody makes a project under such an id from the app, the
+  API or MCP ("id in use"), so nobody takes that work over by making one. Two
+  requests at the same moment, one moving a task to such an id and another
+  making a project under it, can still leave that task in the new project,
+  as moving a task into your own Whole workspace project and then narrowing
+  it can. Not one with Notion links: the containment rule makes one request
+  wait for the other.
 - **Invites made by someone who has since lost access.** A pending guest
   invite's project grants don't follow whoever made them: an admin who's
   later made a member (or removed), or an owner who hands over, leaves the

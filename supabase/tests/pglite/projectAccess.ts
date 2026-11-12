@@ -2063,6 +2063,122 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq(got.off, wantOff, "switch off: each goes through, as before");
   });
 
+  await test("0058, switch on, the containment rule (2t): a new project never takes linked tasks in, and a task's project id counts in any spelling. A client's new team project under an id that work here already names (a loose task of its own with a Notion link, someone's linked or assigned task moved there, a section) is refused ('id in use'), whatever its visibility; the service's or the SQL editor's Members only or Private one under linked tasks' id gets the project sentence; a fresh id goes through. A task filed under a project's id in capitals (or re-spelled so) stops it being made narrower, a Members only project moving in under such a task's id is refused, the blockers list the project once, and a project doesn't leave with such a task behind it. Switched off, each goes through as before (but the last)", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, unknown> = {};
+      await containedAgain(run);
+      let n = 0;
+      const page = () => `0c0c0c0c-5858-4002-8000-${String(++n).padStart(12, "0")}`;
+      const fresh = () => `0d0d0d0d-5858-4002-8000-${String(++n).padStart(12, "0")}`;
+      const mkTask = async (who: Who | null, title: string, project: string, assignee = "nobody") => (await run(who ? w.id[who] : null,
+        `insert into public.tasks (user_id, title, project_id, assignee_id, workspace_id) values ($1::uuid, $2, $3, $4, $5::uuid) returning id::text as id`,
+        [w.id[who ?? "O"], title, project, assignee, w.ws]))[0].id as string;
+      const link = async (who: Who, task: string) => { await run(w.id[who], `select public.notion_link_page($1::uuid, $2)`, [task, page()]); };
+      /** a fresh id with someone's task under it, linked to a Notion page */
+      const looseLinked = async (who: Who) => { const x = fresh(); await link(who, await mkTask(who, "Zebra loose linked", x)); return x; };
+      const make = async (who: Who | null, pid: string, vis: string | null) => {
+        const o = await tryRun(who ? w.id[who] : null,
+          `insert into public.projects (id, user_id, owner_id, name, workspace_id${vis ? ", visibility" : ""}) values ($1::uuid, $2::uuid, $2::uuid, 'Zebra made', $3::uuid${vis ? ", $4" : ""}) returning visibility`,
+          vis ? [pid, w.id[who ?? "O"], w.ws, vis] : [pid, w.id[who ?? "O"], w.ws]);
+        return "error" in o ? said(o) : String(o.rows[0].visibility);
+      };
+      const move = (who: Who, task: string, project: string) => run(w.id[who], `update public.tasks set project_id = $2 where id = $1::uuid`, [task, project]);
+      const narrow = (p: string, v: string) => tryRun(w.id.O, `select public.set_project_visibility($1::uuid, $2) as v`, [p, v]);
+      for (const on of [true, false]) {
+        await run(null, `savepoint pa_mode`);
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+        const res: Record<string, unknown> = {};
+        res["Moe's loose linked task, then his Members only project under its id"] = await make("M2", await looseLinked("M2"), "members");
+        res["Ari's, then her Private one"] = await make("A", await looseLinked("A"), "private");
+        await run(null, `update public.workspaces set project_access_default = 'members' where id = $1::uuid`, [w.ws]);
+        res["Moe's, then one with the workspace's default (Members only)"] = await make("M2", await looseLinked("M2"), null);
+        await run(null, `update public.workspaces set project_access_default = 'workspace' where id = $1::uuid`, [w.ws]);
+        res["Moe's, then the service's Members only one"] = await make(null, await looseLinked("M2"), "members");
+        res["Moe's, then the service's Whole workspace one"] = await make(null, await looseLinked("M2"), "workspace");
+        const tSynced = await mkTask("O", "Zebra Oona's linked", w.proj.PW);
+        await link("O", tSynced);
+        const y = fresh();
+        await move("M2", tSynced, y);
+        res["Oona's linked PW task moved to a loose id by Moe, then his Members only project there"] = await make("M2", y, "members");
+        const tMeg = await mkTask("O", "Zebra Meg's work", w.proj.PW, w.id.ME);
+        const v = fresh();
+        await move("M2", tMeg, v);
+        res["Oona's task for Meg moved there by Moe, then his Members only project"] = await make("M2", v, "members");
+        res["… and Meg still sees it"] = (await run(w.id.ME, `select 1 from public.tasks where id = $1::uuid`, [tMeg])).length;
+        const s = fresh();
+        await run(w.id.M2, `insert into public.sections (user_id, workspace_id, project_id, name) values ($1::uuid, $2::uuid, $3, 'Zebra loose section')`, [w.id.M2, w.ws, s]);
+        res["a loose section, then Moe's Whole workspace project under its id"] = await make("M2", s, "workspace");
+        res["Moe's Members only project under a fresh id"] = await make("M2", fresh(), "members");
+        // capitals (in a Whole workspace project of Oona's with no Notion of its own)
+        const open = async () => (await run(w.id.O, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra caps', $2::uuid, 'workspace') returning id::text as id`, [w.id.O, w.ws]))[0].id as string;
+        await run(null, `savepoint pa_case`);
+        const pc = await open();
+        await link("M2", await mkTask("M2", "Zebra caps", pc.toUpperCase()));
+        res["Moe's task filed under Oona's project in capitals, linked; Oona makes it Members only"] = said(await narrow(pc, "members"));
+        await run(null, `rollback to savepoint pa_case`);
+        await run(null, `savepoint pa_case`);
+        const pr = await open();
+        const tRe = await mkTask("O", "Zebra re-spelled", pr);
+        await link("O", tRe);
+        await run(w.id.M2, `update public.tasks set project_id = upper(project_id) where id = $1::uuid`, [tRe]);
+        res["a linked task of Oona's project re-spelled in capitals by Moe; Oona makes it Private"] = said(await narrow(pr, "private"));
+        await run(null, `rollback to savepoint pa_case`);
+        await run(null, `savepoint pa_case`);
+        const yon = (await run(null, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra Yonder', $2::uuid, 'members') returning id::text as id`, [w.id.O, w.ws2]))[0].id as string;
+        await link("M2", await mkTask("M2", "Zebra caps for Yonder's", yon.toUpperCase()));
+        res["a Members only project of Yonder's moved in while a linked task here names it in capitals"] = said(await tryRun(null,
+          `update public.projects set workspace_id = $2::uuid where id = $1::uuid returning id`, [yon, w.ws]));
+        await run(null, `rollback to savepoint pa_case`);
+        await run(null, `savepoint pa_case`);
+        const mine = (await run(w.id.M2, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, 'Zebra leaving', $2::uuid, 'members') returning id::text as id`, [w.id.M2, w.ws]))[0].id as string;
+        await mkTask("M2", "Zebra caps left behind", mine.toUpperCase());
+        res["Moe's Members only project, with a task filed under it in capitals, moved to his Personal list"] = said(await tryRun(w.id.M2,
+          `update public.projects set workspace_id = null where id = $1::uuid returning id`, [mine]));
+        await run(null, `rollback to savepoint pa_case`);
+        out[on ? "on" : "off"] = res;
+        await run(null, `rollback to savepoint pa_mode`);
+      }
+      // the list before switching on: PM's linked tasks, filed under its id both ways (before the rule)
+      await run(null, `update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]);
+      await run(null, `select set_config('kanbo.notion_contain', 'off', true)`);
+      for (const pid of [w.proj.PM, w.proj.PM.toUpperCase()]) {
+        const t = await mkTask(null, "Zebra PM linked", pid);
+        await run(null, `insert into public.notion_links (workspace_id, task_id, notion_page_id, kind) values ($1::uuid, $2::uuid, $3, 'reference')`, [w.ws, t, page()]);
+      }
+      await run(null, `select set_config('kanbo.notion_contain', '', true)`);
+      out.listed = ((await run(w.id.O, `select public.project_access_notion_blockers($1::uuid) as b`, [w.ws]))[0].b as Record<string, unknown>[])
+        .map((b) => ({ project_id: b.project_id, name: b.name, visibility: b.visibility, syncs: b.syncs, linked_tasks: b.linked_tasks }));
+      return out;
+    });
+    const closedOn = CLOSED("project");
+    const moveFirst = "move its tasks first: A project leaves its workspace only once its tasks, updates, sections, fields, rules and forms have gone, from the bin too.";
+    eq(got.on, {
+      "Moe's loose linked task, then his Members only project under its id": "id in use", "Ari's, then her Private one": "id in use",
+      "Moe's, then one with the workspace's default (Members only)": "id in use", "Moe's, then the service's Members only one": closedOn,
+      "Moe's, then the service's Whole workspace one": "workspace",
+      "Oona's linked PW task moved to a loose id by Moe, then his Members only project there": "id in use",
+      "Oona's task for Meg moved there by Moe, then his Members only project": "id in use", "… and Meg still sees it": 1,
+      "a loose section, then Moe's Whole workspace project under its id": "id in use", "Moe's Members only project under a fresh id": "members",
+      "Moe's task filed under Oona's project in capitals, linked; Oona makes it Members only": closedOn,
+      "a linked task of Oona's project re-spelled in capitals by Moe; Oona makes it Private": closedOn,
+      "a Members only project of Yonder's moved in while a linked task here names it in capitals": closedOn,
+      "Moe's Members only project, with a task filed under it in capitals, moved to his Personal list": moveFirst,
+    }, "switch on");
+    eq(got.off, {
+      "Moe's loose linked task, then his Members only project under its id": "members", "Ari's, then her Private one": "private",
+      "Moe's, then one with the workspace's default (Members only)": "members", "Moe's, then the service's Members only one": "members",
+      "Moe's, then the service's Whole workspace one": "workspace",
+      "Oona's linked PW task moved to a loose id by Moe, then his Members only project there": "members",
+      "Oona's task for Meg moved there by Moe, then his Members only project": "members", "… and Meg still sees it": 1,
+      "a loose section, then Moe's Whole workspace project under its id": "workspace", "Moe's Members only project under a fresh id": "members",
+      "Moe's task filed under Oona's project in capitals, linked; Oona makes it Members only": "ok",
+      "a linked task of Oona's project re-spelled in capitals by Moe; Oona makes it Private": "ok",
+      "a Members only project of Yonder's moved in while a linked task here names it in capitals": "ok",
+      "Moe's Members only project, with a task filed under it in capitals, moved to his Personal list": moveFirst,
+    }, "switch off: as before (a Members only project still doesn't leave its work behind)");
+    eq(got.listed, [{ project_id: w.proj.PM, name: "Zebra PM", visibility: "members", syncs: 0, linked_tasks: 2 }], "the list names PM once, with both tasks");
+  });
+
   await test("0058, switch on, the containment rule (2t): the bin never puts Notion back into a Members only or Private project (a linked task into one made Private since; a Private project binned with its sync while the switch was off); switching on is refused, whoever asks, while one still connects to Notion, saying how many and where (Settings › Project access lists them, for the owner alone), and goes through once they're cleared; switched off, each restore goes through as before", async () => {
     const got = await scenario(async (run, _exec, tryRun) => {
       const out: Record<string, unknown> = {};
