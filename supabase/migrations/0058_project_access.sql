@@ -957,6 +957,27 @@ begin
   return cardinality(ids);
 end; $$;
 
+-- (internal) Is the caller shown this endpoint's full address (webhook_json, to someone who manages it)?
+-- With the switch on, a team endpoint's only to its viewer (who set the address, else who added it: what
+-- it hears is what they can see) and the workspace's owner (who sees everything). Another admin who
+-- manages it is shown it masked, as everyone else is: a catch-hook address is often the receiver's only
+-- credential, and this one may hear of Private projects they're not on. They still change, switch off,
+-- delete or re-point it (re-pointed, it's theirs: D19). Personal endpoints, and the switch off: everyone
+-- who manages it, as before.
+create or replace function public.pa_webhook_url_shown(w public.webhooks)
+returns boolean language sql security definer stable set search_path = public as $$
+  select w.workspace_id is null or not public.pa_on(w.workspace_id)
+      or coalesce(w.url_set_by, w.created_by) = auth.uid()
+      or public.ws_role(w.workspace_id) = 'owner';
+$$;
+-- (internal) Is p_url this endpoint's address as webhook_json showed it masked? Then a change sent with it
+-- (the app's edit form, an API client's GET then PATCH) leaves the address as it is. (No address is its
+-- own masked form: that always ends '/…' or '/…' and the last 4 characters of a longer path.)
+create or replace function public.pa_webhook_url_kept(w public.webhooks, p_url text)
+returns boolean language sql immutable set search_path = public as $$
+  select p_url is not null and w.url is not null and btrim(p_url) = public.webhook_url_masked(w.url) and btrim(p_url) <> w.url;
+$$;
+
 -- 2n. held notices and pending webhooks when access narrows (a project, or a whole workspace when
 -- p_project is null): what's waiting for someone who can't see it any more never goes. Only behind
 -- the switch: while it's off everything goes as it did before this file. (A task's project_id, and the
@@ -1525,7 +1546,8 @@ begin
                            'public.pa_scrub_bin(uuid)', 'public.pa_snap_part(jsonb,uuid[])', 'public.pa_split_bin(uuid)',
                            'public.pa_clear_reasons(uuid)', 'public.pa_notion_contain()', 'public.pa_project_closed(uuid,text)',
                            'public.pa_notion_shut(uuid,text)', 'public.pa_notion_closed_text(text)',
-                           'public.pa_notion_blockers(uuid)', 'public.pa_notion_refuse_on(uuid)'] loop
+                           'public.pa_notion_blockers(uuid)', 'public.pa_notion_refuse_on(uuid)',
+                           'public.pa_webhook_url_shown(public.webhooks)', 'public.pa_webhook_url_kept(public.webhooks,text)'] loop
     execute format('revoke execute on function %s from public, anon, authenticated', f);
   end loop;
 end $internal$;
@@ -3851,6 +3873,68 @@ end; $b$ $fn$;
   grant execute on function public.list_webhook_deliveries(uuid, integer) to authenticated;
   n := n + 1;
 
+  -- 0046's webhook_json: with the switch on, a team endpoint's full address only for its viewer and the
+  -- workspace's owner (pa_webhook_url_shown); another admin who manages it reads it masked (can_manage
+  -- stays true). Switch off: 0046's, line for line.
+  execute $fn$
+create or replace function public.webhook_json(w public.webhooks)
+returns jsonb language sql security definer stable set search_path = public as $b$
+  select jsonb_build_object(
+    'id', w.id, 'workspace_id', w.workspace_id,
+    'url', case when c.manage and public.pa_webhook_url_shown(w) then w.url else public.webhook_url_masked(w.url) end,
+    'description', w.description,
+    'events', to_jsonb(w.events), 'active', w.active,
+    'created_by', w.created_by, 'created_by_name', public.kanbo_person_name(w.created_by),
+    'failure_count', w.failure_count, 'last_status', w.last_status, 'last_error', w.last_error,
+    'last_delivery_at', w.last_delivery_at, 'disabled_at', w.disabled_at, 'disabled_reason', w.disabled_reason,
+    'created_at', w.created_at, 'updated_at', w.updated_at,
+    'can_manage', c.manage)
+    from (select coalesce(public.webhook_can_manage(w), false) as manage) c;
+$b$ $fn$;
+  revoke execute on function public.webhook_json(public.webhooks) from public, anon, authenticated;
+  n := n + 1;
+
+  -- 0046's update_webhook: an address sent back as webhook_json showed it masked leaves the address as it is
+  -- (pa_webhook_url_kept: the app's edit form, prefilled with it, sends it back with every save), rather than
+  -- pointing the endpoint at the masked text. Otherwise 0046's, line for line.
+  execute $fn$
+create or replace function public.update_webhook(p_id uuid, p_url text default null, p_events text[] default null,
+                                                 p_active boolean default null, p_description text default null)
+returns jsonb language plpgsql security definer set search_path = public as $b$
+declare w public.webhooks; u text := btrim(coalesce(p_url, '')); evs text[]; d text;
+begin
+  if auth.uid() is null then raise exception 'not authorized'; end if;
+  select * into w from public.webhooks where id = p_id for update;
+  if w.id is null or not public.webhook_can_manage(w) then raise exception 'webhook not found'; end if;
+  if public.pa_webhook_url_kept(w, p_url) then p_url := null; end if;
+  if p_url is not null and not public.webhook_url_ok(u) then raise exception 'invalid url'; end if;
+  if p_events is not null then evs := public.webhook_events_checked(p_events); end if;
+  if p_description is not null then
+    d := nullif(btrim(p_description), '');
+    if d is not null and length(d) > 200 then raise exception 'invalid description'; end if;
+  end if;
+  update public.webhooks set
+    url             = case when p_url is not null then u else url end,
+    events          = coalesce(evs, events),
+    description     = case when p_description is not null then d else description end,
+    active          = coalesce(p_active, active),
+    failure_count   = case when p_active is true and not active then 0 else failure_count end,
+    disabled_at     = case when p_active is true then null when p_active is false and active then now() else disabled_at end,
+    disabled_reason = case when p_active is true then null when p_active is false and active then 'Switched off by hand' else disabled_reason end,
+    updated_at      = now()
+   where id = p_id
+  returning * into w;
+  if p_active is false then
+    update public.webhook_deliveries set state = 'failed', error = coalesce(error, 'Endpoint switched off'),
+           next_attempt_at = null, lease_until = null, updated_at = now()
+     where webhook_id = p_id and state = 'pending';
+  end if;
+  return public.webhook_json(w);
+end; $b$ $fn$;
+  revoke execute on function public.update_webhook(uuid, text, text[], boolean, text) from public, anon;
+  grant execute on function public.update_webhook(uuid, text, text[], boolean, text) to authenticated;
+  n := n + 1;
+
   -- 0047's restore_from_trash: with the switch on, edit rights on the item's project first (what isn't
   -- yours to restore is 'not found', restored or not), and a task whose project has gone comes back
   -- somewhere with the audience it had (pa_restore_landing). Already restored, it says where the task is
@@ -4002,7 +4086,8 @@ returns boolean language sql stable set search_path = pg_catalog, public as $$
                                  'public.can_edit_project(uuid)', 'public.tasks_visible_to(uuid)',
                                  'public.toggle_task_follow(uuid,boolean)', 'public.toggle_comment_reaction(uuid,text)',
                                  'public.restore_from_trash(uuid)', 'public.approval_json(public.approvals)',
-                                 'public.list_webhook_deliveries(uuid,integer)']
+                                 'public.list_webhook_deliveries(uuid,integer)', 'public.webhook_json(public.webhooks)',
+                                 'public.update_webhook(uuid,text,text[],boolean,text)']
                            || case when to_regclass('public.status_update_comments') is not null
                                    then array['public.can_see_status_update(uuid)', 'public.status_update_project_ok(text,uuid)'] else '{}'::text[] end
                            || case when to_regclass('public.update_asks') is not null

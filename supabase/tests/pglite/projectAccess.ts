@@ -2999,6 +2999,47 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [[hO, hME, hM2, hRe]]);
   });
 
+  // (c1 functions, low: an admin not on a Private project read the full address of the owner's endpoint, which
+  // hears that project's events; for a catch-hook address that's often the receiver's only credential)
+  await test("0058, switch on: a team endpoint's full address is only for its viewer and the workspace's owner; another admin who manages it reads it masked, and saving it as shown keeps it; re-pointed, it's theirs (switch off: every manager, as before)", async () => {
+    const secret = "whsec_" + "b".repeat(43);
+    const mkHook = async (by: Who, url: string) => (await one<{ id: string }>(`insert into public.webhooks (workspace_id, created_by, url, events, secret) values ($1::uuid, $2::uuid, $3, array['task.created'], $4) returning id::text as id`,
+      [w.ws, w.id[by], url, secret])).id;
+    const fullO = "https://hooks.example.com/catch/oona-token-123", maskedO = "https://hooks.example.com/…-123";
+    const fullA = "https://hooks.example.com/catch/ari-token-456";
+    const hO = await mkHook("O", fullO), hA = await mkHook("A", fullA);
+    try {
+      const shown = async (who: Who, id: string, off = false) => {
+        const r = await attempt(w.id[who], `select e ->> 'url' as url, (e ->> 'can_manage')::boolean as m from jsonb_array_elements(public.list_webhooks($1::uuid)) e where e ->> 'id' = $2`,
+          [w.ws, id], off ? [[`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]]] : []);
+        return "rows" in r ? r.rows[0] : errOf(r);
+      };
+      eq([await shown("O", hO), await shown("A", hO), await shown("ME", hO), await shown("A", hO, true)],
+        [{ url: fullO, m: true }, { url: maskedO, m: true }, { url: maskedO, m: false }, { url: fullO, m: true }],
+        "Oona's endpoint: hers in full; Ari (an admin, not on PP) masked, still managing it; Meg masked, as before; switched off, Ari in full, as before");
+      eq([await shown("O", hA), await shown("A", hA)], [{ url: fullA, m: true }, { url: fullA, m: true }], "Ari's own, and the workspace's owner, in full");
+      // Ari saves Oona's endpoint as the edit form shows it (the masked address, its events changed): the address stays hers
+      const saved = await attempt(w.id.A, `select public.update_webhook($1::uuid, $2, array['task.created', 'task.updated']) as r`, [hO, maskedO]);
+      eq("rows" in saved ? (saved.rows[0].r as { url: string }).url : errOf(saved), maskedO, "saved (and still shown masked)");
+      const kept = async () => one<{ url: string; by: string | null; events: string[] }>(`select url, url_set_by::text as by, events from public.webhooks where id = $1::uuid`, [hO]);
+      eq(await kept(), { url: fullO, by: null, events: ["task.created"] }, "a save in a rolled-back try changes nothing");
+      await as(w.id.A, `select public.update_webhook($1::uuid, $2, array['task.created', 'task.updated'])`, [hO, maskedO]);
+      eq(await kept(), { url: fullO, by: null, events: ["task.created", "task.updated"] }, "its address and viewer as they were; the events saved");
+      // (the same with the switch off: a masked address sent back keeps it, rather than pointing it at '…')
+      const offSave = await attempt(null, `select url from public.webhooks where id = $1::uuid`, [hO],
+        [[`update public.workspaces set project_access = false where id = $1::uuid`, [w.ws]],
+         [`select set_config('request.jwt.claims', $1, true)`, [claims(w.id.A)]], [`select public.update_webhook($1::uuid, $2)`, [hO, maskedO]]]);
+      eq("rows" in offSave ? offSave.rows[0].url : errOf(offSave), fullO, "switched off, too");
+      // Ari re-points it: theirs (D19), so Ari reads it in full; Oona, the owner, still does
+      await as(w.id.A, `select public.update_webhook($1::uuid, 'https://other.example.com/ari-own-0001')`, [hO]);
+      eq([await shown("A", hO), await shown("O", hO), await shown("ME", hO)],
+        [{ url: "https://other.example.com/ari-own-0001", m: true }, { url: "https://other.example.com/ari-own-0001", m: true }, { url: "https://other.example.com/…0001", m: false }],
+        "re-pointed by Ari: Ari's and Oona's in full, Meg's masked");
+    } finally {
+      await pg.query(`delete from public.webhooks where id = any ($1::uuid[])`, [[hO, hA]]);
+    }
+  });
+
   await test("0058, switch on: what's queued for a webhook follows its viewer (re-pointed by someone who can't see it, its owner made a guest, or the switch turned on in the SQL editor: it's never sent)", async () => {
     const got = await scenario(async (run) => {
       const secret = "whsec_" + "b".repeat(43);
@@ -3759,6 +3800,8 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
       ["0047_bin_history_approvals_docs.sql", "restore_from_trash(p_id uuid)", "public.restore_from_trash(uuid)"],
       ["0047_bin_history_approvals_docs.sql", "approval_json(a public.approvals)", "public.approval_json(public.approvals)"],
       ["0046_api_webhooks_notion.sql", "list_webhook_deliveries(p_id uuid, p_limit integer default 25)", "public.list_webhook_deliveries(uuid,integer)"],
+      ["0046_api_webhooks_notion.sql", "webhook_json(w public.webhooks)", "public.webhook_json(public.webhooks)"],
+      ["0046_api_webhooks_notion.sql", "update_webhook(p_id uuid, p_url text default null, p_events text[] default null,", "public.update_webhook(uuid,text,text[],boolean,text)"],
       ["0046_api_webhooks_notion.sql", "notion_set_sync_enabled(p_id uuid, p_enabled boolean)", "public.notion_set_sync_enabled(uuid,boolean)"],
       ["0046_api_webhooks_notion.sql", "notion_delete_sync(p_id uuid)", "public.notion_delete_sync(uuid)"],
       ["0046_api_webhooks_notion.sql", "notion_link_page(p_task uuid, p_page_id text)", "public.notion_link_page(uuid,text)"],

@@ -324,7 +324,9 @@ async function manageAction(deps: HandlerDeps, userId: string, action: string, b
   }
 
   // ---- import ----
-  const projectId = b.projectId == null || b.projectId === "" ? null : str(b.projectId, 40);
+  // (as the app and the API write it: lower case. The tasks the import makes carry it as their project id,
+  // which every reader compares as text)
+  const projectId = b.projectId == null || b.projectId === "" ? null : str(b.projectId, 40).toLowerCase();
   if (projectId !== null && !UUID.test(projectId)) return refuse(400, "invalid", "Choose a project to import into.");
   // (0058's containment rule: never into a Members only or Private project while Project access is on,
   // said before Notion is asked anything; importDatabase and the database refuse it too)

@@ -1235,10 +1235,13 @@ async function importLeased(deps: SyncDeps, api: NotionApi, input: ImportInput,
       pid = made[0]?.id ?? null;
       if (!pid) throw new NotionActionError(403, "not_allowed", "You can't add projects to this workspace.");
     } else {
-      const p = await tx.query<{ ws: string | null; archived: boolean }>(
-        `select workspace_id::text as ws, archived_at is not null as archived from public.projects where id = $1::uuid`, [pid]);
+      const p = await tx.query<{ id: string; ws: string | null; archived: boolean }>(
+        `select id::text as id, workspace_id::text as ws, archived_at is not null as archived from public.projects where id = $1::uuid`, [pid]);
       if (!p[0] || p[0].ws !== ws) throw new NotionActionError(404, "not_found", "That project isn't in this workspace.");
       if (p[0].archived) throw new NotionActionError(400, "invalid", "That project is archived. Restore it, or import into another project.");
+      // (the project's own spelling of its id, as the app and the API write it: the tasks made here carry it,
+      // and the runs after this one compare it as text)
+      pid = p[0].id;
     }
     let sid: string | null = null;
     if (input.keepInSync) {

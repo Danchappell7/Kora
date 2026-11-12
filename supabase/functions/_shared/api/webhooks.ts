@@ -762,7 +762,7 @@ export const webhookOpenApiPaths: OpenApiDoc["paths"] = {
   "/webhooks": {
     get: {
       operationId: "listWebhooks", summary: "List webhook endpoints", tags: ["Webhooks"], "x-kanbo-access": "read",
-      description: "Without `workspace`: a personal key lists your personal endpoints and those of every workspace where you can edit; a workspace key lists its workspace's. Signing secrets are never listed, and an endpoint you can't manage (`canManage: false`) shows its `url` masked.",
+      description: "Without `workspace`: a personal key lists your personal endpoints and those of every workspace where you can edit; a workspace key lists its workspace's. Signing secrets are never listed, and an endpoint you can't manage (`canManage: false`) shows its `url` masked; so, where project access is on, does a workspace endpoint whose address someone else set (its owner reads every one in full).",
       parameters: [{ name: "workspace", in: "query", description: "A workspace id, or `personal`", schema: { type: "string" }, example: "personal" }],
       responses: { 200: jsonOk("The endpoints", listSchema(WEBHOOK_SCHEMA), listOf([WEBHOOK_EXAMPLE])), 400: E[400], 401: E[401], 403: E[403], 429: E[429] },
     },

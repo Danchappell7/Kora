@@ -32,7 +32,11 @@ back from the bin only with its project, never into the workspace's first
 project, and such a project leaves its workspace (to Personal or another one)
 only once its tasks, updates and bin entries have gone. Fifth, making someone a
 guest turns their editor roles into commenter whatever the switch says (they
-aren't put back if they're made a member again); the app asks first.
+aren't put back if they're made a member again); the app asks first. Sixth, a
+webhook endpoint's address sent back exactly as Kanbo shows it masked
+(`https://hooks.zapier.com/…x2kd`) leaves the address as it is, switch on or off
+(see "Webhook addresses" below). Before 0058 `update_webhook` pointed the
+endpoint at the masked text, which no receiver answers.
 
 ## What it adds
 
@@ -294,6 +298,16 @@ No new secrets and no new schedule.
   before 0058 with the switch off on purpose: an
   address chosen by someone who has left shouldn't keep receiving the
   workspace's events.
+- **Webhook addresses.** With the switch on, a team endpoint's full address
+  (Settings › Developers › Webhooks, `GET /webhooks`) is shown only to whoever
+  set it, as its deliveries follow what they can see, and to the workspace's
+  owner. Another admin still manages it (edits, switches off, deletes, tests or
+  re-points it) but reads the address masked, as members always have: a
+  catch-hook address is often the receiver's only credential, and the endpoint
+  may hear of Private projects that admin isn't on. Saved with the masked
+  address, as the edit form shows it, the endpoint keeps its address; given a
+  new one, it's theirs. Personal endpoints, and the switch off: everyone who
+  manages an endpoint reads it in full, as before.
 - **Viewers** read and follow; they don't comment, react or give kudos.
   Commenters (and guests added to comment) also attach files to a task and
   remove their own, in the app as in the database.

@@ -533,6 +533,59 @@ end; $$;
 revoke execute on function public.list_webhook_deliveries(uuid, integer) from public, anon;
 grant execute on function public.list_webhook_deliveries(uuid, integer) to authenticated;
 
+-- (0046_api_webhooks_notion.sql)
+create or replace function public.webhook_json(w public.webhooks)
+returns jsonb language sql security definer stable set search_path = public as $$
+  select jsonb_build_object(
+    'id', w.id, 'workspace_id', w.workspace_id,
+    'url', case when c.manage then w.url else public.webhook_url_masked(w.url) end,
+    'description', w.description,
+    'events', to_jsonb(w.events), 'active', w.active,
+    'created_by', w.created_by, 'created_by_name', public.kanbo_person_name(w.created_by),
+    'failure_count', w.failure_count, 'last_status', w.last_status, 'last_error', w.last_error,
+    'last_delivery_at', w.last_delivery_at, 'disabled_at', w.disabled_at, 'disabled_reason', w.disabled_reason,
+    'created_at', w.created_at, 'updated_at', w.updated_at,
+    'can_manage', c.manage)
+    from (select coalesce(public.webhook_can_manage(w), false) as manage) c;
+$$;
+revoke execute on function public.webhook_json(public.webhooks) from public, anon, authenticated;
+
+-- (0046_api_webhooks_notion.sql)
+create or replace function public.update_webhook(p_id uuid, p_url text default null, p_events text[] default null,
+                                                 p_active boolean default null, p_description text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare w public.webhooks; u text := btrim(coalesce(p_url, '')); evs text[]; d text;
+begin
+  if auth.uid() is null then raise exception 'not authorized'; end if;
+  select * into w from public.webhooks where id = p_id for update;
+  if w.id is null or not public.webhook_can_manage(w) then raise exception 'webhook not found'; end if;
+  if p_url is not null and not public.webhook_url_ok(u) then raise exception 'invalid url'; end if;
+  if p_events is not null then evs := public.webhook_events_checked(p_events); end if;
+  if p_description is not null then
+    d := nullif(btrim(p_description), '');
+    if d is not null and length(d) > 200 then raise exception 'invalid description'; end if;
+  end if;
+  update public.webhooks set
+    url             = case when p_url is not null then u else url end,
+    events          = coalesce(evs, events),
+    description     = case when p_description is not null then d else description end,
+    active          = coalesce(p_active, active),
+    failure_count   = case when p_active is true and not active then 0 else failure_count end,
+    disabled_at     = case when p_active is true then null when p_active is false and active then now() else disabled_at end,
+    disabled_reason = case when p_active is true then null when p_active is false and active then 'Switched off by hand' else disabled_reason end,
+    updated_at      = now()
+   where id = p_id
+  returning * into w;
+  if p_active is false then
+    update public.webhook_deliveries set state = 'failed', error = coalesce(error, 'Endpoint switched off'),
+           next_attempt_at = null, lease_until = null, updated_at = now()
+     where webhook_id = p_id and state = 'pending';
+  end if;
+  return public.webhook_json(w);
+end; $$;
+revoke execute on function public.update_webhook(uuid, text, text[], boolean, text) from public, anon;
+grant execute on function public.update_webhook(uuid, text, text[], boolean, text) to authenticated;
+
 -- (0054_update_conversation.sql, only where 0054 is in)
 do $csu$
 begin

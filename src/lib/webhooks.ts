@@ -21,6 +21,9 @@
              'delivery not found' | 'already delivered'
      url: the full address only when can_manage; otherwise masked
           (https://hooks.zapier.com/…x2kd): catch-hook URLs work as passwords.
+          With project access on (0058), a workspace endpoint's full address is
+          only for whoever set it and the workspace's owner: another admin gets
+          it masked with can_manage true, and saving it back masked keeps it.
 
    Package a2: the async functions call those RPCs as the signed-in person
    (or, in demo mode, an in-memory fake with realistic endpoints and

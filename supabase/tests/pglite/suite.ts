@@ -3946,6 +3946,28 @@ async function projectAccessApiSuite(w: World) {
     await pg.query(`delete from public.tasks where project_id = $1`, [fresh.project]);
     await pg.query(`delete from public.projects where id = $1::uuid`, [fresh.project]);
     await pg.query(`delete from public.trash where item_id = $1::uuid`, [fresh.project]);
+    // (c1 functions: a project id sent in capitals, by the notion function or to importDatabase, made tasks that
+    // named the project in capitals) the tasks an import makes carry the project's own id, as the app and the
+    // API write it, so every text reader finds them; the project then can't be made Members only with them
+    const roomy = await mk("Contained capitals", "workspace");
+    const call = async (body: Record<string, unknown>) => {
+      const res = await handleNotionRequest(new Request("https://kanbo.test/functions/v1/notion", { method: "POST", headers: { Authorization: `Bearer ${w.alice}` }, body: JSON.stringify(body) }),
+        { ...deps, authUser: async (j: string) => j, cronSecret: "" } as never);
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    };
+    const spelled = async () => (await pg.query<{ p: string }>(`select project_id as p from public.tasks where title = 'Contained: a page' and lower(project_id) = $1`, [roomy])).rows.map((r) => r.p);
+    const viaFn = await call({ action: "import", workspaceId: w.w1, databaseId: dbId, projectId: roomy.toUpperCase(), mapping: { title: "Name" }, keepInSync: false });
+    eq([viaFn.status, (viaFn.body.result as { projectId?: string; created?: number } | undefined)?.projectId, (viaFn.body.result as { created?: number } | undefined)?.created],
+      [200, roomy, 1], `the notion function's import, its project id in capitals: ${JSON.stringify(viaFn.body)}`);
+    eq(await spelled(), [roomy], "its task names the project as the project does");
+    await pg.query(`delete from public.tasks where lower(project_id) = $1`, [roomy]);
+    const direct = await imp(roomy.toUpperCase(), false);
+    eq([direct.got, direct.project, await spelled()], ["created 1", roomy, [roomy]], "importDatabase given capitals: the same");
+    const narrowed = await asPerson(pg, w.alice, `select public.set_project_visibility($1::uuid, 'members')`, [roomy]).then(() => "made Members only", (e) => String((e as Error).message));
+    eq(narrowed, "notion closed project", "and the project, its imported task linked, isn't made Members only");
+    await pg.query(`delete from public.tasks where lower(project_id) = $1`, [roomy]);
+    await pg.query(`delete from public.projects where id = $1::uuid`, [roomy]);
+    await pg.query(`delete from public.trash where item_id = $1::uuid`, [roomy]);
     // switched off: into Board pay, as before
     await asPerson(pg, w.alice, `select public.set_project_access($1::uuid, false)`, [w.w1]);
     eq((await imp(pay, false)).got, "created 1", "switched off, into Board pay");
