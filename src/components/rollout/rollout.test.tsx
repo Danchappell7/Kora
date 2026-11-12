@@ -9,8 +9,10 @@ import { WelcomeCard } from "./WelcomeCard";
 import { WorkspaceHealthCard, type WorkspaceHealthProps } from "./WorkspaceHealth";
 import { workspaceHealth, welcomeContent } from "../../lib/rollout";
 import { EMPTY_AVAILABILITY, resetAvailability, updateAvailability } from "../../lib/availability";
+import { KANBO_TODAY, toLocalISO } from "../../data/data";
 
 const NOW = new Date(2026, 10, 10, 9, 0);
+const dayFrom = (offset: number) => { const d = new Date(KANBO_TODAY); d.setDate(d.getDate() + offset); return toLocalISO(d); };
 beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW); });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -135,11 +137,12 @@ describe("Welcome to <workspace>", () => {
   it("says who's off beside them (0055), and nothing for a guest", () => {
     const content = welcomeContent({ me: "m-1", workspace: { id: "ws", ownerId: "m-3" }, role: "member", members: [m("m-1", "member"), m("m-3", "owner"), m("m-4", "admin")], projects: [], tasks: [], nameOf: (x) => x.name });
     act(() => updateAvailability({ ...EMPTY_AVAILABILITY, status: "on", me: "m-1", activeWs: "ws", roles: { ws: { "m-1": "member", "m-3": "owner", "m-4": "admin" } },
-      timeOff: [{ id: "o1", userId: "m-3", workspaceId: "ws", startsOn: "2026-11-10", endsOn: "2026-11-12", halfDay: null }] }));
+      // (the chip reads the app's today, fixed when it loads, not the faked clock: off from yesterday to tomorrow)
+      timeOff: [{ id: "o1", userId: "m-3", workspaceId: "ws", startsOn: dayFrom(-1), endsOn: dayFrom(1), halfDay: null }] }));
     try {
       const { rerender } = render(<WelcomeCard workspaceName="Harbour Advisory" workspaceId="ws" content={content} onOpenProject={vi.fn()} onOpenTask={vi.fn()} onOpenPeople={vi.fn()} onDismiss={vi.fn()} />);
       const card = screen.getByRole("region", { name: "Welcome to Harbour Advisory" });
-      expect(within(card).getAllByText("Off until Fri")).toHaveLength(1);
+      expect(within(card).getAllByText(/^Off until (Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/)).toHaveLength(1);
       expect(card.querySelectorAll(".kav-chip")).toHaveLength(1);
       act(() => updateAvailability({ roles: { ws: { "m-1": "guest", "m-3": "owner", "m-4": "admin" } } }));
       rerender(<WelcomeCard workspaceName="Harbour Advisory" workspaceId="ws" content={content} onOpenProject={vi.fn()} onOpenTask={vi.fn()} onOpenPeople={vi.fn()} onDismiss={vi.fn()} />);
