@@ -2345,6 +2345,59 @@ export async function projectAccessSuite(pg: Pg, files: string[], t: Checks): Pr
     eq(got, { on: want(true), off: want(false) }, "only the workspace's own Notion counts; what moved here leaves its Notion where it was");
   });
 
+  await test("0058, switch on, the containment rule (2t), a sync another workspace recorded for a project that moved here: re-stamped as this workspace's while its project is Members only, it's refused (it would run here; with the project Whole workspace, or switched off, it goes); restored from the bin, the 'sync wasn't restored' note looks where the sync is recorded (said when Yonder syncs the database elsewhere by now; not said when only this workspace does, and the sync comes back as Yonder's)", async () => {
+    const got = await scenario(async (run, _exec, tryRun) => {
+      const out: Record<string, unknown> = {};
+      await containedAgain(run);
+      await run(null, `insert into public.workspace_members (workspace_id, user_id, email, name, role, status) values ($1::uuid, $2::uuid, 'me.pa@example.org', 'Meg', 'member', 'active')`, [w.ws2, w.id.ME]);
+      const DB = "0c0c0c0c-5858-4004-8000-0000000000db";
+      const mkY = async (name: string) => (await run(w.id.ME, `insert into public.projects (user_id, owner_id, name, workspace_id, visibility) values ($1::uuid, $1::uuid, $2, $3::uuid, 'workspace') returning id::text as id`, [w.id.ME, name, w.ws2]))[0].id as string;
+      const moved = await mkY("Zebra Yonder synced, moved"), other = await mkY("Zebra Yonder other");
+      const sync = (await run(null, `insert into public.notion_syncs (workspace_id, project_id, database_id, created_by) values ($1::uuid, $2::uuid, $3, $4::uuid) returning id::text as id`, [w.ws2, moved, DB, w.id.O2]))[0].id as string;
+      await run(w.id.ME, `update public.projects set workspace_id = $2::uuid where id = $1::uuid returning id`, [moved, w.ws]);
+      const restamp = async () => {
+        await run(null, `savepoint pa_stamp`);
+        const o = said(await tryRun(null, `update public.notion_syncs set workspace_id = $2::uuid where id = $1::uuid returning id`, [sync, w.ws]));
+        await run(null, `rollback to savepoint pa_stamp`);
+        return o;
+      };
+      const restored = async (meanwhile: () => Promise<unknown>) => {
+        await run(null, `savepoint pa_bin`);
+        await run(w.id.ME, `delete from public.projects where id = $1::uuid`, [moved]);
+        await meanwhile();
+        const bin = (await run(null, `select id::text as id from public.trash where item_id = $1::uuid and restored_at is null`, [moved]))[0].id as string;
+        const r = (await run(w.id.ME, `select public.restore_from_trash($1::uuid) as r`, [bin]))[0].r as Record<string, unknown>;
+        const o = { status: r.status, note: r.note ?? null,
+                    syncs: (await run(null, `select s.workspace_id = $2::uuid as yonders from public.notion_syncs s where s.project_id = $1::uuid`, [moved, w.ws2])).map((x) => x.yonders) };
+        await run(null, `rollback to savepoint pa_bin`);
+        return o;
+      };
+      for (const on of [true, false]) {
+        const res: Record<string, unknown> = {};
+        await run(null, `savepoint pa_mode`);
+        await run(null, `update public.workspaces set project_access = $2 where id = $1::uuid`, [w.ws, on]);
+        res["the service re-stamps Yonder's sync as this workspace's, its project Whole workspace"] = await restamp();
+        res["Meg makes the project Members only"] = said(await tryRun(w.id.ME, `select public.set_project_visibility($1::uuid, 'members') as v`, [moved]));
+        res["... and the service re-stamps it"] = await restamp();
+        res["the bin, while Yonder syncs the database with another project"] = await restored(() =>
+          run(null, `insert into public.notion_syncs (workspace_id, project_id, database_id, created_by) values ($1::uuid, $2::uuid, $3, $4::uuid)`, [w.ws2, other, DB, w.id.O2]));
+        res["the bin, while this workspace syncs it (PW)"] = await restored(() =>
+          run(null, `update public.notion_syncs set database_id = $2 where id = $1::uuid`, [w.rows.notion_syncs.PW![0], DB]));
+        await run(null, `rollback to savepoint pa_mode`);
+        out[on ? "on" : "off"] = res;
+      }
+      return out;
+    });
+    const want = (on: boolean) => ({
+      "the service re-stamps Yonder's sync as this workspace's, its project Whole workspace": "ok",
+      "Meg makes the project Members only": "ok",
+      "... and the service re-stamps it": on ? CLOSED("sync") : "ok",
+      "the bin, while Yonder syncs the database with another project": { status: "restored", note: on ? "Its Notion sync wasn't restored: that database syncs with another project now." : null, syncs: [] },
+      "the bin, while this workspace syncs it (PW)": { status: "restored", note: null, syncs: [true] },
+    });
+    eq(got, { on: want(true), off: want(false) }, "a sync is judged, and looked for, in the workspace it's recorded in");
+  });
+
   await test("0058: pa_notion_page_hidden and pa_notion_database_hidden (served at /rpc) tell someone who isn't in the workspace nothing: the same answer for a database and a page a Members only project syncs and for made-up ones; its people's answers are as before", async () => {
     const got = await scenario(async (run) => {
       await run(null, `update public.workspaces set project_access = true where id = $1::uuid`, [w.ws]);
