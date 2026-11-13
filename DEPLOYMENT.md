@@ -961,7 +961,8 @@ steps; nothing breaks while you wait.
    - `api`, `mcp`: no writes into a project you can only view, and no
      assigning someone who can't see it. A sub-task moved to another project
      on its own becomes a task of its own there (as in the app); `my_day`
-     lists only the approvals you can still decide.
+     lists only the approvals you can still decide. A move refused for Notion
+     links says whose they are (the task's, or one of its sub-tasks').
    - `notion`: a Notion page whose Owner can't see the project comes in
      unassigned (the sync no longer stops on it, nor rolls back its run); and
      where it's switched on, a synced task moved to another project stops
@@ -1025,8 +1026,10 @@ steps; nothing breaks while you wait.
    only with its project, even with the switch off. Admin › Delete user now
    deletes someone who has commented in a business (before, it failed for
    them; their comments stay, under their name), reacting to a comment no
-   longer puts your name on it, and nobody can change a business project's id
-   any more (the app never does). From now on Team ›
+   longer puts your name on it, nobody can change a business project's id
+   any more (the app never does), and a business project can't be given to
+   someone who isn't in that business (About › Owner offers only its people
+   anyway). From now on Team ›
    People asks before making someone a guest (or an admin a member) and names
    what they'd lose: made a guest, their "Can edit" project roles become "Can
    comment", whatever the switch says, and stay so if they're made a member

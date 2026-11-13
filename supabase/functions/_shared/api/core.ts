@@ -63,9 +63,11 @@ export function pgFailure(e: unknown): ApiFail | null {
     return invalid({ assigneeId: "That person can't see this project." });
   }
   // 0058's containment rule: a task with Notion page links doesn't move into a Members only or Private
-  // project while Project access is on (moved itself, or under a parent there). Nothing was changed
+  // project while Project access is on (moved itself, or under a parent there). Nothing was changed. The
+  // database's sentence says which (a sub-task its parent takes along has the links, say), else the move's
   if (/notion closed project/.test(String((e as { message?: unknown })?.message ?? ""))) {
-    return invalid({ projectId: NOTION_CLOSED_MOVE });
+    const hint = String((e as { hint?: unknown })?.hint ?? "");
+    return invalid({ projectId: /^Members only and Private projects don't connect to Notion yet\. [^\n]{3,200}\.$/.test(hint) ? hint : NOTION_CLOSED_MOVE });
   }
   switch (pgKind(e)) {
     case "rls": return forbidden("You don't have permission to do that.");

@@ -94,6 +94,9 @@ const routes: Route[] = [
   { method: "GET", path: "/assignee", handler: async () => { throw Object.assign(new Error("assignee can't see this project"), { code: "42501" }); } },
   // 0058's containment rule refusing a Notion-linked task's move into a Members only or Private project
   { method: "GET", path: "/notion-move", handler: async () => { throw Object.assign(new Error("notion closed project"), { code: "P0001", hint: "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project." }); } },
+  // …a parent whose sub-task has the links (the database's own sentence), and a hint that isn't one of its sentences
+  { method: "GET", path: "/notion-move-sub", handler: async () => { throw Object.assign(new Error("notion closed project"), { code: "P0001", hint: "Members only and Private projects don't connect to Notion yet. One of its sub-tasks has Notion page links: remove them first, or keep it in a Whole workspace project." }); } },
+  { method: "GET", path: "/notion-move-odd", handler: async () => { throw Object.assign(new Error("notion closed project"), { code: "P0001", hint: "select * from secret_table" }); } },
   { method: "GET", path: "/boom", handler: async () => { throw Object.assign(new Error("syntax error at or near \"selec\" in select * from secret_table"), { code: "42601" }); } },
   { method: "POST", path: "/boom", handler: async () => { throw new Error("kaput"); } },
   // writes in a transaction as the user (like the real handlers)
@@ -413,6 +416,14 @@ describe("errors", () => {
     const moved = await call(WRITE, "GET", "/notion-move");
     expect([moved.status, moved.json.error.code, moved.json.error.details]).toEqual([422, "validation_failed",
       { fields: { projectId: "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project." } }]);
+    // the parent of a linked sub-task is told it's the sub-task's links; a hint that isn't a sentence of the rule isn't passed on
+    const sub = await call(WRITE, "GET", "/notion-move-sub");
+    expect([sub.status, sub.json.error.details]).toEqual([422,
+      { fields: { projectId: "Members only and Private projects don't connect to Notion yet. One of its sub-tasks has Notion page links: remove them first, or keep it in a Whole workspace project." } }]);
+    const odd = await call(WRITE, "GET", "/notion-move-odd");
+    expect([odd.status, odd.json.error.details]).toEqual([422,
+      { fields: { projectId: "Members only and Private projects don't connect to Notion yet. Remove this task's Notion page links first, or keep it in a Whole workspace project." } }]);
+    expect(odd.text).not.toMatch(/secret_table/);
     const boom = await call(WRITE, "GET", "/boom");
     expect(boom.status).toBe(500);
     expect(isError(boom.json, 500, "internal")).toBe(true);

@@ -17,7 +17,8 @@
 --      leaves a workspace takes nothing with them: the projects they own there
 --      go to its owner, and the bin and the history forget their access, so
 --      inviting them back gives them only what the invite says (2p; this file
---      does the same once for anyone who left before it).
+--      does the same once for anyone who left before it). Nor is a project
+--      given to anyone who isn't in its workspace, switch on or off.
 --   3. One rank per (person, project): 0 none, 1 view, 2 comment, 3 edit,
 --      from pa_rank_core() (the single table; src/lib/projectAccessMatrix.json
 --      holds the same 320 rows for the app's own tests). Read = 1, comment
@@ -47,7 +48,9 @@
 --   6. Notion is for Whole workspace projects while the switch is on (2t): no Members only or Private
 --      project has a Notion sync, a Notion import or a task with a Notion link, and every way in is
 --      refused with a sentence (a sync, an import, a link, a linked task moved in, a project with them
---      made narrower, the switch turned on while one has them, the bin putting them back).
+--      made narrower, the switch turned on while one has them, the bin putting them back). The rule
+--      counts the workspace's own syncs and links: one another workspace recorded (left there when
+--      its project or task moved here) never runs here, and nobody here can see or remove it.
 --   7. Turning the switch off again is the rollback: instant, nothing lost.
 --      In an emergency, the SQL editor may switch it off directly:
 --        update public.workspaces set project_access = false where id = '<ws id>';
@@ -656,10 +659,12 @@ $$;
 -- never while a live sync ALSO links it to a task the caller can't see: a page moved, in Notion, from one
 -- synced database into another could be taken in by both syncs (the notion function no longer lets it,
 -- with the switch on: heldElsewhere, movedOut), and the cache would then hold whichever task's title was
--- written last, a Private one's included.
+-- written last, a Private one's included. Asked by someone who isn't in the workspace (it's served at
+-- /rpc): always hidden, so it never says whether a page is linked there.
 create or replace function public.pa_notion_page_hidden(p_ws uuid, p_page text)
 returns boolean language sql security definer stable set search_path = public as $$
-  select exists (select 1 from public.notion_links l
+  select not public.is_member(p_ws)
+      or exists (select 1 from public.notion_links l
                   where l.workspace_id = p_ws and l.notion_page_id = p_page and l.kind = 'synced' and l.sync_id is not null
                     and not public.can_see_task(l.task_id))
       or ((exists (select 1 from public.notion_links l
@@ -838,10 +843,11 @@ returns boolean language sql security definer stable set search_path = public as
 $$;
 -- (the caller's, for notion_links' read rule: a link someone added by hand to a database's id, made before
 -- that database closed to the caller, would read its title from the page cache, and the notion function
--- would fetch it again on request; notion_link_page refuses a new one)
+-- would fetch it again on request; notion_link_page refuses a new one. Asked by someone who isn't in the
+-- workspace (it's served at /rpc): always closed, so it never says whether a database syncs there)
 create or replace function public.pa_notion_database_hidden(p_ws uuid, p_db text)
 returns boolean language sql security definer stable set search_path = public as $$
-  select public.user_notion_database_hidden(auth.uid(), p_ws, p_db);
+  select not public.is_member(p_ws) or public.user_notion_database_hidden(auth.uid(), p_ws, p_db);
 $$;
 revoke execute on function public.pa_notion_database_hidden(uuid, text) from public, anon;
 grant execute on function public.pa_notion_database_hidden(uuid, text) to authenticated;
@@ -1420,6 +1426,14 @@ end; $$;
 -- an id that work here names: trg_projects_pa_guard's 'id in use'). The page and database closure above (2j:
 -- pa_notion_page_hidden, user_notion_database_hidden, notion_pages_retired) stays, for what's older
 -- than this rule (the undo window, a workspace switched on before it). Switch off: nothing changes.
+-- The syncs and links it counts are the workspace's own (each row names its workspace). A task or a
+-- project moved here from another workspace leaves its links and syncs recorded there (notion_links_guard
+-- fires only on writes to the link; nothing moves a sync): they're that workspace's, read and removed
+-- there, and dead to what moved (a sync stops at a project that isn't in its workspace, projectGone, and
+-- reads and writes only its own workspace's tasks), so every check here passes them by, the switch-on
+-- list included, rather than refuse what nobody here can see or remove. Should what moved go back,
+-- they're counted there again. (The bin bringing such a link back to a task here would make it this
+-- workspace's: into a Members only or Private project, it's left out instead: pa_trg_notion_links_closed.)
 -- (kanbo.notion_contain = 'off' lifts it for the SQL editor, as kanbo.restoring does the bin's checks:
 -- no client sets a setting. The test suite builds the older states that way.)
 create or replace function public.pa_notion_contain()
@@ -1476,6 +1490,7 @@ create or replace function public.pa_notion_closed_text(p_what text)
 returns text language sql immutable set search_path = pg_catalog as $$
   select 'Members only and Private projects don''t connect to Notion yet. ' || case p_what
     when 'move' then 'Remove this task''s Notion page links first, or keep it in a Whole workspace project.'
+    when 'move sub-task' then 'One of its sub-tasks has Notion page links: remove them first, or keep it in a Whole workspace project.'
     when 'link' then 'Make this project Whole workspace to link Notion pages to its tasks.'
     when 'sync' then 'Choose a Whole workspace project.'
     when 'restore task' then 'This task has Notion page links: make its project Whole workspace to restore it.'
@@ -1485,7 +1500,9 @@ $$;
 -- The Members only and Private projects here that still connect to Notion: their syncs, and their tasks
 -- with a Notion link (one deleted, in the bin or gone from the workspace counts by the access it had:
 -- no name). Switching on is refused while there are any (pa_trg_workspaces_guard). (A task's project id
--- in any spelling is that project's, as every rank reads it: one row a project.)
+-- in any spelling is that project's, as every rank reads it: one row a project.) The workspace's own
+-- syncs and links, as every check of the rule counts them: one another workspace recorded, left when a
+-- task or project moved here, isn't this workspace's to list or remove.
 create or replace function public.pa_notion_blockers(p_ws uuid)
 returns table (project_id text, name text, visibility text, syncs integer, linked_tasks integer)
 language sql security definer stable set search_path = public as $$
@@ -1493,7 +1510,7 @@ language sql security definer stable set search_path = public as $$
     select lower(t.project_id) as pid, count(*)::int as n
       from public.tasks t
      where t.workspace_id = p_ws and t.project_id is not null
-       and exists (select 1 from public.notion_links l where l.task_id = t.id)
+       and exists (select 1 from public.notion_links l where l.task_id = t.id and l.workspace_id = p_ws)
      group by lower(t.project_id)),
   synced as (
     select s.project_id::text as pid, count(*)::int as n
@@ -2024,10 +2041,12 @@ begin
     end if;
     -- (a new project given to someone else has an owner an owner change could give it: an active
     -- non-guest here, as the UPDATE below asks; while the switch is on, or a project that isn't Whole
-    -- workspace)
+    -- workspace. Switched off, a Whole workspace one: anyone in the workspace, a guest too, as before;
+    -- never someone who isn't in it, below)
     if client and not restoring and new.owner_id is not null and new.owner_id is distinct from auth.uid()
-       and (public.pa_on(new.workspace_id) or new.visibility <> 'workspace')
-       and public.user_ws_role(new.owner_id, new.workspace_id) not in ('owner', 'admin', 'member') then
+       and (case when public.pa_on(new.workspace_id) or new.visibility <> 'workspace'
+                 then public.user_ws_role(new.owner_id, new.workspace_id) not in ('owner', 'admin', 'member')
+                 else public.pa_ws_member_role(new.owner_id, new.workspace_id) = 'none' end) then
       raise exception 'invalid owner';
     end if;
     if not restoring then
@@ -2085,6 +2104,16 @@ begin
        and public.user_ws_role(new.owner_id, new.workspace_id) not in ('owner', 'admin', 'member') then
       raise exception 'invalid owner';
     end if;
+  end if;
+  -- (whatever the switch says, a team project's owner is someone in its workspace, given it by an owner
+  -- change or taking it there by a move: one who isn't, invited back later for anything (a guest for
+  -- another project), would have it again as its owner once the switch is on, as someone who left
+  -- would, but for 2p handing a leaver's projects on. Switched off, a guest may still be given a Whole
+  -- workspace one, as before)
+  if direct and new.workspace_id is not null and new.owner_id is not null
+     and (new.owner_id is distinct from old.owner_id or new.workspace_id is distinct from old.workspace_id)
+     and public.pa_ws_member_role(new.owner_id, new.workspace_id) = 'none' then
+    raise exception 'invalid owner';
   end if;
   if new.contributor_ids is distinct from old.contributor_ids and coalesce(current_setting('kanbo.pa_sync', true), '') <> 'on' then
     -- an older tab writing contributor_ids: today's rule while the switch is off (on a Whole workspace
@@ -2883,7 +2912,7 @@ end; $$;
 -- it had here (1h), as notion_delete_sync does, so its owners can sync the database elsewhere again.)
 create or replace function public.pa_trg_notion_syncs() returns trigger
 language plpgsql security definer set search_path = public as $$
-declare kept boolean := false;
+declare kept boolean := false; pws uuid;
 begin
   -- (the containment rule, 2t: never into a Members only or Private project while the switch is on,
   -- whoever writes it, the bin putting one back too. The bin's insert of a database that syncs with
@@ -2893,12 +2922,18 @@ begin
     perform 1 from public.notion_syncs x where x.workspace_id = new.workspace_id and x.database_id = new.database_id for key share;
     kept := found;
   end if;
-  -- (judged where the project is: a sync row names its workspace, and only notion_save_sync checks the two agree)
-  if (tg_op = 'INSERT' and not kept or tg_op = 'UPDATE' and new.project_id is distinct from old.project_id)
-     and public.pa_notion_shut(coalesce((select p.workspace_id from public.projects p where p.id = new.project_id), new.workspace_id),
-                               new.project_id::text) then
-    raise exception 'notion closed project'
-      using hint = public.pa_notion_closed_text(case when public.pa_restoring() then 'restore project' else 'sync' end);
+  -- (judged where the sync is, when its project is there too: a sync row names its workspace, and only
+  -- notion_save_sync checks the two agree. One whose project is in another workspace by now (the bin
+  -- putting back a project that moved there, with the sync its old workspace recorded) never runs
+  -- (projectGone), and is that old workspace's, as 2t counts it; should the project go back, that's
+  -- judged then. The project's row is held (FOR SHARE) first, so a move of it waits for this)
+  if tg_op = 'INSERT' and not kept
+     or tg_op = 'UPDATE' and (new.project_id is distinct from old.project_id or new.workspace_id is distinct from old.workspace_id) then
+    select p.workspace_id into pws from public.projects p where p.id = new.project_id for share;
+    if pws is not distinct from new.workspace_id and public.pa_notion_shut(new.workspace_id, new.project_id::text) then
+      raise exception 'notion closed project'
+        using hint = public.pa_notion_closed_text(case when public.pa_restoring() then 'restore project' else 'sync' end);
+    end if;
   end if;
   if public.pa_is_client() and not public.pa_restoring() and new.workspace_id is not null and public.pa_on(new.workspace_id)
      and tg_op = 'UPDATE' and new.project_id is distinct from old.project_id
@@ -2941,6 +2976,17 @@ begin
   end if;
   select x.workspace_id, x.project_id into t from public.tasks x where x.id = new.task_id for share;
   if t.workspace_id is not null and public.pa_notion_shut(t.workspace_id, t.project_id) then
+    -- (the bin putting back a link that was another workspace's when it went in: its task had moved here
+    -- with it still recorded there, dead to it, and 2t passed it by. notion_links_guard has made it this
+    -- workspace's by now, so it's left out, and the restore goes on, rather than refused for a link
+    -- nobody here could see or remove)
+    if tg_op = 'INSERT' and public.pa_restoring() and exists (
+         select 1 from public.trash r
+          where r.workspace_id = t.workspace_id and r.restored_at is null
+            and r.snapshot -> 'notion_links' @> jsonb_build_array(jsonb_build_object('id', new.id))
+            and not r.snapshot -> 'notion_links' @> jsonb_build_array(jsonb_build_object('id', new.id, 'workspace_id', t.workspace_id))) then
+      return null;
+    end if;
     -- (the bin putting it back: its project's own restore, while that project's entry is still in the bin,
     -- or a task's into a live project)
     raise exception 'notion closed project' using hint = public.pa_notion_closed_text(case
@@ -2954,9 +3000,11 @@ end; $$;
 
 -- tasks (the containment rule, 2t): a task with a Notion link never moves into a Members only or Private
 -- project while the switch is on (refused, never unlinked): on its own, as a sub-task its parent takes
--- along (pa_trg_tasks_after's update comes through here), re-parented under a task there (trg_tasks_pa
--- has moved it to its parent's project by now: it sorts first), or into another workspace's. Whoever
--- writes it: the app, the API, MCP, the planner, the bin.
+-- along (pa_trg_tasks_after's update comes through here), or re-parented under a task there (trg_tasks_pa
+-- has moved it to its parent's project by now: it sorts first). Whoever writes it: the app, the API,
+-- MCP, the planner, the bin. Its links in the workspace it's in, or going to (2t: a task moved to
+-- another workspace leaves its links recorded in the one it left, where they never sync with it; moved
+-- back, they're its again). A sub-task its parent takes along says so: the parent may have none.
 create or replace function public.pa_trg_tasks_notion() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
@@ -2964,9 +3012,12 @@ begin
      or (new.project_id is not distinct from old.project_id and new.workspace_id is not distinct from old.workspace_id) then
     return new;
   end if;
-  if exists (select 1 from public.notion_links l where l.task_id = new.id)
+  if exists (select 1 from public.notion_links l where l.task_id = new.id and l.workspace_id = new.workspace_id)
      and public.pa_notion_shut(new.workspace_id, new.project_id) then
-    raise exception 'notion closed project' using hint = public.pa_notion_closed_text('move');
+    raise exception 'notion closed project' using hint = public.pa_notion_closed_text(
+      case when pg_trigger_depth() > 1 and new.parent_id is not null
+                and exists (select 1 from public.tasks p where p.id = new.parent_id and p.project_id is not distinct from new.project_id)
+           then 'move sub-task' else 'move' end);
   end if;
   return new;
 end; $$;
@@ -2980,6 +3031,8 @@ end; $$;
 -- a page linked meanwhile to a task under an id no live project here has (or a linked task moved to
 -- one) holds that row too (pa_notion_shut), so it waits for this and judges the project this made, or
 -- this waits for it and finds its link. (Made narrower in place, the project's own row does that.)
+-- Its syncs and its tasks' links in that workspace (2t): a project or a task moved here from another one
+-- leaves its syncs and links recorded there, where they're counted should it go back.
 create or replace function public.pa_trg_projects_notion() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare on_ boolean;
@@ -2990,10 +3043,10 @@ begin
   end if;
   select w.project_access into on_ from public.workspaces w where w.id = new.workspace_id for no key update;
   if not coalesce(on_, false) then return new; end if;
-  if exists (select 1 from public.notion_syncs s where s.project_id = new.id)
+  if exists (select 1 from public.notion_syncs s where s.project_id = new.id and s.workspace_id = new.workspace_id)
      or exists (select 1 from public.tasks t
                  where t.workspace_id = new.workspace_id and lower(t.project_id) = new.id::text
-                   and exists (select 1 from public.notion_links l where l.task_id = t.id)) then
+                   and exists (select 1 from public.notion_links l where l.task_id = t.id and l.workspace_id = new.workspace_id)) then
     raise exception 'notion closed project' using hint = public.pa_notion_closed_text(
       case when tg_op = 'INSERT' and public.pa_restoring() then 'restore project' else 'project' end);
   end if;
@@ -3251,7 +3304,7 @@ language sql immutable set search_path = pg_catalog as $$
     ('goal_links', 'trg_goal_links_pa', 'before insert', 'pa_trg_goal_links', null),
     ('goals', 'trg_goals_pa_project', 'before insert or update of project_id', 'pa_trg_goals_project', 'project_id'),
     ('forms', 'trg_forms_pa_token', 'before update of public_token', 'pa_trg_forms_token', 'public_token'),
-    ('notion_syncs', 'trg_notion_syncs_pa', 'before insert or update of project_id', 'pa_trg_notion_syncs', null),
+    ('notion_syncs', 'trg_notion_syncs_pa', 'before insert or update of project_id, workspace_id', 'pa_trg_notion_syncs', null),
     ('notion_links', 'trg_notion_links_pa_gone', 'after delete', 'pa_trg_notion_links_gone', null),
     -- (the containment rule, 2t)
     ('notion_links', 'trg_notion_links_pa_closed', 'before insert or update of task_id', 'pa_trg_notion_links_closed', null),
@@ -3940,7 +3993,9 @@ end; $b$ $fn$;
   -- somewhere with the audience it had (pa_restore_landing). Already restored, it says where the task is
   -- now only to someone who can see it there (moved since into a project they can't see: no project).
   -- A project whose Notion database syncs with another project by now comes back without its sync
-  -- (trash_restore_project keeps the one there), and says so. Switch off: 0047's, line for line.
+  -- (trash_restore_project keeps the one there), and says so: in the sync's own workspace (one another
+  -- workspace recorded, for a project that moved here, comes back as that workspace's, 2t). Switch off:
+  -- 0047's, line for line.
   execute $fn$
 create or replace function public.restore_from_trash(p_id uuid)
 returns jsonb language plpgsql security definer set search_path = public as $b$
@@ -3979,7 +4034,8 @@ begin
   if r.kind = 'project' and r.workspace_id is not null and public.pa_on(r.workspace_id) then
     lost := exists (select 1 from jsonb_array_elements(case when jsonb_typeof(r.snapshot -> 'notion_syncs') = 'array'
                                                             then r.snapshot -> 'notion_syncs' else '[]'::jsonb end) s
-                      join public.notion_syncs n on n.workspace_id = r.workspace_id and n.database_id = s ->> 'database_id'
+                      join public.notion_syncs n on n.workspace_id = coalesce(public.kanbo_uuid(s ->> 'workspace_id'), r.workspace_id)
+                                                and n.database_id = s ->> 'database_id'
                                                 and n.id is distinct from public.kanbo_uuid(s ->> 'id'));
   end if;
   prev := coalesce(current_setting('kanbo.restoring', true), '');

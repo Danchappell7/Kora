@@ -36,7 +36,16 @@ aren't put back if they're made a member again); the app asks first. Sixth, a
 webhook endpoint's address sent back exactly as Kanbo shows it masked
 (`https://hooks.zapier.com/…x2kd`) leaves the address as it is, switch on or off
 (see "Webhook addresses" below). Before 0058 `update_webhook` pointed the
-endpoint at the masked text, which no receiver answers.
+endpoint at the masked text, which no receiver answers. Seventh, switch on or
+off, a team project's owner is someone in its workspace: an owner change
+(About › Owner, or a write to the column), a new project given to someone, or
+a move to another workspace that would make someone who isn't in it (who has
+left, or never was) the owner is refused ("invalid owner"). Before 0058 any
+writer could set any owner; invited back later for anything, that person
+would own it again once the switch is on, as the first exception explains.
+With the switch off a guest can still be given a Whole workspace project, as
+before; the app never offers anyone else, and never moves a project between
+workspaces.
 
 ## What it adds
 
@@ -318,8 +327,8 @@ No new secrets and no new schedule.
   function, the SQL editor): saving a sync for one or pointing a sync at one,
   importing into one, linking a page to one of its tasks (or re-pointing a
   link there), moving a task with Notion links into one (on its own, with its
-  parent, put under a task there, from another workspace; by the app, the
-  API, MCP, the planner or the bin), restoring from the bin a task with links
+  parent, which is told it's its sub-task's links, or put under a task there;
+  by the app, the API, MCP, the planner or the bin), restoring from the bin a task with links
   into one or such a project with its sync or linked tasks, making a project
   that has a sync or linked tasks Members only or Private (Members only to
   Private too), making a new Members only or Private project under an id
@@ -327,7 +336,18 @@ No new secrets and no new schedule.
   first, above), moving a Members only or Private project in from another
   workspace while linked tasks here name it, and turning the switch on while
   a Members only or Private project still has them. A task's project id
-  counts in any spelling (capitals too), as every rank reads it. Each
+  counts in any spelling (capitals too), as every rank reads it. The rule
+  counts the workspace's own syncs and links: a task or a project moved here
+  from another workspace (through the database's API by hand: the app never
+  does) leaves its Notion links and sync recorded in the workspace it left.
+  They're that workspace's to see and remove, they never sync with what moved
+  (a sync stops at a project that isn't in its workspace, and reads and writes
+  only its own workspace's tasks), and nobody here can see them, so they don't
+  stand in the way here: what moved goes into a Members only or Private
+  project, is made one, and the switch goes on, as with no Notion. Taken back
+  to that workspace, they count there again. (The bin putting such a task back
+  here would make its link this workspace's: into a Members only or Private
+  project, that link is left out and the rest comes back.) Each
   refusal is "notion closed project" (switching on: "notion in closed
   projects") with the sentence as its hint, which the
   app, the API and MCP show as it is: "Members only and Private projects
@@ -380,7 +400,10 @@ person who saved it: it goes when someone else signs in there.)
   it as the parent comment, a Personal task hung under it, a project's or
   task's id already in use, `pa_rank` / `pa_task_gated` called directly).
   None of them reads its title, content, people or counts. Anyone outside the
-  workspace could do the same before 0058.
+  workspace could do the same before 0058. (The Notion page and database checks
+  that the read rules use, `pa_notion_page_hidden` and
+  `pa_notion_database_hidden`, answer someone outside the workspace the same
+  for every id: closed.)
 - **Work under an id no project has.** A task, update, section, field, rule
   or form whose project id names no project here (moved there through the
   database's API by hand, or left by a Whole workspace project that went) is
@@ -398,7 +421,10 @@ person who saved it: it goes when someone else signs in there.)
   grants they made in place, and the guest gets them on joining. The owner
   and each project's managers see and can take off pending grants in People &
   access. Before 0058 the same admin could leave a whole-workspace invite
-  behind.
+  behind. The other way round, a pending invite's grant on a project goes when
+  the project goes to the bin, and doesn't come back when it's restored: the
+  guest joins without it, and nothing says so. Add the project to the invite
+  again (People & access). Nothing is read by anyone it wasn't granted to.
 - **Webhook summaries.** An endpoint's last delivery time, status, error and
   failure count (Settings › Webhooks) move with every delivery it makes,
   including ones about Private projects that the delivery log hides from

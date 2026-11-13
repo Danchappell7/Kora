@@ -3739,7 +3739,7 @@ async function projectAccessApiSuite(w: World) {
     eq(rows.map((r) => [r.project_id, r.assignee_id]), [[pay, w.alice], [pay, w.alice]], "both in Board pay, both now alice's");
     eq([rows[0].collaborators, rows[0].followers], [[dora], []], "bob dropped, dora kept");
   });
-  await test("0058 via REST and MCP, switch on: a task with a Notion page link (or a sub-task with one) doesn't move into a Members only or Private project; the answer says why and nothing changes (0058's containment rule)", async () => {
+  await test("0058 via REST and MCP, switch on: a task with a Notion page link (or a sub-task with one) doesn't move into a Members only or Private project; the answer says why (whose links: the task's or a sub-task's) and nothing changes (0058's containment rule)", async () => {
     const made = await rest(w, aliceKey, "POST", "/tasks", { title: "Notion-linked brief", projectId: w.launch });
     eq(made.status, 201, "made in Launch");
     const sub = await rest(w, aliceKey, "POST", "/tasks", { title: "Linked step", parentId: made.json.id });
@@ -3757,8 +3757,12 @@ async function projectAccessApiSuite(w: World) {
     // (only the sub-task linked: it would go along with its parent)
     await pg.query(`delete from public.notion_links where id = $1::uuid`, [l1]);
     await link(sub.json.id);
+    // (said as the sub-task's links: the task being moved has none of its own)
+    const kidSentence = "Members only and Private projects don't connect to Notion yet. One of its sub-tasks has Notion page links: remove them first, or keep it in a Whole workspace project.";
     const withKid = await rest(w, aliceKey, "PATCH", `/tasks/${made.json.id}`, { projectId: pay });
-    eq([withKid.status, withKid.json?.error?.details?.fields?.projectId], [422, sentence], `REST, a linked sub-task: ${JSON.stringify(withKid.json)}`);
+    eq([withKid.status, withKid.json?.error?.details?.fields?.projectId], [422, kidSentence], `REST, a linked sub-task: ${JSON.stringify(withKid.json)}`);
+    const kidMcp = await tool(w, alice, "update_task", { taskId: made.json.id, projectId: leads });
+    eq([kidMcp.isError, kidMcp.content[0].text.includes(kidSentence)], [true, true], `MCP, a linked sub-task: ${kidMcp.content[0].text}`);
     eq(await where(), [w.launch, w.launch], "nothing moved either");
     // (a Whole workspace project takes it, links and all)
     const open = await mk("Zebra open", "workspace");
