@@ -25,6 +25,8 @@ export function verifySelect(sql, file) {
     if (!line.startsWith("--")) break;
     const body = line.replace(/^--\s?/, "");
     if (body.trim()) lines.push(body);
+    // the select ends at its semicolon; any notes after it (0058 has some) aren't part of it
+    if (/;\s*$/.test(body)) break;
   }
   const text = lines.join("\n").trim().replace(/;\s*$/, "");
   if (!/^select\b/i.test(text)) throw new Error(`${file}: its VERIFY block isn't a single select`);

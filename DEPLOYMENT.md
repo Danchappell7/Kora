@@ -779,6 +779,42 @@ say "The new code isn't in this folder yet." and stop before asking for your tok
    the per-address limit is weaker until that's looked at.
 6. **Connect an AI app**: Settings › Developers › Connect your AI has the steps for each one.
 
+### Step 17–19 in one go (the shortest way)
+
+This does all of Steps 17, 18 and 19 below: thirteen functions, then database
+updates 0051 to 0058 in ONE paste. It's safe whether or not you've already done
+Steps 17–18 (each update is safe to run again). Project access (0058) starts
+**off** in every business, so nobody sees any change until you switch it on
+for a business (step 4 here).
+
+1. **Deploy the thirteen functions** (no new secrets, no new schedule). It runs
+   from `~/Downloads/kora-app` and stops with "The new code isn't in this folder
+   yet." (before asking for your token) if the folder doesn't have it.
+
+   ```bash
+   cd ~/Downloads/kora-app && { [ -f supabase/deploy/0051-0058_one_paste.sql ] || { echo "The new code isn't in this folder yet. Nothing has changed."; false; }; } && read -s "SUPABASE_ACCESS_TOKEN?Paste your Supabase token, then press Enter: " && echo && export SUPABASE_ACCESS_TOKEN && R=htnchiljplrnjkwimgla && supabase functions deploy webhook-dispatch --no-verify-jwt --project-ref $R --use-api && supabase functions deploy api --no-verify-jwt --project-ref $R --use-api && supabase functions deploy mcp --no-verify-jwt --project-ref $R --use-api && supabase functions deploy daily-reminders --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-standup --no-verify-jwt --project-ref $R --use-api && supabase functions deploy slack-app --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notify --project-ref $R --use-api && supabase functions deploy ai-assist --project-ref $R --use-api && supabase functions deploy slack-post --project-ref $R --use-api && supabase functions deploy invite-member --project-ref $R --use-api && supabase functions deploy public-form --no-verify-jwt --project-ref $R --use-api && supabase functions deploy notion --project-ref $R --use-api && supabase functions deploy ics-feed --no-verify-jwt --project-ref $R --use-api && echo "All thirteen functions deployed."; unset SUPABASE_ACCESS_TOKEN
+   ```
+2. **Run the eight database updates in one paste.** Copy the file:
+
+   ```bash
+   pbcopy < ~/Downloads/kora-app/supabase/deploy/0051-0058_one_paste.sql
+   ```
+
+   Open the SQL editor (<https://supabase.com/dashboard/project/htnchiljplrnjkwimgla/sql/new>),
+   paste, and press **Run**. If Supabase warns about "destructive operations", choose
+   **Run this query**: the drops are the files replacing their own older rules, and no
+   table is dropped. The result is one row: columns 0051 to 0058 all say `true` and
+   "not true" says `none`. It runs as one, so if it stops with an error nothing has
+   changed: send the message to whoever is helping you. It's safe to run again.
+
+   The file is made from the eight migration files by `node scripts/bundle-migrations.mjs 0051 0058`
+   (a test fails if it falls out of step with them).
+3. **Reload the app** and look for what Steps 17.3, 18.3 and 19.3 describe: as the
+   business's owner, Settings › Workspace shows **Project access**, switched **off**.
+4. **Switching it on for a business** is done in the app, one business at a time,
+   when you're ready: Step 19.4 has the order (guests first, the Notion check, then
+   which projects to make Members only or Private). Step 19.5 is the rollback.
+
 ### Step 17–18 in one go (the short way)
 
 This does all of Step 17 and Step 18 below: ten functions, then database updates
